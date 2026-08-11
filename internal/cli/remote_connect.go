@@ -730,6 +730,13 @@ func openInBrowser(url string) error {
 		cmd, args = "open", []string{url}
 	case "windows":
 		cmd, args = "rundll32", []string{"url.dll,FileProtocolHandler", url}
+	case "android":
+		// termux-api's termux-open-url opens the browser; fall back when absent.
+		if p, err := exec.LookPath("termux-open-url"); err == nil {
+			cmd, args = p, []string{url}
+		} else {
+			cmd, args = "xdg-open", []string{url}
+		}
 	default:
 		cmd, args = "xdg-open", []string{url}
 	}
