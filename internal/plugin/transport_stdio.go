@@ -449,9 +449,9 @@ func stdioShell() string {
 			return exe
 		}
 	}
-	for _, name := range []string{"zsh", "bash", "sh"} {
-		if p, err := exec.LookPath(name); err == nil {
-			return p
+	for _, shell := range []string{"/bin/zsh", "/bin/bash", "/bin/sh"} {
+		if isExecutableFile(shell) {
+			return shell
 		}
 	}
 	return ""

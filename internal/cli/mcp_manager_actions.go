@@ -399,11 +399,6 @@ func mcpOpenCommand(target string) (*exec.Cmd, error) {
 		return exec.Command("open", target), nil
 	case "windows":
 		return exec.Command("rundll32", "url.dll,FileProtocolHandler", target), nil
-	case "android":
-		if p, err := exec.LookPath("termux-open"); err == nil {
-			return exec.Command(p, target), nil
-		}
-		return exec.Command("xdg-open", target), nil
 	default:
 		return exec.Command("xdg-open", target), nil
 	}
