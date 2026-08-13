@@ -62,11 +62,23 @@ else
 fi
 
 # 7. cherry-pick Termux 补丁(termux-patch 分支 HEAD 为补丁 commit)
+# 本地分支可能不存在(例如新 clone 或 fetch 后未建分支),此时从 origin 创建跟踪分支。
+if ! git rev-parse --verify -q "$PATCH_BRANCH" >/dev/null; then
+  log "本地分支 $PATCH_BRANCH 不存在,从 origin/$PATCH_BRANCH 创建"
+  git branch --track "$PATCH_BRANCH" "origin/$PATCH_BRANCH" || {
+    echo "[update] 无法创建本地分支 $PATCH_BRANCH(origin 无此分支?)" >&2
+    exit 1
+  }
+fi
 if git cherry-pick "$PATCH_BRANCH" 2>/dev/null; then
   log "补丁干净应用 ✓"
 else
-  echo "[update] 补丁与 $TAG 冲突,请手工解决后 git cherry-pick --continue" >&2
-  echo "[update] 若补丁中某些文件在 $TAG 已不需要,可用 git cherry-pick --skip" >&2
+  if git status --porcelain | grep -qE '^(UU|AA|DD|AU|UA|DU|UD)'; then
+    echo "[update] 补丁与 $TAG 冲突,请手工解决后 git cherry-pick --continue" >&2
+    echo "[update] 若补丁中某些文件在 $TAG 已不需要,可用 git cherry-pick --skip" >&2
+  else
+    echo "[update] cherry-pick 失败(非冲突),请检查上方 git 报错" >&2
+  fi
   exit 1
 fi
 
