@@ -10,6 +10,7 @@ const packageJSON = JSON.parse(readFileSync(resolve(repoRoot, "desktop/frontend/
 const appSource = readFileSync(resolve(repoRoot, "desktop/frontend/src/App.tsx"), "utf8");
 const bridgeSource = readFileSync(resolve(repoRoot, "desktop/frontend/src/lib/bridge.ts"), "utf8");
 const desktopMainSource = readFileSync(resolve(repoRoot, "desktop/main.go"), "utf8");
+const transcriptScrollBenchSource = readFileSync(resolve(repoRoot, "desktop/frontend/bench/transcript-scroll-stability.mjs"), "utf8");
 
 function jobBody(name, nextName) {
   const match = workflow.match(new RegExp(`\\n  ${name}:\\n([\\s\\S]*?)\\n  ${nextName}:`));
@@ -120,22 +121,37 @@ for (const required of ["transcript-selection.mjs", "transcript-scroll-stability
 }
 
 const transcriptCommand = "pnpm --dir frontend test:transcript";
-const transcriptRuns = workflow.match(/pnpm --dir frontend test:transcript(?:\s|$)/g)?.length ?? 0;
-if (!jobBody("desktop", "desktop-macos").includes(transcriptCommand) || transcriptRuns !== 1) {
+const desktopLinuxJob = jobBody("desktop", "desktop-macos");
+const transcriptRuns = desktopLinuxJob.match(/pnpm --dir frontend test:transcript(?:\s|$)/g)?.length ?? 0;
+if (!desktopLinuxJob.includes(transcriptCommand) || transcriptRuns !== 1) {
   throw new Error("motion-ci-contract: the Linux desktop job must run test:transcript exactly once");
 }
 
 const transcriptBrowserCommand = "pnpm --dir frontend test:transcript-browser";
-const transcriptBrowserRuns = workflow.match(/pnpm --dir frontend test:transcript-browser(?:\s|$)/g)?.length ?? 0;
-if (!jobBody("desktop", "desktop-macos").includes(transcriptBrowserCommand) || transcriptBrowserRuns !== 1) {
+const transcriptBrowserRuns = desktopLinuxJob.match(/pnpm --dir frontend test:transcript-browser(?:\s|$)/g)?.length ?? 0;
+if (!desktopLinuxJob.includes(transcriptBrowserCommand) || transcriptBrowserRuns !== 1) {
   throw new Error("motion-ci-contract: the Linux desktop job must run test:transcript-browser exactly once");
 }
-if (!jobBody("desktop", "desktop-macos").includes("PLAYWRIGHT_BROWSERS_PATH=.pw-browsers pnpm --dir frontend exec playwright install")) {
+if (!desktopLinuxJob.includes("PLAYWRIGHT_BROWSERS_PATH=.pw-browsers pnpm --dir frontend exec playwright install")) {
   throw new Error("motion-ci-contract: Chromium must install into the path used by frontend browser tests");
+}
+if (!windowsJob.includes(transcriptBrowserCommand)) {
+  throw new Error("motion-ci-contract: desktop-windows must run the transcript browser replay");
 }
 for (const required of ["transcript-selection.mjs", "transcript-scroll-stability.mjs"]) {
   if (!packageJSON.scripts?.["test:transcript-browser"]?.includes(required)) {
     throw new Error(`motion-ci-contract: test:transcript-browser must include ${required}`);
+  }
+}
+for (const required of [
+  "PerformanceObserver",
+  "__reasonixScrollPerfProbe",
+  "REASONIX_TRANSCRIPT_MAX_FRAME_GAP_MS",
+  "REASONIX_TRANSCRIPT_MAX_LONG_TASK_MS",
+  "Array.from({ length: 10 }",
+]) {
+  if (!transcriptScrollBenchSource.includes(required)) {
+    throw new Error(`motion-ci-contract: transcript scroll browser gate must retain performance probe ${required}`);
   }
 }
 

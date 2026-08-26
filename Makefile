@@ -6,21 +6,15 @@ LDFLAGS := -s -w \
 	-X main.gitCommit=$(GIT_COMMIT) \
 	-X main.buildTimeUTC=$(BUILD_TIME_UTC)
 GOEXE := $(shell go env GOEXE)
-ANDROID_ARCH ?= arm64
-
 # One pin for the Makefile and the CI lint job; see .github/workflows/ci.yml.
 GOLANGCI_VERSION := $(shell cat .golangci-version)
 WAILS_VERSION := $(shell tr -d '[:space:]' < .wails-version)
 
-.PHONY: build android vet fmt lint lint-go lint-install lint-cross lint-update wails-install test desktop-test desktop-test-short desktop-test-times sdk-test sdk-test-race hooks cross clean
+.PHONY: build vet fmt lint lint-go lint-install lint-cross lint-update wails-install test desktop-test desktop-test-short desktop-test-times sdk-test sdk-test-race hooks cross clean
 
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/reasonix$(GOEXE) ./cmd/reasonix
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/reasonix-plugin-example$(GOEXE) ./cmd/reasonix-plugin-example
-
-android:
-	@mkdir -p bin
-	CGO_ENABLED=0 GOOS=android GOARCH=$(ANDROID_ARCH) go build -ldflags "$(LDFLAGS)" -o bin/reasonix-android-$(ANDROID_ARCH) ./cmd/reasonix
 
 vet:
 	go vet ./...

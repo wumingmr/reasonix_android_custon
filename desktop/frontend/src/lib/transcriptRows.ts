@@ -15,6 +15,14 @@ import { isBatchedReadOnlyTool, isSteerNoticeText, type ExtensionItem, type Item
 import { appendTurnActionCopyText } from "./turnActionCopy";
 import { isCreationGroupableTool, toolGroupKind, type ToolGroupKind } from "../components/ToolGroup";
 import type { ProcessFoldPreference } from "./processFoldPreference";
+import type { ResolvedReasoningDisplayMode } from "./reasoningDisplayPreference";
+import {
+  estimateTranscriptRowGeometry,
+  resolveReasoningLayoutVariant,
+  resolveToolCardDefaultOpen,
+  type TranscriptGeometryEnvironment,
+  type TranscriptRowLayoutVariant,
+} from "./transcriptRowGeometry";
 
 export type UserItem = Extract<Item, { kind: "user" }>;
 export type AssistantItem = Extract<Item, { kind: "assistant" }>;
@@ -118,7 +126,9 @@ export function partitionTurnItems(items: readonly Item[], live: TranscriptLiveF
 }
 
 function assistantReasoningOnly(item: AssistantItem): AssistantItem {
-  return { ...item, text: "" };
+  const reasoning = { ...item, text: "" };
+  itemMeasurementVersionOverrides.set(reasoning, itemMeasurementVersion(item));
+  return reasoning;
 }
 
 export function turnWorkDurationMs(items: readonly Item[]): number {
@@ -264,6 +274,7 @@ export interface FoldEntry {
   open: boolean;
   userOverridden: boolean;
   running: boolean;
+  keepReasoningExpanded?: boolean;
 }
 
 export type FoldMap = ReadonlyMap<string, FoldEntry>;
@@ -271,24 +282,30 @@ export type FoldMap = ReadonlyMap<string, FoldEntry>;
 export const EMPTY_FOLDS: FoldMap = new Map();
 
 export function defaultFoldOpen(
-  segment: { hasOutsideContent: boolean; hasRunningWork: boolean },
+  segment: { hasOutsideContent: boolean; hasRunningWork: boolean; keepReasoningExpanded?: boolean },
   preference: ProcessFoldPreference,
 ): boolean {
-  return preference === "expanded" || !segment.hasOutsideContent || segment.hasRunningWork;
+  return preference === "expanded" || segment.keepReasoningExpanded === true || !segment.hasOutsideContent || segment.hasRunningWork;
 }
 
 export interface FoldSegmentState {
   key: string;
   hasOutsideContent: boolean;
   hasRunningWork: boolean;
+  keepReasoningExpanded: boolean;
 }
 
-export function foldSegmentStates(models: readonly TurnModel[]): FoldSegmentState[] {
+export function foldSegmentStates(models: readonly TurnModel[], keepReasoningExpanded = false): FoldSegmentState[] {
   const out: FoldSegmentState[] = [];
   for (const model of models) {
     for (const segment of model.segments) {
       if (segment.displayItems.length === 0) continue;
-      out.push({ key: segment.key, hasOutsideContent: segment.hasOutsideContent, hasRunningWork: segment.hasRunningWork });
+      out.push({
+        key: segment.key,
+        hasOutsideContent: segment.hasOutsideContent,
+        hasRunningWork: segment.hasRunningWork,
+        keepReasoningExpanded: keepReasoningExpanded && segment.displayItems.some((item) => item.kind === "assistant"),
+      });
     }
   }
   return out;
@@ -322,17 +339,24 @@ export function reconcileFoldEntries(
         open: defaultFoldOpen(segment, preference),
         userOverridden: false,
         running: segment.hasRunningWork,
+        keepReasoningExpanded: segment.keepReasoningExpanded,
       });
       continue;
     }
-    if (preferenceChanged) {
-      const open = preference === "expanded"
+    const reasoningPinChanged = Boolean(entry.keepReasoningExpanded) !== segment.keepReasoningExpanded;
+    if (preferenceChanged || reasoningPinChanged) {
+      const open = preference === "expanded" || segment.keepReasoningExpanded
         ? true
         : !segment.hasRunningWork && segment.hasOutsideContent
           ? false
           : entry.open;
-      if (open !== entry.open || entry.userOverridden || entry.running !== segment.hasRunningWork) {
-        write(segment.key, { open, userOverridden: false, running: segment.hasRunningWork });
+      if (open !== entry.open || entry.userOverridden || entry.running !== segment.hasRunningWork || reasoningPinChanged) {
+        write(segment.key, {
+          open,
+          userOverridden: false,
+          running: segment.hasRunningWork,
+          keepReasoningExpanded: segment.keepReasoningExpanded,
+        });
       }
       continue;
     }
@@ -342,13 +366,18 @@ export function reconcileFoldEntries(
       const userOverridden = entry.running ? entry.userOverridden : false;
       const open = userOverridden ? entry.open : true;
       if (open !== entry.open || userOverridden !== entry.userOverridden || !entry.running) {
-        write(segment.key, { open, userOverridden, running: true });
+        write(segment.key, { open, userOverridden, running: true, keepReasoningExpanded: segment.keepReasoningExpanded });
       }
       continue;
     }
     if (entry.running) {
-      const open = !entry.userOverridden && segment.hasOutsideContent && preference !== "expanded" ? false : entry.open;
-      write(segment.key, { open, userOverridden: entry.userOverridden, running: false });
+      const open = !entry.userOverridden && segment.hasOutsideContent && preference !== "expanded" && !segment.keepReasoningExpanded ? false : entry.open;
+      write(segment.key, {
+        open,
+        userOverridden: entry.userOverridden,
+        running: false,
+        keepReasoningExpanded: segment.keepReasoningExpanded,
+      });
     }
   }
   for (const key of prev.keys()) {
@@ -364,7 +393,12 @@ export function reconcileFoldEntries(
 export function foldMapWithToggle(prev: FoldMap, key: string, currentlyOpen: boolean): Map<string, FoldEntry> {
   const next = new Map(prev);
   const entry = prev.get(key);
-  next.set(key, { open: !currentlyOpen, userOverridden: true, running: entry?.running ?? false });
+  next.set(key, {
+    open: !currentlyOpen,
+    userOverridden: true,
+    running: entry?.running ?? false,
+    keepReasoningExpanded: entry?.keepReasoningExpanded,
+  });
   return next;
 }
 
@@ -372,13 +406,18 @@ export function foldMapWithToggle(prev: FoldMap, key: string, currentlyOpen: boo
 export function foldMapWithReasoningOpen(prev: FoldMap, key: string, running: boolean): Map<string, FoldEntry> {
   const next = new Map(prev);
   const entry = prev.get(key);
-  next.set(key, { open: true, userOverridden: true, running: entry?.running ?? running });
+  next.set(key, {
+    open: true,
+    userOverridden: true,
+    running: entry?.running ?? running,
+    keepReasoningExpanded: entry?.keepReasoningExpanded,
+  });
   return next;
 }
 
 // ── Virtual rows ──────────────────────────────────────────────────────────────
 
-export type TranscriptRow =
+type TranscriptRowContent =
   | { kind: "older-history"; key: string }
   | { kind: "user"; key: string; item: UserItem; turn: number | undefined }
   | { kind: "process-header"; key: string; segment: SegmentModel; open: boolean }
@@ -394,6 +433,89 @@ export type TranscriptRow =
   | { kind: "extension"; key: string; item: ExtensionItem }
   | { kind: "turn-actions"; key: string; turn: number; text: string };
 
+export type TranscriptRow = TranscriptRowContent & { layoutVariant?: TranscriptRowLayoutVariant };
+
+/** Initial geometry is present on every row built by buildTranscriptRows.
+ * Optional keeps compatibility with focused tests/extensions that construct
+ * a minimal TranscriptRow directly; consumers resolve their safe fallback. */
+export type TranscriptRowWithLayout = TranscriptRowContent & { layoutVariant: TranscriptRowLayoutVariant };
+
+// Derived reasoning-only assistant items intentionally blank the answer text;
+// retain the source semantic version for that projection without caching
+// mutable bridge objects themselves.
+const itemMeasurementVersionOverrides = new WeakMap<object, string>();
+
+function hashGeometryParts(parts: readonly string[]): string {
+  let hash = 2166136261;
+  for (const part of parts) {
+    for (let index = 0; index < part.length; index += 1) {
+      hash ^= part.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    hash ^= 31;
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${hash >>> 0}:${parts.map((part) => part.length).join(",")}`;
+}
+
+/** Semantic content version: equal projections keep the same geometry even
+ * when the controller creates fresh objects for an unrelated UI update. */
+function itemMeasurementVersion(item: Item): string {
+  const override = itemMeasurementVersionOverrides.get(item);
+  if (override) return override;
+  const parts: string[] = [String(item.kind ?? ""), String(item.id ?? "")];
+  // Focused callers and older bridge payloads may provide a minimal item
+  // without the discriminant. Preserve its text in the semantic version so a
+  // late preview -> resolved patch cannot reuse the preview measurement.
+  if (!item.kind) {
+    const legacy = item as unknown as { text?: unknown; reasoning?: unknown; output?: unknown; args?: unknown };
+    parts.push(String(legacy.text ?? ""), String(legacy.reasoning ?? ""), String(legacy.args ?? ""), String(legacy.output ?? ""));
+  }
+  switch (item.kind) {
+    case "user":
+      parts.push(String(item.text ?? ""), String(item.submitText ?? ""), item.failed ? "1" : "0", String(item.createdAt ?? ""));
+      break;
+    case "assistant":
+      parts.push(String(item.text ?? ""), String(item.reasoning ?? ""), item.streaming ? "1" : "0", item.reasoningComplete ? "1" : "0", String(item.reasoningDurationMs ?? ""), String(item.workDurationMs ?? ""), JSON.stringify(item.searchSources ?? []), JSON.stringify(item.memoryCitations ?? []));
+      break;
+    case "phase":
+      parts.push(String(item.text ?? ""));
+      break;
+    case "notice":
+      parts.push(String(item.text ?? ""), String(item.detail ?? ""), String(item.title ?? ""), String(item.level ?? ""), String(item.variant ?? ""), String(item.action ?? ""), JSON.stringify(item.completionSummary ?? {}));
+      break;
+    case "compaction":
+      parts.push(item.pending ? "1" : "0", String(item.trigger ?? ""), String(item.messages ?? ""), String(item.summary ?? ""), String(item.archive ?? ""));
+      break;
+    case "tool":
+      parts.push(String(item.name ?? ""), String(item.args ?? ""), String(item.output ?? ""), String(item.error ?? ""), String(item.status ?? ""), String(item.subject ?? ""), String(item.summary ?? ""), item.truncated ? "1" : "0", item.dataArchived ? "1" : "0", JSON.stringify(item.fileDiff ?? {}), JSON.stringify(item.execution ?? {}), item.subagentProgress ? JSON.stringify(item.subagentProgress) : "");
+      break;
+    case "extension":
+      parts.push(String(item.surfaceKey ?? ""), String(item.pluginId ?? ""), String(item.surfaceId ?? ""), String(item.generation ?? ""), JSON.stringify(item.card ?? null));
+      break;
+  }
+  return hashGeometryParts(parts);
+}
+
+function measurementVersionForItems(items: readonly Item[]): string {
+  return hashGeometryParts(items.map((item) => itemMeasurementVersion(item)));
+}
+
+export function transcriptRowMeasurementVersion(row: TranscriptRow): string {
+  switch (row.kind) {
+    case "older-history":
+    case "turn-actions":
+      return "0:0";
+    case "process-header":
+      return measurementVersionForItems(row.segment.processItems);
+    case "tool-batch":
+    case "tool-group":
+      return measurementVersionForItems(row.items);
+    default:
+      return `1:${itemMeasurementVersion(row.item)}`;
+  }
+}
+
 export const OLDER_HISTORY_ROW_KEY = "older-history";
 
 export function userRowKey(itemId: string): string {
@@ -402,19 +524,24 @@ export function userRowKey(itemId: string): string {
 
 /** Body rows of one expanded process fold: read-only batches, creation tool
  *  groups, single tool cards, phases, info notices, compactions, reasoning. */
-function processBodyRows(segment: SegmentModel, creationMode: boolean): TranscriptRow[] {
-  const rows: TranscriptRow[] = [];
+function processBodyRows(
+  segment: SegmentModel,
+  creationMode: boolean,
+  reasoningDisplayMode: ResolvedReasoningDisplayMode,
+  subcallsByParent: ReadonlyMap<string, readonly ToolItem[]>,
+): TranscriptRowWithLayout[] {
+  const rows: TranscriptRowWithLayout[] = [];
   let roBatch: ToolItem[] = [];
   let toolBatch: ToolItem[] = [];
   let toolBatchKind: ToolGroupKind | null = null;
   const flushRO = () => {
     if (roBatch.length === 0) return;
-    rows.push({ kind: "tool-batch", key: `tb:${roBatch[0].id}`, items: [...roBatch] });
+    rows.push({ kind: "tool-batch", key: `tb:${roBatch[0].id}`, items: [...roBatch], layoutVariant: "tool-batch-collapsed" });
     roBatch = [];
   };
   const flushToolBatch = () => {
     if (!toolBatchKind || toolBatch.length === 0) return;
-    rows.push({ kind: "tool-group", key: `tg:${toolBatch[0].id}`, items: [...toolBatch], groupKind: toolBatchKind });
+    rows.push({ kind: "tool-group", key: `tg:${toolBatch[0].id}`, items: [...toolBatch], groupKind: toolBatchKind, layoutVariant: "tool-group-collapsed" });
     toolBatch = [];
     toolBatchKind = null;
   };
@@ -442,21 +569,44 @@ function processBodyRows(segment: SegmentModel, creationMode: boolean): Transcri
     }
     switch (it.kind) {
       case "tool":
-        rows.push({ kind: "tool", key: `t:${it.id}`, item: it as ToolItem });
+        rows.push({
+          kind: "tool",
+          key: `t:${it.id}`,
+          item: it as ToolItem,
+          layoutVariant: resolveToolCardDefaultOpen(
+            it as ToolItem,
+            subcallsByParent.get(it.id)?.length ?? 0,
+            reasoningDisplayMode,
+          ) ? "tool-expanded" : "tool-collapsed",
+        });
         break;
       case "phase":
-        rows.push({ kind: "phase", key: `p:${it.id}`, item: it as PhaseItem });
+        rows.push({ kind: "phase", key: `p:${it.id}`, item: it as PhaseItem, layoutVariant: "static" });
         break;
       case "notice":
-        rows.push({ kind: "process-notice", key: `pn:${it.id}`, item: it as NoticeItem });
+        rows.push({ kind: "process-notice", key: `pn:${it.id}`, item: it as NoticeItem, layoutVariant: "static" });
         break;
       case "compaction":
-        rows.push({ kind: "compaction", key: `c:${it.id}`, item: it as CompactionItem });
+        rows.push({
+          kind: "compaction",
+          key: `c:${it.id}`,
+          item: it as CompactionItem,
+          layoutVariant: (it as CompactionItem).pending ? "static" : "compaction-collapsed",
+        });
         break;
       case "assistant":
         // Answer text renders outside the fold (partitionTurnItems strips it),
         // so the fold only ever shows the reasoning segment.
-        rows.push({ kind: "reasoning", key: `r:${it.id}`, item: it as AssistantItem, segmentKey: segment.key });
+        rows.push({
+          kind: "reasoning",
+          key: `r:${it.id}`,
+          item: it as AssistantItem,
+          segmentKey: segment.key,
+          layoutVariant: resolveReasoningLayoutVariant(
+            reasoningDisplayMode,
+            Boolean((it as AssistantItem).streaming && !(it as AssistantItem).reasoningComplete),
+          ) ?? "reasoning-summary",
+        });
         break;
     }
   }
@@ -474,12 +624,16 @@ export interface BuildRowsOptions {
   turnForUser: (item: UserItem) => number | undefined;
   /** A checkpoint may make a turn actionable even without assistant text. */
   hasCheckpointForTurn?: (turn: number) => boolean;
+  reasoningDisplayMode?: ResolvedReasoningDisplayMode;
+  subcallsByParent?: ReadonlyMap<string, readonly ToolItem[]>;
 }
 
-export function buildTranscriptRows(models: readonly TurnModel[], options: BuildRowsOptions): TranscriptRow[] {
-  const rows: TranscriptRow[] = [];
+export function buildTranscriptRows(models: readonly TurnModel[], options: BuildRowsOptions): TranscriptRowWithLayout[] {
+  const rows: TranscriptRowWithLayout[] = [];
+  const reasoningDisplayMode = options.reasoningDisplayMode ?? "auto";
+  const subcallsByParent = options.subcallsByParent ?? new Map<string, readonly ToolItem[]>();
   if (options.hasOlderHistory) {
-    rows.push({ kind: "older-history", key: OLDER_HISTORY_ROW_KEY });
+    rows.push({ kind: "older-history", key: OLDER_HISTORY_ROW_KEY, layoutVariant: "static" });
   }
   for (const model of models) {
     const user = model.user;
@@ -487,21 +641,21 @@ export function buildTranscriptRows(models: readonly TurnModel[], options: Build
     // index, so rewind targets survive history paging.
     const turn = user ? options.turnForUser(user) : undefined;
     if (user) {
-      rows.push({ kind: "user", key: userRowKey(user.id), item: user, turn });
+      rows.push({ kind: "user", key: userRowKey(user.id), item: user, turn, layoutVariant: "text-flow" });
     }
     for (const segment of model.segments) {
       if (segment.displayItems.length > 0) {
         const open = options.folds.get(segment.key)?.open ?? defaultFoldOpen(segment, options.foldPreference);
-        rows.push({ kind: "process-header", key: `ph:${segment.key}`, segment, open });
-        if (open) rows.push(...processBodyRows(segment, options.creationMode));
+        rows.push({ kind: "process-header", key: `ph:${segment.key}`, segment, open, layoutVariant: "static" });
+        if (open) rows.push(...processBodyRows(segment, options.creationMode, reasoningDisplayMode, subcallsByParent));
       }
       for (const item of segment.outsideItems) {
         if (item.kind === "extension") {
-          rows.push({ kind: "extension", key: `x:${item.id}`, item });
+          rows.push({ kind: "extension", key: `x:${item.id}`, item, layoutVariant: "text-flow" });
         } else if (item.kind === "notice") {
-          rows.push({ kind: "notice", key: `n:${item.id}`, item });
+          rows.push({ kind: "notice", key: `n:${item.id}`, item, layoutVariant: "text-flow" });
         } else {
-          rows.push({ kind: "answer", key: `a:${item.id}`, item });
+          rows.push({ kind: "answer", key: `a:${item.id}`, item, layoutVariant: "text-flow" });
         }
       }
     }
@@ -514,45 +668,74 @@ export function buildTranscriptRows(models: readonly TurnModel[], options: Build
       (model.actionText.trim() || options.hasCheckpointForTurn?.(turn)) &&
       user
     ) {
-      rows.push({ kind: "turn-actions", key: `ta:${user.id}`, turn, text: model.actionText });
+      rows.push({ kind: "turn-actions", key: `ta:${user.id}`, turn, text: model.actionText, layoutVariant: "static" });
     }
   }
   return rows;
 }
 
+// ── Live turn split ───────────────────────────────────────────────────────────
+// The streaming ("live") turn renders as the virtual list's in-flow Footer —
+// inside the scroller but outside the measured size tree — so the list only
+// ever owns static, bounded rows. The active turn is the one owning the live
+// assistant item; while running with no live item yet it is the last turn.
+// Everything from the active turn onward (except its user message, which
+// stays as the history tail) moves to the live region, preserving the visual
+// order for later steers/messages.
+
+export interface TranscriptLiveSplit {
+  historyRows: TranscriptRow[];
+  liveRows: TranscriptRow[];
+  /** True while a turn is active — the live region may render a status row even when liveRows is empty. */
+  liveActive: boolean;
+}
+
+function firstRowKeyForModel(model: TurnModel): string | undefined {
+  for (const segment of model.segments) {
+    if (segment.displayItems.length > 0) return `ph:${segment.key}`;
+    const outside = segment.outsideItems[0];
+    if (!outside) continue;
+    return outside.kind === "extension" ? `x:${outside.id}` : outside.kind === "notice" ? `n:${outside.id}` : `a:${outside.id}`;
+  }
+  return undefined;
+}
+
+export function splitTranscriptLiveRows(
+  models: readonly TurnModel[],
+  rows: readonly TranscriptRow[],
+  liveId: string | undefined,
+  running: boolean,
+): TranscriptLiveSplit {
+  let activeIndex = -1;
+  if (liveId) {
+    activeIndex = models.findIndex((model) => model.turnItems.some((item) => item.id === liveId));
+  }
+  if (activeIndex < 0 && running && models.length > 0) activeIndex = models.length - 1;
+  if (activeIndex < 0) return { historyRows: [...rows], liveRows: [], liveActive: false };
+  const active = models[activeIndex];
+  if (!active.user) {
+    // Prelude turn (no user message): split at the turn's first row. A turn
+    // with no rendered rows yet keeps the whole list as history.
+    const firstKey = firstRowKeyForModel(active);
+    const firstIndex = firstKey ? rows.findIndex((row) => row.key === firstKey) : -1;
+    if (!firstKey || firstIndex < 0) return { historyRows: [...rows], liveRows: [], liveActive: true };
+    return { historyRows: rows.slice(0, firstIndex), liveRows: rows.slice(firstIndex), liveActive: true };
+  }
+  const userIndex = rows.findIndex((row) => row.key === userRowKey(active.user!.id));
+  if (userIndex < 0) return { historyRows: [...rows], liveRows: [], liveActive: false };
+  return {
+    historyRows: rows.slice(0, userIndex + 1),
+    liveRows: rows.slice(userIndex + 1),
+    liveActive: true,
+  };
+}
+
 // ── Measurement / identity helpers ────────────────────────────────────────────
 
-/** Ballpark row heights; measureElement corrects them on mount. */
-export function estimateTranscriptRowSize(row: TranscriptRow | undefined): number {
-  if (!row) return 48;
-  switch (row.kind) {
-    case "older-history":
-      return 44;
-    case "user":
-      return 88;
-    case "process-header":
-      return 28;
-    case "reasoning":
-      return 96;
-    case "tool":
-      return 96;
-    case "tool-batch":
-    case "tool-group":
-      return 32 + row.items.length * 24;
-    case "phase":
-      return 28;
-    case "process-notice":
-    case "notice":
-      return 44;
-    case "compaction":
-      return 36;
-    case "answer":
-      return 160;
-    case "extension":
-      return 160;
-    case "turn-actions":
-      return 28;
-  }
+/** Ballpark row heights; Virtuoso replaces them with real measurements on mount. */
+export function estimateTranscriptRowSize(row: TranscriptRow | undefined, contentWidth?: number): number {
+  const environment: TranscriptGeometryEnvironment = { contentWidth, typographySignature: "default" };
+  return estimateTranscriptRowGeometry(row, environment);
 }
 
 /**
