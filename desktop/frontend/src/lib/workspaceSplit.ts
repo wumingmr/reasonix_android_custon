@@ -141,3 +141,12 @@ export function workspaceSplitTreeWidthFromPointer({
     previewMinWidth,
   });
 }
+export const WORKSPACE_TREE_MIN_WIDTH = 140;
+export const WORKSPACE_TREE_DEFAULT_WIDTH = 300;
+export const WORKSPACE_PREVIEW_MIN_WIDTH = 140;
+export const WORKSPACE_PREVIEW_TARGET_WIDTH = 360;
+export const WORKSPACE_DUAL_PANEL_TARGET_WIDTH = WORKSPACE_TREE_DEFAULT_WIDTH + WORKSPACE_PREVIEW_TARGET_WIDTH;
+
+export function clampWorkspaceTreeWidth(width: number, panelWidth?: number): number {
+  return clampWorkspaceSplitTreeWidth({ width, panelWidth, treeMinWidth: WORKSPACE_TREE_MIN_WIDTH, previewMinWidth: WORKSPACE_PREVIEW_MIN_WIDTH });
+}

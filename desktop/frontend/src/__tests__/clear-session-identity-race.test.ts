@@ -35,10 +35,14 @@ function deferred<T>() {
 console.log("\nclear-session identity race");
 
 // ── hydrate identity fence (used by loadSessionDataForTab.stillCurrent) ─────
-ok(hydrateIdentityCurrent("/a.jsonl", 1, "/a.jsonl", 1), "matching path+generation is current");
-ok(!hydrateIdentityCurrent("/a.jsonl", 1, "/b.jsonl", 2), "path drift after clear is rejected");
-ok(!hydrateIdentityCurrent("/a.jsonl", 1, "/a.jsonl", 2), "generation-only drift after clear is rejected");
-ok(hydrateIdentityCurrent("", undefined, "/b.jsonl", 2), "empty load path does not false-reject");
+ok(hydrateIdentityCurrent({ sessionPath: "/a.jsonl", sessionGeneration: 1 }, { sessionPath: "/a.jsonl", sessionGeneration: 1 }), "matching path+generation is current");
+ok(!hydrateIdentityCurrent({ sessionPath: "/a.jsonl", sessionGeneration: 1 }, { sessionPath: "/b.jsonl", sessionGeneration: 2 }), "path drift after clear is rejected");
+ok(!hydrateIdentityCurrent({ sessionPath: "/a.jsonl", sessionGeneration: 1 }, { sessionPath: "/a.jsonl", sessionGeneration: 2 }), "generation-only drift after clear is rejected");
+ok(hydrateIdentityCurrent({}, { sessionPath: "/b.jsonl", sessionGeneration: 2 }), "empty load identity does not false-reject");
+ok(!hydrateIdentityCurrent(
+  { session: { hostId: "local", sessionId: "canonical-a" }, sessionGeneration: 1 },
+  { session: { hostId: "local", sessionId: "canonical-b" }, sessionGeneration: 1 },
+), "canonical identity drift is rejected when session paths are empty");
 
 // ── deferred A hydrate vs clear→B (barrier interleaving) ───────────────────
 type LiveMeta = { sessionPath: string; sessionGeneration: number; items: string[] };
@@ -57,7 +61,10 @@ const hydrateA = (async () => {
   const loadGen = live.sessionGeneration;
   const page = await lateA.promise;
   // stillCurrent check at apply time — equivalent to useController fence.
-  if (!hydrateIdentityCurrent(loadPath, loadGen, live.sessionPath, live.sessionGeneration)) {
+  if (!hydrateIdentityCurrent(
+    { sessionPath: loadPath, sessionGeneration: loadGen },
+    { sessionPath: live.sessionPath, sessionGeneration: live.sessionGeneration },
+  )) {
     return { applied: false as const, items: live.items.slice() };
   }
   live.items = page.items;
@@ -92,7 +99,12 @@ const controller = readFileSync(join(root, "lib/useController.ts"), "utf8");
 assert.match(controller, /hydrateIdentityCurrent\(/, "useController uses shared identity fence");
 assert.match(controller, /evictTab\(tabId\)/, "clearSession evicts TranscriptStore");
 assert.match(controller, /sessionGeneration:\s*cleared\.sessionGeneration/, "clear applies returned generation");
-assert.match(controller, /a\.sessionGeneration === b\.sessionGeneration/, "sameMeta compares generation");
+assert.match(
+  controller,
+  /sessionIdentityStableKey\(a\) === sessionIdentityStableKey\(b\)/,
+  "sameMeta compares the complete canonical identity through the shared helper",
+);
+assert.match(controller, /a\.sessionGeneration === b\.sessionGeneration/, "sameMeta also fences unbound generations");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

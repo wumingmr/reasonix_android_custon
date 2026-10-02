@@ -1,9 +1,6 @@
 package sessioncatalog
 
 import (
-	"context"
-	"database/sql"
-	"errors"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -40,15 +37,91 @@ func classifyRecoveryLineage(record SessionRecord) SessionRecord {
 	return record
 }
 
-func classifyRecoveryLineageFromContent(record SessionRecord) SessionRecord {
+type recoveryContentResult struct {
+	snapshot agent.SessionContentSnapshot
+	ok       bool
+}
+
+type recoveryContentCache struct {
+	entries map[string]recoveryContentResult
+	onLoad  func(string)
+	strict  bool
+}
+
+func newRecoveryContentCache(onLoad func(string)) *recoveryContentCache {
+	return &recoveryContentCache{entries: map[string]recoveryContentResult{}, onLoad: onLoad}
+}
+
+func newStrictRecoveryContentCache(onLoad func(string)) *recoveryContentCache {
+	return &recoveryContentCache{entries: map[string]recoveryContentResult{}, onLoad: onLoad, strict: true}
+}
+
+func listSessionOrderWithContent(dir string, content *recoveryContentCache) ([]agent.SessionOrderInfo, error) {
+	return agent.ListSessionOrderWithRecoveryPreferenceResolver(dir, func(path string, meta agent.BranchMeta) bool {
+		digest := strings.TrimSpace(meta.RecoveryPreferredDigest)
+		if !meta.RecoveryPreferred || digest == "" {
+			return false
+		}
+		_, ok := content.load(path, digest)
+		return ok
+	})
+}
+
+func (c *recoveryContentCache) load(path, digest string) (agent.SessionContentSnapshot, bool) {
+	key := PathIdentityKey(path)
+	result, loaded := c.entries[key]
+	if !loaded {
+		if c.onLoad != nil {
+			c.onLoad(path)
+		}
+		result.snapshot, result.ok = agent.LoadSessionContentSnapshot(path)
+		c.entries[key] = result
+	}
+	if !result.ok || strings.TrimSpace(digest) != "" && !result.snapshot.MatchesDigest(digest) {
+		return agent.SessionContentSnapshot{}, false
+	}
+	return result.snapshot, true
+}
+
+func (c *recoveryContentCache) loadRecord(record SessionRecord) (agent.SessionContentSnapshot, bool) {
+	if c.strict && record.Recovered && strings.TrimSpace(record.RecoveryDigest) == "" {
+		return agent.SessionContentSnapshot{}, false
+	}
+	return c.load(record.Path, record.RecoveryDigest)
+}
+
+func classifyRecoveryLineageWithContent(record SessionRecord, content *recoveryContentCache) SessionRecord {
+	if !record.Recovered {
+		if record.RecoveryRole == "" {
+			record.RecoveryRole = RecoveryRoleNormal
+		}
+		return record
+	}
 	record.RecoveryCopy = false
-	return classifyRecoveryLineage(record)
+	record.RecoveryGroupID = firstNonEmpty(record.ParentID, agent.BranchID(record.Path))
+	record.RecoveryRole = RecoveryRoleDiverged
+	record.RecoveryCanonical = false
+	parentPath := recoveryParentPath(record)
+	if parentPath == "" {
+		return record
+	}
+	branch, branchOK := content.loadRecord(record)
+	parent, parentOK := content.load(parentPath, "")
+	if branchOK && parentOK && parent.Covers(branch) {
+		record.RecoveryCopy = true
+		record.RecoveryRole = RecoveryRoleCoveredCopy
+	}
+	return record
 }
 
 // promoteCanonicalLeaves marks unique non-covered leaves that cover every
 // ancestor in their group as adopted/canonical. Multiple non-covering leaves
 // stay diverged. open/running/pinned/leased decisions are left to callers.
 func promoteCanonicalLeaves(records []SessionRecord) []SessionRecord {
+	return promoteCanonicalLeavesWithContent(records, newRecoveryContentCache(nil))
+}
+
+func promoteCanonicalLeavesWithContent(records []SessionRecord, cache *recoveryContentCache) []SessionRecord {
 	byGroup, groupRoot := recoveryLineageGroups(records)
 	for groupID, idxs := range byGroup {
 		for _, i := range idxs {
@@ -57,7 +130,11 @@ func promoteCanonicalLeaves(records []SessionRecord) []SessionRecord {
 		}
 		rootIndex, hasRoot := groupRoot[groupID]
 		preferred := -1
-		for _, index := range idxs {
+		preferenceIndexes := append([]int{}, idxs...)
+		if hasRoot {
+			preferenceIndexes = append(preferenceIndexes, rootIndex)
+		}
+		for _, index := range preferenceIndexes {
 			if records[index].RecoveryPreferred {
 				if preferred >= 0 {
 					preferred = -2 // multiple stale preferences fail closed
@@ -75,7 +152,7 @@ func promoteCanonicalLeaves(records []SessionRecord) []SessionRecord {
 		if hasRoot {
 			contentIdxs = append(contentIdxs, rootIndex)
 		}
-		content := loadRecoveryGroupContent(records, contentIdxs)
+		content := loadRecoveryGroupContent(records, contentIdxs, cache)
 		candidate, ok := uniqueLongestRecovery(records, idxs, content)
 		if !ok {
 			// No unique covering leaf: still pick one stable representative so
@@ -377,13 +454,13 @@ func recoveryLineageGroups(records []SessionRecord) (map[string][]int, map[strin
 	return byGroup, groupRoot
 }
 
-func loadRecoveryGroupContent(records []SessionRecord, idxs []int) map[int]agent.SessionContentSnapshot {
+func loadRecoveryGroupContent(records []SessionRecord, idxs []int, cache *recoveryContentCache) map[int]agent.SessionContentSnapshot {
 	content := make(map[int]agent.SessionContentSnapshot, len(idxs))
 	for _, index := range idxs {
 		if _, loaded := content[index]; loaded {
 			continue
 		}
-		if snapshot, ok := agent.LoadSessionContentSnapshot(records[index].Path); ok {
+		if snapshot, ok := cache.loadRecord(records[index]); ok {
 			content[index] = snapshot
 		}
 	}
@@ -455,77 +532,6 @@ func recoveryCandidateCovers(candidate, root int, idxs []int, content map[int]ag
 		}
 	}
 	return true
-}
-
-func (c *Catalog) refreshDirectoryRecoveryLineage(ctx context.Context, target DirectoryTarget, records []SessionRecord) error {
-	for i := range records {
-		records[i] = classifyRecoveryLineageFromContent(normalizeSessionRecord(records[i]))
-	}
-	records = promoteCanonicalLeaves(records)
-	c.mutationMu.Lock()
-	defer c.mutationMu.Unlock()
-	tx, err := c.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	affected := map[TopicKey]struct{}{}
-	changed := false
-	for _, record := range records {
-		// Capture the previously projected topic so re-anchored recovery rows
-		// can delete empty legacy topic shells.
-		var previous TopicKey
-		if err := tx.QueryRowContext(ctx, `SELECT scope,workspace_root,topic_id FROM catalog_sessions WHERE path=?`, record.Path).
-			Scan(&previous.Scope, &previous.WorkspaceRoot, &previous.TopicID); err == nil && previous.TopicID != "" {
-			affected[previous] = struct{}{}
-		} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			_ = tx.Rollback()
-			return err
-		}
-		result, err := tx.ExecContext(ctx, `UPDATE catalog_sessions SET recovered=?,recovery_copy=?,recovery_group_id=?,recovery_role=?,recovery_canonical=?,topic_id=?,topic_title=?,logical_topic_id=?,ordinary_visible=?,parent_id=? WHERE path=?`,
-			boolToInt(record.Recovered), boolToInt(record.RecoveryCopy), record.RecoveryGroupID, record.RecoveryRole,
-			boolToInt(record.RecoveryCanonical), record.TopicID, record.TopicTitle, record.LogicalTopicID,
-			boolToInt(record.OrdinaryVisible), record.ParentID, record.Path)
-		if err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-		if rows, _ := result.RowsAffected(); rows > 0 {
-			changed = true
-		}
-		if record.TopicID != "" {
-			affected[TopicKey{Scope: record.Scope, WorkspaceRoot: record.WorkspaceRoot, TopicID: record.TopicID}] = struct{}{}
-		}
-		if record.Recovered && previous.TopicID != "" && previous.TopicID != record.TopicID {
-			// The lineage re-anchor moved this recovery row off its old topic;
-			// tombstone it so SyncMetadata cannot resurrect the folded shell.
-			if err := rememberFoldedTopic(ctx, tx, previous, c.opts.Now().UnixMilli()); err != nil {
-				_ = tx.Rollback()
-				return err
-			}
-		}
-	}
-	if !changed {
-		return tx.Rollback()
-	}
-	for key := range affected {
-		if err := recomputeTopic(ctx, tx, key); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-	}
-	revision, err := bumpRevision(ctx, tx)
-	if err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	// Recovery lineage is the final projection step inside ReconcileDirectory.
-	// Keep its revision internal; finishDirectoryScan publishes the one complete
-	// directory snapshot after missing-row cleanup and readiness are committed.
-	c.rememberRevision(revision)
-	return nil
 }
 
 func recoveryParentPath(record SessionRecord) string {

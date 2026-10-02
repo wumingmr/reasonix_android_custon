@@ -96,27 +96,20 @@ func chunks(items ...provider.Chunk) <-chan provider.Chunk {
 	return ch
 }
 
-func TestToolLoopRetriesOnlyAfterOverflowMaintenanceProgress(t *testing.T) {
+func TestToolLoopRetriesAfterEachCompleteToolResult(t *testing.T) {
 	prov := &repeatedOverflowProvider{rejectedAt: make(map[int]bool), requestsAt: make(map[int]int), maxToolCalls: 9}
 	reg := tool.NewRegistry()
 	reg.Add(overflowLoopTool{output: strings.Repeat("large deterministic tool output. ", 700)})
 
-	applied := 0
-	sink := event.FuncSink(func(e event.Event) {
-		if e.Kind == event.ContextMaintenanceEvent && e.Maintenance != nil &&
-			e.Maintenance.Status == "applied" && e.Maintenance.Action == "summary" {
-			applied++
-		}
-	})
 	a := New(prov, reg, NewSession("system"), Options{
 		ContextWindow:   100_000,
 		CompactRatio:    defaultCompactRatio,
 		MaxOutputTokens: 1024,
-	}, sink)
+	}, event.Discard)
 
 	err := a.Run(context.Background(), "keep using the tool until the provider says the task is done")
-	if err == nil {
-		t.Fatal("overflow without new projection progress unexpectedly retried")
+	if err != nil {
+		t.Fatalf("complete repeated tool results should advance projection recovery: %v", err)
 	}
 
 	prov.mu.Lock()
@@ -124,10 +117,7 @@ func TestToolLoopRetriesOnlyAfterOverflowMaintenanceProgress(t *testing.T) {
 	if prov.overflows != 2 {
 		t.Fatalf("provider overflows = %d, want 2", prov.overflows)
 	}
-	if prov.requestsAt[3] != 2 || prov.requestsAt[6] != 1 {
-		t.Fatalf("requests at overflow points = %v, want one retry after progress and none without progress", prov.requestsAt)
-	}
-	if prov.summaries > 1 || applied > 1 {
-		t.Fatalf("summaries=%d applied=%d, want no repeated summary without new projection input", prov.summaries, applied)
+	if prov.requestsAt[3] != 2 || prov.requestsAt[6] != 2 {
+		t.Fatalf("requests at overflow points = %v, want one retry after each new tool-result span", prov.requestsAt)
 	}
 }

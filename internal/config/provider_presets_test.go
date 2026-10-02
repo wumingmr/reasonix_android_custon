@@ -5,9 +5,10 @@ import (
 	"testing"
 
 	"reasonix/internal/provider"
+	"reasonix/internal/provider/openai"
 )
 
-func TestCurrentBuiltInAnthropicCompatibleProvidersRemainLocalByCapability(t *testing.T) {
+func TestAnthropicPresetsDoNotImplicitlyEnableServerTools(t *testing.T) {
 	var entries []ProviderEntry
 	entries = append(entries, Default().Providers...)
 	for _, preset := range CuratedProviderPresets() {
@@ -19,7 +20,9 @@ func TestCurrentBuiltInAnthropicCompatibleProvidersRemainLocalByCapability(t *te
 		}
 		root := strings.TrimSuffix(strings.TrimRight(entry.BaseURL, "/"), "/v1")
 		if strings.EqualFold(root, "https://api.anthropic.com") {
-			t.Fatalf("built-in provider %q unexpectedly targets official Anthropic; add an explicit native-capability UX before enabling it", entry.Name)
+			if entry.Name != "anthropic" || entry.WebSearch == nil || *entry.WebSearch || entry.AuthHeader {
+				t.Fatalf("official Anthropic preset must explicitly use API-key auth without native server tools: %q", entry.Name)
+			}
 		}
 	}
 }
@@ -150,6 +153,25 @@ func TestOpenCodeGoContextWindowPresetsMatchModelsDev(t *testing.T) {
 	}
 }
 
+func TestOpenCodeGoChatPresetsExposeDeepSeekVisionModel(t *testing.T) {
+	for _, presetID := range []string{"opencode-go", "opencode-go-recommended"} {
+		preset, ok := CuratedProviderPreset(presetID)
+		if !ok {
+			t.Fatalf("missing %s preset", presetID)
+		}
+		var entry *ProviderEntry
+		for i := range preset.Entries {
+			if preset.Entries[i].Name == "opencode-go" {
+				entry = &preset.Entries[i]
+				break
+			}
+		}
+		if entry == nil || !entry.HasModel(openai.OfficialDeepSeekVisionModel) || !entry.HasVisionModel(openai.OfficialDeepSeekVisionModel) {
+			t.Fatalf("%s Chat entry = %+v, want DeepSeek vision SKU", presetID, entry)
+		}
+	}
+}
+
 func TestOpenCodePresetPresentationMetadata(t *testing.T) {
 	want := map[string]struct {
 		group    string
@@ -213,7 +235,7 @@ func TestOpenCodeGoDeepSeekAlternativeProtocolPresets(t *testing.T) {
 	if !EffectiveWebSearch(&responses) || !HasServerWebSearchCapability(&responses) {
 		t.Fatalf("opencode-go-deepseek-responses web search = effective:%t capability:%t", EffectiveWebSearch(&responses), HasServerWebSearchCapability(&responses))
 	}
-	if cap := EffortCapabilityForEntry(&responses); !cap.Supported || cap.Default != "high" || !containsString(cap.Levels, "disabled") || !containsString(cap.Levels, "max") {
+	if cap := EffortCapabilityForEntry(&responses); !cap.Supported || cap.Default != "high" || !containsString(cap.Levels, "none") || !containsString(cap.Levels, "low") || !containsString(cap.Levels, "max") {
 		t.Fatalf("opencode-go-deepseek-responses effort capability = %+v", cap)
 	}
 
@@ -309,14 +331,14 @@ func TestDeepSeekAnthropicPresetIsOptionalAndModelScoped(t *testing.T) {
 		t.Fatalf("DeepSeek Anthropic preset = %+v, want one entry", preset)
 	}
 	entry := preset.Entries[0]
-	if entry.Kind != "anthropic" || entry.BaseURL != deepSeekAnthropicBaseURL || entry.Default != "deepseek-v4-flash" || entry.Thinking != "enabled" || !EffectiveWebSearch(&entry) || entry.Vision || entry.APIKeyEnv != "DEEPSEEK_API_KEY" {
+	if entry.Kind != "anthropic" || entry.BaseURL != deepSeekAnthropicBaseURL || entry.Default != "deepseek-flash" || entry.Thinking != "enabled" || !EffectiveWebSearch(&entry) || entry.Vision || entry.APIKeyEnv != "DEEPSEEK_API_KEY" {
 		t.Fatalf("DeepSeek Anthropic preset entry = %+v", entry)
 	}
 	var cfg Config
 	if err := cfg.UpsertProvider(entry); err != nil {
 		t.Fatalf("UpsertProvider: %v", err)
 	}
-	flash, ok := cfg.ResolveModel("deepseek-anthropic/deepseek-v4-flash")
+	flash, ok := cfg.ResolveModel("deepseek-anthropic/deepseek-flash")
 	if !ok {
 		t.Fatal("Flash model did not resolve")
 	}
@@ -344,7 +366,7 @@ func TestDeepSeekResponsesPresetMatchesOfficialSupport(t *testing.T) {
 	if entry.Kind != "responses" || entry.BaseURL != "https://api.deepseek.com" || entry.ResponsesMode != "stateless" {
 		t.Fatalf("deepseek responses endpoint = %+v", entry)
 	}
-	if !entry.HasModel("deepseek-v4-flash") || !entry.HasModel("deepseek-v4-pro") || entry.Default != "deepseek-v4-flash" {
+	if !entry.HasModel("deepseek-flash") || !entry.HasModel("deepseek-v4-pro") || entry.Default != "deepseek-flash" {
 		t.Fatalf("deepseek responses models = %v default=%q", entry.Models, entry.Default)
 	}
 	if entry.ModelsURL != "" {
@@ -357,7 +379,7 @@ func TestDeepSeekResponsesPresetMatchesOfficialSupport(t *testing.T) {
 	if err := cfg.UpsertProvider(entry); err != nil {
 		t.Fatalf("UpsertProvider: %v", err)
 	}
-	flash, ok := cfg.ResolveModel("deepseek-responses/deepseek-v4-flash")
+	flash, ok := cfg.ResolveModel("deepseek-responses/deepseek-flash")
 	if !ok {
 		t.Fatal("Flash model did not resolve")
 	}
@@ -413,52 +435,6 @@ func TestCuratedProviderPresetsHideRedundantDeepSeekAnthropicPreset(t *testing.T
 	}
 	if _, ok := CuratedProviderPreset("deepseek-anthropic"); !ok {
 		t.Fatal("legacy DeepSeek Anthropic preset must remain available for compatibility")
-	}
-}
-
-func TestTokenRhythmPresetMatchesPublicAPIIntegration(t *testing.T) {
-	preset, ok := CuratedProviderPreset("token-rhythm")
-	if !ok || len(preset.Entries) != 1 {
-		t.Fatalf("Token Rhythm preset = %+v, want one entry", preset)
-	}
-	if preset.Label != "Token Rhythm" || preset.KeyEnv != "TOKEN_RHYTHM_API_KEY" {
-		t.Fatalf("Token Rhythm identity = label %q key %q", preset.Label, preset.KeyEnv)
-	}
-	entry := preset.Entries[0]
-	if entry.Kind != "openai" || entry.BaseURL != "https://tokenrhythm.studio/v1" || entry.ModelsURL != "https://tokenrhythm.studio/v1/models" {
-		t.Fatalf("Token Rhythm endpoint mismatch: %+v", entry)
-	}
-	if entry.DefaultModel() != "deepseek-v4-flash" || !entry.HasModel("qwen3.8-max") || entry.HasModel("qwen-image-2.0") {
-		t.Fatalf("Token Rhythm chat catalog mismatch: models=%v default=%q", entry.Models, entry.DefaultModel())
-	}
-
-	var cfg Config
-	if err := cfg.UpsertProvider(entry); err != nil {
-		t.Fatalf("upsert Token Rhythm preset: %v", err)
-	}
-	deepseek, ok := cfg.ResolveModel("token-rhythm/deepseek-v4-flash")
-	if !ok || deepseek.ContextWindow != 1_000_000 || ReasoningProtocolForEntry(deepseek) != ReasoningProtocolDeepSeek {
-		t.Fatalf("Token Rhythm DeepSeek capability mismatch: %+v", deepseek)
-	}
-	kimi, ok := cfg.ResolveModel("token-rhythm/kimi-k2.7-code")
-	if !ok || kimi.ContextWindow != 256_000 || !EffectiveVision(kimi) {
-		t.Fatalf("Token Rhythm Kimi capability mismatch: %+v", kimi)
-	}
-	glm, ok := cfg.ResolveModel("token-rhythm/glm-5.1")
-	if !ok || glm.ContextWindow != 200_000 || EffectiveVision(glm) || ReasoningProtocolForEntry(glm) != ReasoningProtocolGLM {
-		t.Fatalf("Token Rhythm GLM capability mismatch: %+v", glm)
-	}
-	glmCap := EffortCapabilityForEntry(glm)
-	if !glmCap.Supported || glmCap.Default != "enabled" || !stringSlicesEqual(glmCap.Levels, []string{"auto", "enabled", "disabled"}) {
-		t.Fatalf("Token Rhythm GLM effort mismatch: %+v", glmCap)
-	}
-	flash0731, ok := cfg.ResolveModel("token-rhythm/deepseek-v4-flash-0731")
-	if !ok || ReasoningProtocolForEntry(flash0731) != ReasoningProtocolDeepSeek {
-		t.Fatalf("Token Rhythm DeepSeek 0731 protocol mismatch: %+v", flash0731)
-	}
-	flashCap := EffortCapabilityForEntry(flash0731)
-	if !flashCap.Supported || flashCap.Default != "high" || !stringSlicesEqual(flashCap.Levels, []string{"auto", "disabled", "low", "high", "max"}) {
-		t.Fatalf("Token Rhythm DeepSeek 0731 effort mismatch: %+v", flashCap)
 	}
 }
 
@@ -664,48 +640,6 @@ func TestCuratedProviderPresetCapabilities(t *testing.T) {
 	}
 	if longcatAnthropic.ContextWindow != longCat20ContextWindow {
 		t.Fatalf("longcat-anthropic context_window = %d, want %d", longcatAnthropic.ContextWindow, longCat20ContextWindow)
-	}
-
-	mimo, ok := cfg.Provider("mimo-api")
-	if !ok {
-		t.Fatal("mimo-api provider missing")
-	}
-	if !mimo.NoProxy {
-		t.Fatal("mimo-api preset should bypass configured proxy for China-only endpoint")
-	}
-	if mimo.DefaultModel() != "mimo-v2.5-pro" || !mimo.HasVisionModel("mimo-v2.5") || mimo.HasVisionModel("mimo-v2.5-pro") {
-		t.Fatalf("mimo vision capability mismatch: %+v", mimo.VisionModels)
-	}
-	if price := mimo.PriceForModel("mimo-v2.5-pro"); price == nil || price.Currency != "¥" {
-		t.Fatalf("mimo-v2.5-pro price = %+v, want RMB pricing", price)
-	}
-	mimoAnthropic, ok := cfg.Provider("mimo-anthropic")
-	if !ok {
-		t.Fatal("mimo-anthropic provider missing")
-	}
-	if mimoAnthropic.Kind != "anthropic" || mimoAnthropic.BaseURL != "https://api.xiaomimimo.com/anthropic" || mimoAnthropic.Thinking != "adaptive" {
-		t.Fatalf("mimo-anthropic capability mismatch: %+v", mimoAnthropic)
-	}
-	mimoPlan, ok := cfg.Provider("mimo-token-plan-cn")
-	if !ok {
-		t.Fatal("mimo-token-plan-cn provider missing")
-	}
-	if !mimoPlan.NoProxy || mimoPlan.APIKeyEnv != "MIMO_TOKEN_PLAN_API_KEY" || !mimoPlan.HasVisionModel("mimo-v2.5") {
-		t.Fatalf("mimo-token-plan-cn capability mismatch: %+v", mimoPlan)
-	}
-	mimoSGP, ok := cfg.Provider("mimo-token-plan-sgp")
-	if !ok {
-		t.Fatal("mimo-token-plan-sgp provider missing")
-	}
-	if mimoSGP.NoProxy || mimoSGP.BaseURL != "https://token-plan-sgp.xiaomimimo.com/v1" {
-		t.Fatalf("mimo-token-plan-sgp endpoint/proxy mismatch: %+v", mimoSGP)
-	}
-	mimoPlanAnthropic, ok := cfg.Provider("mimo-token-plan-cn-anthropic")
-	if !ok {
-		t.Fatal("mimo-token-plan-cn-anthropic provider missing")
-	}
-	if mimoPlanAnthropic.Kind != "anthropic" || !mimoPlanAnthropic.NoProxy || mimoPlanAnthropic.BaseURL != "https://token-plan-cn.xiaomimimo.com/anthropic" {
-		t.Fatalf("mimo-token-plan-cn-anthropic capability mismatch: %+v", mimoPlanAnthropic)
 	}
 
 	minimax, ok := cfg.ResolveModel("minimax-cn-api/MiniMax-M3")
@@ -932,43 +866,5 @@ func TestCuratedProviderPresetCapabilities(t *testing.T) {
 	}
 	if cap := EffortCapabilityForEntry(ollama); !cap.Supported || cap.Default != "auto" || !containsString(cap.Levels, "max") || !containsString(cap.Levels, "none") {
 		t.Fatalf("ollama-cloud effort capability = %+v, want none/max", cap)
-	}
-}
-
-func TestCuratedProviderPresetDeepSeekReasoningProtocolScope(t *testing.T) {
-	var cfg Config
-	for _, preset := range CuratedProviderPresets() {
-		for _, entry := range preset.Entries {
-			if err := cfg.UpsertProvider(entry); err != nil {
-				t.Fatalf("upsert preset %q: %v", preset.ID, err)
-			}
-		}
-	}
-
-	tests := []struct {
-		ref  string
-		want string
-	}{
-		{ref: "opencode-go/deepseek-v4-pro", want: ReasoningProtocolDeepSeek},
-		{ref: "opencode-go/deepseek-v4-flash", want: ReasoningProtocolDeepSeek},
-		{ref: "ollama-cloud/deepseek-v4-pro", want: ReasoningProtocolDeepSeek},
-		{ref: "ollama-cloud/deepseek-v4-flash", want: ReasoningProtocolDeepSeek},
-		{ref: "novita/deepseek/deepseek-v4-pro"},
-		{ref: "novita/deepseek/deepseek-v4-flash"},
-		{ref: "gmi/deepseek-ai/DeepSeek-V4-Pro"},
-		{ref: "gmi/deepseek-ai/DeepSeek-V4-Flash"},
-		{ref: "nvidia/deepseek-ai/deepseek-v4-pro"},
-		{ref: "vercel-ai-gateway/deepseek/deepseek-v4-pro"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.ref, func(t *testing.T) {
-			entry, ok := cfg.ResolveModel(tc.ref)
-			if !ok {
-				t.Fatalf("ResolveModel(%q) failed", tc.ref)
-			}
-			if got := ReasoningProtocolForEntry(entry); got != tc.want {
-				t.Fatalf("ReasoningProtocolForEntry(%q) = %q, want %q", tc.ref, got, tc.want)
-			}
-		})
 	}
 }

@@ -1,0 +1,789 @@
+{
+  "build": {
+    "schemaVersion": 1,
+    "version": "v1.38.8-preview.history.26",
+    "channel": "preview",
+    "commit": "bc8cdb9fdd62b84c6a7b0833252f2694aa9f58dd",
+    "buildTime": "2026-09-22T18:09:44Z",
+    "electron": "44.2.0",
+    "platform": "darwin/arm64"
+  },
+  "machine": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M1 Max",
+    "logicalCPUs": 10,
+    "memoryBytes": 68719476736
+  },
+  "measurement": "elapsed from package launch; existing catalog; fixed active session/project; progressively added inactive legacy files",
+  "qualifiedSample": true,
+  "thresholdPass": true,
+  "warmups": [
+    {
+      "sessions": 100,
+      "elapsedMs": 1156.6187090000003
+    },
+    {
+      "sessions": 10000,
+      "elapsedMs": 21477.395917
+    },
+    {
+      "sessions": 100000,
+      "elapsedMs": 241133.01716699998
+    }
+  ],
+  "cohorts": [
+    {
+      "sessions": 100,
+      "runs": 30,
+      "p95": {
+        "interactiveMs": 1430.2866250000006,
+        "firstPageMs": 1303.6672500000022,
+        "trustedWindowMs": 1463.763374999995,
+        "canSendMs": 1482.8437919999997
+      }
+    },
+    {
+      "sessions": 10000,
+      "runs": 30,
+      "p95": {
+        "interactiveMs": 1344.6602080000011,
+        "firstPageMs": 1295.4549169999955,
+        "trustedWindowMs": 1365.630124999996,
+        "canSendMs": 1375.6119590000017
+      }
+    },
+    {
+      "sessions": 100000,
+      "runs": 30,
+      "p95": {
+        "interactiveMs": 1349.7278750000405,
+        "firstPageMs": 1309.3364999999758,
+        "trustedWindowMs": 1360.2988750000368,
+        "canSendMs": 1382.2854999999981
+      }
+    }
+  ],
+  "records": [
+    {
+      "sessions": 100,
+      "run": 1,
+      "interactiveMs": 1244.461292,
+      "firstPageMs": 1093.2894580000002,
+      "trustedWindowMs": 1241.651667,
+      "canSendMs": 1273.56725
+    },
+    {
+      "sessions": 100,
+      "run": 2,
+      "interactiveMs": 1242.9022079999995,
+      "firstPageMs": 1111.513500000001,
+      "trustedWindowMs": 1289.9419579999994,
+      "canSendMs": 1322.1754999999994
+    },
+    {
+      "sessions": 100,
+      "run": 3,
+      "interactiveMs": 1374.7456660000007,
+      "firstPageMs": 1301.180375,
+      "trustedWindowMs": 1329.4552910000002,
+      "canSendMs": 1405.1101660000004
+    },
+    {
+      "sessions": 100,
+      "run": 4,
+      "interactiveMs": 1279.847667,
+      "firstPageMs": 1157.494917,
+      "trustedWindowMs": 1306.921792000001,
+      "canSendMs": 1345.6022080000002
+    },
+    {
+      "sessions": 100,
+      "run": 5,
+      "interactiveMs": 1116.6118749999987,
+      "firstPageMs": 1040.6096249999991,
+      "trustedWindowMs": 1261.9851659999986,
+      "canSendMs": 1242.2823329999992
+    },
+    {
+      "sessions": 100,
+      "run": 6,
+      "interactiveMs": 1092.1375829999997,
+      "firstPageMs": 1077.7084160000013,
+      "trustedWindowMs": 1311.9896249999983,
+      "canSendMs": 1299.0400829999999
+    },
+    {
+      "sessions": 100,
+      "run": 7,
+      "interactiveMs": 1329.614542000003,
+      "firstPageMs": 1303.6672500000022,
+      "trustedWindowMs": 1300.4174999999996,
+      "canSendMs": 1350.737583000002
+    },
+    {
+      "sessions": 100,
+      "run": 8,
+      "interactiveMs": 1239.6512079999993,
+      "firstPageMs": 1100.6870000000017,
+      "trustedWindowMs": 1116.6935830000002,
+      "canSendMs": 1279.2594160000008
+    },
+    {
+      "sessions": 100,
+      "run": 9,
+      "interactiveMs": 1351.963667,
+      "firstPageMs": 1150.409584000001,
+      "trustedWindowMs": 1395.382834,
+      "canSendMs": 1399.4635000000017
+    },
+    {
+      "sessions": 100,
+      "run": 10,
+      "interactiveMs": 1236.2273750000022,
+      "firstPageMs": 1215.3729170000006,
+      "trustedWindowMs": 1217.7755840000027,
+      "canSendMs": 1271.3718340000014
+    },
+    {
+      "sessions": 100,
+      "run": 11,
+      "interactiveMs": 1137.9156249999978,
+      "firstPageMs": 1108.8529170000002,
+      "trustedWindowMs": 1270.8172919999997,
+      "canSendMs": 1289.5701249999984
+    },
+    {
+      "sessions": 100,
+      "run": 12,
+      "interactiveMs": 1499.7537919999995,
+      "firstPageMs": 1485.2115000000013,
+      "trustedWindowMs": 1494.6490000000013,
+      "canSendMs": 1507.4523340000014
+    },
+    {
+      "sessions": 100,
+      "run": 13,
+      "interactiveMs": 1219.1102500000015,
+      "firstPageMs": 1049.2098750000005,
+      "trustedWindowMs": 1218.9032499999994,
+      "canSendMs": 1266.7678750000014
+    },
+    {
+      "sessions": 100,
+      "run": 14,
+      "interactiveMs": 1248.8521250000013,
+      "firstPageMs": 1248.333999999999,
+      "trustedWindowMs": 1219.0677920000016,
+      "canSendMs": 1270.7568749999991
+    },
+    {
+      "sessions": 100,
+      "run": 15,
+      "interactiveMs": 1066.612541999999,
+      "firstPageMs": 1053.3424169999998,
+      "trustedWindowMs": 1186.791250000002,
+      "canSendMs": 1385.5467919999974
+    },
+    {
+      "sessions": 100,
+      "run": 16,
+      "interactiveMs": 1146.5935000000027,
+      "firstPageMs": 1123.673834000001,
+      "trustedWindowMs": 1142.9049589999995,
+      "canSendMs": 1291.1024590000015
+    },
+    {
+      "sessions": 100,
+      "run": 17,
+      "interactiveMs": 1212.7148749999978,
+      "firstPageMs": 1052.154416999998,
+      "trustedWindowMs": 1101.0563750000001,
+      "canSendMs": 1244.1923749999987
+    },
+    {
+      "sessions": 100,
+      "run": 18,
+      "interactiveMs": 1235.8866249999992,
+      "firstPageMs": 1070.9490839999999,
+      "trustedWindowMs": 1179.290958999998,
+      "canSendMs": 1273.6940000000031
+    },
+    {
+      "sessions": 100,
+      "run": 19,
+      "interactiveMs": 1165.5605829999986,
+      "firstPageMs": 1088.96875,
+      "trustedWindowMs": 1238.7495409999974,
+      "canSendMs": 1271.291707999997
+    },
+    {
+      "sessions": 100,
+      "run": 20,
+      "interactiveMs": 1430.2866250000006,
+      "firstPageMs": 1221.3464999999997,
+      "trustedWindowMs": 1463.763374999995,
+      "canSendMs": 1482.8437919999997
+    },
+    {
+      "sessions": 100,
+      "run": 21,
+      "interactiveMs": 1213.583458000001,
+      "firstPageMs": 1061.971875000003,
+      "trustedWindowMs": 1106.9137920000067,
+      "canSendMs": 1251.229333000003
+    },
+    {
+      "sessions": 100,
+      "run": 22,
+      "interactiveMs": 1166.7329160000008,
+      "firstPageMs": 1007.8061250000028,
+      "trustedWindowMs": 1213.9755829999995,
+      "canSendMs": 1245.1743750000023
+    },
+    {
+      "sessions": 100,
+      "run": 23,
+      "interactiveMs": 1140.007375000001,
+      "firstPageMs": 1048.317750000002,
+      "trustedWindowMs": 1066.4958330000009,
+      "canSendMs": 1229.5287499999977
+    },
+    {
+      "sessions": 100,
+      "run": 24,
+      "interactiveMs": 1301.862874999999,
+      "firstPageMs": 1178.5531249999985,
+      "trustedWindowMs": 1170.0326669999995,
+      "canSendMs": 1340.2242499999993
+    },
+    {
+      "sessions": 100,
+      "run": 25,
+      "interactiveMs": 1217.625709,
+      "firstPageMs": 1053.9126670000041,
+      "trustedWindowMs": 1311.6400420000064,
+      "canSendMs": 1279.3344590000052
+    },
+    {
+      "sessions": 100,
+      "run": 26,
+      "interactiveMs": 1214.7827089999992,
+      "firstPageMs": 1058.1854999999996,
+      "trustedWindowMs": 1130.0116669999989,
+      "canSendMs": 1266.8352920000034
+    },
+    {
+      "sessions": 100,
+      "run": 27,
+      "interactiveMs": 1277.333249999996,
+      "firstPageMs": 1147.8527499999982,
+      "trustedWindowMs": 1276.3349579999995,
+      "canSendMs": 1321.6450829999958
+    },
+    {
+      "sessions": 100,
+      "run": 28,
+      "interactiveMs": 1139.5213339999973,
+      "firstPageMs": 1113.315625000003,
+      "trustedWindowMs": 1399.5996670000022,
+      "canSendMs": 1275.3494589999973
+    },
+    {
+      "sessions": 100,
+      "run": 29,
+      "interactiveMs": 1145.0416659999973,
+      "firstPageMs": 1123.9929580000025,
+      "trustedWindowMs": 1116.0639159999992,
+      "canSendMs": 1278.6421659999978
+    },
+    {
+      "sessions": 100,
+      "run": 30,
+      "interactiveMs": 1297.1050420000029,
+      "firstPageMs": 1234.7827920000054,
+      "trustedWindowMs": 1240.2650420000064,
+      "canSendMs": 1314.8155840000036
+    },
+    {
+      "sessions": 10000,
+      "run": 1,
+      "interactiveMs": 1212.0951670000068,
+      "firstPageMs": 1201.3662089999998,
+      "trustedWindowMs": 1203.4479589999974,
+      "canSendMs": 1241.1391670000012
+    },
+    {
+      "sessions": 10000,
+      "run": 2,
+      "interactiveMs": 1298.4487919999956,
+      "firstPageMs": 1062.6312920000055,
+      "trustedWindowMs": 1315.1867919999931,
+      "canSendMs": 1340.6807499999995
+    },
+    {
+      "sessions": 10000,
+      "run": 3,
+      "interactiveMs": 1293.394207999998,
+      "firstPageMs": 1290.3610829999961,
+      "trustedWindowMs": 1279.1959579999966,
+      "canSendMs": 1300.8194999999978
+    },
+    {
+      "sessions": 10000,
+      "run": 4,
+      "interactiveMs": 1334.2763749999867,
+      "firstPageMs": 1205.8484999999928,
+      "trustedWindowMs": 1337.3843329999945,
+      "canSendMs": 1350.2272079999966
+    },
+    {
+      "sessions": 10000,
+      "run": 5,
+      "interactiveMs": 1338.450834000003,
+      "firstPageMs": 1309.0139170000039,
+      "trustedWindowMs": 1345.2892920000013,
+      "canSendMs": 1358.794584000003
+    },
+    {
+      "sessions": 10000,
+      "run": 6,
+      "interactiveMs": 1109.0599999999977,
+      "firstPageMs": 1104.5029170000053,
+      "trustedWindowMs": 1291.9253749999916,
+      "canSendMs": 1260.3149580000027
+    },
+    {
+      "sessions": 10000,
+      "run": 7,
+      "interactiveMs": 1237.344790999996,
+      "firstPageMs": 1014.6158330000035,
+      "trustedWindowMs": 1242.6838750000024,
+      "canSendMs": 1291.3448749999952
+    },
+    {
+      "sessions": 10000,
+      "run": 8,
+      "interactiveMs": 1153.5309160000033,
+      "firstPageMs": 1140.7884160000103,
+      "trustedWindowMs": 1342.3234999999986,
+      "canSendMs": 1309.2948330000072
+    },
+    {
+      "sessions": 10000,
+      "run": 9,
+      "interactiveMs": 1244.8373749999882,
+      "firstPageMs": 1073.260249999992,
+      "trustedWindowMs": 1222.307832999999,
+      "canSendMs": 1266.487249999991
+    },
+    {
+      "sessions": 10000,
+      "run": 10,
+      "interactiveMs": 1273.5530419999996,
+      "firstPageMs": 1154.969167000003,
+      "trustedWindowMs": 1365.630124999996,
+      "canSendMs": 1375.6119590000017
+    },
+    {
+      "sessions": 10000,
+      "run": 11,
+      "interactiveMs": 1253.9429579999996,
+      "firstPageMs": 1043.3437080000003,
+      "trustedWindowMs": 1280.470417000004,
+      "canSendMs": 1299.3660830000008
+    },
+    {
+      "sessions": 10000,
+      "run": 12,
+      "interactiveMs": 1205.9891659999994,
+      "firstPageMs": 1027.3201249999984,
+      "trustedWindowMs": 1285.908208000008,
+      "canSendMs": 1247.8788750000094
+    },
+    {
+      "sessions": 10000,
+      "run": 13,
+      "interactiveMs": 1295.9148330000025,
+      "firstPageMs": 1255.760666999995,
+      "trustedWindowMs": 1271.4147499999963,
+      "canSendMs": 1319.317750000002
+    },
+    {
+      "sessions": 10000,
+      "run": 14,
+      "interactiveMs": 1216.0462499999994,
+      "firstPageMs": 1055.3055000000022,
+      "trustedWindowMs": 1254.2525000000023,
+      "canSendMs": 1302.032917000004
+    },
+    {
+      "sessions": 10000,
+      "run": 15,
+      "interactiveMs": 1197.091374999989,
+      "firstPageMs": 1087.279291999992,
+      "trustedWindowMs": 1195.5881249999948,
+      "canSendMs": 1261.3601669999916
+    },
+    {
+      "sessions": 10000,
+      "run": 16,
+      "interactiveMs": 1267.7279999999882,
+      "firstPageMs": 1058.4752919999883,
+      "trustedWindowMs": 1263.929250000001,
+      "canSendMs": 1335.7018339999922
+    },
+    {
+      "sessions": 10000,
+      "run": 17,
+      "interactiveMs": 1208.0407080000004,
+      "firstPageMs": 1069.8835000000108,
+      "trustedWindowMs": 1089.0221250000031,
+      "canSendMs": 1261.9448330000014
+    },
+    {
+      "sessions": 10000,
+      "run": 18,
+      "interactiveMs": 1236.9477500000066,
+      "firstPageMs": 1127.6567920000089,
+      "trustedWindowMs": 1227.4569580000098,
+      "canSendMs": 1289.9357080000045
+    },
+    {
+      "sessions": 10000,
+      "run": 19,
+      "interactiveMs": 1297.08583299999,
+      "firstPageMs": 1286.8291249999893,
+      "trustedWindowMs": 1292.871082999991,
+      "canSendMs": 1304.4658329999947
+    },
+    {
+      "sessions": 10000,
+      "run": 20,
+      "interactiveMs": 1156.4192909999983,
+      "firstPageMs": 1078.0731249999953,
+      "trustedWindowMs": 1239.0618749999994,
+      "canSendMs": 1270.552291
+    },
+    {
+      "sessions": 10000,
+      "run": 21,
+      "interactiveMs": 1235.2537920000032,
+      "firstPageMs": 1046.0092080000031,
+      "trustedWindowMs": 1289.757249999995,
+      "canSendMs": 1314.4494169999962
+    },
+    {
+      "sessions": 10000,
+      "run": 22,
+      "interactiveMs": 1179.333832999997,
+      "firstPageMs": 1094.7301249999873,
+      "trustedWindowMs": 1284.0107499999867,
+      "canSendMs": 1308.8903749999881
+    },
+    {
+      "sessions": 10000,
+      "run": 23,
+      "interactiveMs": 1344.6602080000011,
+      "firstPageMs": 1289.0045419999951,
+      "trustedWindowMs": 1297.5229169999948,
+      "canSendMs": 1360.9181669999962
+    },
+    {
+      "sessions": 10000,
+      "run": 24,
+      "interactiveMs": 1231.771166000006,
+      "firstPageMs": 1216.5535410000011,
+      "trustedWindowMs": 1286.226250000007,
+      "canSendMs": 1282.700416000007
+    },
+    {
+      "sessions": 10000,
+      "run": 25,
+      "interactiveMs": 1211.9064170000202,
+      "firstPageMs": 1200.8383750000212,
+      "trustedWindowMs": 1238.434917000006,
+      "canSendMs": 1278.7150839999958
+    },
+    {
+      "sessions": 10000,
+      "run": 26,
+      "interactiveMs": 1340.722958999977,
+      "firstPageMs": 1295.4549169999955,
+      "trustedWindowMs": 1336.8172919999924,
+      "canSendMs": 1348.7462919999962
+    },
+    {
+      "sessions": 10000,
+      "run": 27,
+      "interactiveMs": 1105.808916000009,
+      "firstPageMs": 1075.4222500000033,
+      "trustedWindowMs": 1237.9207080000197,
+      "canSendMs": 1263.841041000007
+    },
+    {
+      "sessions": 10000,
+      "run": 28,
+      "interactiveMs": 1229.8917920000094,
+      "firstPageMs": 1221.8337090000277,
+      "trustedWindowMs": 1303.0497500000056,
+      "canSendMs": 1268.751459000021
+    },
+    {
+      "sessions": 10000,
+      "run": 29,
+      "interactiveMs": 1369.237832999992,
+      "firstPageMs": 1005.0010830000101,
+      "trustedWindowMs": 1370.9439160000184,
+      "canSendMs": 1408.8704159999907
+    },
+    {
+      "sessions": 10000,
+      "run": 30,
+      "interactiveMs": 1269.0965419999848,
+      "firstPageMs": 1100.6991249999846,
+      "trustedWindowMs": 1337.5586250000051,
+      "canSendMs": 1352.0463330000057
+    },
+    {
+      "sessions": 100000,
+      "run": 1,
+      "interactiveMs": 1179.2158339999733,
+      "firstPageMs": 1124.7715839999728,
+      "trustedWindowMs": 1313.8615839999984,
+      "canSendMs": 1336.4794589999947
+    },
+    {
+      "sessions": 100000,
+      "run": 2,
+      "interactiveMs": 1243.079000000027,
+      "firstPageMs": 1043.8352500000037,
+      "trustedWindowMs": 1360.2988750000368,
+      "canSendMs": 1382.2854999999981
+    },
+    {
+      "sessions": 100000,
+      "run": 3,
+      "interactiveMs": 1316.3162499999744,
+      "firstPageMs": 1266.929375000007,
+      "trustedWindowMs": 1303.980540999968,
+      "canSendMs": 1327.2291250000126
+    },
+    {
+      "sessions": 100000,
+      "run": 4,
+      "interactiveMs": 1384.9972089999937,
+      "firstPageMs": 1249.2375000000466,
+      "trustedWindowMs": 1461.5663749999949,
+      "canSendMs": 1458.0457090000273
+    },
+    {
+      "sessions": 100000,
+      "run": 5,
+      "interactiveMs": 1237.0412909999723,
+      "firstPageMs": 1228.790708000015,
+      "trustedWindowMs": 1231.5733330000076,
+      "canSendMs": 1283.2873329999857
+    },
+    {
+      "sessions": 100000,
+      "run": 6,
+      "interactiveMs": 1339.7772920000134,
+      "firstPageMs": 1316.1378329999861,
+      "trustedWindowMs": 1336.4577500000014,
+      "canSendMs": 1370.6872919999878
+    },
+    {
+      "sessions": 100000,
+      "run": 7,
+      "interactiveMs": 1316.3434580000467,
+      "firstPageMs": 1266.987208000035,
+      "trustedWindowMs": 1317.4482080000453,
+      "canSendMs": 1345.1174159999937
+    },
+    {
+      "sessions": 100000,
+      "run": 8,
+      "interactiveMs": 1291.2912500000093,
+      "firstPageMs": 1121.6783750000177,
+      "trustedWindowMs": 1275.762875000015,
+      "canSendMs": 1328.3862500000396
+    },
+    {
+      "sessions": 100000,
+      "run": 9,
+      "interactiveMs": 1261.4917499999865,
+      "firstPageMs": 1248.3797909999848,
+      "trustedWindowMs": 1313.4309580000117,
+      "canSendMs": 1281.4654159999918
+    },
+    {
+      "sessions": 100000,
+      "run": 10,
+      "interactiveMs": 1159.3294589999714,
+      "firstPageMs": 1005.7079169999924,
+      "trustedWindowMs": 1199.0459589999518,
+      "canSendMs": 1253.379041999986
+    },
+    {
+      "sessions": 100000,
+      "run": 11,
+      "interactiveMs": 1177.5320000000065,
+      "firstPageMs": 1174.2897079999675,
+      "trustedWindowMs": 1175.3842919999734,
+      "canSendMs": 1208.3176669999957
+    },
+    {
+      "sessions": 100000,
+      "run": 12,
+      "interactiveMs": 1294.4398330000113,
+      "firstPageMs": 1264.2773329999764,
+      "trustedWindowMs": 1265.0150830000057,
+      "canSendMs": 1319.2634579999722
+    },
+    {
+      "sessions": 100000,
+      "run": 13,
+      "interactiveMs": 1273.1388330000336,
+      "firstPageMs": 1130.9742910000496,
+      "trustedWindowMs": 1350.629333000048,
+      "canSendMs": 1316.3694160000305
+    },
+    {
+      "sessions": 100000,
+      "run": 14,
+      "interactiveMs": 1237.008375000034,
+      "firstPageMs": 1111.744000000006,
+      "trustedWindowMs": 1310.8868329999968,
+      "canSendMs": 1280.0080830000225
+    },
+    {
+      "sessions": 100000,
+      "run": 15,
+      "interactiveMs": 1201.3837080000085,
+      "firstPageMs": 1015.992333000002,
+      "trustedWindowMs": 1204.3390420000069,
+      "canSendMs": 1235.3134999999893
+    },
+    {
+      "sessions": 100000,
+      "run": 16,
+      "interactiveMs": 1272.6425839999574,
+      "firstPageMs": 1138.6632499999832,
+      "trustedWindowMs": 1273.9049589999486,
+      "canSendMs": 1309.5124169999617
+    },
+    {
+      "sessions": 100000,
+      "run": 17,
+      "interactiveMs": 1285.4605410000077,
+      "firstPageMs": 1035.4387909999932,
+      "trustedWindowMs": 1291.799624999985,
+      "canSendMs": 1351.028500000015
+    },
+    {
+      "sessions": 100000,
+      "run": 18,
+      "interactiveMs": 1233.5367499999702,
+      "firstPageMs": 969.1882500000065,
+      "trustedWindowMs": 1239.8792919999687,
+      "canSendMs": 1268.9542919999803
+    },
+    {
+      "sessions": 100000,
+      "run": 19,
+      "interactiveMs": 1281.6542090000003,
+      "firstPageMs": 1244.8229999999749,
+      "trustedWindowMs": 1248.691125000012,
+      "canSendMs": 1297.1945839999826
+    },
+    {
+      "sessions": 100000,
+      "run": 20,
+      "interactiveMs": 1247.3623749999679,
+      "firstPageMs": 1232.9885829999694,
+      "trustedWindowMs": 1234.5403749999823,
+      "canSendMs": 1293.2779159999918
+    },
+    {
+      "sessions": 100000,
+      "run": 21,
+      "interactiveMs": 1247.7892920000013,
+      "firstPageMs": 1240.3957500000251,
+      "trustedWindowMs": 1237.3973750000005,
+      "canSendMs": 1258.3977500000037
+    },
+    {
+      "sessions": 100000,
+      "run": 22,
+      "interactiveMs": 1316.1895829999703,
+      "firstPageMs": 1309.3364999999758,
+      "trustedWindowMs": 1310.0972499999916,
+      "canSendMs": 1326.4570829999866
+    },
+    {
+      "sessions": 100000,
+      "run": 23,
+      "interactiveMs": 1186.993415999983,
+      "firstPageMs": 1113.789665999997,
+      "trustedWindowMs": 1104.9871660000063,
+      "canSendMs": 1272.6375409999746
+    },
+    {
+      "sessions": 100000,
+      "run": 24,
+      "interactiveMs": 1282.4096659999923,
+      "firstPageMs": 1276.8927080000285,
+      "trustedWindowMs": 1279.1430829999736,
+      "canSendMs": 1290.3595830000122
+    },
+    {
+      "sessions": 100000,
+      "run": 25,
+      "interactiveMs": 1349.7278750000405,
+      "firstPageMs": 1094.665875000006,
+      "trustedWindowMs": 1346.6666250000126,
+      "canSendMs": 1363.4289590000408
+    },
+    {
+      "sessions": 100000,
+      "run": 26,
+      "interactiveMs": 1153.3379160000477,
+      "firstPageMs": 1054.697375000047,
+      "trustedWindowMs": 1290.129083000007,
+      "canSendMs": 1309.353041000024
+    },
+    {
+      "sessions": 100000,
+      "run": 27,
+      "interactiveMs": 1265.7957910000114,
+      "firstPageMs": 1238.1678750000428,
+      "trustedWindowMs": 1235.2625830000034,
+      "canSendMs": 1283.37166600005
+    },
+    {
+      "sessions": 100000,
+      "run": 28,
+      "interactiveMs": 1075.0664170000236,
+      "firstPageMs": 1060.8481250000186,
+      "trustedWindowMs": 1271.9062920000288,
+      "canSendMs": 1230.1199170000036
+    },
+    {
+      "sessions": 100000,
+      "run": 29,
+      "interactiveMs": 1231.5638339999714,
+      "firstPageMs": 1060.010459000012,
+      "trustedWindowMs": 1113.93429200002,
+      "canSendMs": 1277.1394169999985
+    },
+    {
+      "sessions": 100000,
+      "run": 30,
+      "interactiveMs": 1268.2233750000014,
+      "firstPageMs": 1122.7583749999758,
+      "trustedWindowMs": 1109.6401249999763,
+      "canSendMs": 1293.9223750000237
+    }
+  ]
+}

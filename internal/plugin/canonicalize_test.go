@@ -46,7 +46,7 @@ func TestCanonicalizeSchemaSortsKeys(t *testing.T) {
 	result := canonicalizeSchema(schema)
 	// json.Marshal sorts map keys, so verify the JSON string directly.
 	s := string(result)
-	if s != `{"a":2,"m":3,"properties":{},"type":"object","z":1}` {
+	if s != `{"a":2,"m":3,"properties":{},"required":[],"type":"object","z":1}` {
 		t.Errorf("keys not sorted, got: %s", s)
 	}
 }

@@ -282,7 +282,7 @@ func chatLeaseFixture(t *testing.T) (m chatTUI, active, target string) {
 	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
 	m = newTestChatTUI()
 	m.width = 80
-	m.ctrl = control.New(control.Options{Executor: exec, SessionDir: dir, SessionPath: active, Label: "test"})
+	m.ctrl = newOwnedTestController(t, control.Options{Executor: exec, SessionDir: dir, SessionPath: active, Label: "test"})
 	m.leases = control.NewSessionLeaseKeeper()
 	t.Cleanup(m.leases.Release)
 	if err := m.leases.Rebind(active); err != nil {

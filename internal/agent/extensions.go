@@ -13,6 +13,7 @@ import (
 	"reasonix/internal/extension"
 	"reasonix/internal/extension/dispatch"
 	"reasonix/internal/extension/providerconv"
+	"reasonix/internal/i18n"
 	"reasonix/internal/provider"
 )
 
@@ -79,7 +80,7 @@ func extensionBlockedError(point extension.InterceptorPoint, reason string) erro
 	if reason == "" {
 		reason = "no reason given"
 	}
-	return fmt.Errorf("extension blocked %s: %s", point, reason)
+	return fmt.Errorf("extension blocked %s: %s — %s", point, reason, i18n.M.ExtensionBlockRecovery)
 }
 
 // extensionBlockReason normalizes a block reason for tool-result surfaces.
@@ -142,7 +143,7 @@ func (a *Agent) interceptContextPrepare(ctx context.Context, messages []provider
 	payload := dispatch.ContextPayload{Messages: providerconv.MessagesToProtocol(messages)}
 	result, err := d.Intercept(ctx, extension.PointContextPrepare, &payload)
 	if err != nil {
-		return nil, err
+		return nil, extensionRequestFailure(err)
 	}
 	if result.Blocked {
 		d.Event(extension.PointContextPrepare, payload)
@@ -151,7 +152,7 @@ func (a *Agent) interceptContextPrepare(ctx context.Context, messages []provider
 	// The context slot owner gets the final say over the chain-walked payload.
 	replaced, err := strategyReplaced(ctx, d, extension.SlotContext, extension.PointContextPrepare, &payload)
 	if err != nil {
-		return nil, err
+		return nil, extensionRequestFailure(err)
 	}
 	d.Event(extension.PointContextPrepare, payload)
 	if len(result.Applied) > 0 || replaced {
@@ -172,7 +173,7 @@ func (a *Agent) interceptProviderRequest(ctx context.Context, req provider.Reque
 	payload := dispatch.ProviderRequestPayload{Request: providerconv.RequestToProtocol(req)}
 	result, err := d.Intercept(ctx, extension.PointProviderRequest, &payload)
 	if err != nil {
-		return provider.Request{}, err
+		return provider.Request{}, extensionRequestFailure(err)
 	}
 	if result.Blocked {
 		d.Event(extension.PointProviderRequest, payload)
@@ -182,13 +183,20 @@ func (a *Agent) interceptProviderRequest(ctx context.Context, req provider.Reque
 	// chain-walked payload.
 	replaced, err := strategyReplaced(ctx, d, extension.SlotProviderRequest, extension.PointProviderRequest, &payload)
 	if err != nil {
-		return provider.Request{}, err
+		return provider.Request{}, extensionRequestFailure(err)
 	}
 	d.Event(extension.PointProviderRequest, payload)
 	if len(result.Applied) > 0 || replaced {
 		return providerconv.RequestFromProtocol(payload.Request), nil
 	}
 	return req, nil
+}
+
+func extensionRequestFailure(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return fmt.Errorf("%s: %w", i18n.M.ExtensionRequestRecovery, err)
 }
 
 // interceptProviderResponse runs provider.response after the stream completed
@@ -234,7 +242,8 @@ func (a *Agent) interceptProviderResponse(ctx context.Context, text, reasoning, 
 	return text, reasoning, signature, calls, usage, nil
 }
 
-// interceptToolBefore runs tool.before right after the call parsed. A block
+// interceptToolBefore runs tool.before after the host resolved and validated
+// the concrete target. A block
 // fails the call with the reason as the tool-result error (mirroring a
 // PreToolUse hook block). A replacement substitutes the provider-visible name
 // and arguments, but only after host revalidation — the arguments must decode
@@ -276,9 +285,6 @@ func (a *Agent) interceptToolBefore(ctx context.Context, plan *toolCallPlan) (to
 	}
 	plan.call.Name = payload.Name
 	plan.call.Arguments = payload.Arguments
-	if blocked, early := a.parseToolCall(ctx, plan); early {
-		return blocked, true
-	}
 	return toolOutcome{}, false
 }
 

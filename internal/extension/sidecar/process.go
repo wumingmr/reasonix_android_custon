@@ -237,8 +237,8 @@ func (p *process) wait() {
 	})
 }
 
-// finishJob releases the Windows Job Object once the process is known to be
-// gone (a no-op off Windows and after KillTracked already released it).
+// finishJob and kill share ownership of the Windows Job Object. Its numeric
+// handle may be reused immediately after either path closes it.
 func (p *process) finishJob() {
 	p.jobOnce.Do(func() { proc.FinishTracked(p.job) })
 }
@@ -248,8 +248,11 @@ func (p *process) kill() {
 	if p.cmd == nil || p.cmd.Process == nil {
 		return
 	}
-	proc.KillTracked(p.cmd, p.job)
-	p.finishJob()
+	if p.job != 0 {
+		p.jobOnce.Do(func() { proc.KillTracked(p.cmd, p.job) })
+		return
+	}
+	proc.KillTracked(p.cmd, 0)
 }
 
 // close stops the sidecar with the bounded sequence: close stdin, grant a

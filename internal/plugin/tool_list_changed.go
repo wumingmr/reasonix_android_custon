@@ -38,6 +38,37 @@ type toolListRefreshState struct {
 	publishedRevision atomic.Uint64
 }
 
+type auxiliaryRefreshState struct {
+	revision atomic.Uint64
+	applied  atomic.Uint64
+	running  atomic.Bool
+}
+
+type auxiliaryListRefreshState struct {
+	prompt   auxiliaryRefreshState
+	resource auxiliaryRefreshState
+}
+
+type clientCapabilities struct {
+	tools                bool
+	prompts              bool
+	resources            bool
+	toolsListChanged     bool
+	promptsListChanged   bool
+	resourcesListChanged bool
+	// serverExtensions records extension IDs the server declared in its
+	// initialize capabilities. MCP Apps needs two-way agreement: the client
+	// declares io.modelcontextprotocol/ui, the server answers with it.
+	serverExtensions map[string]bool
+}
+
+// appsUI reports two-way MCP Apps agreement for this server.
+func (cc clientCapabilities) appsUI() bool { return cc.serverExtensions[AppsUIExtensionID] }
+
+func (c *Client) appsNegotiated() bool {
+	return c != nil && c.profile.Capabilities().AppsUI && c.capabilities.appsUI()
+}
+
 // toolCatalogSnapshot is immutable after publication. All slices are built off
 // lock and replaced together under toolsMu, so readers see either the complete
 // old catalog or the complete new catalog.
@@ -47,12 +78,16 @@ type toolCatalogSnapshot struct {
 	fingerprint [sha256.Size]byte
 	infos       []ToolInfo
 	adapters    []tool.Tool
+	// appAdapters holds App-callable tools (visibility contains "app"),
+	// including app-only ones that never enter the model catalog.
+	appAdapters []tool.Tool
 }
 
 type toolCatalogFingerprintEntry struct {
 	RawName         string          `json:"raw_name"`
 	VisibleName     string          `json:"visible_name"`
 	Description     string          `json:"description"`
+	Visibility      []string        `json:"visibility,omitempty"`
 	Schema          json.RawMessage `json:"schema,omitempty"`
 	OutputSchema    json.RawMessage `json:"output_schema,omitempty"`
 	SchemaError     string          `json:"schema_error,omitempty"`
@@ -164,6 +199,100 @@ func (h *Host) bindToolListChanges(c *Client) {
 		h.publishToolListChange(c, tools)
 	})
 	c.watchToolListChanges()
+	h.watchAuxiliaryListChanges(c)
+}
+
+func (h *Host) watchAuxiliaryListChanges(c *Client) {
+	t, ok := c.t.(notificationTransport)
+	if !ok {
+		return
+	}
+	c.refresh.mu.Lock()
+	ctx := c.refresh.ctx
+	closed := c.refresh.closed
+	c.refresh.mu.Unlock()
+	if closed {
+		return
+	}
+	var stops []func()
+	if c.capabilities.promptsListChanged {
+		stops = append(stops, t.registerNotification("notifications/prompts/list_changed", func(json.RawMessage) {
+			h.requestPromptRefresh(ctx, c)
+		}))
+	}
+	if c.capabilities.resourcesListChanged {
+		stops = append(stops, t.registerNotification("notifications/resources/list_changed", func(json.RawMessage) {
+			h.requestResourceRefresh(ctx, c)
+		}))
+	}
+	c.surfaceStopsMu.Lock()
+	if c.closed.Load() {
+		c.surfaceStopsMu.Unlock()
+		for _, stop := range stops {
+			stop()
+		}
+		return
+	}
+	c.surfaceStops = append(c.surfaceStops, stops...)
+	c.surfaceStopsMu.Unlock()
+}
+
+func (h *Host) requestPromptRefresh(ctx context.Context, c *Client) {
+	c.auxiliaryRefresh.prompt.revision.Add(1)
+	h.startPromptRefresh(ctx, c)
+}
+
+func (h *Host) startPromptRefresh(ctx context.Context, c *Client) {
+	if !c.auxiliaryRefresh.prompt.running.CompareAndSwap(false, true) {
+		return
+	}
+	if !h.goSurface(func() {
+		defer func() {
+			c.auxiliaryRefresh.prompt.running.Store(false)
+			if ctx.Err() == nil && !c.closed.Load() && c.auxiliaryRefresh.prompt.applied.Load() < c.auxiliaryRefresh.prompt.revision.Load() {
+				h.startPromptRefresh(ctx, c)
+			}
+		}()
+		for ctx.Err() == nil && !c.closed.Load() {
+			target := c.auxiliaryRefresh.prompt.revision.Load()
+			h.fetchPrompts(ctx, c, nil)
+			c.auxiliaryRefresh.prompt.applied.Store(target)
+			if c.auxiliaryRefresh.prompt.revision.Load() == target {
+				return
+			}
+		}
+	}) {
+		c.auxiliaryRefresh.prompt.running.Store(false)
+	}
+}
+
+func (h *Host) requestResourceRefresh(ctx context.Context, c *Client) {
+	c.auxiliaryRefresh.resource.revision.Add(1)
+	h.startResourceRefresh(ctx, c)
+}
+
+func (h *Host) startResourceRefresh(ctx context.Context, c *Client) {
+	if !c.auxiliaryRefresh.resource.running.CompareAndSwap(false, true) {
+		return
+	}
+	if !h.goSurface(func() {
+		defer func() {
+			c.auxiliaryRefresh.resource.running.Store(false)
+			if ctx.Err() == nil && !c.closed.Load() && c.auxiliaryRefresh.resource.applied.Load() < c.auxiliaryRefresh.resource.revision.Load() {
+				h.startResourceRefresh(ctx, c)
+			}
+		}()
+		for ctx.Err() == nil && !c.closed.Load() {
+			target := c.auxiliaryRefresh.resource.revision.Load()
+			h.fetchResources(ctx, c, nil)
+			c.auxiliaryRefresh.resource.applied.Store(target)
+			if c.auxiliaryRefresh.resource.revision.Load() == target {
+				return
+			}
+		}
+	}) {
+		c.auxiliaryRefresh.resource.running.Store(false)
+	}
 }
 
 func (h *Host) registerStartedClient(c *Client, tools []tool.Tool) ([]tool.Tool, error) {
@@ -212,7 +341,7 @@ func deliverToolListChange(subscriber *toolListSubscriber, spec Spec, tools []to
 }
 
 func (c *Client) watchToolListChanges() {
-	if !c.supportsToolListChanged {
+	if !c.capabilities.toolsListChanged {
 		return
 	}
 	t, ok := c.t.(notificationTransport)
@@ -424,6 +553,7 @@ func (c *Client) fetchToolCatalog(ctx context.Context, settleEmpty bool) (toolCa
 
 	toolInfos := make([]ToolInfo, 0, len(out))
 	tools := make([]tool.Tool, 0, len(out))
+	appTools := make([]tool.Tool, 0, len(out))
 	fingerprintEntries := make([]toolCatalogFingerprintEntry, 0, len(out))
 	normalizedSchemas := make(map[string]json.RawMessage, len(out))
 	for _, candidate := range out {
@@ -435,6 +565,8 @@ func (c *Client) fetchToolCatalog(ctx context.Context, settleEmpty bool) (toolCa
 	for _, candidate := range out {
 		readOnlyHint := candidate.Annotations != nil && candidate.Annotations.ReadOnlyHint
 		destructiveHint := candidate.Annotations != nil && candidate.Annotations.DestructiveHint
+		modelVisible, appVisible := candidate.Meta.appVisibility()
+		appCallable := appVisible && c.appsNegotiated()
 		info := ToolInfo{Name: candidate.Name, Description: candidate.Description, ReadOnlyHint: readOnlyHint, DestructiveHint: destructiveHint}
 		visibleName := candidate.Name
 		if c.spec.StripRawPrefix != "" {
@@ -445,17 +577,23 @@ func (c *Client) fetchToolCatalog(ctx context.Context, settleEmpty bool) (toolCa
 			if _, err := normalizeAndValidateToolSchema(candidate.InputSchema); err != nil {
 				info.SchemaError = schemaValidationError(err)
 			}
-			toolInfos = append(toolInfos, info)
+			if modelVisible {
+				toolInfos = append(toolInfos, info)
+			}
 			fingerprintEntries = append(fingerprintEntries, toolCatalogFingerprintEntry{
 				RawName: candidate.Name, VisibleName: visibleName, Description: candidate.Description,
 				SchemaError: info.SchemaError, ReadOnlyHint: readOnlyHint, DestructiveHint: destructiveHint,
+				Visibility: candidate.Meta.visibilityCopy(),
 			})
 			continue
 		}
-		toolInfos = append(toolInfos, info)
+		if modelVisible {
+			toolInfos = append(toolInfos, info)
+		}
 		outputSchema := append(json.RawMessage(nil), candidate.OutputSchema...)
 		fingerprintOutputSchema := canonicalizeCatalogJSON(outputSchema)
-		tools = append(tools, &remoteTool{
+		uiResourceURI, uiCSP := candidate.Meta.uiResource()
+		adapter := &remoteTool{
 			client:           c,
 			name:             toolName(c.name, visibleName),
 			rawName:          candidate.Name,
@@ -466,10 +604,21 @@ func (c *Client) fetchToolCatalog(ctx context.Context, settleEmpty bool) (toolCa
 			declaredReadOnly: readOnlyHint,
 			readOnly:         readOnlyHint,
 			destructive:      destructiveHint,
-		})
+			visibility:       candidate.Meta.visibilityCopy(),
+			appCallable:      appCallable,
+			uiResourceURI:    uiResourceURI,
+			uiCSP:            uiCSP,
+		}
+		if modelVisible {
+			tools = append(tools, adapter)
+		}
+		if appCallable {
+			appTools = append(appTools, adapter)
+		}
 		fingerprintEntries = append(fingerprintEntries, toolCatalogFingerprintEntry{
 			RawName: candidate.Name, VisibleName: visibleName, Description: candidate.Description,
 			Schema: schema, OutputSchema: fingerprintOutputSchema, ReadOnlyHint: readOnlyHint, DestructiveHint: destructiveHint,
+			Visibility: candidate.Meta.visibilityCopy(),
 		})
 	}
 	sort.SliceStable(toolInfos, func(i, j int) bool { return toolInfos[i].Name < toolInfos[j].Name })
@@ -481,7 +630,7 @@ func (c *Client) fetchToolCatalog(ctx context.Context, settleEmpty bool) (toolCa
 	}
 	return toolCatalogSnapshot{
 		listed: true, fingerprint: sha256.Sum256(fingerprintJSON),
-		infos: toolInfos, adapters: sortedTools,
+		infos: toolInfos, adapters: sortedTools, appAdapters: sortToolsByName(appTools),
 	}, nil
 }
 
@@ -513,19 +662,34 @@ func (c *Client) publishToolCatalog(candidate toolCatalogSnapshot, targetRevisio
 	c.toolsMu.Lock()
 	changed := !c.toolCatalog.listed || c.toolCatalog.fingerprint != candidate.fingerprint
 	if changed {
+		oldFingerprints := catalogSchemaFingerprints(c.toolCatalog.adapters)
 		c.catalogGeneration++
 		candidate.generation = c.catalogGeneration
-		for _, adapter := range candidate.adapters {
-			if remote, ok := adapter.(*remoteTool); ok {
-				remote.generation = candidate.generation
+		for _, adapters := range [][]tool.Tool{candidate.adapters, candidate.appAdapters} {
+			for _, adapter := range adapters {
+				if remote, ok := adapter.(*remoteTool); ok {
+					remote.generation = candidate.generation
+				}
 			}
 		}
 		c.toolCatalog = candidate
+		tool.InvalidateArgumentSchemas(oldFingerprints)
 	}
 	tools := append([]tool.Tool(nil), c.toolCatalog.adapters...)
 	c.toolsMu.Unlock()
 	c.advancePublishedToolListRevision(targetRevision)
 	return tools, changed, nil
+}
+
+func catalogSchemaFingerprints(adapters []tool.Tool) []string {
+	out := make([]string, 0, len(adapters))
+	for _, adapter := range adapters {
+		if adapter == nil {
+			continue
+		}
+		out = append(out, tool.SchemaFingerprint(adapter.Schema()))
+	}
+	return out
 }
 
 func (c *Client) advancePublishedToolListRevision(revision uint64) {
@@ -577,7 +741,7 @@ func (c *Client) listToolsRaw(ctx context.Context) ([]mcpTool, error) {
 // window before their initial tool catalog is considered complete.
 func (c *Client) listToolsRawSettled(ctx context.Context) ([]mcpTool, error) {
 	out, err := c.listToolsRaw(ctx)
-	if err != nil || !c.hasTools || len(out) > 0 {
+	if err != nil || !c.capabilities.tools || len(out) > 0 {
 		return out, err
 	}
 	for _, delay := range advertisedToolsEmptyListRetryDelays {

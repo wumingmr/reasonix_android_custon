@@ -6,111 +6,113 @@ import (
 	"fmt"
 	"strings"
 
+	goaldomain "reasonix/internal/goal"
 	"reasonix/internal/tool"
 )
 
 func init() { tool.RegisterBuiltin(updateGoal{}) }
 
-// updateGoal records the model's structured per-turn goal disposition for the
-// active goal turn. Like complete_step it has no host side effects: the call
-// only records candidate state, and the real FSM transition happens after the
-// turn ends, once Delivery readiness and budget checks pass. It is a host
-// workflow operation — it never requires write approval and grants no
-// permissions. Outside an active goal turn it fails closed without changing
-// any state, so plain chat cannot be hijacked into goal machinery.
 type updateGoal struct{}
 
+type updateGoalInput struct {
+	GoalID        string             `json:"goal_id"`
+	Revision      uint64             `json:"revision"`
+	Action        tool.GoalAction    `json:"action"`
+	Objective     *string            `json:"objective"`
+	Limit         optionalRoundLimit `json:"max_goal_rounds"`
+	BlockedReason *string            `json:"blocked_reason"`
+}
+
 func (updateGoal) Name() string { return "update_goal" }
-
 func (updateGoal) Description() string {
-	return "Report this turn's disposition for the active goal. Call it at the end of every goal turn instead of using prose markers: `continue` (work is ongoing — give a concrete next_action), `complete` (the request is fully done, output format and constraints satisfied, and verification was attempted or reported unavailable), or `blocked` (only the user can unblock: missing user-only information, an irreversible/externally visible operation, or changed scope). The host validates your claim against Delivery acceptance criteria and decides whether to continue automatically. Fields: `status` (required, one of continue|complete|blocked), `reason` (required for continue and blocked, optional for complete), `next_action` (optional concrete next step; recommended for continue), `completion` (recommended with complete: `verified` is checked against real receipts, while `unverified` and `risks` are yours to declare and never count against you)."
+	return "Update the exact current goal revision. edit, pause, and resume require current direct-human authority; complete and blocked are also allowed during the exact autonomous goal round. There is no continue action: leaving an active goal unchanged continues it automatically. Only edit consumes objective/max_goal_rounds; only blocked consumes blocked_reason. Omit unused fields; supplied unused fields are ignored."
 }
-
 func (updateGoal) Schema() json.RawMessage {
-	return json.RawMessage(`{
-"type":"object",
-"properties":{
-  "status":{"type":"string","enum":["continue","complete","blocked"],"description":"continue = keep working autonomously; complete = the goal is fully done and verified; blocked = only the user can unblock."},
-  "reason":{"type":"string","description":"Short explanation. REQUIRED for continue and blocked; optional for complete."},
-  "next_action":{"type":"string","description":"Optional concrete next step. Recommended for continue so the host can guide the next turn."},
-  "completion":{
-    "type":"object",
-    "description":"Your own account of the finished work.",
-    "properties":{
-      "verified":{"type":"array","items":{"type":"string"},"description":"Commands you ran as proof, as they actually ran. One that never ran, failed, or predates your latest change is recorded as an unbacked claim."},
-      "unverified":{"type":"array","items":{"type":"string"},"description":"What you did NOT verify. The host cannot infer what you skipped, so stating it is the only way it is known — and it never blocks completion."},
-      "risks":{"type":"array","items":{"type":"string"},"description":"Known risks to carry forward."}
-    }
-  }
-},
-"required":["status"]
-}`)
+	return json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"goal_id":{"type":"string","minLength":1},"revision":{"type":"integer","minimum":1},"action":{"type":"string","enum":["edit","pause","resume","complete","blocked"]},"objective":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"Replacement non-empty objective for edit; omit or null to keep it. Ignored for other actions."},"max_goal_rounds":{"anyOf":[{"type":"integer","minimum":1},{"type":"null"}],"description":"Replacement limit for edit; omit to keep it, null removes the limit. Ignored for other actions."},"blocked_reason":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"Non-empty concrete blocker required for blocked. Ignored for other actions."}},"required":["goal_id","revision","action"]}`)
 }
-
-// ReadOnly is true: update_goal only records a claim; the host performs the
-// state transition after the turn. It never needs approval and cannot expand
-// tool permissions or bypass sandbox policy.
-func (updateGoal) ReadOnly() bool { return true }
-
+func (updateGoal) ReadOnly() bool { return false }
 func (updateGoal) ProviderVisible(ctx context.Context) bool {
-	_, ok := tool.GoalTurnRecorderFromContext(ctx)
+	_, ok := tool.GoalLifecycleFromContext(ctx)
 	return ok
 }
-
-// PlanModeSafe reports true: the tool is read-only host bookkeeping, and
-// outside an active goal turn its Execute fails closed anyway.
-func (updateGoal) PlanModeSafe() bool { return true }
-
 func (updateGoal) Execute(ctx context.Context, args json.RawMessage) (string, error) {
-	var p struct {
-		Status     string `json:"status"`
-		Reason     string `json:"reason"`
-		NextAction string `json:"next_action"`
-		Completion struct {
-			Verified   []string `json:"verified"`
-			Unverified []string `json:"unverified"`
-			Risks      []string `json:"risks"`
-		} `json:"completion"`
+	if strings.Contains(string(args), `"status"`) && !strings.Contains(string(args), `"action"`) {
+		return "", fmt.Errorf("legacy update_goal protocol is unsupported; call get_goal, then use goal_id, revision, and action; leaving an active goal unchanged continues automatically")
 	}
-	if err := json.Unmarshal(args, &p); err != nil {
-		return "", fmt.Errorf("invalid update_goal args: %w", err)
+	var input updateGoalInput
+	if err := decodeGoalArgs(args, &input, "update_goal"); err != nil {
+		return "", err
 	}
-	p.Status = strings.ToLower(strings.TrimSpace(p.Status))
-	switch p.Status {
-	case "continue", "complete", "blocked":
-	default:
-		return "", fmt.Errorf("update_goal: status must be one of continue|complete|blocked, got %q — no goal state was changed", p.Status)
+	input.GoalID = strings.TrimSpace(input.GoalID)
+	if input.GoalID == "" || input.Revision == 0 {
+		return "", fmt.Errorf("goal_id and a positive revision are required")
 	}
-	if (p.Status == "continue" || p.Status == "blocked") && strings.TrimSpace(p.Reason) == "" {
-		return "", fmt.Errorf("update_goal: reason is required for %s — no goal state was changed", p.Status)
-	}
-	for i, command := range p.Completion.Verified {
-		if strings.TrimSpace(command) == "" {
-			return "", fmt.Errorf("update_goal: completion.verified[%d] is empty — cite the command as it actually ran, or leave the list out", i)
+	request := tool.GoalUpdateRequest{Ref: goaldomain.Ref{ID: input.GoalID, Revision: input.Revision}, Action: input.Action}
+	// The action selects the mutation payload. Models may echo the entire goal
+	// snapshot or fill unused optional fields; none may become implicit edits.
+	switch input.Action {
+	case tool.GoalActionEdit:
+		if input.Objective == nil && !input.Limit.Present {
+			return "", fmt.Errorf("edit requires objective and/or max_goal_rounds")
 		}
+		if input.Objective != nil {
+			value, err := trimmedRequired(*input.Objective, "objective")
+			if err != nil {
+				return "", err
+			}
+			request.Objective = &value
+		}
+		if input.Limit.Present {
+			limit, err := parseRoundLimit(input.Limit.Raw)
+			if err != nil {
+				return "", err
+			}
+			request.MaxGoalRounds = goaldomain.RoundLimitChange{Set: true, Value: limit}
+		}
+	case tool.GoalActionBlocked:
+		if input.BlockedReason == nil {
+			return "", fmt.Errorf("blocked requires blocked_reason")
+		}
+		message, err := trimmedRequired(*input.BlockedReason, "blocked_reason")
+		if err != nil {
+			return "", err
+		}
+		request.BlockedReason = &goaldomain.BlockReason{Code: "model-blocked", Message: message}
+	case tool.GoalActionPause, tool.GoalActionResume, tool.GoalActionComplete:
+	default:
+		return "", fmt.Errorf("action must be one of edit|pause|resume|complete|blocked")
 	}
-	recorder, ok := tool.GoalTurnRecorderFromContext(ctx)
-	if !ok {
-		return "", fmt.Errorf("update_goal is only available while an active goal turn is running — no goal state was changed")
+	binding, err := goalBinding(ctx)
+	if err != nil {
+		return "", err
 	}
-	result, err := recorder.RecordGoalReport(tool.GoalReport{
-		Status:     p.Status,
-		Reason:     strings.TrimSpace(p.Reason),
-		NextAction: strings.TrimSpace(p.NextAction),
-	})
-	if err != nil || p.Status != "complete" {
-		return result, err
+	view, err := binding.Owner.UpdateGoal(ctx, request, binding.Authority)
+	if err != nil {
+		return "", goalToolError("update_goal", err)
 	}
-	return result + completionNote(len(p.Completion.Verified), len(p.Completion.Unverified), len(p.Completion.Risks)), nil
+	instruction := ""
+	if view.Phase == goaldomain.PhaseComplete || view.Phase == goaldomain.PhaseBlocked {
+		instruction = "Finish the current turn with an accurate final summary for the user; no further automatic goal round will be admitted."
+	}
+	if ignored := input.ignoredFields(); len(ignored) > 0 {
+		notice := fmt.Sprintf("Fields not applied: %s. Action %q ignores these fields; the returned goal contains the effective state.", strings.Join(ignored, ", "), input.Action)
+		instruction = strings.TrimSpace(instruction + " " + notice)
+	}
+	return goalToolResultWithInstruction(&view, instruction)
 }
 
-// completionNote tells the model what its own account will contribute to the
-// host's completion report. The claim is reconciled against real receipts
-// after the turn; it is recorded, never trusted.
-func completionNote(verified, unverified, risks int) string {
-	if verified+unverified+risks == 0 {
-		return " No completion account was given: the report will carry only what the host could observe."
+func (p updateGoalInput) ignoredFields() []string {
+	var fields []string
+	if p.Action != tool.GoalActionEdit {
+		if p.Objective != nil {
+			fields = append(fields, "objective")
+		}
+		if p.Limit.Present {
+			fields = append(fields, "max_goal_rounds")
+		}
 	}
-	return fmt.Sprintf(" Completion account recorded (%d verified, %d unverified, %d risks); the verified commands are reconciled against this session's receipts.",
-		verified, unverified, risks)
+	if p.Action != tool.GoalActionBlocked && p.BlockedReason != nil {
+		fields = append(fields, "blocked_reason")
+	}
+	return fields
 }

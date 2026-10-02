@@ -100,8 +100,7 @@ for the latest desktop build.
 | Windows | Installer `.exe` or portable `.zip` | x64 / ARM64 |
 | Linux | `.deb` or `.tar.gz` | x64 |
 
-Windows installers are code-signed through [SignPath.io](https://signpath.io/)
-with a free certificate provided by the [SignPath Foundation](https://signpath.org/).
+Windows installers are code-signed with a Certum code-signing certificate.
 
 ### Path C: VS Code extension
 
@@ -124,7 +123,7 @@ cd DeepSeek-Reasonix
 
 #### CLI
 
-The CLI build requires **Go 1.25+**. The module pins a `toolchain` directive;
+The CLI build requires **Go 1.26+**. The module pins a `toolchain` directive;
 keep `GOTOOLCHAIN=auto` so Go downloads the pinned toolchain, or install it.
 
 ```sh
@@ -134,19 +133,15 @@ make cross      # -> dist/ (darwin|linux|windows × amd64|arm64)
 
 #### Desktop
 
-The desktop build additionally requires:
-
-- **Node 24+ and pnpm 10** (`npm install -g pnpm@10`) for the frontend
-- **Wails CLI** matching the shared `.wails-version` pin
+The desktop build additionally requires **Node 24+ and pnpm 10**
+(`npm install -g pnpm@10`) for the frontend and the Electron shell:
 
 ```sh
-make wails-install
-cd desktop
-wails build
+scripts/desktop-build.sh darwin/arm64 v0.0.0-dev   # one platform per run
 ```
 
-See the [desktop build guide](desktop/README.md#prerequisites) for platform
-webview dependencies and Linux build tags.
+No platform webview dependencies are needed — the shell ships its own
+Chromium. See the [desktop build guide](desktop/README.md#prerequisites).
 
 ## Quick start
 
@@ -180,6 +175,7 @@ For advanced CLI usage and configuration, see the **[CLI reference](./docs/CLI.m
   [Configuration paths](./docs/CONFIG_PATHS.md) · [ACP editor integration](./docs/ACP.md)
 - **Features & troubleshooting:** [Subagent profiles](./docs/SUBAGENT_PROFILES.md) ·
   [Context Engine v2](./docs/SESSION_MEMORY_RETRIEVAL.md) ·
+  [File deliverables and the `present` tool](./docs/PRESENT_TOOL.md) ·
   [Capability diagnostics](./docs/CAPABILITY_DIAGNOSTICS.md) ·
   [Recovery and updates](./docs/RECOVERY.md) · [Bot guide](./docs/BOT_GUIDE.md) ·
   [Checkpoints & rewind](./docs/CHECKPOINTS.md)
@@ -213,10 +209,10 @@ A small list of folks whose work has shaped Reasonix the most — the current to
 | Contributor | Contributor | Contributor | Contributor |
 | --- | --- | --- | --- |
 | [**SivanCola**](https://github.com/SivanCola) | [**esengine**](https://github.com/esengine) | [**ttmouse**](https://github.com/ttmouse) | [**lifu963**](https://github.com/lifu963) |
-| **reasonix** | [**HUQIANTAO**](https://github.com/HUQIANTAO) | [**GTC2080**](https://github.com/GTC2080) | [**light-front-theory**](https://github.com/light-front-theory) |
-| **merge-order-check** | [**Li-Charles-One**](https://github.com/Li-Charles-One) | [**eghrhegpe**](https://github.com/eghrhegpe) | **wufengfan** |
-| [**CVEngineer66**](https://github.com/CVEngineer66) | [**dependabot\[bot\]**](https://github.com/apps/dependabot) | [**lanshi17**](https://github.com/lanshi17) | [**SuMuxi66**](https://github.com/SuMuxi66) |
-| [**CnsMaple**](https://github.com/CnsMaple) | [**cyq1017**](https://github.com/cyq1017) | [**JesonChou**](https://github.com/JesonChou) | [**XTLine**](https://github.com/XTLine) |
+| **reasonix** | [**HUQIANTAO**](https://github.com/HUQIANTAO) | [**GTC2080**](https://github.com/GTC2080) | [**mchenziyi**](https://github.com/mchenziyi) |
+| [**Li-Charles-One**](https://github.com/Li-Charles-One) | **merge-order-check** | [**light-front-theory**](https://github.com/light-front-theory) | **Yan Li** |
+| [**eghrhegpe**](https://github.com/eghrhegpe) | **wufengfan** | [**Bernardxu123**](https://github.com/Bernardxu123) | [**HaoyueQin**](https://github.com/HaoyueQin) |
+| [**CVEngineer66**](https://github.com/CVEngineer66) | [**JesonChou**](https://github.com/JesonChou) | [**SuMuxi66**](https://github.com/SuMuxi66) | [**lanshi17**](https://github.com/lanshi17) |
 <!-- reasonix-top-contributors:end -->
 
 Special thanks to [**Bernardxu123**](https://github.com/Bernardxu123) for designing the project logo and intro video.

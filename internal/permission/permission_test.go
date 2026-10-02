@@ -8,6 +8,16 @@ import (
 	"testing"
 )
 
+func TestPwshUsesLegacyBashPermissionRules(t *testing.T) {
+	if !ruleToolMatches("Bash", "pwsh") || !ruleToolMatches("PowerShell", "bash") {
+		t.Fatal("shell aliases should share one permission capability")
+	}
+	p := New("ask", []string{"Bash(Get-ChildItem:*)"}, nil, nil)
+	if got := p.DecideSubject("pwsh", false, "Get-ChildItem -Force"); got != Allow {
+		t.Fatalf("legacy Bash allow rule for pwsh = %v", got)
+	}
+}
+
 func TestParseRule(t *testing.T) {
 	cases := []struct {
 		in       string

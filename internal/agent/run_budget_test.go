@@ -115,7 +115,7 @@ func TestRunBudgetTracksRealTurnSpend(t *testing.T) {
 // The whole point of the task scope: "continue" starts a new Run, and a
 // per-Run total resets there. The four-hour failure this axis exists for was
 // never one Run.
-func TestTaskBudgetSurvivesAContinuation(t *testing.T) {
+func TestTaskBudgetRestartsForOrdinaryNewUserTurn(t *testing.T) {
 	sink := newBudgetSink()
 	reg := tool.NewRegistry()
 	reg.Add(readProbe{})
@@ -127,8 +127,6 @@ func TestTaskBudgetSurvivesAContinuation(t *testing.T) {
 	}
 	afterFirst := sink.samples[len(sink.samples)-1]
 
-	// What the host does for a continuation: keep the evidence ledger.
-	a.pending.preserveEvidence = true
 	if err := a.Run(context.Background(), "continue"); err != nil {
 		t.Fatalf("continuation Run: %v", err)
 	}
@@ -138,17 +136,16 @@ func TestTaskBudgetSurvivesAContinuation(t *testing.T) {
 		t.Fatalf("turn rounds = %d, want the per-Run scope to restart below the first Run's %d",
 			afterSecond.Turn.Rounds, afterFirst.Turn.Rounds)
 	}
-	wantTaskRounds := afterFirst.Task.Rounds + afterSecond.Turn.Rounds
-	if afterSecond.Task.Rounds != wantTaskRounds {
-		t.Fatalf("task rounds = %d, want %d carried across the continuation",
-			afterSecond.Task.Rounds, wantTaskRounds)
+	if afterSecond.Task.Rounds != afterSecond.Turn.Rounds {
+		t.Fatalf("task rounds = %d, want current turn rounds %d",
+			afterSecond.Task.Rounds, afterSecond.Turn.Rounds)
 	}
-	if afterSecond.Task.Cost <= afterFirst.Task.Cost {
-		t.Fatalf("task cost = %v, want it to accumulate past the first Run's %v",
+	if afterSecond.Task.Cost >= afterFirst.Task.Cost {
+		t.Fatalf("task cost = %v, want a fresh ordinary-turn task below the first Run's %v",
 			afterSecond.Task.Cost, afterFirst.Task.Cost)
 	}
 	if afterSecond.Task.ElapsedMs < afterSecond.Turn.ElapsedMs {
-		t.Fatal("task elapsed must span both Runs, not just the current one")
+		t.Fatal("task elapsed must cover the current ordinary turn")
 	}
 }
 

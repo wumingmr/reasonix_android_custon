@@ -12,7 +12,7 @@ import (
 
 func TestMemoryApprovalStillPromptsUnderAsk(t *testing.T) {
 	approvalRequests := make(chan event.Approval, 1)
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Sink: event.FuncSink(func(e event.Event) {
 			if e.Kind == event.ApprovalRequest {
 				approvalRequests <- e.Approval
@@ -46,7 +46,7 @@ func TestMemoryApprovalStillPromptsUnderAsk(t *testing.T) {
 		t.Fatal("memory approval must remain pending under ask")
 	}
 
-	c.Approve(approval.ID, true, true, true)
+	c.Approve(approval.ID, true, true, false)
 	select {
 	case err := <-errs:
 		t.Fatalf("requestApproval: %v", err)
@@ -64,7 +64,7 @@ func TestAutoAndYoloAllowMemoryWithoutPrompt(t *testing.T) {
 	for _, mode := range []string{ToolApprovalAuto, ToolApprovalYolo} {
 		t.Run(mode, func(t *testing.T) {
 			var approvalRequested bool
-			c := New(Options{
+			c := newOwnedTestController(t, Options{
 				Sink: event.FuncSink(func(e event.Event) {
 					if e.Kind == event.ApprovalRequest {
 						approvalRequested = true
@@ -101,7 +101,7 @@ func TestAutoAndYoloAllowMemoryWithoutPrompt(t *testing.T) {
 
 func TestToolApprovalModeAutoPreservesExplicitMemoryAsk(t *testing.T) {
 	approvalRequests := make(chan event.Approval, 1)
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Policy: permission.New("ask", nil, []string{"remember"}, nil),
 		Sink: event.FuncSink(func(e event.Event) {
 			if e.Kind == event.ApprovalRequest {
@@ -144,7 +144,7 @@ func TestToolApprovalModeAutoPreservesExplicitMemoryAsk(t *testing.T) {
 
 func TestToolApprovalModeYoloBypassesMemoryAskAndHonorsDeny(t *testing.T) {
 	var approvalRequested bool
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Policy: permission.New("ask", nil, []string{"forget"}, []string{"remember"}),
 		Sink: event.FuncSink(func(e event.Event) {
 			if e.Kind == event.ApprovalRequest {
@@ -174,9 +174,9 @@ func TestToolApprovalModeYoloBypassesMemoryAskAndHonorsDeny(t *testing.T) {
 	}
 }
 
-func TestSetAutoApproveToolsDrainsPendingMemoryApproval(t *testing.T) {
+func TestSetAutoApproveToolsDoesNotResolvePendingMemoryApproval(t *testing.T) {
 	approvalRequests := make(chan event.Approval, 1)
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Sink: event.FuncSink(func(e event.Event) {
 			if e.Kind == event.ApprovalRequest {
 				approvalRequests <- e.Approval
@@ -195,8 +195,9 @@ func TestSetAutoApproveToolsDrainsPendingMemoryApproval(t *testing.T) {
 		done <- allow
 	}()
 
+	var approval event.Approval
 	select {
-	case <-approvalRequests:
+	case approval = <-approvalRequests:
 	case <-time.After(30 * time.Second):
 		t.Fatal("memory approval request was not emitted")
 	}
@@ -207,17 +208,18 @@ func TestSetAutoApproveToolsDrainsPendingMemoryApproval(t *testing.T) {
 	case err := <-errs:
 		t.Fatalf("requestApproval: %v", err)
 	case allow := <-done:
-		if !allow {
-			t.Fatal("pending memory approval should be allowed when YOLO turns on")
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("pending memory approval stayed blocked after YOLO turned on")
+		t.Fatalf("legacy permission change answered pending memory approval: allow=%v", allow)
+	case <-time.After(50 * time.Millisecond):
+	}
+	c.Approve(approval.ID, true, false, false)
+	if allow := <-done; !allow {
+		t.Fatal("manual approval should allow memory write")
 	}
 }
 
 func TestToolApprovalModeAutoDrainsPendingMemoryFallback(t *testing.T) {
 	approvalRequests := make(chan event.Approval, 1)
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Sink: event.FuncSink(func(e event.Event) {
 			if e.Kind == event.ApprovalRequest {
 				approvalRequests <- e.Approval
@@ -238,22 +240,28 @@ func TestToolApprovalModeAutoDrainsPendingMemoryFallback(t *testing.T) {
 	}
 
 	drained := c.ApplyToolApprovalMode(ToolApprovalAuto)
-	if len(drained) != 1 || drained[0] != approval.ID {
-		t.Fatalf("auto drained ids = %v, want [%s]", drained, approval.ID)
+	if len(drained) != 0 {
+		t.Fatalf("workspace preset resolved old memory approval: %v", drained)
 	}
 	select {
 	case allow := <-done:
-		if !allow {
-			t.Fatal("auto should allow a pending fallback memory approval")
+		t.Fatalf("preset switch resolved pending memory approval: allow=%v", allow)
+	default:
+	}
+	c.Approve(approval.ID, false, false, false)
+	select {
+	case allow := <-done:
+		if allow {
+			t.Fatal("cleanup denial unexpectedly allowed memory operation")
 		}
 	case <-time.After(30 * time.Second):
-		t.Fatal("pending fallback memory approval stayed blocked under auto")
+		t.Fatal("pending memory approval did not resolve after denial")
 	}
 }
 
 func TestToolApprovalModeAutoKeepsPendingExplicitMemoryAsk(t *testing.T) {
 	approvalRequests := make(chan event.Approval, 1)
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Policy: permission.New("ask", nil, []string{"forget"}, nil),
 		Sink: event.FuncSink(func(e event.Event) {
 			if e.Kind == event.ApprovalRequest {

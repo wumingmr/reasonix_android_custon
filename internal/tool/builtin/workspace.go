@@ -73,7 +73,21 @@ func (w Workspace) Tools(enabled ...string) []tool.Tool {
 	roots := realRoots(writeRoots)
 	forbidRoots := realRoots(w.ForbidReadRoots)
 
+	shell := w.Bash.Shell
+	if shell.Path == "" {
+		shell = sandbox.ResolveShell("", "", nil)
+	}
+	shellTool := bash{workDir: w.Dir, sb: w.Bash, shell: shell, timeout: w.BashTimeout, guard: w.SessionGuard, terminal: w.Terminal, sessionTemp: w.SessionTemp}
+	if shell.Kind == sandbox.ShellPowerShell {
+		shellTool.name = "pwsh"
+	}
+	legacyShell := tool.Tool(shellTool)
+	if shellTool.Name() == "pwsh" {
+		legacyShell, _ = AliasBash(shellTool, "bash")
+	}
 	overrides := map[string]tool.Tool{
+		"view_image":    viewImage{workDir: w.Dir, paths: w.ReadPaths, forbidRoots: forbidRoots},
+		"present":       present{workDir: w.Dir, paths: w.ReadPaths, forbidRoots: forbidRoots},
 		"read_file":     readFile{workDir: w.Dir, paths: w.ReadPaths, forbidRoots: forbidRoots, overlay: w.FileOverlay},
 		"write_file":    writeFile{workDir: w.Dir, roots: roots, guard: w.SessionGuard, managed: w.ManagedConfig, overlay: w.FileOverlay, receipt: w.FileWriteReceipt},
 		"edit_file":     editFile{workDir: w.Dir, roots: roots, guard: w.SessionGuard, managed: w.ManagedConfig, overlay: w.FileOverlay},
@@ -83,10 +97,11 @@ func (w Workspace) Tools(enabled ...string) []tool.Tool {
 		"delete_range":  deleteRange{workDir: w.Dir, roots: roots, guard: w.SessionGuard, managed: w.ManagedConfig, overlay: w.FileOverlay},
 		"delete_symbol": deleteSymbol{workDir: w.Dir, roots: roots, guard: w.SessionGuard, managed: w.ManagedConfig, overlay: w.FileOverlay},
 		"code_index":    codeIndex{workDir: w.Dir, forbidRoots: forbidRoots},
-		"bash":          bash{workDir: w.Dir, sb: w.Bash, timeout: w.BashTimeout, guard: w.SessionGuard, terminal: w.Terminal, sessionTemp: w.SessionTemp},
+		"bash":          legacyShell,
+		"pwsh":          shellTool,
 		"ls":            listDir{workDir: w.Dir, paths: w.ReadPaths, forbidRoots: forbidRoots},
 		"glob":          globTool{workDir: w.Dir, paths: w.ReadPaths, forbidRoots: forbidRoots},
-		"grep":          grepTool{workDir: w.Dir, paths: w.ReadPaths, rg: w.Search.RgPath, forbidRoots: forbidRoots, sb: w.Bash, sessionTemp: w.SessionTemp},
+		"grep":          grepTool{workDir: w.Dir, paths: w.ReadPaths, rg: w.Search.RgPath, forbidRoots: forbidRoots, sb: w.Bash, sessionTemp: w.SessionTemp, overlay: w.FileOverlay},
 		"web_fetch":     webFetch{proxySpec: w.ProxySpec},
 	}
 	all := tool.Builtins()
@@ -96,20 +111,40 @@ func (w Workspace) Tools(enabled ...string) []tool.Tool {
 				all[i] = BindWriteRootSet(bound, w.WriteRootSet)
 			}
 		}
+		if shellTool.Name() == "pwsh" {
+			primary := BindWriteRootSet(shellTool, w.WriteRootSet)
+			withoutLegacy := all[:0]
+			for _, t := range all {
+				if t.Name() != "bash" {
+					withoutLegacy = append(withoutLegacy, t)
+				}
+			}
+			all = append(withoutLegacy, primary)
+		}
 		return all
 	}
 	want := make(map[string]bool, len(enabled))
 	for _, n := range enabled {
+		if tool.IsShellToolName(n) {
+			n = "bash"
+		}
 		want[n] = true
 	}
 	out := make([]tool.Tool, 0, len(enabled))
 	for _, t := range all {
 		if want[t.Name()] {
+			if shellTool.Name() == "pwsh" && t.Name() == "bash" {
+				continue
+			}
 			if bound, ok := overrides[t.Name()]; ok {
 				t = BindWriteRootSet(bound, w.WriteRootSet)
 			}
 			out = append(out, t)
 		}
+	}
+	if shellTool.Name() == "pwsh" && want["bash"] {
+		primary := BindWriteRootSet(shellTool, w.WriteRootSet)
+		out = append(out, primary)
 	}
 	return out
 }

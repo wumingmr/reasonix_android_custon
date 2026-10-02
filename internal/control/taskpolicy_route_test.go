@@ -13,7 +13,7 @@ func TestTurnOrchestratorRoutesCapabilitiesWithFrozenTaskPolicy(t *testing.T) {
 	runner := &plannerMetadataRunner{}
 	reg := tool.NewRegistry()
 	reg.Add(capabilityTestTool{name: "run_skill"})
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Runner:   runner,
 		Registry: reg,
 		Skills: []skill.Skill{{

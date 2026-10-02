@@ -137,11 +137,7 @@ func (h *workspaceChangeHub) addTreeLocked(r *workspaceWatchRoot, root string) {
 			}
 			return nil
 		}
-		rel, relErr := filepath.Rel(r.root, path)
-		if relErr != nil {
-			return nil
-		}
-		if path != r.root && fileref.SkipEntry(filepath.ToSlash(rel), d.Name(), d.IsDir()) {
+		if path != r.root && fileref.SkipBrowseEntry(d.Name(), d.IsDir()) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -296,8 +292,7 @@ func workspaceWatchPathSkipped(root, path string) bool {
 	}
 	parts := strings.Split(filepath.ToSlash(rel), "/")
 	for i, name := range parts {
-		prefix := strings.Join(parts[:i+1], "/")
-		if fileref.SkipEntry(prefix, name, i < len(parts)-1) {
+		if fileref.SkipBrowseEntry(name, i < len(parts)-1) {
 			return true
 		}
 	}

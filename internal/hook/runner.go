@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 )
@@ -21,6 +22,8 @@ type Runner struct {
 	notify    func(string) // surface a non-blocking (warn/error) hook message; may be nil
 	mu        sync.RWMutex
 	sessionID string
+	parent    *Runner // set by ForRole; the session ID is then derived from it
+	role      string
 }
 
 // SetSessionID updates the Claude-compatible session identifier used in hook
@@ -35,16 +38,75 @@ func (r *Runner) SetSessionID(id string) {
 }
 
 func (r *Runner) payload(event Event) Payload {
+	return Payload{Event: event, Cwd: r.cwd, SessionID: r.currentSessionID()}
+}
+
+func (r *Runner) currentSessionID() string {
+	if r.parent != nil {
+		if id := r.parent.currentSessionID(); id != "" {
+			return id + ":" + r.role
+		}
+		return r.role
+	}
 	r.mu.RLock()
-	id := r.sessionID
-	r.mu.RUnlock()
-	return Payload{Event: event, Cwd: r.cwd, SessionID: id}
+	defer r.mu.RUnlock()
+	return r.sessionID
 }
 
 // NewRunner builds a Runner. spawner nil uses DefaultSpawner; notify nil drops
 // non-blocking messages.
 func NewRunner(hooks []ResolvedHook, cwd string, spawner Spawner, notify func(string)) *Runner {
 	return &Runner{hooks: hooks, cwd: cwd, spawner: spawner, notify: notify}
+}
+
+// ForSession gives a child session the same resolved rules and execution
+// environment without sharing mutable session identity with its parent.
+func (r *Runner) ForSession(id string) *Runner {
+	if r == nil {
+		return nil
+	}
+	child := NewRunner(r.hooks, r.cwd, r.spawner, r.notify)
+	child.SetSessionID(id)
+	return child
+}
+
+// ForRole gives an agent that works for this runner's session, such as the
+// planner, the same rules under session "<parent session>:<role>". The parent's
+// ID is read each time a hook fires, so a later SetSessionID on it reaches the role.
+func (r *Runner) ForRole(role string) *Runner {
+	if r == nil {
+		return nil
+	}
+	child := NewRunner(r.hooks, r.cwd, r.spawner, r.notify)
+	child.parent, child.role = r, role
+	return child
+}
+
+// NoCwdCommandSearchEnv is honoured by cmd.exe and CreateProcess: when set,
+// a bare command name is not resolved against the current directory.
+const NoCwdCommandSearchEnv = "NoDefaultCurrentDirectoryInExePath"
+
+// WithoutCwdCommandSearch gives hooks the same cwd but sets
+// NoCwdCommandSearchEnv, so on Windows a bare `python` in a hook command can
+// never resolve to a python.exe that the cwd ships. It is inherited by
+// ForSession and ForRole, and is harmless on other platforms.
+func (r *Runner) WithoutCwdCommandSearch() *Runner {
+	if r == nil {
+		return nil
+	}
+	base := r.spawner
+	if base == nil {
+		base = DefaultSpawner
+	}
+	child := r.ForSession(r.currentSessionID())
+	child.spawner = func(ctx context.Context, in SpawnInput) SpawnResult {
+		env := make(map[string]string, len(in.Env)+1)
+		maps.Copy(env, in.Env)
+		env[NoCwdCommandSearchEnv] = "1"
+		in.Env = env
+		return base(ctx, in)
+	}
+	return child
 }
 
 // Hooks returns the resolved hooks (for `/hooks` listing).

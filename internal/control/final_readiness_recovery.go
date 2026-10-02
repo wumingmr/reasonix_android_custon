@@ -10,7 +10,7 @@ const (
 	// and ACP. It is additive and optional, so older clients remain compatible.
 	FinalReadinessRecoveryAction = "final_readiness_recovery"
 	ContinueChecksCommand        = "/continue-checks"
-	defaultContinueChecksPrompt  = "Continue the remaining final checks, preserve completed work, and only finish after the host readiness requirements pass."
+	defaultContinueChecksPrompt  = "Continue checking the work. Preserve completed changes, run relevant checks, and report the observed results and anything you could not verify."
 )
 
 // ParseFinalReadinessRecoveryCommand converts the explicit slash action into a
@@ -33,31 +33,24 @@ func (c *Controller) RunFinalReadinessRecovery(ctx context.Context, input string
 	return c.RunFinalReadinessRecoveryWithAdmission(ctx, input, nil)
 }
 
-// RunFinalReadinessRecoveryWithAdmission runs the recovery after the controller
-// has admitted the request and consumed a valid one-shot checkpoint. Hosts that
-// publish turn lifecycle state use the callback to avoid announcing a turn for
-// a stale recovery request.
+// RunFinalReadinessRecoveryWithAdmission is a retired compatibility action. Old
+// history stays readable, but no checkpoint can authorize or replay work.
 func (c *Controller) RunFinalReadinessRecoveryWithAdmission(ctx context.Context, input string, onAdmitted func()) error {
-	return c.runSynchronousTurn(ctx, nil, func(runCtx context.Context) error {
-		if c.executor == nil || !c.executor.PrepareFinalReadinessRecovery() {
-			return ErrNoFinalReadinessRecovery
-		}
-		if onAdmitted != nil {
-			onAdmitted()
-		}
-		return c.runTurn(runCtx, input)
-	})
+	return ErrNoFinalReadinessRecovery
 }
 
-// SubmitFinalReadinessRecovery preserves the immediately preceding exhausted
-// ledger for one explicit asynchronous continuation.
+// SubmitFinalReadinessRecovery retains the asynchronous symbol for old clients
+// and emits the stable retirement error through the ordinary turn path.
 func (c *Controller) SubmitFinalReadinessRecovery(display, input string) {
-	c.runGuarded(func(ctx context.Context) error {
-		if c.executor == nil || !c.executor.PrepareFinalReadinessRecovery() {
-			return ErrNoFinalReadinessRecovery
-		}
-		return c.runGoalLoopWithRawDisplay(ctx, input, input, display)
-	})
+	c.submissions.mu.Lock()
+	defer c.releaseSubmissionAdmission()
+	c.submitFinalReadinessRecoveryLocked(display, input, turnAdmission{})
+}
+
+func (c *Controller) submitFinalReadinessRecoveryLocked(display, input string, admission turnAdmission) {
+	c.runGuardedWithAdmission(func(ctx context.Context) error {
+		return ErrNoFinalReadinessRecovery
+	}, admission)
 }
 
 // SubmitDeliveryRecovery preserves the v1.25 desktop/API symbol.
@@ -65,7 +58,7 @@ func (c *Controller) SubmitDeliveryRecovery(display, input string) {
 	c.SubmitFinalReadinessRecovery(display, input)
 }
 
-func (c *Controller) submitFinalReadinessCommand(trimmed, display string) bool {
+func (c *Controller) submitFinalReadinessCommand(trimmed, display string, admission turnAdmission) bool {
 	prompt, ok := ParseFinalReadinessRecoveryCommand(trimmed)
 	if !ok {
 		return false
@@ -73,6 +66,6 @@ func (c *Controller) submitFinalReadinessCommand(trimmed, display string) bool {
 	if strings.TrimSpace(display) == "" {
 		display = trimmed
 	}
-	c.SubmitFinalReadinessRecovery(display, prompt)
+	c.submitFinalReadinessRecoveryLocked(display, prompt, admission)
 	return true
 }

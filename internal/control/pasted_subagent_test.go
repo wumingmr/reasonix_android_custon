@@ -23,7 +23,7 @@ func TestStructuredResearchReceivesExpandedPastedText(t *testing.T) {
 	events := make(chan event.Event, 12)
 	var gotTask string
 	var gotDisplay string
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Executor: exec,
 		Sink:     event.FuncSink(func(e event.Event) { events <- e }),
 		Skills: []skill.Skill{{

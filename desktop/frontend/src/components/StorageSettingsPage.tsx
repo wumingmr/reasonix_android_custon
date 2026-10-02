@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Copy, Check } from "lucide-react";
 import { app } from "../lib/bridge";
 import { useT } from "../lib/i18n";
+import { HistoricalImportList } from "./HistoricalImportList";
+import { HistoricalRecoveryList } from "./HistoricalRecoveryList";
+import { useManagementT } from "../lib/managementLocale";
 
 type StorageSettingsView = Awaited<ReturnType<typeof app.StorageSettings>>;
 
 export function StorageSettingsPage() {
   const t = useT();
+  const m = useManagementT();
   const [view, setView] = useState<StorageSettingsView | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
@@ -37,7 +42,7 @@ export function StorageSettingsPage() {
     );
   }
 
-  return (
+  return (<>
     <section className="settings-section">
       <div className="settings-section__head">
         <div>
@@ -52,19 +57,33 @@ export function StorageSettingsPage() {
         <StoragePathField label={t("settings.storageExtensions")} value={view.extensionsPath} />
       </div>
     </section>
-  );
+    <section className="settings-section">
+      <div className="settings-section__head"><div>
+        <div className="settings-section__title">{m("historicalTitle")}</div>
+        <div className="settings-section__desc">{m("historicalDescription")}</div>
+      </div></div>
+      <div className="settings-section__body">
+        <HistoricalImportList active />
+        <details><summary>{t("history.recoveryReview")}</summary><HistoricalRecoveryList active /></details>
+      </div>
+    </section>
+  </>);
 }
 
 function StoragePathField({ label, hint, value }: { label: ReactNode; hint?: ReactNode; value: string }) {
   const t = useT();
+  const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState(false);
   return (
     <div className="settings-field">
       <div className="settings-field__copy">
         <div className="settings-field__label">{label}</div>
         {hint && <div className="settings-field__hint"><span className="settings-field__hint-line">{hint}</span></div>}
       </div>
-      <div className="settings-field__control">
+      <div className="settings-field__control settings-path-value">
         <input className="mem-input" value={value} placeholder={t("common.none")} aria-label={String(label)} readOnly />
+        <button className="btn settings-icon-button" disabled={!value} title={t(copied ? "richLink.copied" : "common.copy")} aria-label={`${t("common.copy")}: ${String(label)}`} onClick={async () => { try { await navigator.clipboard.writeText(value); setCopied(true); setCopyError(false); } catch { setCopyError(true); } }}>{copied ? <Check size={16} /> : <Copy size={16} />}</button>
+        {copyError && <span role="alert">{t("settings.hooksJsonClipboardUnavailable")}</span>}
       </div>
     </div>
   );

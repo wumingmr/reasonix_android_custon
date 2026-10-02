@@ -6,6 +6,7 @@ package boot
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sync"
@@ -19,21 +20,34 @@ import (
 )
 
 type effectRecordingProvider struct {
-	mu   sync.Mutex
-	reqs []provider.Request
+	mu        sync.Mutex
+	reqs      []provider.Request
+	rawInputs []string
 }
 
 func (p *effectRecordingProvider) Name() string { return "boot-effect-test" }
 
-func (p *effectRecordingProvider) Stream(_ context.Context, req provider.Request) (<-chan provider.Chunk, error) {
+func (p *effectRecordingProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.Chunk, error) {
 	p.mu.Lock()
 	p.reqs = append(p.reqs, req)
+	p.rawInputs = append(p.rawInputs, agent.RawUserInput(ctx, ""))
 	p.mu.Unlock()
-	ch := make(chan provider.Chunk, 2)
-	ch <- provider.Chunk{Type: provider.ChunkText, Text: "ok"}
-	ch <- provider.Chunk{Type: provider.ChunkDone}
+	chunks := []provider.Chunk{
+		{Type: provider.ChunkText, Text: "ok"},
+		{Type: provider.ChunkDone},
+	}
+	ch := make(chan provider.Chunk, len(chunks))
+	for _, chunk := range chunks {
+		ch <- chunk
+	}
 	close(ch)
 	return ch, nil
+}
+
+func (p *effectRecordingProvider) rawUserInputs() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.rawInputs...)
 }
 
 func (p *effectRecordingProvider) requests() []provider.Request {
@@ -60,11 +74,15 @@ default_model = "test-model"
 [agent]
 system_prompt = "BASE"
 
+[environment]
+enabled = false
+
 [[providers]]
 name = "test-model"
 kind = "`+kind+`"
 model = "x"
 `)
+	approveWorkspace(t, dir)
 
 	ctrl, err := Build(context.Background(), Options{Sink: event.Discard, TokenMode: tokenMode, Ablation: arm})
 	if err != nil {
@@ -203,6 +221,7 @@ name = "test-model"
 kind = "boot-budget-gate"
 model = "x"
 `)
+	approveWorkspace(t, dir)
 
 	ctrl, err := Build(context.Background(), Options{Sink: event.Discard})
 	if err != nil {
@@ -223,5 +242,24 @@ model = "x"
 	}
 	if rec.roundCount() == 0 {
 		t.Fatal("no round reached the provider; the run never started")
+	}
+}
+
+// TestEffectEveryProviderToolDeclaresRequiredArray holds the root schema shape
+// strict upstreams validate: relays re-serialize an omitted required as null.
+func TestEffectEveryProviderToolDeclaresRequiredArray(t *testing.T) {
+	reqs := effectRun(t, "boot-effect-required", "", ablation.Set{})
+	if len(reqs[0].Tools) == 0 {
+		t.Fatal("no tools reached the provider request")
+	}
+	for _, schema := range reqs[0].Tools {
+		var root map[string]json.RawMessage
+		if err := json.Unmarshal(schema.Parameters, &root); err != nil {
+			t.Fatalf("%s: parameters are not an object: %v", schema.Name, err)
+		}
+		var required []string
+		if raw, ok := root["required"]; !ok || string(raw) == "null" || json.Unmarshal(raw, &required) != nil {
+			t.Errorf("%s: parameters lack a required array: %s", schema.Name, schema.Parameters)
+		}
 	}
 }

@@ -3,11 +3,11 @@
   top: 0;
   right: 0;
   left: 0;
-  z-index: var(--z-workspace-status);
+  z-index: var(--z-inline-sticky);
   padding: 3px 8px;
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
-  color: var(--muted);
+  color: var(--fg-faint);
   font-size: var(--text-xs);
   line-height: 1.4;
   pointer-events: none;
@@ -22,10 +22,14 @@
   position: relative;
 }
 
+.workbench-dock__collapse {
+  margin-left: auto;
+}
+
 .layout--workspace-overlay .workbench-dock--overlay {
   position: absolute;
   z-index: var(--z-workspace-float);
-  top: var(--app-chrome-height);
+  top: var(--app-bar-height, var(--topicbar-height));
   right: 0;
   bottom: var(--statusbar-height);
   width: min(var(--workspace-width), calc(100vw - 16px));
@@ -37,21 +41,33 @@
   box-shadow: -12px 0 36px rgba(0, 0, 0, 0.24);
 }
 
-/* Preserve an opened sidebar beside a 400px chat surface at the native
-   shell's 760px minimum; the right dock floats above both surfaces. */
+/* Override the legacy two-column mobile shell while retaining the dock track. */
 @media (max-width: 820px) {
   :is(.app, :root[data-theme-style] .app) .layout:not(.layout--sidebar-collapsed) {
-    grid-template-columns: var(--sidebar-expanded-width) minmax(400px, 1fr) !important;
+    grid-template-columns: var(--sidebar-expanded-width) minmax(0, 1fr) minmax(0, 0px) !important;
   }
 
   :is(.app, :root[data-theme-style] .app) .layout.layout--sidebar-collapsed {
-    grid-template-columns: minmax(400px, 1fr) !important;
+    grid-template-columns: 0px minmax(0, 1fr) minmax(0, 0px) !important;
+  }
+
+  :is(.app, :root[data-theme-style] .app) .layout.layout--workspace-open {
+    grid-template-columns: var(--sidebar-width) minmax(400px, 1fr) var(--workspace-width) !important;
+  }
+
+  :is(.app, :root[data-theme-style] .app) .layout .workbench-dock {
+    display: flex !important;
+    grid-column: 3;
+  }
+
+  :is(.app, :root[data-theme-style] .app) .layout--terminal-drawer-open :is(.terminal-drawer, .terminal-drawer-resizer) {
+    grid-column: 2 !important;
   }
 
   :is(.app, :root[data-theme-style] .app) .layout:not(.layout--sidebar-collapsed) .sidebar {
     position: relative;
     inset: auto;
-    z-index: var(--z-flow);
+    z-index: var(--z-app-content);
     display: flex !important;
     grid-column: 1;
     width: auto;
@@ -65,11 +81,31 @@
   }
 
   :is(.app, :root[data-theme-style] .app) .layout.layout--sidebar-collapsed .chat-pane {
-    grid-column: 1 !important;
-    min-width: 400px;
+    grid-column: 2 !important;
+    min-width: 0;
   }
 
   :is(.app, :root[data-theme-style] .app) .layout--workspace-overlay .workbench-dock--overlay {
     display: flex !important;
+    grid-area: auto;
+  }
+}
+
+/* Fullscreen is derived from the viewport, never written into the saved mode.
+   Keep shell chrome reachable and hide covered controls from keyboard focus. */
+@media (max-width: 767px) {
+  :is(.app, :root[data-theme-style] .app) .layout.layout--workspace-overlay {
+    min-width: 0;
+  }
+
+  :is(.app, :root[data-theme-style] .app) .layout--workspace-overlay .workbench-dock--overlay {
+    width: 100%;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  :is(.app, :root[data-theme-style] .app) .layout--workspace-overlay :is(.chat-pane, .sidebar, .sidebar-resizer, .terminal-drawer, .terminal-drawer-resizer) {
+    visibility: hidden;
   }
 }

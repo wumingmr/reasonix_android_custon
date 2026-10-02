@@ -1,5 +1,5 @@
 import { useCallback, useEffect, type RefObject, type UIEvent } from "react";
-import { flushWorkspaceTreeMemory, rememberWorkspaceTreeScroll } from "./workspaceTreeMemory";
+import { flushWorkspaceTreeMemory, rememberWorkspaceTreeScroll } from "./workspaceViewMemory";
 
 export function useWorkspaceTreeScrollPersistence<T extends HTMLElement>({
   memoryKey,

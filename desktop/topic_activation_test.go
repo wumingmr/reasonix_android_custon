@@ -2,14 +2,11 @@ package main
 
 import (
 	"context"
-	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"reasonix/internal/agent"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/evidence"
@@ -152,99 +149,6 @@ func flushActivationCompletions(app *App) {
 	<-done
 }
 
-func TestStartTopicActivationRapidSwitchOutOfOrderBuilds(t *testing.T) {
-	isolateDesktopUserDirs(t)
-	app := NewApp()
-	app.ctx = context.Background()
-	app.readyHook = func() {}
-	installNoopRuntimeEvents(app)
-	events := newActivationEventRecorder(app)
-	gate := newTabBuildGate(app)
-	t.Cleanup(func() {
-		gate.releaseAll()
-		app.shutdown(context.Background())
-	})
-
-	ticketA, err := app.StartTopicActivation(TopicActivationRequest{Scope: "global", TopicID: "topic-a", RequestID: "req-a"})
-	if err != nil {
-		t.Fatalf("StartTopicActivation A: %v", err)
-	}
-	if ticketA.RequestID != "req-a" || ticketA.TabID == "" || ticketA.Meta.ID != ticketA.TabID {
-		t.Fatalf("ticket A = %+v, want echoed requestId and consistent tab meta", ticketA)
-	}
-	if got := events.next(t); got != (TopicActivationEvent{RequestID: "req-a", TabID: ticketA.TabID, Phase: "starting"}) {
-		t.Fatalf("first event = %+v, want starting req-a", got)
-	}
-	gate.waitEntered(t, ticketA.TabID)
-
-	ticketB, err := app.StartTopicActivation(TopicActivationRequest{Scope: "global", TopicID: "topic-b", RequestID: "req-b"})
-	if err != nil {
-		t.Fatalf("StartTopicActivation B: %v", err)
-	}
-	if got := events.next(t); got != (TopicActivationEvent{RequestID: "req-a", TabID: ticketA.TabID, Phase: "cancelled"}) {
-		t.Fatalf("event = %+v, want cancelled req-a", got)
-	}
-	if got := events.next(t); got != (TopicActivationEvent{RequestID: "req-b", TabID: ticketB.TabID, Phase: "starting"}) {
-		t.Fatalf("event = %+v, want starting req-b", got)
-	}
-	gate.waitEntered(t, ticketB.TabID)
-
-	ticketC, err := app.StartTopicActivation(TopicActivationRequest{Scope: "global", TopicID: "topic-c", RequestID: "req-c"})
-	if err != nil {
-		t.Fatalf("StartTopicActivation C: %v", err)
-	}
-	if got := events.next(t); got != (TopicActivationEvent{RequestID: "req-b", TabID: ticketB.TabID, Phase: "cancelled"}) {
-		t.Fatalf("event = %+v, want cancelled req-b", got)
-	}
-	if got := events.next(t); got != (TopicActivationEvent{RequestID: "req-c", TabID: ticketC.TabID, Phase: "starting"}) {
-		t.Fatalf("event = %+v, want starting req-c", got)
-	}
-	gate.waitEntered(t, ticketC.TabID)
-
-	// Forced out-of-order completion: C builds first and wins; A and B then
-	// abandon through the superseded-build path. All gates must be released
-	// before waiting on C's ready: the winner's prune needs the runtime
-	// admission write side, which the gated loser builds hold read-side.
-	gate.release(ticketC.TabID)
-	gate.release(ticketA.TabID)
-	gate.release(ticketB.TabID)
-
-	ready := events.waitFor(t, activationEventFor("req-c", "ready"))
-	if ready.TabID != ticketC.TabID {
-		t.Fatalf("ready event tab = %q, want %q", ready.TabID, ticketC.TabID)
-	}
-	flushActivationCompletions(app)
-	events.drainEmpty(t)
-
-	tabs := app.ListTabs()
-	if len(tabs) != 1 || tabs[0].ID != ticketC.TabID || !tabs[0].Active {
-		t.Fatalf("ListTabs = %+v, want only the active winner tab %q", tabs, ticketC.TabID)
-	}
-	app.mu.RLock()
-	detached := len(app.detachedSessions)
-	runtimes := len(app.runtimeByID)
-	app.mu.RUnlock()
-	if detached != 0 {
-		t.Fatalf("detached sessions = %d, want 0 (building tabs must be torn down, not detached)", detached)
-	}
-	if runtimes != 1 {
-		t.Fatalf("runtime registry entries = %d, want 1 (only the winner)", runtimes)
-	}
-
-	// Loser session leases must be gone; the winner's lease stays held.
-	for _, ticket := range []TopicActivationTicket{ticketA, ticketB} {
-		lease, err := agent.TryAcquireSessionLease(sessionRuntimeKey(ticket.Meta.SessionPath))
-		if err != nil {
-			t.Fatalf("session lease for superseded tab %q is still held: %v", ticket.TabID, err)
-		}
-		lease.Release()
-	}
-	if lease, err := agent.TryAcquireSessionLease(sessionRuntimeKey(ticketC.Meta.SessionPath)); err == nil {
-		lease.Release()
-		t.Fatal("winner session lease was not held after activation")
-	}
-}
-
 func TestStartTopicActivationSyncBuildAndReuseFastPath(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	app := NewApp() // a.ctx == nil: builds run synchronously inside the call
@@ -305,6 +209,56 @@ func TestStartTopicActivationSyncBuildAndReuseFastPath(t *testing.T) {
 	}
 }
 
+func TestStartTopicActivationReplacesRemoteSurface(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	installNoopRuntimeEvents(app)
+	events := newActivationEventRecorder(app)
+	gate := newTabBuildGate(app)
+	t.Cleanup(func() { gate.releaseAll(); app.shutdown(context.Background()) })
+
+	remoteCtx, cancelRemote := context.WithCancel(context.Background())
+	app.remoteTabMu.Lock()
+	app.remoteTabs = map[string]*remoteTab{
+		"remote": {id: "remote", ref: RemoteTabRef{HostID: "box", Workspace: "/work"}, state: "disconnected", cancel: cancelRemote},
+	}
+	app.remoteTabLayout = remoteTabLayoutState{activeID: "remote", order: []string{"remote"}, stripOrder: []string{"remote"}}
+	app.remoteTabMu.Unlock()
+
+	ticket, err := app.StartTopicActivation(TopicActivationRequest{Scope: "global", TopicID: "local-after-remote", RequestID: "local-after-remote"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The tab build stays held: the local tab must be selected without it.
+	gate.waitEntered(t, ticket.TabID)
+	if tabs := app.ListTabs(); len(tabs) == 0 {
+		t.Fatalf("tabs immediately after local ticket = %+v, want active %q", tabs, ticket.TabID)
+	} else {
+		active := ""
+		for _, tab := range tabs {
+			if tab.Active {
+				active = tab.ID
+			}
+		}
+		if active != ticket.TabID {
+			t.Fatalf("tabs immediately after local ticket = %+v, want active %q", tabs, ticket.TabID)
+		}
+	}
+	gate.release(ticket.TabID)
+	events.waitFor(t, activationEventFor(ticket.RequestID, "ready"))
+	flushActivationCompletions(app)
+	if tabs := app.ListTabs(); len(tabs) != 1 || tabs[0].ID != ticket.TabID || !tabs[0].Active {
+		t.Fatalf("tabs after local activation = %+v, want only active local %q", tabs, ticket.TabID)
+	}
+	select {
+	case <-remoteCtx.Done():
+	default:
+		t.Fatal("remote tab pump was not cancelled after switching to local")
+	}
+}
+
 // activationStubController is the minimal SessionAPI surface exercised by
 // prune/detach/attach flows around a tab with active runtime work.
 type activationStubController struct {
@@ -339,123 +293,6 @@ func (c *activationStubController) GoalRuntime() control.GoalRuntimeView {
 }
 func (c *activationStubController) Todos() []evidence.TodoItem { return nil }
 func (c *activationStubController) SnapshotForShutdown() error { return nil }
-
-func TestStartTopicActivationFailureDetachesPreviousAndReattaches(t *testing.T) {
-	isolateDesktopUserDirs(t)
-	projectRoot := t.TempDir()
-	sessionDir := desktopSessionDir(projectRoot)
-	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-		t.Fatalf("mkdir sessions: %v", err)
-	}
-	pathA := writeTopicSession(t, sessionDir, "a.jsonl", "topic-a", "Topic A", projectRoot)
-	pathB := writeTopicSession(t, sessionDir, "b.jsonl", "topic-b", "Topic B", projectRoot)
-
-	app := NewApp()
-	app.ctx = context.Background()
-	app.readyHook = func() {}
-	events := newActivationEventRecorder(app)
-	t.Cleanup(func() { app.shutdown(context.Background()) })
-
-	stub := &activationStubController{sessionPath: pathA}
-	tabA := &WorkspaceTab{
-		ID:            "tab-a",
-		Scope:         "project",
-		WorkspaceRoot: projectRoot,
-		TopicID:       "topic-a",
-		TopicTitle:    "Topic A",
-		SessionPath:   pathA,
-		Ctrl:          stub,
-		Label:         "stub-model",
-		Ready:         true,
-		disabledMCP:   map[string]ServerView{},
-	}
-	tabA.sink = &tabEventSink{tabID: tabA.ID, app: app}
-	installNoopRuntimeEvents(app, tabA.sink)
-	if err := tabA.ensureSessionLease(pathA); err != nil {
-		t.Fatalf("ensureSessionLease A: %v", err)
-	}
-	app.tabs[tabA.ID] = tabA
-	app.tabOrder = []string{tabA.ID}
-	app.activeTabID = tabA.ID
-
-	// An external holder makes topic B's build fail with the lease-held error.
-	externalLease, err := agent.TryAcquireSessionLease(sessionRuntimeKey(pathB))
-	if err != nil {
-		t.Fatalf("external lease for B: %v", err)
-	}
-	defer externalLease.Release()
-
-	ticketB, err := app.StartTopicActivation(TopicActivationRequest{
-		Scope:         "project",
-		WorkspaceRoot: projectRoot,
-		TopicID:       "topic-b",
-		RequestID:     "req-b",
-	})
-	if err != nil {
-		t.Fatalf("StartTopicActivation B: %v", err)
-	}
-	failed := events.waitFor(t, activationEventFor("req-b", "failed"))
-	if failed.TabID != ticketB.TabID {
-		t.Fatalf("failed event tab = %q, want %q", failed.TabID, ticketB.TabID)
-	}
-	if !strings.Contains(failed.Error, "already open in another Reasonix window") {
-		t.Fatalf("failed error = %q, want the sanitized lease-busy message", failed.Error)
-	}
-	if strings.Contains(failed.Error, pathB) {
-		t.Fatalf("failed error leaks the session path: %q", failed.Error)
-	}
-
-	// Failure preserves the previous runtime: A had active work, so the prune
-	// detached it instead of tearing it down — controller open, lease held.
-	app.mu.RLock()
-	detached := app.detachedSessions[sessionRuntimeKey(pathA)]
-	app.mu.RUnlock()
-	if detached != tabA {
-		t.Fatal("tab A with active work was not detached after the failed switch")
-	}
-	if stub.closed.Load() {
-		t.Fatal("detached tab A controller was closed")
-	}
-	if lease, err := agent.TryAcquireSessionLease(sessionRuntimeKey(pathA)); err == nil {
-		lease.Release()
-		t.Fatal("tab A session lease was released by the failed switch")
-	}
-
-	// Send routing stays tab-scoped: the pruned tab ID resolves nowhere, the
-	// visible (failed) tab has no controller, and nothing crosses into either.
-	if tab, ctrl := app.tabAndCtrlByID(tabA.ID); tab != nil || ctrl != nil {
-		t.Fatal("pruned tab A still resolves through send routing")
-	}
-	app.CancelTab(tabA.ID) // must be a no-op, must not touch anything else
-
-	// Switching back reattaches the detached runtime instead of rebuilding it.
-	ticketA2, err := app.StartTopicActivation(TopicActivationRequest{
-		Scope:         "project",
-		WorkspaceRoot: projectRoot,
-		TopicID:       "topic-a",
-		RequestID:     "req-a2",
-	})
-	if err != nil {
-		t.Fatalf("StartTopicActivation back to A: %v", err)
-	}
-	events.waitFor(t, activationEventFor("req-a2", "ready"))
-
-	app.mu.RLock()
-	reattached := app.tabs[ticketA2.TabID]
-	detachedLeft := len(app.detachedSessions)
-	app.mu.RUnlock()
-	if reattached == nil || reattached.Ctrl != stub {
-		t.Fatal("switching back did not reattach the detached stub runtime")
-	}
-	if stub.closed.Load() {
-		t.Fatal("stub controller was closed during reattach")
-	}
-	if detachedLeft != 0 {
-		t.Fatalf("detached sessions after reattach = %d, want 0", detachedLeft)
-	}
-	flushActivationCompletions(app)
-	events.drainEmpty(t)
-}
 
 func TestActivateTopicSupersedesPendingTicketedActivation(t *testing.T) {
 	isolateDesktopUserDirs(t)

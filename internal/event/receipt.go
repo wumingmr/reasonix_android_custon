@@ -1,15 +1,20 @@
 package event
 
+import "reasonix/internal/checkpoint"
+
 // CompletionReceipt is the user-facing completion record on TurnDone: what the
 // host could verify about the turn's work, and — the part no prose reliably
 // carries — what it could not. Unlike the shadow audit this holds content,
 // because a receipt naming no file and no command tells the reader nothing.
 type CompletionReceipt struct {
-	Verdict       string
-	Changes       []ReceiptChange
-	Verifications []ReceiptVerification
-	Gaps          []ReceiptGap
-	Risks         []string
+	AssessmentKind string
+	Diff           *checkpoint.TurnChanges
+	Interrupted    bool
+	Verdict        string
+	Changes        []ReceiptChange
+	Verifications  []ReceiptVerification
+	Gaps           []ReceiptGap
+	Risks          []string
 }
 
 // ReceiptChange is one mutated path and whether anything looked at it again.
@@ -21,9 +26,13 @@ type ReceiptChange struct {
 // ReceiptVerification is a verification command's last outcome. Stale means it
 // ran before the newest change, so it proves nothing about the current tree.
 type ReceiptVerification struct {
-	Command string
-	Passed  bool
-	Stale   bool
+	Command      string
+	Passed       bool
+	Stale        bool
+	ToolCallID   string
+	ToolResultID string
+	Interrupted  bool
+	ExitCode     *int
 }
 
 // ReceiptGap is one thing the receipt refuses to present as verified.

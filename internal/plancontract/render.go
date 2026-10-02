@@ -6,9 +6,8 @@ import (
 )
 
 // Render turns a plan into the markdown a user reads. Its only list items are
-// the steps — phases numbered, sub-steps indented — so a reader that parses the
-// text for a task list finds exactly what ProjectTodos builds. RequiresApproval
-// is absent on purpose: it is a routing request the host answers with its
+// the steps — phases numbered, sub-steps indented — in their stable order.
+// RequiresApproval is absent on purpose: it is a routing request the host answers with its
 // approval surface, not plan content.
 func Render(p Plan) string {
 	p = p.Normalize()

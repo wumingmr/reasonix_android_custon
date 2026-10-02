@@ -75,11 +75,15 @@ type SearchRequest struct {
 	Query         string
 	Scope         string
 	WorkspaceRoot string
-	Kinds         []string
-	ToolName      string
-	Limit         int
-	Roots         []string
-	After         *SearchCursor
+	// SessionPath restricts results to one exact durable transcript. It is used
+	// by target-bound sidebar previews so a failed/empty lookup can never fall
+	// through to a different session in the same root.
+	SessionPath string
+	Kinds       []string
+	ToolName    string
+	Limit       int
+	Roots       []string
+	After       *SearchCursor
 }
 
 // SearchCursor is a stable keyset over SQLite's BM25 rank and deterministic

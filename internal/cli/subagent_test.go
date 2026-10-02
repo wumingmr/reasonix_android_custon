@@ -258,7 +258,7 @@ func TestSubagentProfileCLIRunAndTrySelectIsolatedRunners(t *testing.T) {
 	var normalCalls, readOnlyCalls int
 	var normalTask, tryTask string
 	setupSubagentCommand = func(context.Context, string, int, bool, event.Sink, string) (*control.Controller, error) {
-		return control.New(control.Options{
+		return newOwnedTestController(t, control.Options{
 			Skills: []skill.Skill{{Name: "helper", RunAs: skill.RunSubagent, Invocation: "manual", Scope: skill.ScopeGlobal}},
 			SkillRunner: func(_ context.Context, _ skill.Skill, task string, opts skill.SubagentRunOptions) (string, error) {
 				normalCalls++
@@ -330,7 +330,7 @@ func TestSubagentRunTryDirPinsExplicitWorkspaceRoot(t *testing.T) {
 	var gotRoot string
 	setupSubagentCommand = func(_ context.Context, _ string, _ int, _ bool, _ event.Sink, workspaceRoot string) (*control.Controller, error) {
 		gotRoot = workspaceRoot
-		return control.New(control.Options{
+		return newOwnedTestController(t, control.Options{
 			Skills: []skill.Skill{{Name: "helper", RunAs: skill.RunSubagent, Invocation: "manual", Scope: skill.ScopeGlobal}},
 			SkillRunner: func(_ context.Context, _ skill.Skill, task string, opts skill.SubagentRunOptions) (string, error) {
 				return "run answer", nil

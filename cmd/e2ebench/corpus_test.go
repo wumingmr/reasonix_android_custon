@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const corpusDir = "../../benchmarks/e2e"
@@ -54,6 +56,24 @@ func gradeSeed(t *testing.T, work string) error {
 	cmd := exec.Command("bash", "verify.sh")
 	cmd.Dir = work
 	return cmd.Run()
+}
+
+// requireRealBash skips hosts whose bash cannot actually run commands. On
+// Windows exec.LookPath("bash") happily resolves to the System32 WSL launcher,
+// so a LookPath guard passes while every grade fails inside a distro that may
+// not even carry /bin/bash. The graders are POSIX fixtures; probing mirrors
+// what sandbox's own shell resolution does before trusting a bash. Timeout
+// bounded in case the stub blocks on an install prompt.
+func requireRealBash(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash unavailable; the graders are POSIX shell fixtures")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := exec.CommandContext(ctx, "bash", "-c", "true").Run(); err != nil {
+		t.Skipf("bash cannot run commands (%v); the graders need a working POSIX shell", err)
+	}
 }
 
 // forbiddenArtifact names, per task, a file whose mere existence is the
@@ -157,10 +177,9 @@ func TestNoSolutionCorpusGradesTheInverseContract(t *testing.T) {
 	// The graders are POSIX shell and python3 fixtures, and the suite they
 	// belong to only ever runs on POSIX CI. Where either is missing this
 	// checks the host, not the corpus.
-	for _, bin := range []string{"bash", "python3"} {
-		if _, err := exec.LookPath(bin); err != nil {
-			t.Skipf("%s unavailable; the no-solution graders need a POSIX shell and python3", bin)
-		}
+	requireRealBash(t)
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 unavailable; the no-solution graders need a POSIX shell and python3")
 	}
 	tasks, err := loadTasks(corpusDir)
 	if err != nil {

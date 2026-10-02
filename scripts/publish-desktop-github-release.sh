@@ -60,7 +60,10 @@ if ! gh api "$release_endpoint" >"$release_json" 2>"$release_error"; then
 		exit 1
 	fi
 	args=(--title "$title" --notes-file "$notes_file")
-	if [ "$prerelease" = "true" ]; then
+	if [ "${DESKTOP_MANUAL_ONLY:-false}" = "true" ]; then
+		bash "$script_dir/manual-desktop-exception.sh" validate "$tag"
+		args+=(--latest=false)
+	elif [ "$prerelease" = "true" ]; then
 		args+=(--prerelease --latest=false)
 	else
 		args+=(--latest)

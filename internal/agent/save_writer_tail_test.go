@@ -34,7 +34,7 @@ func snapshotDigest(t *testing.T, s *Session) [32]byte {
 }
 
 func TestWriterTailDecisionNoOpAfterSave(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	s := NewSession("sys")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
 	bindSessionWriter(t, s, path)
@@ -52,7 +52,7 @@ func TestWriterTailDecisionNoOpAfterSave(t *testing.T) {
 }
 
 func TestWriterTailDecisionAppendAfterSave(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	s := NewSession("sys")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
 	bindSessionWriter(t, s, path)
@@ -68,6 +68,35 @@ func TestWriterTailDecisionAppendAfterSave(t *testing.T) {
 	}
 	if !decision.appendOnly || decision.appendFrom != before {
 		t.Fatalf("decision = %+v, want appendOnly from %d", decision, before)
+	}
+}
+
+func TestWriterTailRetryAfterPreWALReservation(t *testing.T) {
+	path := schemaOneSessionPath(t, "session.jsonl")
+	s := NewSession("sys")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	bindSessionWriter(t, s, path)
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("initial SaveSnapshot: %v", err)
+	}
+
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "second"})
+	_, restore := crashAt(t, "wal-append", store.SessionEventLog(path))
+	crash := saveCrashing(func() { _ = s.SaveSnapshot(path) })
+	restore()
+	if crash == nil {
+		t.Fatal("save must crash after reserving the revision and before WAL append")
+	}
+
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("same-writer retry after reserved revision: %v", err)
+	}
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession after retry: %v", err)
+	}
+	if got := len(loaded.Snapshot()); got != 3 {
+		t.Fatalf("messages after retry = %d, want 3", got)
 	}
 }
 
@@ -130,7 +159,7 @@ func TestWriterTailDecisionDisarmedWhenLogGrows(t *testing.T) {
 }
 
 func TestWriterTailBindAdoptsLoadBaseline(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	s := NewSession("sys")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
 	if err := s.SaveSnapshot(path); err != nil {
@@ -149,7 +178,7 @@ func TestWriterTailBindAdoptsLoadBaseline(t *testing.T) {
 }
 
 func TestWriterTailClassifyDoesNotRereadTranscriptBody(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	s := NewSession("sys")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
 	bindSessionWriter(t, s, path)

@@ -1,14 +1,29 @@
+import { desktopHost } from "./desktopHost";
 import { asArray } from "./array";
+import { runtimeStateStore } from "./runtimeStateStore";
+import { projectSessionIdentity, projectSessionExcluded, projectSessionKeys } from "./projectSessionIdentity";
 import type { ProjectNode, ProjectRuntimeTopic, ProjectTreeRuntimeSnapshot } from "./types";
 
 const noExcludedTopicIds: ReadonlySet<string> = new Set();
 
 function withoutRuntimeState(node: ProjectNode): ProjectNode {
-  return { ...node, open: undefined, running: undefined, status: undefined, children: [] };
+  return { ...node, open: undefined, running: undefined, status: undefined,
+    children: asArray(node.children).map(withoutRuntimeState) };
 }
 
-function runtimeTopicKey(scope: string, workspaceRoot: string, topicId: string): string {
-  return `${scope}\u0000${workspaceRoot}\u0000${topicId}`;
+function runtimeChildren(runtime: ProjectNode, catalog?: ProjectNode): ProjectNode[] {
+  const overlays = new Map(asArray(runtime.children).map(child => [projectSessionIdentity(child), child]));
+  const children = asArray(catalog?.children).map(child => {
+    const overlay = overlays.get(projectSessionIdentity(child));
+    if (overlay) overlays.delete(projectSessionIdentity(child));
+    return overlay ? { ...withoutRuntimeState(child), open: overlay.open, running: overlay.running,
+      status: overlay.status, children: runtimeChildren(overlay, child) } : withoutRuntimeState(child);
+  });
+  return [...children, ...overlays.values()];
+}
+
+function runtimeTopicKey(scope: string, workspaceRoot: string, node: ProjectNode): string {
+  return `${scope}\u0000${workspaceRoot}\u0000${projectSessionIdentity(node)}`;
 }
 
 function sameOwnFields(current: ProjectNode, next: ProjectNode): boolean {
@@ -44,10 +59,10 @@ function rememberResidentTopics(
     const scope = project.kind === "project" ? "project" : "global";
     const root = scope === "project" ? project.root ?? "" : "";
     for (const topic of asArray(project.children)) {
-      if (topic.runtimeOnly || !topic.topicId || excludedTopicIds.has(topic.topicId)) continue;
-      const key = runtimeTopicKey(scope, root, topic.topicId);
+      if (topic.runtimeOnly || projectSessionExcluded(topic, excludedTopicIds)) continue;
+      const key = runtimeTopicKey(scope, root, topic);
       catalogKeys.add(key);
-      residentTopics.set(key, withoutRuntimeState(topic));
+      residentTopics.set(key, { ...withoutRuntimeState(topic), children: asArray(topic.children) });
     }
   }
   return catalogKeys;
@@ -58,9 +73,8 @@ function activeRuntimeTopicKeys(
   excludedTopicIds: ReadonlySet<string>,
 ): Set<string> {
   return new Set(topics.flatMap((topic) => {
-    const topicId = topic.node.topicId;
-    if (!topicId || excludedTopicIds.has(topicId)) return [];
-    return [runtimeTopicKey(topic.scope, topic.scope === "project" ? topic.workspaceRoot ?? "" : "", topicId)];
+    if (projectSessionExcluded(topic.node, excludedTopicIds)) return [];
+    return [runtimeTopicKey(topic.scope, topic.scope === "project" ? topic.workspaceRoot ?? "" : "", topic.node)];
   }));
 }
 
@@ -88,33 +102,43 @@ export function projectTreeApplyRuntimeTopics(
     if (project.kind !== "project" && project.kind !== "global_folder") return project;
     const scope = project.kind === "project" ? "project" : "global";
     const root = scope === "project" ? project.root ?? "" : "";
-    const runtimeByTopic = new Map(topics
-      .filter((topic) => topic.node.topicId
-        && !excludedTopicIds.has(topic.node.topicId)
+    const available = topics
+      .filter((topic) => !projectSessionExcluded(topic.node, excludedTopicIds)
         && topic.scope === scope
-        && (scope !== "project" || topic.workspaceRoot === root))
-      .map((topic) => [topic.node.topicId!, topic]));
+        && (scope !== "project" || topic.workspaceRoot === root));
+    const aliases = new Map<string, string>();
+    for (const node of [...asArray(project.children), ...available.map(topic => topic.node)]) {
+      if (!node.session && !node.tabId) continue;
+      for (const alias of projectSessionKeys(node)) aliases.set(alias, projectSessionIdentity(node));
+    }
+    const identityOf = (node: ProjectNode) => aliases.get(projectSessionIdentity(node)) ?? projectSessionIdentity(node);
+    const runtimeByTopic = new Map(available.map(topic => [identityOf(topic.node), topic]));
     const currentChildren = asArray(project.children);
     const base: ProjectNode[] = [];
     for (const node of currentChildren) {
-      if (node.runtimeOnly || excludedTopicIds.has(node.topicId ?? "")) continue;
-      const runtime = node.topicId ? runtimeByTopic.get(node.topicId) : undefined;
-      if (runtime) runtimeByTopic.delete(node.topicId!);
+      if (node.runtimeOnly || projectSessionExcluded(node, excludedTopicIds)) continue;
+      const identity = identityOf(node);
+      if (base.some(row => identityOf(row) === identity)) continue;
+      const candidate = runtimeByTopic.get(identity);
+      if (candidate) runtimeByTopic.delete(identity);
+      const runtime = candidate && (candidate.node.lifecycleGeneration ?? 0) >= (node.lifecycleGeneration ?? 0) ? candidate : undefined;
       const next = runtime ? {
         ...withoutRuntimeState(node),
-        sessionPath: runtime.node.sessionPath,
+        session: node.session ?? runtime.node.session,
+        identityAliases: node.identityAliases ?? runtime.node.identityAliases,
         open: runtime.node.open,
         running: runtime.node.running,
         status: runtime.node.status,
-        children: asArray(runtime.node.children),
+        children: runtimeChildren(runtime.node, node),
       } : withoutRuntimeState(node);
       base.push(reconcileNode(node, next));
     }
     const runtimeOnly: ProjectNode[] = [];
     for (const topic of runtimeByTopic.values()) {
       const topicId = topic.node.topicId!;
-      const current = currentChildren.find((node) => node.runtimeOnly && node.topicId === topicId);
-      const resident = residentTopics?.get(runtimeTopicKey(scope, root, topicId));
+      const identity = projectSessionIdentity(topic.node);
+      const current = currentChildren.find((node) => node.runtimeOnly && projectSessionIdentity(node) === identity);
+      const resident = residentTopics?.get(runtimeTopicKey(scope, root, topic.node));
       const stable = withoutRuntimeState(resident ?? current ?? topic.node);
       runtimeOnly.push(reconcileNode(current, {
         ...stable,
@@ -123,12 +147,12 @@ export function projectTreeApplyRuntimeTopics(
         label: resident?.label ?? topic.node.label,
         root: topic.node.root,
         topicId,
-        sessionPath: topic.node.sessionPath,
+        sessionPath: stable.sessionPath || topic.node.sessionPath,
         open: topic.node.open,
         running: topic.node.running,
         status: topic.node.status,
         runtimeOnly: true,
-        children: asArray(topic.node.children),
+        children: runtimeChildren(topic.node, resident ?? current),
       }));
     }
     return reconcileNode(project, { ...project, children: [...runtimeOnly, ...base] });
@@ -157,10 +181,9 @@ export function normalizeProjectTreeRuntimeSnapshot(payload: unknown): ProjectTr
 }
 
 export function onProjectTreeRuntimeChanged(cb: (event: ProjectTreeRuntimeSnapshot) => void): () => void {
-  if (typeof window !== "undefined" && window.runtime) {
-    return window.runtime.EventsOn("project-tree:runtime-changed", (payload?: unknown) => cb(normalizeProjectTreeRuntimeSnapshot(payload)));
-  }
-  return () => {};
+  const host = desktopHost();
+  if (host.kind === "none") return () => {};
+  return host.events.on("project-tree:runtime-changed", (payload?: unknown) => cb(normalizeProjectTreeRuntimeSnapshot(payload)));
 }
 
 export function bindProjectTreeRuntime(
@@ -177,13 +200,24 @@ export function bindProjectTreeRuntime(
     snapshot = next;
     setTree(apply);
   };
-  const stop = onProjectTreeRuntimeChanged(accept);
-  void getSnapshot()?.then(accept).catch(() => {});
+  const unified = () => {
+    const current = runtimeStateStore.getSnapshot();
+    if (current) {
+      const topics = runtimeStateStore.getFailed() ? current.topics.map(topic => ({ ...topic, node: { ...topic.node, running: false, status: "unknown" as const } })) : current.topics;
+      snapshot = null;
+      accept({ revision: current.revision, topics });
+    }
+  };
+  const stopUnified = runtimeStateStore.subscribe(unified);
+  const stop = onProjectTreeRuntimeChanged(next => { if (!runtimeStateStore.getSnapshot()) accept(next); });
+  unified();
+  if (!runtimeStateStore.getSnapshot()) void getSnapshot()?.then(next => { if (!runtimeStateStore.getSnapshot()) accept(next); }).catch(() => {});
   return {
     apply,
     dispose() {
       active = false;
       stop();
+      stopUnified();
     },
   };
 }

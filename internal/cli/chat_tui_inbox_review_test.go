@@ -12,7 +12,7 @@ import (
 
 func TestManualNewlineDuringRunningTurnDoesNotSteerOrClearDraft(t *testing.T) {
 	dir := t.TempDir()
-	ctrl := control.New(control.Options{SessionPath: filepath.Join(dir, "session.jsonl"), SessionDir: dir})
+	ctrl := newOwnedTestController(t, control.Options{SessionPath: filepath.Join(dir, "session.jsonl"), SessionDir: dir})
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 40)
 	m.state = tuiRunning
 	m.input.SetValue("first line")

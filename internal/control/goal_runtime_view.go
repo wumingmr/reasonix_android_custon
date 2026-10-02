@@ -4,17 +4,17 @@ import "fmt"
 
 // GoalRuntimeView is the host-side runtime summary exposed to frontends.
 type GoalRuntimeView struct {
-	TurnsUsed        int
-	TurnsLimit       int
-	TokensUsed       int
-	RequestsUsed     int
-	WorkDurationMs   int64
-	TokensLimit      int
-	NoProgressTurns  int
-	NoProgressLimit  int
-	LastReason       string
-	StopCause        string
-	BudgetExtensions int
+	TurnsUsed        int    `json:"turnsUsed"`
+	TurnsLimit       int    `json:"turnsLimit"`
+	TokensUsed       int    `json:"tokensUsed"`
+	RequestsUsed     int    `json:"requestsUsed,omitempty"`
+	WorkDurationMs   int64  `json:"workDurationMs,omitempty"`
+	TokensLimit      int    `json:"tokensLimit"`
+	NoProgressTurns  int    `json:"noProgressTurns"`
+	NoProgressLimit  int    `json:"noProgressLimit"`
+	LastReason       string `json:"lastReason,omitempty"`
+	StopCause        string `json:"stopCause,omitempty"`
+	BudgetExtensions int    `json:"budgetExtensions"`
 }
 
 func (g *goalMachine) runtimeView() GoalRuntimeView {
@@ -32,26 +32,6 @@ func (g *goalMachine) runtimeView() GoalRuntimeView {
 		NoProgressLimit: 0, LastReason: last,
 		StopCause: g.stopCause, BudgetExtensions: 0,
 	}
-}
-
-func (g *goalMachine) lastContinuationReasonText() string {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.lastEvaluatorReason != "" {
-		return g.lastEvaluatorReason
-	}
-	return g.lastContinuationReason
-}
-
-func (g *goalMachine) budgetStatusText() string {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.tokensLimit > 0 {
-		return fmt.Sprintf("turns: %d, requests: %d, tokens: %d/%d, work time: %s",
-			g.turnsUsed, g.requestsUsed, g.tokensUsed, g.tokensLimit, GoalWorkDurationText(g.workDurationMs))
-	}
-	return fmt.Sprintf("turns: %d, requests: %d, tokens: %d, work time: %s (observational)",
-		g.turnsUsed, g.requestsUsed, g.tokensUsed, GoalWorkDurationText(g.workDurationMs))
 }
 
 // GoalWorkDurationText renders cumulative active Goal work time without

@@ -12,6 +12,7 @@ import (
 	"reasonix/internal/bot"
 	"reasonix/internal/botruntime"
 	"reasonix/internal/config"
+	"reasonix/internal/session"
 )
 
 type BotRuntimeStatusView struct {
@@ -123,7 +124,7 @@ func (a *App) refreshBotRuntime() {
 		a.botBridge.seedWatchers(bridgeRoutesFromConfig(cfg.Bot.DesktopWatchers), watcherVersion)
 		bridge = a.botBridge
 	}
-	_ = a.botRuntime.apply(a.bootContext(), cfg, globalTabWorkspaceRoot(), a.persistRemoteBotToolApprovalMode, bridge)
+	_ = a.botRuntime.apply(a.bootContext(), cfg, globalTabWorkspaceRoot(), a.persistRemoteBotToolApprovalMode, bridge, a.historicalSessionService)
 }
 
 func (a *App) loadDesktopBotConfig() (*config.Config, error) {
@@ -151,7 +152,7 @@ func (a *App) BotRuntimeStatus() BotRuntimeStatusView {
 	return a.botRuntime.snapshot()
 }
 
-func (r *desktopBotRuntime) apply(parent context.Context, cfg *config.Config, workspaceRoot string, onToolApprovalModeChange func(bot.InboundMessage, string) error, bridge bot.DesktopBridge) error {
+func (r *desktopBotRuntime) apply(parent context.Context, cfg *config.Config, workspaceRoot string, onToolApprovalModeChange func(bot.InboundMessage, string) error, bridge bot.DesktopBridge, sessionServiceForRoot func(string) (*session.Service, error)) error {
 	if r == nil {
 		return nil
 	}
@@ -234,6 +235,7 @@ func (r *desktopBotRuntime) apply(parent context.Context, cfg *config.Config, wo
 		OnSessionReady:           botruntime.NewSessionRemembererWithWorkspace(logger, workspaceRoot),
 		OnToolApprovalModeChange: onToolApprovalModeChange,
 		Desktop:                  bridge,
+		SessionServiceForRoot:    sessionServiceForRoot,
 	}
 	bindings := botruntime.AdapterBindings(cfg, plan.Enabled, nil, logger)
 	if len(bindings) == 0 {

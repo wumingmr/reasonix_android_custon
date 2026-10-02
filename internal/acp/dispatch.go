@@ -17,6 +17,7 @@ import (
 	"reasonix/internal/permission"
 	"reasonix/internal/provider"
 	"reasonix/internal/shellparse"
+	"reasonix/internal/tool"
 )
 
 // notifier is the slice of Conn the dispatch sink depends on: it pushes
@@ -53,10 +54,12 @@ type updateSink struct {
 	sessionID string
 	// cwd resolves relative tool-arg paths for tool_call locations. Set once
 	// via bindCwd before the sink receives events.
-	cwd     string
-	approve func(id string, allow, session, persist bool)
-	answer  func(id string, answers []event.AskAnswer)
-	status  func(event.Event)
+	cwd                     string
+	approve                 func(id string, allow, session, persist bool)
+	answer                  func(id string, answers []event.AskAnswer)
+	mcpInteractionSupported bool
+	answerMCPInteraction    func(string, string, map[string]any) error
+	status                  func(event.Event)
 	// extensionSurface records the client's negotiated
 	// reasonix.extensionSurface support: structured surfaces go out as vendor
 	// session/update payloads on top of the always-sent text fallback.
@@ -165,14 +168,8 @@ func (s *updateSink) Emit(e event.Event) {
 			return
 		}
 		// Full dispatches only arrive after a committed sampling attempt (or from
-		// nested sub-agents). Never mark them speculative.
-		// todo_write is the agent's task list; mirror it as an ACP plan update so
-		// the client renders structured progress alongside the tool_call.
-		if e.Tool.Name == "todo_write" {
-			if entries, ok := planEntriesFromTodoArgs(e.Tool.Args); ok {
-				s.send(planUpdate{SessionUpdate: "plan", Entries: entries})
-			}
-		}
+		// nested sub-agents). Never mark them speculative. A dispatch is still
+		// intent, so it cannot update the current todo projection.
 		s.send(toolCall{
 			SessionUpdate: "tool_call",
 			ToolCallID:    e.Tool.ID,
@@ -184,6 +181,9 @@ func (s *updateSink) Emit(e event.Event) {
 		})
 
 	case event.ToolResult:
+		if e.Tool.TodoWritten {
+			s.send(planUpdate{SessionUpdate: "plan", Entries: planEntriesFromTodos(e.Tool.Todos)})
+		}
 		status := "completed"
 		text := e.Tool.Output
 		if e.Tool.Err != "" {
@@ -204,11 +204,17 @@ func (s *updateSink) Emit(e event.Event) {
 
 	case event.Notice:
 		// Surface warnings to the host as a message chunk so they're not lost;
-		// info-level notices stay out of band.
+		// generic info-level notices stay out of band. Completion uncertainty is
+		// a recoverable terminal result and is shown without warning severity.
 		if e.Level == event.LevelWarn && e.Text != "" {
 			s.send(messageChunk{
 				SessionUpdate: "agent_message_chunk",
 				Content:       textBlock("\n\n[warning] " + e.Text),
+			})
+		} else if e.Code == event.NoticeCodeCompletionUncertain && e.Text != "" {
+			s.send(messageChunk{
+				SessionUpdate: "agent_message_chunk",
+				Content:       textBlock("\n\n" + e.Text),
 			})
 		}
 
@@ -222,19 +228,8 @@ func (s *updateSink) Emit(e event.Event) {
 			})
 		}
 
-	case event.ApprovalRequest:
-		// The run loop is now blocked awaiting Approve(id, …). Do the
-		// client round-trip off the emit goroutine so Emit returns at once
-		// (the agent emits serially); the answer unblocks the loop.
-		turnCtx := s.currentTurnContext()
-		go s.requestPermission(turnCtx, e.Approval)
-
-	case event.AskRequest:
-		// ACP has no separate "ask the user a business question" method. Reuse
-		// the standard permission round-trip with the question options as choices;
-		// clients such as Zed already know how to render this interaction.
-		turnCtx := s.currentTurnContext()
-		go s.requestAsk(turnCtx, e.Ask)
+	case event.ApprovalRequest, event.AskRequest, event.MCPInteractionRequest:
+		s.emitPrompt(e)
 
 	case event.ExtensionSurface, event.ExtensionStatus:
 		s.emitExtension(e)
@@ -341,6 +336,9 @@ func (s *updateSink) send(update any) {
 // completed since it is history, not a live turn.
 func (s *updateSink) replay(msgs []provider.Message) {
 	for _, m := range msgs {
+		if agent.IsPinnedContextRevision(m) {
+			continue
+		}
 		switch m.Role {
 		case provider.RoleUser:
 			// Replay the user-authored view, not the persisted wire form:
@@ -375,13 +373,6 @@ func (s *updateSink) replay(msgs []provider.Message) {
 					RawInput:      rawJSON(tc.Arguments),
 					Locations:     s.toolLocations(tc.Name, tc.Arguments),
 				})
-				// Replaying the latest plan keeps the client's plan view in sync
-				// with the restored conversation; each update replaces the last.
-				if tc.Name == "todo_write" {
-					if entries, ok := planEntriesFromTodoArgs(tc.Arguments); ok {
-						s.send(planUpdate{SessionUpdate: "plan", Entries: entries})
-					}
-				}
 			}
 		case provider.RoleTool:
 			s.send(toolCallUpdateMsg{
@@ -424,7 +415,7 @@ func (s *updateSink) requestPermission(ctx context.Context, a event.Approval) {
 		Options: options,
 	}
 
-	allow, session, persist := false, false, false
+	allow, session := false, false
 	if raw, err := s.conn.Request(ctx, "session/request_permission", params); err == nil {
 		var res PermissionRequestResult
 		if json.Unmarshal(raw, &res) == nil && res.Outcome.Outcome == "selected" {
@@ -433,8 +424,6 @@ func (s *updateSink) requestPermission(ctx context.Context, a event.Approval) {
 				allow = true
 			case "reasonix_write_session":
 				allow, session = true, true
-			case "reasonix_write_project":
-				allow, session, persist = true, true, true
 			case "reasonix_write_deny":
 			case string(OptAllowOnce):
 				allow = true
@@ -443,14 +432,13 @@ func (s *updateSink) requestPermission(ctx context.Context, a event.Approval) {
 			}
 		}
 	}
-	s.approve(a.ID, allow, session, persist)
+	s.approve(a.ID, allow, session, false)
 }
 
 func writeAccessApprovalOptions() []PermissionOption {
 	return []PermissionOption{
 		{OptionID: "reasonix_write_once", Name: "Allow once", Kind: OptAllowOnce},
 		{OptionID: "reasonix_write_session", Name: "Allow these directories for this session", Kind: OptAllowAlways},
-		{OptionID: "reasonix_write_project", Name: "Add to project allow_write", Kind: OptAllowAlways},
 		{OptionID: "reasonix_write_deny", Name: "Reject", Kind: OptRejectOnce},
 	}
 }
@@ -458,8 +446,9 @@ func writeAccessApprovalOptions() []PermissionOption {
 // permissionMeta carries Reasonix-owned structured data that an ACP supervisor
 // may trust independently from model-supplied rawInput. A foreground bash call
 // receives argv only when the command is a single static command: shell
-// expansion, control operators, redirects, assignments, and background jobs all
-// fail closed and remain interactive.
+// expansion, control operators, redirects, assignments, and background jobs are
+// omitted from this advisory argv field; execution still follows the active
+// permission preset and OS sandbox rather than the command's syntax shape.
 func (s *updateSink) permissionMeta(a event.Approval) map[string]any {
 	reasonix := map[string]any{
 		"approvalId": a.ID,
@@ -479,7 +468,7 @@ func (s *updateSink) permissionMeta(a event.Approval) map[string]any {
 		reasonix["ordinaryPermissionNeeded"] = wa.OrdinaryPermissionNeeded
 		reasonix["persistAllowed"] = wa.PersistAllowed
 	}
-	if a.Tool == "bash" && strings.TrimSpace(s.cwd) != "" {
+	if tool.IsShellToolName(a.Tool) && strings.TrimSpace(s.cwd) != "" {
 		var input struct {
 			Command                     string `json:"command"`
 			RunInBackground             bool   `json:"run_in_background"`
@@ -649,7 +638,7 @@ func toolKindFor(name string) string {
 		return "search"
 	case "edit_file", "move_file", "multiedit", "write_file":
 		return "edit"
-	case "bash":
+	case "bash", "pwsh", "powershell", "shell":
 		return "execute"
 	case control.SandboxEscapeApprovalTool:
 		return "execute"
@@ -714,22 +703,11 @@ func (s *updateSink) absPath(p string) string {
 	return filepath.Join(s.cwd, p)
 }
 
-// planEntriesFromTodoArgs maps a todo_write argument payload onto ACP plan
-// entries. Phase items (level 0) rank high, sub-steps medium; unknown statuses
-// degrade to pending so a malformed item cannot poison the whole update.
-func planEntriesFromTodoArgs(rawArgs string) ([]PlanEntry, bool) {
-	var p struct {
-		Todos []struct {
-			Content string `json:"content"`
-			Status  string `json:"status"`
-			Level   int    `json:"level"`
-		} `json:"todos"`
-	}
-	if json.Unmarshal([]byte(rawArgs), &p) != nil || len(p.Todos) == 0 {
-		return nil, false
-	}
-	entries := make([]PlanEntry, 0, len(p.Todos))
-	for _, t := range p.Todos {
+// planEntriesFromTodos maps the committed host projection onto ACP's complete
+// replacement plan. Empty input deliberately clears the client plan.
+func planEntriesFromTodos(todos []event.Todo) []PlanEntry {
+	entries := make([]PlanEntry, 0, len(todos))
+	for _, t := range todos {
 		if strings.TrimSpace(t.Content) == "" {
 			continue
 		}
@@ -739,14 +717,7 @@ func planEntriesFromTodoArgs(rawArgs string) ([]PlanEntry, bool) {
 		default:
 			status = "pending"
 		}
-		priority := "medium"
-		if t.Level == 0 {
-			priority = "high"
-		}
-		entries = append(entries, PlanEntry{Content: t.Content, Priority: priority, Status: status})
+		entries = append(entries, PlanEntry{Content: t.Content, Priority: "medium", Status: status})
 	}
-	if len(entries) == 0 {
-		return nil, false
-	}
-	return entries, true
+	return entries
 }

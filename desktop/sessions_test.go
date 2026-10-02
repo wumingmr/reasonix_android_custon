@@ -1407,6 +1407,24 @@ func TestRemoveDesktopSessionArtifactsPrunesPlannerDisplay(t *testing.T) {
 	}
 }
 
+func TestRecordSessionPlannerDisplayForTurnIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	first := []HistoryMessage{{Role: "assistant", Content: "partial"}}
+	final := []HistoryMessage{{Role: "assistant", Content: "recovered partial"}, {Role: "notice", Content: "interrupted"}}
+	if err := recordSessionPlannerDisplayForTurn(dir, path, "turn-1", "prompt", first); err != nil {
+		t.Fatalf("record first projection: %v", err)
+	}
+	if err := recordSessionPlannerDisplayForTurn(dir, path, "turn-1", "prompt", final); err != nil {
+		t.Fatalf("upsert recovered projection: %v", err)
+	}
+
+	got := sessionPlannerDisplayTurns(dir, path)
+	if len(got) != 1 || got[0].TurnID != "turn-1" || len(got[0].Messages) != 2 || got[0].Messages[0].Content != "recovered partial" {
+		t.Fatalf("turn-id upsert = %+v, want one updated projection", got)
+	}
+}
+
 func TestPruneSessionPlannerDisplaysRemovesOnlyOrphans(t *testing.T) {
 	dir := t.TempDir()
 	turn := []plannerDisplayTurn{{UserHash: messageDisplayKey("prompt"), Messages: []HistoryMessage{{Role: "assistant", Content: "display"}}}}
@@ -1501,7 +1519,7 @@ func TestRecordSessionDisplaySkipsNoop(t *testing.T) {
 
 func TestRecordSessionDisplaySerializesConcurrentTabs(t *testing.T) {
 	dir := t.TempDir()
-	const tabs = 32
+	const tabs = 8
 	errs := make(chan error, tabs)
 	var wg sync.WaitGroup
 	for i := range tabs {

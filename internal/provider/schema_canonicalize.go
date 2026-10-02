@@ -13,7 +13,7 @@ func CanonicalizeSchema(raw json.RawMessage) json.RawMessage {
 		// schema. An empty json.RawMessage makes json.Marshal of the enclosing
 		// request fail ("unexpected end of JSON input") and bricks the whole
 		// provider; emit a strict OpenAI-compatible empty-object schema instead.
-		return json.RawMessage(`{"properties":{},"type":"object"}`)
+		return json.RawMessage(`{"properties":{},"required":[],"type":"object"}`)
 	}
 	var v any
 	if err := json.Unmarshal(raw, &v); err != nil {
@@ -23,7 +23,7 @@ func CanonicalizeSchema(raw json.RawMessage) json.RawMessage {
 		// A nil RawMessage persists as JSON null in the MCP schema cache. Treat
 		// both forms as the same no-argument schema so old cache entries remain
 		// usable and never reach a strict provider as parameters: null.
-		return json.RawMessage(`{"properties":{},"type":"object"}`)
+		return json.RawMessage(`{"properties":{},"required":[],"type":"object"}`)
 	}
 	canon := canonicalizeSchemaValue(v)
 	ensureRootObjectProperties(canon)
@@ -52,6 +52,11 @@ func ensureRootObjectProperties(v any) {
 	}
 	if _, ok := m["properties"]; !ok {
 		m["properties"] = map[string]any{}
+	}
+	// Relays that re-serialize schemas into typed structs emit an omitted
+	// required as null, which strict upstreams reject as "not of type array".
+	if _, ok := m["required"]; !ok {
+		m["required"] = []any{}
 	}
 }
 

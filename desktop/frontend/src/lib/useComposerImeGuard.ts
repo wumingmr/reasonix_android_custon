@@ -32,6 +32,10 @@ export function useComposerImeGuard(options: ComposerImeGuardOptions): ComposerI
   const { taRef, text, invocationCount, textRef, lastSelectionRef, setText, setPlainSelection } = options;
   const composingRef = useRef(false);
   const lastCompositionEndAt = useRef(0);
+  const setTextRef = useRef(setText);
+  const setPlainSelectionRef = useRef(setPlainSelection);
+  setTextRef.current = setText;
+  setPlainSelectionRef.current = setPlainSelection;
   // Latest text the IME path itself produced, so a programmatic setText
   // landing mid-composition can be told apart from IME input and force a
   // resync.
@@ -61,9 +65,9 @@ export function useComposerImeGuard(options: ComposerImeGuardOptions): ComposerI
           end: node.selectionEnd ?? node.value.length,
         };
         textRef.current = node.value;
-        setText(node.value);
+        setTextRef.current(node.value);
         lastSelectionRef.current = nextSelection;
-        setPlainSelection(nextSelection);
+        setPlainSelectionRef.current(nextSelection);
       }
     };
     node.addEventListener("compositionstart", onStart);
@@ -80,7 +84,7 @@ export function useComposerImeGuard(options: ComposerImeGuardOptions): ComposerI
         imeStateTextRef.current = null;
       }
     };
-  }, [invocationCount, taRef, textRef, lastSelectionRef, setText, setPlainSelection]);
+  }, [invocationCount, taRef, textRef, lastSelectionRef]);
 
   // Programmatic setText (history recall, menu inserts, draft switches)
   // bypasses the textarea's onChange, so while the IME freeze renders the

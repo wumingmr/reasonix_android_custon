@@ -1,0 +1,37 @@
+.presented-files { display: grid; gap: 8px; margin-top: 2px; }
+.presented-files__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+
+.turn-files { display: grid; overflow: hidden; margin-top: 8px; border: 1px solid var(--border-soft); border-radius: 12px; background: color-mix(in srgb, var(--bg-elev) 92%, transparent); box-shadow: 0 1px 2px #00000008; }
+.turn-files__head { display: flex; align-items: center; gap: 11px; width: 100%; padding: 12px 14px; border: 0; background: color-mix(in srgb, var(--bg-soft) 84%, transparent); color: inherit; text-align: left; cursor: pointer; }
+.turn-files__head:hover { background: var(--bg-soft); }
+.turn-files__icon { display: grid; flex: none; place-items: center; width: 38px; height: 38px; border-radius: 9px; background: var(--accent); color: var(--accent-contrast, #fff); }
+.turn-files__summary { display: grid; min-width: 0; gap: 3px; }
+.turn-files__summary strong { font-size: 14px; font-weight: 650; }
+.turn-files__summary > span { font-family: var(--font-mono); font-size: 12px; }
+.turn-files__added { color: var(--ok); }
+.turn-files__removed { color: var(--danger); }
+.turn-files__list { display: grid; margin: 0; padding: 5px 10px; list-style: none; }
+.turn-files__list li { min-width: 0; }
+.turn-files__list button { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 16px; width: 100%; min-height: 30px; padding: 5px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--fg-dim); font-family: var(--font-mono); font-size: 12px; text-align: left; cursor: pointer; }
+.turn-files__list button:hover { background: var(--bg-soft); color: var(--fg); }
+.turn-files__list button > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.turn-files__error { margin: 0; padding: 0 14px 10px; color: var(--danger); font-size: 12px; }
+
+.presented-file { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; min-width: 0; border: 1px solid var(--border-soft); border-radius: 12px; background: color-mix(in srgb, var(--bg-elev) 92%, transparent); box-shadow: 0 1px 2px #00000008; }
+.presented-file:hover { border-color: var(--border); background: var(--bg-soft); }
+.presented-file__main { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 10px 8px 10px 12px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.presented-file__icon { display: grid; flex: none; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: var(--bg-soft); color: var(--fg-dim); }
+.presented-file__copy { display: grid; min-width: 0; gap: 2px; }
+.presented-file__copy strong, .presented-file__copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.presented-file__copy strong { font-size: 13px; font-weight: 600; }
+.presented-file__copy small { color: var(--fg-faint); font-size: 12px; }
+.presented-file__split { position: relative; display: flex; align-self: center; overflow: visible; margin-right: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--button-bg, var(--bg-soft)); }
+.presented-file__open, .presented-file__more { height: 30px; border: 0; background: transparent; color: var(--fg); cursor: pointer; }
+.presented-file__open { padding: 0 10px; border-radius: 7px 0 0 7px; font-size: 12px; }
+.presented-file__more { display: grid; place-items: center; width: 29px; padding: 0; border-left: 1px solid var(--border); border-radius: 0 7px 7px 0; }
+.presented-file__open:hover, .presented-file__more:hover { background: color-mix(in srgb, var(--fg) 8%, transparent); }
+.presented-file__open:disabled, .presented-file__more:disabled { cursor: default; opacity: .55; }
+.presented-file__error { grid-column: 1 / -1; margin: 0; padding: 0 12px 9px; color: var(--danger); font-size: 12px; }
+.presented-files__toggle { justify-self: start; display: inline-flex; align-items: center; gap: 5px; margin: 0 6px 6px; padding: 3px 6px; border: 0; background: transparent; color: var(--fg-faint); font-size: 12px; cursor: pointer; }
+
+@container (max-width: 640px) { .presented-files__grid { grid-template-columns: 1fr; } }

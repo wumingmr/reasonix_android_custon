@@ -9,6 +9,7 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/checkpoint"
+	"reasonix/internal/config"
 	"reasonix/internal/diff"
 	"reasonix/internal/provider"
 )
@@ -38,10 +39,11 @@ type checkpointManager struct {
 
 // rebind points the store at the (possibly new) session, loading any checkpoints
 // already on disk, and resets the turn counter and boundaries from them. root is
-// the workspace root used to guard restore writes. Called on construction and
-// whenever the session path changes (NewSession/Resume/SetSessionPath/fork).
-func (m *checkpointManager) rebind(dir, root string) {
-	store := checkpoint.New(dir, root)
+// the workspace root used to guard restore writes. opts carry the configured
+// retention. Called on construction and whenever the session path changes
+// (NewSession/Resume/SetSessionPath/fork).
+func (m *checkpointManager) rebind(dir, root string, opts ...checkpoint.Option) {
+	store := checkpoint.New(dir, root, opts...)
 	next := store.NextTurn() // continue numbering past any checkpoints on disk
 	bound := store.Bounds()  // rebuilt from persisted checkpoints so a resumed
 	if bound == nil {        // session can still rewind conversation / fork
@@ -52,6 +54,24 @@ func (m *checkpointManager) rebind(dir, root string) {
 	m.turn = next
 	m.bound = bound
 	m.mu.Unlock()
+}
+
+// checkpointOptions turns the workspace [checkpoints] config into store
+// options. A read failure leaves the built-in retention defaults in place —
+// checkpoints are a safety net, so a malformed config must not block a session.
+func (c *Controller) checkpointOptions() []checkpoint.Option {
+	cfg, err := config.LoadForRootReadOnly(c.workspaceRoot)
+	if err != nil {
+		return nil
+	}
+	var opts []checkpoint.Option
+	if turns := cfg.Checkpoints.RetainTurns; turns > 0 {
+		opts = append(opts, checkpoint.WithRetainCheckpoints(turns))
+	}
+	if quota := cfg.Checkpoints.BlobQuotaBytes; quota > 0 {
+		opts = append(opts, checkpoint.WithBlobQuota(quota))
+	}
+	return opts
 }
 
 // enabled reports whether a checkpoint store is bound.
@@ -151,13 +171,13 @@ func (c *Controller) validatedCheckpointTurn(completion *guardedTurnCompletion) 
 	if !c.checkpoints.matchesBoundary(candidate.store, candidate.turn, candidate.messageIndex) {
 		return nil
 	}
-	messages := candidate.session.Snapshot()
+	messages := c.terminationMessages()
 	if candidate.messageIndex < 0 || candidate.messageIndex >= len(messages) {
 		return nil
 	}
 	message := messages[candidate.messageIndex]
 	if message.Role != provider.RoleUser || message.LocalOnly ||
-		!agent.IsUserAuthoredTurn(agent.UserMessageText(message)) ||
+		!agent.IsUserAuthoredTurnMessage(message) ||
 		(message.CreatedAt > 0 && candidate.openedAt > 0 && message.CreatedAt < candidate.openedAt) {
 		return nil
 	}
@@ -216,6 +236,11 @@ func (m *checkpointManager) fileState(path string) (checkpoint.FileState, bool) 
 		return checkpoint.FileState{}, false
 	}
 	return store.FileState(path)
+}
+
+// CheckpointTurnChanges is read-only and never computes from the current tree.
+func (c *Controller) CheckpointTurnChanges(turn int) *checkpoint.TurnChanges {
+	return c.checkpoints.storeRef().TurnChanges(turn)
 }
 
 // snapshot records a pre-edit file change into the open checkpoint — the

@@ -48,15 +48,22 @@ billing_mode = "payg"       # payg | subscription_equivalent
 
 ## DeepSeek 峰谷计价
 
-从北京时间 2026-08-17 00:00 起，DeepSeek 官方 OpenAI、Responses 与
-Anthropic 端点上的 V4 Flash、`deepseek-v4-flash-vision-exp`（价卡与 Flash 相同）
-和 V4 Pro 按请求发生时刻计价。北京时间 09:00–12:00、14:00–18:00 为高峰，区间左闭右开，
-其余为低峰。由于供应商不提供逐 token 计费时刻，Reasonix 使用取得 usage 的请求完成时刻，
-并继续把报价标记为估算。发给视觉 SKU 的图片按供应商 usage 计入输入 token。
+DeepSeek 官方 OpenAI、Responses 与 Anthropic 端点上的 Flash 与 V4 Pro 按请求发生时刻
+计价。北京时间 09:00–12:00、14:00–18:00 为高峰，区间左闭右开，其余为低峰。由于供应商
+不提供逐 token 计费时刻，Reasonix 使用取得 usage 的请求完成时刻，并继续把报价标记为估算。
+发给支持图片的模型的图片按供应商 usage 计入输入 token。
 
-配置中保存的价格仍是高峰基准价。只有 PAYG 且完整价格精确匹配官方高峰基准价时才启用
-动态档位；自定义端点、自定义价格和未知模型仍使用静态费率。已经写入 session、ledger、
-stats 的历史报价不会回填或重算。
+目前记录了两期价目。北京时间 2026-08-17 00:00 起：V4 Flash、
+`deepseek-v4-flash-vision-exp`（价卡与 Flash 相同）和 V4 Pro。北京时间 2026-09-10 12:00
+起：`deepseek-flash` 采用更低的 Flash 价格，已下线的 `deepseek-v4-flash` 与
+`deepseek-v4-flash-vision-exp` 由该模型承接并按同一价格计费；V4 Pro 在供应商将其路由到
+V4.1 Flash 之前仍按自身价格计费。报价按发生时刻生效的那期价目解析，因此被取代的 8 月
+价格仍然可查。
+
+配置中保存的价格仍是高峰基准价。只有 PAYG 且完整价格精确匹配某一期官方高峰基准价时才
+启用动态档位。仍停留在上一期基准价的配置会被识别为未经改动的官方价格，并按**当前**价目
+计费，因此供应商调价无需用户重新保存配置即可生效。自定义端点、自定义价格和未知模型仍
+使用静态费率。已经写入 session、ledger、stats 的历史报价不会回填或重算。
 
 ## 钱包与诊断
 

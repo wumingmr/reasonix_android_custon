@@ -29,7 +29,7 @@ func bindTabWriteAuthority(tab *WorkspaceTab, ctrl control.SessionAPI) error {
 // authorizeTabReplacementLocked validates and binds a replacement before it
 // is published. App.mu must be held by the caller.
 func (a *App) authorizeTabReplacementLocked(tab *WorkspaceTab, ctrl control.SessionAPI, action, authority string) error {
-	if current := a.tabs[tab.ID]; current != tab {
+	if !a.ownsRuntimeTabLocked(tab) {
 		return fmt.Errorf("tab %q changed while %s; retry", tab.ID, action)
 	}
 	if err := bindTabWriteAuthority(tab, ctrl); err != nil {
@@ -65,7 +65,7 @@ func (a *App) validateAndBindSessionRebindLocked(tab *WorkspaceTab, source tabRu
 // commitStartupWriteAuthorityLocked commits extension registration and write
 // authority under the final publication lock. App.mu must be held on entry;
 // failure paths release it and retire the unpublished controller.
-func (a *App) commitStartupWriteAuthorityLocked(tab *WorkspaceTab, ctrl control.SessionAPI, registration *sharedHostMCPRegistration, rootKey, acquiredLeaseKey string, wailsCtx context.Context) bool {
+func (a *App) commitStartupWriteAuthorityLocked(tab *WorkspaceTab, ctrl control.SessionAPI, registration *sharedHostMCPRegistration, rootKey, acquiredLeaseKey string, appCtx context.Context) bool {
 	if !registration.commit() {
 		a.mu.Unlock()
 		a.abandonSupersededBuild(tab, ctrl, rootKey, acquiredLeaseKey)
@@ -73,12 +73,11 @@ func (a *App) commitStartupWriteAuthorityLocked(tab *WorkspaceTab, ctrl control.
 		return false
 	}
 	if err := bindTabWriteAuthority(tab, ctrl); err != nil {
-		setTabStartupError(tab, err)
-		tab.Ready = false
-		a.setSessionRuntimePhaseLocked(tab, sessionRuntimeFailed, err)
+		_, save := a.markTabStartupFailureLocked(tab, err, suppressStartupRestore)
 		a.mu.Unlock()
+		a.writeTabsSaveRequest(save)
 		a.abandonSupersededBuild(tab, ctrl, rootKey, acquiredLeaseKey)
-		a.emitReady(wailsCtx, tab.ID)
+		a.emitReady(appCtx, tab.ID)
 		return false
 	}
 	return true

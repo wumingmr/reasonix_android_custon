@@ -59,10 +59,15 @@ func (e editFile) Execute(ctx context.Context, args json.RawMessage) (string, er
 	if err := confineWrite(ctx, effectiveWriteRoots(ctx, e.rootSet, e.roots), e.guard, e.managed, p.Path); err != nil {
 		return "", err
 	}
+	unlock := lockMutationPath(p.Path)
+	defer unlock()
 
 	src, err := readEditSource(ctx, e.overlay, p.Path)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", p.Path, err)
+	}
+	if err := src.requireObserved(ctx, e.overlay, p.Path); err != nil {
+		return "", err
 	}
 
 	applied := applyOldStringEdit(src.content, p.OldString, p.NewString, false)

@@ -92,7 +92,8 @@ func IsolateUserState() (func(), error) {
 }
 
 // RunWithIsolatedUserState runs a package test binary behind the user-state
-// isolation guard and exits with the test result.
+// isolation guard and exits with the test result. It also fails the binary when
+// a test leaked a file lock; see VerifyNoLeakedFileLocks.
 func RunWithIsolatedUserState(m TestingM) {
 	cleanup, err := IsolateUserState()
 	if err != nil {
@@ -100,6 +101,12 @@ func RunWithIsolatedUserState(m TestingM) {
 		os.Exit(1)
 	}
 	exitCode := m.Run()
+	if leak := VerifyNoLeakedFileLocks(); leak != nil {
+		fmt.Fprintln(os.Stderr, leak)
+		if exitCode == 0 {
+			exitCode = 1
+		}
+	}
 	cleanup()
 	os.Exit(exitCode)
 }

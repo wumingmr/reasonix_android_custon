@@ -7,6 +7,7 @@ import type { AppBindings } from "../lib/bridge";
 import type { HistoryMessage, Meta, TabMeta, WireEvent } from "../lib/types";
 import { useController } from "../lib/useController";
 import { historySliceFromMessages } from "./mockHistorySlice";
+import { installDesktopHostStub } from "./desktopHostStub";
 
 let passed = 0;
 let failed = 0;
@@ -72,7 +73,6 @@ let revision = 1;
 let history: HistoryMessage[] = [];
 let listTabsCalls = 0;
 let historyCalls = 0;
-const agentEventHandlers: Array<(event: WireEvent) => void> = [];
 
 function tabMeta(): TabMeta {
   return {
@@ -120,14 +120,7 @@ function meta(): Meta {
   };
 }
 
-window.runtime = {
-  EventsOn: (name, handler) => {
-    if (name === "agent:event") agentEventHandlers.push(handler as (event: WireEvent) => void);
-    return () => {};
-  },
-  BrowserOpenURL: () => {},
-};
-window.go = {
+const desktopStub = installDesktopHostStub(({
   main: {
     App: {
       ListTabs: async () => {
@@ -140,6 +133,7 @@ window.go = {
       BalanceForTab: async () => ({ available: false, display: "" }),
       JobsForTab: async () => [],
       CheckpointsForTab: async () => [],
+      ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
       HistorySliceForTab: async (_id, request) => {
         historyCalls += 1;
         return historySliceFromMessages(tabID, history, request, { revision, digest: `digest-${revision}` });
@@ -151,7 +145,7 @@ window.go = {
       },
     } as Partial<AppBindings> as AppBindings,
   },
-};
+}).main.App);
 
 type Controller = ReturnType<typeof useController>;
 let controller: Controller | undefined;
@@ -170,10 +164,8 @@ await act(async () => {
 await waitFor("initial session", () => controller?.activeTabId === tabID && historyCalls > 0);
 
 await act(async () => {
-  for (const handler of agentEventHandlers) {
-    handler({ kind: "turn_started", tabId: tabID });
-    handler({ kind: "turn_done", tabId: tabID });
-  }
+  desktopStub.emit("agent:event", { kind: "turn_started", tabId: tabID });
+  desktopStub.emit("agent:event", { kind: "turn_done", tabId: tabID });
   await flushPromises();
 });
 fakeNow += 60_000;
@@ -183,7 +175,7 @@ await act(async () => {
 });
 ok(controller?.state.running ?? false, "optimistic submit enters running state without any agent events");
 ok(controller?.state.turnActive === false, "missing turn_started leaves no live turn evidence");
-ok(watchdogTimers.size === 1, "optimistic submit arms the stale-turn watchdog");
+ok(watchdogTimers.size === 0, "v2 never arms a timer that guesses task completion");
 
 const firstTimer = watchdogTimers.entries().next().value as [number, () => void] | undefined;
 if (firstTimer) {
@@ -194,9 +186,9 @@ if (firstTimer) {
     await flushPromises();
   });
 }
-ok(listTabsCalls >= 2, "first quiet-period probe reconciles backend runtime state");
+ok(listTabsCalls >= 1, "initial tab discovery completed");
 ok(controller?.state.running ?? false, "a genuinely running backend remains running");
-ok(watchdogTimers.size === 1, "still-running probe re-arms instead of stopping after one check");
+ok(watchdogTimers.size === 0, "network silence does not restart a watchdog");
 
 backendRunning = false;
 revision = 2;
@@ -213,11 +205,14 @@ if (secondTimer) {
     await flushPromises();
   });
 }
-await waitFor("missed answer hydration", () => controller?.state.items.some(
-  (item) => item.kind === "assistant" && item.text === "recovered answer",
-) ?? false);
-ok(controller?.state.running === false, "idle backend settles the spinner without switching tabs");
-ok(controller?.state.items.some((item) => item.kind === "assistant" && item.text === "recovered answer") ?? false, "watchdog hydrates the persisted missed answer");
+ok(controller?.state.running === true, "idle metadata alone cannot end the turn");
+await act(async () => {
+  desktopStub.emit("agent:event", { kind: "message", tabId: tabID, messageId: "final", text: "recovered answer" });
+  desktopStub.emit("agent:event", { kind: "turn_done", tabId: tabID });
+  await flushPromises();
+});
+ok(controller?.state.running === false, "ordered backend completion settles the spinner");
+ok(controller?.state.items.some((item) => item.kind === "assistant" && item.text === "recovered answer") ?? false, "completion updates the same visible transcript");
 ok(watchdogTimers.size === 0, "settled turn leaves no watchdog timer behind");
 
 await act(async () => { root.unmount(); });

@@ -1,0 +1,91 @@
+import { useCallback } from "react";
+import { useI18n } from "./i18n";
+const messages = {
+  back: ["返回工作区", "返回工作區", "Back to workspace"],
+  automationBack: ["返回自动化", "返回自動化", "Back to automation"],
+  listBack: ["返回列表", "返回列表", "Back to list"],
+  refresh: ["刷新", "重新整理", "Refresh"],
+  retry: ["重试", "重試", "Retry"],
+  cancel: ["取消", "取消", "Cancel"],
+  confirm: ["确认删除", "確認刪除", "Confirm deletion"],
+  loading: ["正在加载…", "正在載入…", "Loading…"],
+  loadFailed: ["加载失败，请重试。", "載入失敗，請重試。", "Could not load. Please retry."],
+  operationFailed: ["操作未完成，请重试。", "操作未完成，請重試。", "The operation did not complete. Please retry."],
+  refreshedFailed: ["操作已完成，但列表刷新失败。", "操作已完成，但列表重新整理失敗。", "Operation completed, but the list could not refresh."],
+  restored: ["会话已恢复", "會話已還原", "Conversation restored"],
+  deleted: ["已永久删除", "已永久刪除", "Permanently deleted"],
+  clearFilters: ["清除筛选", "清除篩選", "Clear filters"],
+  trashDescription: ["查看和恢复已删除的会话。", "查看與還原已刪除的會話。", "Review and restore deleted conversations."],
+  purgeTitle: ["永久删除会话", "永久刪除會話", "Permanently delete conversation"],
+  purgeDescription: ["删除“{name}”后无法恢复。", "刪除「{name}」後無法還原。", "Deleting “{name}” cannot be undone."],
+  clearTitle: ["清空回收站", "清空回收站", "Empty trash"],
+  clearDescription: ["将永久删除全部 {n} 条普通会话，包括筛选隐藏的条目。系统恢复数据不在其中。此操作无法撤销。", "將永久刪除全部 {n} 條一般會話，包括篩選隱藏的項目。系統復原資料不在其中。此操作無法復原。", "Permanently delete all {n} ordinary conversations, including filtered-out items. System recovery data is excluded. This cannot be undone."],
+  batchResult: ["已删除 {success} 条，{failed} 条未完成。", "已刪除 {success} 條，{failed} 條未完成。", "Deleted {success}; {failed} did not complete."],
+  retryFailed: ["仅重试失败项", "僅重試失敗項目", "Retry failed items"],
+  saved: ["已保存", "已儲存", "Saved"],
+  saving: ["保存中…", "儲存中…", "Saving…"],
+  unsaved: ["未保存", "未儲存", "Unsaved"],
+  noTasks: ["还没有自动化任务，创建一个任务开始。", "還沒有自動化任務，建立一個任務開始。", "No automations yet. Create a task to get started."],
+  drafts: ["草稿", "草稿", "Drafts"],
+  discard: ["放弃修改", "放棄修改", "Discard changes"],
+  configuration: ["任务配置", "任務設定", "Configuration"],
+  savedRun: ["按已保存配置运行", "依已儲存設定執行", "Runs with saved configuration"],
+  filteredDetail: ["当前任务不在筛选结果中", "目前任務不在篩選結果中", "This task is outside the current filters"],
+  conflict: ["此任务已在其他地方修改，部分字段与你的编辑冲突。", "此任務已在其他地方修改，部分欄位與你的編輯衝突。", "This task changed elsewhere. Some fields conflict with your edits."],
+  missingTask: ["此任务已被删除，你的草稿仍然保留。", "此任務已被刪除，你的草稿仍然保留。", "This task was deleted. Your draft is still available."],
+  reloadTask: ["加载最新配置", "載入最新設定", "Load latest configuration"],
+  saveAsNew: ["另存为新任务", "另存為新任務", "Save as new task"],
+  deleteTask: ["删除自动化任务", "刪除自動化任務", "Delete automation"],
+  deleteTaskDescription: ["删除“{name}”后将停止未来调度，已有会话会保留。", "刪除「{name}」後將停止未來排程，已有會話會保留。", "Deleting “{name}” stops future scheduling. Existing conversations are kept."],
+  historicalTitle: ["历史会话", "歷史對話", "Historical sessions"],
+  historicalDescription: ["原始文件已保留，这些记录不参与清空回收站。", "原始檔案已保留，這些記錄不參與清空回收站。", "Original files are preserved. These records are excluded from Empty trash."],
+  historicalImportDescription: ["打开时只导入所选会话，也可批量导入。原始文件始终保留，其他会话可正常使用。", "開啟時只匯入所選對話，也可批次匯入。保留原始檔案，其他對話仍可使用。", "Import a conversation when you open it, or import all. Original files are kept. Other conversations remain available."],
+  historicalImportAll: ["导入全部", "匯入全部", "Import all"],
+  historicalImportOpen: ["导入并打开", "匯入並開啟", "Import and open"],
+  historicalImportPause: ["完成当前项后暂停", "完成目前項目後暫停", "Pause after current item"],
+  historicalImportResume: ["继续导入", "繼續匯入", "Continue"],
+  historicalImportCancel: ["取消导入", "取消匯入", "Cancel import"],
+  historicalRemaining: ["剩余：", "剩餘：", "Remaining:"],
+  historicalSourceBusy: ["其他实例正在使用此会话，关闭后可重试。", "其他實例正在使用此對話，關閉後可重試。", "In use by another instance. Close it and retry."],
+  historicalImportFailed: ["导入失败，原件已保留。可重试或查看恢复详情。", "匯入失敗，原件已保留。可重試或檢視恢復詳情。", "Import failed. Original files are preserved; retry or review recovery details."],
+  historicalAvailable: ["尚未导入", "尚未匯入", "Not imported"],
+  historicalFailureWorkspaceConflict: ["会话记录的项目路径与当前项目不一致，已停止导入以免放错项目。原件已保留。", "對話記錄的專案路徑與目前專案不一致，已停止匯入以免放錯專案。原件已保留。", "The conversation records a different project folder than this project, so it was not imported. Original files are preserved."],
+  historicalFailureTooLarge: ["会话历史超过安全回放上限，无法导入。原件已保留。", "對話歷史超過安全重播上限，無法匯入。原件已保留。", "The conversation history exceeds the safe replay limit and cannot be imported. Original files are preserved."],
+  historicalFailureDamaged: ["会话历史已损坏或不完整，无法导入。原件已保留。", "對話歷史已損壞或不完整，無法匯入。原件已保留。", "The conversation history is damaged or incomplete and cannot be imported. Original files are preserved."],
+  historicalFailureUnsupported: ["会话由不支持的存储格式写入，无法导入。原件已保留。", "對話由不支援的儲存格式寫入，無法匯入。原件已保留。", "The conversation was written in an unsupported storage format. Original files are preserved."],
+  historicalFailureStateConflict: ["导入记录与已登记的会话冲突，已停止以免覆盖。原件已保留。", "匯入記錄與已登記的對話衝突，已停止以免覆寫。原件已保留。", "The import conflicts with an already registered conversation and was stopped. Original files are preserved."],
+  historicalFailureSourceChanged: ["导入期间原始会话发生了变化，请重试。", "匯入期間原始對話發生了變化，請重試。", "The original conversation changed during import. Retry."],
+  historicalOpenFailed: ["已导入，但打开会话失败。可重试。", "已匯入，但開啟對話失敗。可重試。", "Imported, but the conversation could not be opened. Retry."],
+  historicalRecoveryDetails: ["查看恢复详情", "檢視恢復詳情", "Review recovery details"],
+  historicalImportToSend: ["导入后才能继续发送消息，原始文件会保留。", "匯入後才能繼續傳送訊息，原始檔案會保留。", "Import this conversation to keep sending messages. The original file is kept."],
+  historicalSourceUpdated: ["旧来源有更新，可导入为独立分支", "舊來源有更新，可匯入為獨立分支", "Historical source changed. Import as a separate branch."],
+  historicalQueued: ["排队中", "排隊中", "Queued"],
+  historicalImporting: ["正在导入", "正在匯入", "Importing"],
+  historicalImported: ["已导入", "已匯入", "Imported"],
+  historicalBlocked: ["被占用", "使用中", "In use"],
+  historicalNeedsAttention: ["需要处理", "需要處理", "Needs attention"],
+  historicalArchived: ["已归档", "已封存", "Archived"],
+  historicalDeleted: ["已删除", "已刪除", "Deleted"],
+  noHistoricalSessions: ["暂无待恢复的历史会话", "暫無待恢復的歷史對話", "No historical sessions awaiting recovery"],
+  branch: ["分支", "分支", "Branch"],
+} as const;
+export type ManagementKey = keyof typeof messages;
+const historicalFailureKeys: Record<string, ManagementKey> = {
+  source_busy: "historicalSourceBusy",
+  workspace_conflict: "historicalFailureWorkspaceConflict",
+  history_too_large: "historicalFailureTooLarge",
+  history_damaged: "historicalFailureDamaged",
+  unsupported_version: "historicalFailureUnsupported",
+  state_conflict: "historicalFailureStateConflict",
+  target_changed: "historicalFailureSourceChanged",
+};
+export function historicalFailureKey(code?: string): ManagementKey {
+  return (code && historicalFailureKeys[code]) || "historicalImportFailed";
+}
+export function useManagementT() {
+  const { locale } = useI18n();
+  return useCallback((key: ManagementKey, vars?: Record<string, string | number>) => {
+    const text = messages[key][locale === "en" ? 2 : locale === "zh-TW" ? 1 : 0];
+    return text.replace(/\{(\w+)\}/g, (match, name: string) => vars?.[name] === undefined ? match : String(vars[name]));
+  }, [locale]);
+}

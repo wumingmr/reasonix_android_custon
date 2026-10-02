@@ -138,9 +138,11 @@ func (m chatTUI) handleChooserKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		return m.chooserActivate(c.cursor)
 	default:
-		// number keys 1..9 jump to / pick an option
+		// number keys 1..9 jump to / pick a numbered row: a real option, the
+		// "Type something" free-text row, or the "Chat about this" dismissal row
+		// (chooserActivate already routes all three the same way Enter does).
 		if s := msg.String(); len(s) == 1 && s[0] >= '1' && s[0] <= '9' {
-			if idx := int(s[0] - '1'); idx < len(q.Options) {
+			if idx := int(s[0] - '1'); idx < c.rowCount() {
 				return m.chooserActivate(idx)
 			}
 		}
@@ -168,7 +170,7 @@ func (m chatTUI) chooserActivate(row int) (tea.Model, tea.Cmd) {
 	case row == len(q.Options): // Type something
 		c.typing = true
 		c.cursor = row
-		m.input.Reset()
+		m.resetComposerInput()
 		m.input.SetHeight(1)
 		m.refreshInputPlaceholder()
 		return m, nil

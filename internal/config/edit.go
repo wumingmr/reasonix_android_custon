@@ -7,7 +7,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"runtime"
 	"slices"
@@ -21,6 +20,7 @@ import (
 	"reasonix/internal/mcpdiag"
 	"reasonix/internal/netclient"
 	"reasonix/internal/permission"
+	"reasonix/internal/permissionpreset"
 )
 
 var validDesktopExternalOpenerID = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
@@ -39,6 +39,11 @@ const (
 	listAllow = "allow"
 	listAsk   = "ask"
 	listDeny  = "deny"
+
+	// CompactRatioMin and CompactRatioMax are the bounds shared by the
+	// programmatic config editor and all CLI/Desktop callers.
+	CompactRatioMin = 0.30
+	CompactRatioMax = 0.85
 )
 
 // SetDefaultModel points default_model at an existing model. It accepts both
@@ -94,7 +99,7 @@ func (c *Config) SetVisionModel(name string) error {
 	if !ok {
 		return fmt.Errorf("set vision model: no such model %q (configured: %s)", name, c.providerNames())
 	}
-	if !EffectiveVision(entry) {
+	if NewModelCapabilityResolver().Resolve(entry).State != CapabilitySupported {
 		return fmt.Errorf("set vision model: %q does not support image input", name)
 	}
 	if !entry.Configured() {
@@ -116,18 +121,16 @@ func (c *Config) SetAutoPlan(mode string) error {
 	return fmt.Errorf("automatic plan mode has been retired; use Plan Mode explicitly")
 }
 
-// SetDesktopDefaultToolApprovalMode sets the Ask/Auto/YOLO posture used only
-// for newly-created desktop sessions.
+// SetDesktopDefaultToolApprovalMode sets the execution permission preset used
+// only for newly-created desktop sessions. Legacy names remain accepted at
+// this compatibility boundary.
 func (c *Config) SetDesktopDefaultToolApprovalMode(mode string) error {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "ask":
-		c.Desktop.DefaultToolApprovalMode = "ask"
-	case "auto":
-		c.Desktop.DefaultToolApprovalMode = "auto"
-	case "yolo", "full", "full-access", "bypass":
-		c.Desktop.DefaultToolApprovalMode = "yolo"
+	raw := strings.ToLower(strings.TrimSpace(mode))
+	switch raw {
+	case "ask", "auto", "yolo", "full", "full-access", "danger_full_access", string(permissionpreset.ReadOnly), string(permissionpreset.WorkspaceWrite), string(permissionpreset.DangerFullAccess):
+		c.Desktop.DefaultToolApprovalMode = string(permissionpreset.Normalize(raw))
 	default:
-		return fmt.Errorf("default_tool_approval_mode %q: must be ask|auto|yolo", mode)
+		return fmt.Errorf("default_tool_approval_mode %q: must be read-only|workspace-write|danger-full-access", mode)
 	}
 	return nil
 }
@@ -178,23 +181,6 @@ func (c *Config) UpsertProviderPreservingRuntime(e ProviderEntry) error {
 		}
 	}
 	return c.UpsertProvider(e)
-}
-
-// ProviderEntryConfigSnapshot strips process-only state from a provider copy so
-// optimistic edit logs contain only persisted configuration.
-func ProviderEntryConfigSnapshot(entry ProviderEntry) ProviderEntry {
-	entry.resolvedAPIKey = ""
-	entry.resolvedSource = CredentialSource{}
-	entry.visionOverride = nil
-	entry.persistedOfficialCurrency = ""
-	return entry
-}
-
-// ProviderEntriesConfigEqual compares persisted provider configuration while
-// ignoring credentials and capability state resolved only for the current
-// process. Setup uses it for optimistic conflict detection during replay.
-func ProviderEntriesConfigEqual(a, b ProviderEntry) bool {
-	return reflect.DeepEqual(ProviderEntryConfigSnapshot(a), ProviderEntryConfigSnapshot(b))
 }
 
 // SetProviderEffort updates a provider's provider-specific thinking effort knob.
@@ -302,14 +288,15 @@ func (c *Config) SetDesktopTerminalTheme(theme string) error {
 // affect CLI output or provider-visible request data.
 func (c *Config) SetDesktopLayoutStyle(style string) error {
 	switch strings.ToLower(strings.TrimSpace(style)) {
-	case "", "classic":
-		c.Desktop.LayoutStyle = "classic"
-	case "workbench", "workspace":
-		c.Desktop.LayoutStyle = "workbench"
 	case "creation":
 		c.Desktop.LayoutStyle = "creation"
+	case "", "classic", "workbench", "workspace":
+		// "classic" is retired and stores as workbench, matching the read path
+		// in normalizeDesktopLayoutStyle. An older caller that still sends it
+		// gets the surviving style rather than an error.
+		c.Desktop.LayoutStyle = "workbench"
 	default:
-		return fmt.Errorf("desktop layout style %q: must be classic|workbench|creation", style)
+		return fmt.Errorf("desktop layout style %q: must be workbench|creation", style)
 	}
 	return nil
 }
@@ -369,6 +356,7 @@ func (c *Config) SetDesktopStatusBarStyle(style string) error {
 	default:
 		return fmt.Errorf("status bar style %q: must be icon|text", style)
 	}
+	c.Desktop.StatusBarStyleInitialized = true
 	return nil
 }
 
@@ -402,7 +390,7 @@ func (c *Config) SetDesktopCheckUpdates(enabled bool) error {
 	return nil
 }
 
-// SetDesktopUpdateChannel is retained for pre-single-channel Wails clients.
+// SetDesktopUpdateChannel is retained for pre-single-channel desktop clients.
 // Clearing the legacy field keeps the next canonical write channel-free.
 func (c *Config) SetDesktopUpdateChannel(_ string) error {
 	c.Desktop.UpdateChannel = ""
@@ -428,10 +416,11 @@ func (c *Config) SetColdResumePrune(enabled bool) error {
 }
 
 // SetCompactRatio updates the sole user-controlled automatic compaction
-// threshold. Allowed range is 0.65–0.85; presets are 0.70 / 0.80 / 0.85.
+// threshold. Allowed range is CompactRatioMin–CompactRatioMax; presets are
+// 0.70 / 0.80 / 0.85.
 func (c *Config) SetCompactRatio(ratio float64) error {
-	if math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio < 0.65 || ratio > 0.85 {
-		return fmt.Errorf("compact ratio %v: must be between 0.65 and 0.85", ratio)
+	if math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio < CompactRatioMin || ratio > CompactRatioMax {
+		return fmt.Errorf("compact ratio %v: must be between %.2f and %.2f", ratio, CompactRatioMin, CompactRatioMax)
 	}
 	c.Agent.CompactRatio = ratio
 	return nil
@@ -1581,7 +1570,7 @@ func (c *Config) SaveTo(path string) error {
 	if scope == RenderScopeProject {
 		return c.saveProjectIncrementalResolved(path, resolved)
 	}
-	return writeConfigFileResolved(resolved, RenderTOMLForScope(c, scope), configFilePerm(path))
+	return c.writeModelConfigResolved(resolved, RenderTOMLForScope(c, scope), configFilePerm(path))
 }
 
 func (c *Config) SaveToScope(path string, scope RenderScope) error {
@@ -1604,7 +1593,7 @@ func (c *Config) SaveToScope(path string, scope RenderScope) error {
 	if err != nil {
 		return err
 	}
-	return writeConfigFileResolved(resolved, RenderTOMLForScope(c, scope), configFilePerm(path))
+	return c.writeModelConfigResolved(resolved, RenderTOMLForScope(c, scope), configFilePerm(path))
 }
 
 func (c *Config) saveProjectIncrementalResolved(logicalPath, resolvedPath string) error {
@@ -1618,11 +1607,9 @@ func (c *Config) saveProjectIncrementalResolved(logicalPath, resolvedPath string
 
 	body := string(raw)
 	isNew := body == ""
-
 	if isNew {
-		return writeConfigFileResolved(resolvedPath, RenderTOMLForScope(c, RenderScopeProject), configFilePerm(logicalPath))
+		return c.writeModelConfigResolved(resolvedPath, RenderTOMLForScope(c, RenderScopeProject), configFilePerm(logicalPath))
 	}
-
 	delta := RenderTOMLProjectDelta(c)
 	if tomlBodyHasTopLevelKey(body, "config_version") && !tomlBodyHasTopLevelKey(delta, "config_version") {
 		delta = fmt.Sprintf("config_version = %d\n", configVersion(c)) + delta
@@ -1632,12 +1619,13 @@ func (c *Config) saveProjectIncrementalResolved(logicalPath, resolvedPath string
 	removeSkills := projectSkillsKeysToRemove(body, c)
 	_, hasLegacyDesktopAutoGuard := tomlSectionKeyValue(body, "desktop", "default_auto_recovery_checkpoint")
 	_, hasRetiredAgentAutoGuard := tomlSectionKeyValue(body, "agent", "auto_recovery_checkpoint")
-	removeRetiredAutoGuard := hasLegacyDesktopAutoGuard || hasRetiredAgentAutoGuard
+	_, hasRetiredRecoveryModel := tomlSectionKeyValue(body, "agent", "recovery_model")
+	_, hasRetiredRecoveryTemperature := tomlSectionKeyValue(body, "agent", "recovery_temperature")
+	removeRetiredAutoGuard := hasLegacyDesktopAutoGuard || hasRetiredAgentAutoGuard || hasRetiredRecoveryModel || hasRetiredRecoveryTemperature
 	writeProviderAccess := c.Desktop.ProviderAccess != nil
 	if strings.TrimSpace(delta) == "" && !removePlugins && !removeSandboxBash && !removeSkills && !removeRetiredAutoGuard && !writeProviderAccess {
 		return nil // no changes to write
 	}
-
 	// Parse delta into section blocks and merge each into body
 	if strings.TrimSpace(delta) != "" {
 		body = mergeTOMLDelta(body, delta)
@@ -1654,11 +1642,12 @@ func (c *Config) saveProjectIncrementalResolved(logicalPath, resolvedPath string
 	if removeRetiredAutoGuard {
 		body = removeTOMLSectionKey(body, "desktop", "default_auto_recovery_checkpoint")
 		body = removeTOMLSectionKey(body, "agent", "auto_recovery_checkpoint")
+		body = removeTOMLSectionKey(removeTOMLSectionKey(body, "agent", "recovery_model"), "agent", "recovery_temperature")
 	}
 	if writeProviderAccess {
 		body = upsertTOMLSectionKey(body, "desktop", "provider_access", "provider_access = "+renderStringArray(c.Desktop.ProviderAccess))
 	}
-	return writeConfigFileResolved(resolvedPath, body, configFilePerm(logicalPath))
+	return c.writeModelConfigResolved(resolvedPath, body, configFilePerm(logicalPath))
 }
 
 // projectSkillsKeysToRemove reports whether an existing project [skills]
@@ -1839,7 +1828,10 @@ func writeConfigFileResolved(path, body string, perm os.FileMode) error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("save: empty config path")
 	}
-	return fileutil.AtomicWriteFile(path, []byte(body), perm)
+	if err := finalizeOpenCodeGoJournal(path); err != nil {
+		return err
+	}
+	return fileutil.AtomicWriteFileStrict(path, []byte(body), perm)
 }
 
 // atomicWriteToConfigFile resolves the path once and writes only the validated
@@ -1848,6 +1840,9 @@ func writeConfigFileResolved(path, body string, perm os.FileMode) error {
 func atomicWriteToConfigFile(path, body string, perm os.FileMode) error {
 	resolved, err := resolveConfigReadPath(path)
 	if err != nil {
+		return err
+	}
+	if err := finalizeOpenCodeGoJournal(resolved); err != nil {
 		return err
 	}
 	if err := fileutil.AtomicWriteFile(resolved, []byte(body), perm); err != nil {
@@ -2399,75 +2394,4 @@ func tomlBodyHasSection(body, sectionName string) bool {
 		}
 	}
 	return false
-}
-
-func renderScopeForPath(path string) RenderScope {
-	if isUserConfigPath(path) {
-		return RenderScopeUser
-	}
-	return RenderScopeProject
-}
-
-func isUserConfigPath(path string) bool {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return false
-	}
-	for _, uc := range userConfigCandidatePaths() {
-		uc = strings.TrimSpace(uc)
-		if uc == "" {
-			continue
-		}
-		pathAbs, pathErr := filepath.Abs(path)
-		ucAbs, ucErr := filepath.Abs(uc)
-		if pathErr == nil && ucErr == nil {
-			if filepath.Clean(pathAbs) == filepath.Clean(ucAbs) {
-				return true
-			}
-			continue
-		}
-		if filepath.Clean(path) == filepath.Clean(uc) {
-			return true
-		}
-	}
-	return false
-}
-
-// IsUserConfigPath reports whether path is one of Reasonix's current or legacy
-// user-global config locations. Other paths use project-scoped rendering.
-func IsUserConfigPath(path string) bool {
-	return isUserConfigPath(path)
-}
-
-// Save writes the configuration back to the file it was loaded from
-// (SourcePath), or to ./reasonix.toml when none exists yet — the conventional
-// project-local target a fresh GUI session would create.
-func (c *Config) Save() error {
-	path := SourcePath()
-	if path == "" {
-		path = "reasonix.toml"
-	}
-	return c.SaveTo(path)
-}
-
-// SaveForRoot saves root's project config when it exists, falling back to the
-// user's global config when root has no reasonix.toml. Existing project files
-// are edited from their own TOML only, never from a runtime user+project merge.
-func (c *Config) SaveForRoot(root string) error {
-	root = resolveRoot(root)
-	projectTOML := "reasonix.toml"
-	if root != "." {
-		projectTOML = filepath.Join(root, "reasonix.toml")
-	}
-	if _, err := os.Stat(projectTOML); err == nil {
-		projectCfg := LoadForEditWithoutCredentials(projectTOML)
-		return projectCfg.SaveTo(projectTOML)
-	}
-	if uc := userConfigPath(); uc != "" {
-		if err := os.MkdirAll(filepath.Dir(uc), 0o755); err != nil {
-			return err
-		}
-		return c.SaveTo(uc)
-	}
-	return c.SaveTo(projectTOML)
 }

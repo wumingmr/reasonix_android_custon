@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -10,14 +11,10 @@ import (
 	"reasonix/internal/tool"
 )
 
-func TestRunRetriesReasoningOnlyFinalAnswer(t *testing.T) {
+func TestRunAcceptsReasoningOnlyFinalAnswer(t *testing.T) {
 	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
 		{
 			{Type: provider.ChunkReasoning, Text: "I should answer the user."},
-			{Type: provider.ChunkDone},
-		},
-		{
-			{Type: provider.ChunkText, Text: "visible reply"},
 			{Type: provider.ChunkDone},
 		},
 	}}
@@ -26,25 +23,21 @@ func TestRunRetriesReasoningOnlyFinalAnswer(t *testing.T) {
 	if err := a.Run(context.Background(), "answer me"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if prov.call != 2 {
-		t.Fatalf("provider calls = %d, want retry after reasoning-only answer", prov.call)
+	if prov.call != 1 {
+		t.Fatalf("provider calls = %d, want one clean reasoning-only completion", prov.call)
 	}
-	if got := lastAssistantContent(a.sess.conversation); got != "visible reply" {
-		t.Fatalf("last assistant content = %q, want visible reply", got)
+	if got := lastAssistantContent(a.sess.conversation); got != "" {
+		t.Fatalf("last assistant content = %q, want empty content beside reasoning", got)
 	}
-	if !sessionHasUserMessageContaining(a.sess.conversation, "visible answer") {
-		t.Fatal("missing synthetic visible-answer retry message")
+	if sessionHasUserMessageContaining(a.sess.conversation, "visible answer") {
+		t.Fatal("must not inject a synthetic visible-answer retry")
 	}
 }
 
-func TestRunPrefixesReasoningLanguageOnSyntheticRetry(t *testing.T) {
+func TestRunPrefixesReasoningLanguageOnReasoningOnlyCompletion(t *testing.T) {
 	prov := &mockProvider{name: "p", streams: [][]provider.Chunk{
 		{
 			{Type: provider.ChunkReasoning, Text: "I should answer the user."},
-			{Type: provider.ChunkDone},
-		},
-		{
-			{Type: provider.ChunkText, Text: "visible reply"},
 			{Type: provider.ChunkDone},
 		},
 	}}
@@ -53,27 +46,25 @@ func TestRunPrefixesReasoningLanguageOnSyntheticRetry(t *testing.T) {
 	if err := a.Run(context.Background(), "answer me"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(prov.requests) != 2 {
-		t.Fatalf("provider requests = %d, want 2", len(prov.requests))
+	if len(prov.requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(prov.requests))
 	}
-	for i, req := range prov.requests {
-		got := lastUser(req)
-		if !strings.HasPrefix(got, "<reasoning-language>") || !strings.Contains(got, "简体中文") {
-			t.Fatalf("request %d last user = %q, want reasoning-language prefix", i, got)
-		}
+	got := lastUser(prov.requests[0])
+	if !strings.HasPrefix(got, "<reasoning-language>") || !strings.Contains(got, "简体中文") {
+		t.Fatalf("last user = %q, want reasoning-language prefix", got)
 	}
-	if !strings.Contains(lastUser(prov.requests[1]), "visible answer") {
-		t.Fatalf("retry request last user = %q, want visible-answer retry", lastUser(prov.requests[1]))
+	if strings.Contains(got, "visible answer") {
+		t.Fatalf("reasoning-only completion must not receive a synthetic visible-answer retry: %q", got)
 	}
 }
 
-func TestRunStopsAfterRepeatedEmptyFinalAnswers(t *testing.T) {
+func TestRunRequiresVisibleFinalOnlyWhenExplicitlyRequested(t *testing.T) {
 	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
 		{{Type: provider.ChunkReasoning, Text: "thinking 1"}, {Type: provider.ChunkDone}},
 		{{Type: provider.ChunkReasoning, Text: "thinking 2"}, {Type: provider.ChunkDone}},
 		{{Type: provider.ChunkReasoning, Text: "thinking 3"}, {Type: provider.ChunkDone}},
 	}}
-	a := New(prov, tool.NewRegistry(), NewSession(""), Options{}, event.Discard)
+	a := New(prov, tool.NewRegistry(), NewSession(""), Options{RequireVisibleFinal: true}, event.Discard)
 
 	err := a.Run(context.Background(), "answer me")
 	if err == nil {
@@ -84,6 +75,59 @@ func TestRunStopsAfterRepeatedEmptyFinalAnswers(t *testing.T) {
 	}
 	if prov.call != 3 {
 		t.Fatalf("provider calls = %d, want three empty-answer attempts", prov.call)
+	}
+}
+
+func TestEmptyResponseLeavesRetryToUser(t *testing.T) {
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+		{{Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "visible reply"}, {Type: provider.ChunkDone}},
+	}}
+	a := New(prov, tool.NewRegistry(), NewSession(""), Options{}, event.Discard)
+	if err := a.Run(t.Context(), "answer me"); !errors.Is(err, provider.ErrEmptyResponse) {
+		t.Fatalf("err=%v", err)
+	}
+	if prov.call != 1 || lastAssistantContent(a.Session()) != "" {
+		t.Fatalf("calls=%d", prov.call)
+	}
+	if err := a.Run(t.Context(), "try again"); err != nil {
+		t.Fatal(err)
+	}
+	if prov.call != 2 || lastAssistantContent(a.Session()) != "visible reply" {
+		t.Fatalf("manual retry calls=%d", prov.call)
+	}
+	if sessionHasUserMessageContaining(a.Session(), "visible answer") {
+		t.Fatal("injected synthetic retry prompt")
+	}
+}
+
+func TestRunStopsOnZeroContentWithoutCommittingEmptyMessages(t *testing.T) {
+	turns := make([][]provider.Chunk, maxSamplingAttempts)
+	for i := range turns {
+		turns[i] = []provider.Chunk{{Type: provider.ChunkDone}}
+	}
+	prov := &scriptedProvider{name: "p", turns: turns}
+	sink := &recordSink{}
+	a := New(prov, tool.NewRegistry(), NewSession(""), Options{}, sink)
+
+	err := a.Run(context.Background(), "answer me")
+	if !errors.Is(err, provider.ErrEmptyResponse) {
+		t.Fatalf("Run error = %v, want ErrEmptyResponse", err)
+	}
+	if prov.call != 1 {
+		t.Fatalf("provider calls = %d, want 1", prov.call)
+	}
+	for _, message := range a.sess.conversation.Messages {
+		if message.Role == provider.RoleAssistant {
+			t.Fatalf("empty attempt committed assistant message: %+v", message)
+		}
+		if message.Role == provider.RoleUser && strings.Contains(message.Content, "visible answer") {
+			t.Fatalf("empty attempt injected synthetic user prompt: %q", message.Content)
+		}
+	}
+	retries := sink.kinds(event.Retrying)
+	if len(retries) != 0 {
+		t.Fatalf("unexpected retry events: %+v", retries)
 	}
 }
 
@@ -133,7 +177,7 @@ func TestRunAcceptsReasoningOnlyFinalWhenModelStopped(t *testing.T) {
 	}
 }
 
-func TestRunRetriesReasoningOnlyStopWithoutDeepSeekPolicy(t *testing.T) {
+func TestRunAcceptsReasoningOnlyStopWithoutDeepSeekPolicy(t *testing.T) {
 	// Same chunk sequence as the accept test, but the provider does not
 	// declare DeepSeek thinking mode (ToolCallReasoningPolicy). The accept
 	// path must stay scoped to DeepSeek: local <think>-tag models keep the
@@ -146,24 +190,20 @@ func TestRunRetriesReasoningOnlyStopWithoutDeepSeekPolicy(t *testing.T) {
 			{Type: provider.ChunkUsage, Usage: &provider.Usage{FinishReason: "stop", TotalTokens: 10}},
 			{Type: provider.ChunkDone},
 		},
-		{
-			{Type: provider.ChunkText, Text: "visible reply"},
-			{Type: provider.ChunkDone},
-		},
 	}}
 	a := New(prov, tool.NewRegistry(), NewSession(""), Options{}, event.Discard)
 
 	if err := a.Run(context.Background(), "answer me"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if prov.call != 2 {
-		t.Fatalf("provider calls = %d, want 2 (non-DeepSeek providers must keep the retry)", prov.call)
+	if prov.call != 1 {
+		t.Fatalf("provider calls = %d, want 1 for a reasoning-only clean terminal", prov.call)
 	}
-	if !sessionHasUserMessageContaining(a.sess.conversation, "visible answer") {
-		t.Fatal("missing synthetic visible-answer retry message for non-DeepSeek provider")
+	if sessionHasUserMessageContaining(a.sess.conversation, "visible answer") {
+		t.Fatal("must not inject a synthetic visible-answer retry")
 	}
-	if got := lastAssistantContent(a.sess.conversation); got != "visible reply" {
-		t.Fatalf("last assistant content = %q, want visible reply", got)
+	if got := lastAssistantContent(a.sess.conversation); got != "" {
+		t.Fatalf("last assistant content = %q, want empty content beside reasoning", got)
 	}
 }
 
@@ -185,5 +225,68 @@ func BenchmarkHasVisibleFinalAnswer(b *testing.B) {
 			}
 			_ = got
 		})
+	}
+}
+
+func reasoningOnlyStop(text string) []provider.Chunk {
+	return []provider.Chunk{
+		{Type: provider.ChunkReasoning, Text: text},
+		{Type: provider.ChunkUsage, Usage: &provider.Usage{FinishReason: "stop", TotalTokens: 10}},
+		{Type: provider.ChunkDone},
+	}
+}
+
+func countUserMessagesContaining(s *Session, needle string) int {
+	n := 0
+	for _, message := range s.Messages {
+		if message.Role == provider.RoleUser && strings.Contains(message.Content, needle) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestRunRetriesReasoningOnlyStopAfterToolRoundOnce(t *testing.T) {
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+		{{Type: provider.ChunkReasoning, Text: "read the file"}, toolCallChunk("call-1", "read_file", `{}`), {Type: provider.ChunkUsage, Usage: &provider.Usage{FinishReason: "tool_calls", TotalTokens: 10}}, {Type: provider.ChunkDone}},
+		reasoningOnlyStop("I have the file contents; the answer is ready."),
+		{{Type: provider.ChunkText, Text: "The file says contents."}, {Type: provider.ChunkDone}},
+	}}
+	reg := tool.NewRegistry()
+	reg.Add(fakeReadFileTool{})
+	a := New(deepseekThinkingProvider{prov}, reg, NewSession(""), Options{}, event.Discard)
+
+	if err := a.Run(context.Background(), "what does the file say"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if prov.call != 3 {
+		t.Fatalf("provider calls = %d, want tool round + reasoning-only stop + one retry", prov.call)
+	}
+	if got := countUserMessagesContaining(a.sess.conversation, "visible answer"); got != 1 {
+		t.Fatalf("visible-answer retries = %d, want exactly 1", got)
+	}
+	if got := lastAssistantContent(a.sess.conversation); got != "The file says contents." {
+		t.Fatalf("last assistant content = %q, want the visible synthesis", got)
+	}
+}
+
+func TestRunAcceptsSecondReasoningOnlyStopAfterToolRound(t *testing.T) {
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+		{{Type: provider.ChunkReasoning, Text: "read the file"}, toolCallChunk("call-1", "read_file", `{}`), {Type: provider.ChunkUsage, Usage: &provider.Usage{FinishReason: "tool_calls", TotalTokens: 10}}, {Type: provider.ChunkDone}},
+		reasoningOnlyStop("done thinking"),
+		reasoningOnlyStop("still only thinking"),
+	}}
+	reg := tool.NewRegistry()
+	reg.Add(fakeReadFileTool{})
+	a := New(deepseekThinkingProvider{prov}, reg, NewSession(""), Options{}, event.Discard)
+
+	if err := a.Run(context.Background(), "what does the file say"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if prov.call != 3 {
+		t.Fatalf("provider calls = %d, want a single bounded retry", prov.call)
+	}
+	if got := countUserMessagesContaining(a.sess.conversation, "visible answer"); got != 1 {
+		t.Fatalf("visible-answer retries = %d, want exactly 1", got)
 	}
 }

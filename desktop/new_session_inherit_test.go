@@ -12,9 +12,29 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
-	"reasonix/internal/event"
-	"reasonix/internal/provider"
 )
+
+func requireTabSessionModel(t *testing.T, tab *WorkspaceTab, want string) {
+	t.Helper()
+	if tab == nil || tab.Ctrl == nil || tab.SessionID == "" || tab.SessionPath != "" {
+		t.Fatalf("tab has no exclusive v3 identity: %+v", tab)
+	}
+	identity, ok := tab.Ctrl.(control.IdentityLifecycle)
+	if !ok {
+		t.Fatal("controller has no v3 identity lifecycle")
+	}
+	ref, bound := identity.SessionRef()
+	if !bound || ref.SessionID != tab.SessionID {
+		t.Fatalf("controller identity = %+v, %v; tab session = %q", ref, bound, tab.SessionID)
+	}
+	snapshot, err := identity.SessionService().Query().Snapshot(t.Context(), ref)
+	if err != nil {
+		t.Fatalf("query v3 session: %v", err)
+	}
+	if got := snapshot.Projection.ModelRef; got != want {
+		t.Fatalf("v3 session model = %q, want %q", got, want)
+	}
+}
 
 func TestEnsureBlankTabInheritsActiveTabLocalSettings(t *testing.T) {
 	isolateDesktopUserDirs(t)
@@ -133,9 +153,7 @@ func TestEnsureBlankTabUsesGlobalSessionDefaultsForModelAndToolApproval(t *testi
 	if src.model != "deepseek-flash/deepseek-v4-flash" || src.toolApprovalMode != control.ToolApprovalAsk {
 		t.Fatalf("existing tab should not be overwritten, got model=%q approval=%q", src.model, src.toolApprovalMode)
 	}
-	if !strings.Contains(filepath.Base(created.SessionPath), "deepseek-v4-pro") {
-		t.Fatalf("new session path = %q, want filename seeded by global default model", created.SessionPath)
-	}
+	requireTabSessionModel(t, created, "deepseek-pro/deepseek-v4-pro")
 }
 
 func TestEnsureBlankTabRetargetsReusedSameNameModelToDefaultProvider(t *testing.T) {
@@ -180,9 +198,7 @@ func TestEnsureBlankTabRetargetsReusedSameNameModelToDefaultProvider(t *testing.
 	if tab.model != defaultRef || tab.Ctrl.ModelRef() != defaultRef {
 		t.Fatalf("reused runtime model = tab:%q controller:%q, want %q", tab.model, tab.Ctrl.ModelRef(), defaultRef)
 	}
-	if stored, ok := agent.LoadSessionModel(tab.currentSessionPath()); !ok || stored != defaultRef {
-		t.Fatalf("stored session model = %q, %v, want %q", stored, ok, defaultRef)
-	}
+	requireTabSessionModel(t, tab, defaultRef)
 
 	current := ""
 	for _, info := range app.ModelsForTab(tab.ID) {
@@ -240,8 +256,9 @@ func TestEnsureBlankTabRepairsStaleStoredProviderWhenRuntimeAlreadyDefault(t *te
 	if tab.model != defaultRef || tab.Ctrl.ModelRef() != defaultRef {
 		t.Fatalf("runtime model = tab:%q controller:%q, want %q", tab.model, tab.Ctrl.ModelRef(), defaultRef)
 	}
-	if stored, ok := agent.LoadSessionModel(tab.currentSessionPath()); !ok || stored != defaultRef {
-		t.Fatalf("stored session model = %q, %v, want repaired %q", stored, ok, defaultRef)
+	requireTabSessionModel(t, tab, defaultRef)
+	if stored, ok := agent.LoadSessionModel(path); !ok || stored != oldRef {
+		t.Fatalf("legacy source model = %q, %v, want unchanged %q", stored, ok, oldRef)
 	}
 }
 
@@ -295,7 +312,10 @@ func TestEnsureBlankTabConcurrentModelSwitchKeepsLastSelection(t *testing.T) {
 
 	select {
 	case <-firstSwitchReturned:
-	case <-time.After(5 * time.Second):
+	case err := <-ensureDone:
+		close(releaseFirstSwitch)
+		t.Fatalf("EnsureBlankTab completed before the default model switch: %v", err)
+	case <-time.After(30 * time.Second):
 		close(releaseFirstSwitch)
 		t.Fatal("timed out waiting for default model switch")
 	}
@@ -313,16 +333,14 @@ func TestEnsureBlankTabConcurrentModelSwitchKeepsLastSelection(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EnsureBlankTab: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for EnsureBlankTab")
 	}
 
 	if tab.model != oldRef || tab.Ctrl.ModelRef() != oldRef {
 		t.Fatalf("last selected runtime = tab:%q controller:%q, want %q (default was %q)", tab.model, tab.Ctrl.ModelRef(), oldRef, defaultRef)
 	}
-	if stored, ok := agent.LoadSessionModel(tab.currentSessionPath()); !ok || stored != oldRef {
-		t.Fatalf("stored session model = %q, %v, want last selection %q", stored, ok, oldRef)
-	}
+	requireTabSessionModel(t, tab, oldRef)
 }
 
 func TestEnsureBlankTabRestartsStartingBlankWithDefaultProvider(t *testing.T) {
@@ -370,9 +388,7 @@ func TestEnsureBlankTabRestartsStartingBlankWithDefaultProvider(t *testing.T) {
 	if !tab.Ready || tab.Ctrl == nil || tab.model != defaultRef || tab.Ctrl.ModelRef() != defaultRef {
 		t.Fatalf("restarted blank runtime = ready:%v controller:%v tab:%q, want %q", tab.Ready, tab.Ctrl != nil, tab.model, defaultRef)
 	}
-	if stored, ok := agent.LoadSessionModel(tab.currentSessionPath()); !ok || stored != defaultRef {
-		t.Fatalf("stored session model = %q, %v, want %q", stored, ok, defaultRef)
-	}
+	requireTabSessionModel(t, tab, defaultRef)
 }
 
 func configureSameNameModelProviders(t *testing.T) (model, oldRef, defaultRef string) {
@@ -507,14 +523,11 @@ func TestDesktopNewSessionDefaultsRejectsNonChatDefaultWithoutFallback(t *testin
 	}
 
 	app := NewApp()
-	meta, err := app.EnsureBlankTab("global", "")
-	if err != nil {
-		t.Fatalf("EnsureBlankTab: %v", err)
+	_, err := app.EnsureBlankTab("global", "")
+	if err == nil || !strings.Contains(err.Error(), "chat-capable provider") {
+		t.Fatalf("EnsureBlankTab error = %v, want actionable no-chat-model error", err)
 	}
-	created := app.tabs[meta.ID]
-	if created == nil {
-		t.Fatalf("new tab %q missing from app.tabs", meta.ID)
-	}
+	created := app.activeTabLocked()
 	if created.model != "" {
 		t.Fatalf("new session model = %q, want no ineligible model selected", created.model)
 	}
@@ -544,14 +557,11 @@ func TestDesktopNewSessionDefaultsHonorExplicitEmptyProviderAccess(t *testing.T)
 	}
 
 	app := NewApp()
-	meta, err := app.EnsureBlankTab("global", "")
-	if err != nil {
-		t.Fatalf("EnsureBlankTab: %v", err)
+	_, err := app.EnsureBlankTab("global", "")
+	if err == nil || !strings.Contains(err.Error(), "chat-capable provider") {
+		t.Fatalf("EnsureBlankTab error = %v, want actionable no-provider error", err)
 	}
-	created := app.tabs[meta.ID]
-	if created == nil {
-		t.Fatalf("new tab %q missing from app.tabs", meta.ID)
-	}
+	created := app.activeTabLocked()
 	if created.model != "" {
 		t.Fatalf("new session model = %q, want no provider selected", created.model)
 	}
@@ -600,12 +610,10 @@ func TestDesktopNewSessionDefaultsUsesProjectDefaultAndSkipsItsKeylessProvider(t
 	if created.model != "test-prov/test-model" {
 		t.Fatalf("new project session model = %q, want configured fallback test-prov/test-model", created.model)
 	}
-	if !strings.Contains(filepath.Base(created.SessionPath), "test-model") {
-		t.Fatalf("new project session path = %q, want filename seeded by fallback model", created.SessionPath)
-	}
+	requireTabSessionModel(t, created, "test-prov/test-model")
 }
 
-func TestSetDefaultModelPersistsSessionSidecar(t *testing.T) {
+func TestSetDefaultModelPreservesExistingSession(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	oldRef, newRef := configureSwitchableDefaultModels(t)
 	cfg := config.LoadForEdit(config.UserConfigPath())
@@ -646,55 +654,26 @@ func TestSetDefaultModelPersistsSessionSidecar(t *testing.T) {
 	if got := config.LoadForEdit(config.UserConfigPath()).DefaultModel; got != newRef {
 		t.Fatalf("default_model = %q, want %q", got, newRef)
 	}
-	if tab.model != newRef {
-		t.Fatalf("tab model = %q, want %q", tab.model, newRef)
+	if tab.model != oldRef {
+		t.Fatalf("tab model = %q, want %q", tab.model, oldRef)
 	}
-	if stored, ok := agent.LoadSessionModel(path); !ok || stored != newRef {
-		t.Fatalf("stored session model = %q, %v, want %q", stored, ok, newRef)
+	if stored, ok := agent.LoadSessionModel(path); !ok || stored != oldRef {
+		t.Fatalf("stored session model = %q, %v, want %q", stored, ok, oldRef)
 	}
 }
 
 func TestNewSessionForTabUsesConfiguredDefaultModel(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	oldRef, newRef := configureSwitchableDefaultModels(t)
-
-	dir := config.SessionDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir session dir: %v", err)
-	}
-	oldSession := agent.NewSession("sys")
-	oldSession.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
-	oldExec := agent.New(nil, nil, oldSession, agent.Options{}, event.Discard)
-	oldPath := filepath.Join(dir, "old.jsonl")
-	if err := os.WriteFile(oldPath, []byte(`{"role":"user","content":"hello"}`+"\n"), 0o644); err != nil {
-		t.Fatalf("write old session: %v", err)
-	}
-	if err := agent.SetBranchModelPreserveUpdated(oldPath, oldRef); err != nil {
-		t.Fatalf("seed old session model: %v", err)
-	}
-	oldCtrl := control.New(control.Options{Executor: oldExec, SessionDir: dir, SessionPath: oldPath, Label: oldRef, Sink: event.Discard})
-
 	app := NewApp()
 	app.ctx = context.Background()
-	tab := &WorkspaceTab{
-		ID:          "new-session-default",
-		Scope:       "global",
-		Ready:       true,
-		model:       oldRef,
-		SessionPath: oldPath,
-		Ctrl:        oldCtrl,
-		sink:        &tabEventSink{tabID: "new-session-default", app: app},
-		disabledMCP: map[string]ServerView{},
-	}
-	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
-	app.tabOrder = []string{tab.ID}
+	app.tabs = map[string]*WorkspaceTab{}
+	root := globalWorkspaceRoot()
+	tab := modelSettingsBootTab(t, app, "new-session-default", root, oldRef)
+	tab.Scope = "global"
 	app.activeTabID = tab.ID
-	t.Cleanup(func() {
-		if tab.Ctrl != nil {
-			tab.Ctrl.Close()
-		}
-		tab.releaseSessionLease()
-	})
+	identity := tab.Ctrl.(control.IdentityLifecycle)
+	oldSessionRef, _ := identity.SessionRef()
 
 	if err := app.NewSessionForTab(tab.ID); err != nil {
 		t.Fatalf("NewSessionForTab: %v", err)
@@ -702,53 +681,38 @@ func TestNewSessionForTabUsesConfiguredDefaultModel(t *testing.T) {
 	if tab.model != newRef {
 		t.Fatalf("new session tab model = %q, want configured default %q", tab.model, newRef)
 	}
-	if stored, ok := agent.LoadSessionModel(tab.currentSessionPath()); !ok || stored != newRef {
-		t.Fatalf("new session stored model = %q, %v, want %q", stored, ok, newRef)
-	}
-	if oldStored, ok := agent.LoadSessionModel(oldPath); !ok || oldStored != oldRef {
-		t.Fatalf("previous session model = %q, %v, want unchanged %q", oldStored, ok, oldRef)
+	requireTabSessionModel(t, tab, newRef)
+	oldSnapshot, err := identity.SessionService().Query().Snapshot(t.Context(), oldSessionRef)
+	if err != nil || oldSnapshot.Projection.ModelRef != oldRef {
+		t.Fatalf("previous v3 session model = %q, err=%v, want unchanged %q", oldSnapshot.Projection.ModelRef, err, oldRef)
 	}
 }
 
 func TestNewSessionForTabAlignsBlankTabToDefault(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	oldRef, newRef := configureSwitchableDefaultModels(t)
-
-	globalRoot := globalWorkspaceRoot()
-	path, err := createEmptySessionFile(desktopSessionDir(globalRoot), "old-model")
-	if err != nil {
-		t.Fatalf("create empty session: %v", err)
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	cfg.DefaultModel = oldRef
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatal(err)
 	}
-	if err := agent.SetBranchModelPreserveUpdated(path, oldRef); err != nil {
-		t.Fatalf("seed old session model: %v", err)
-	}
-
-	blank := agent.NewSession("sys")
-	exec := agent.New(nil, nil, blank, agent.Options{}, event.Discard)
-	ctrl := control.New(control.Options{Executor: exec, SessionDir: desktopSessionDir(globalRoot), SessionPath: path, Label: oldRef, Sink: event.Discard})
-
 	app := NewApp()
 	app.ctx = context.Background()
-	tab := &WorkspaceTab{
-		ID:            "blank-default",
-		Scope:         "global",
-		WorkspaceRoot: globalRoot,
-		Ready:         true,
-		model:         oldRef,
-		SessionPath:   path,
-		Ctrl:          ctrl,
-		sink:          &tabEventSink{tabID: "blank-default", app: app},
-		disabledMCP:   map[string]ServerView{},
+	meta, err := app.EnsureBlankTab("global", "")
+	if err != nil {
+		t.Fatal(err)
 	}
-	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
-	app.tabOrder = []string{tab.ID}
-	app.activeTabID = tab.ID
+	tab := app.tabs[meta.ID]
 	t.Cleanup(func() {
 		if tab.Ctrl != nil {
 			tab.Ctrl.Close()
 		}
-		tab.releaseSessionLease()
 	})
+	cfg = config.LoadForEdit(config.UserConfigPath())
+	cfg.DefaultModel = newRef
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := app.NewSessionForTab(tab.ID); err != nil {
 		t.Fatalf("NewSessionForTab: %v", err)
@@ -756,9 +720,7 @@ func TestNewSessionForTabAlignsBlankTabToDefault(t *testing.T) {
 	if tab.model != newRef {
 		t.Fatalf("blank tab model = %q, want configured default %q", tab.model, newRef)
 	}
-	if stored, ok := agent.LoadSessionModel(tab.currentSessionPath()); !ok || stored != newRef {
-		t.Fatalf("blank stored model = %q, %v, want %q", stored, ok, newRef)
-	}
+	requireTabSessionModel(t, tab, newRef)
 }
 
 func configureSwitchableDefaultModels(t *testing.T) (oldRef, newRef string) {

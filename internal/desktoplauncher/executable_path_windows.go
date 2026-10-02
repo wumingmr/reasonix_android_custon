@@ -5,12 +5,21 @@ package desktoplauncher
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/sys/windows"
 )
 
 const maxFinalPathUTF16 = 1 << 16
+
+type launchLocation string
+
+const (
+	launchLocationLocal       launchLocation = "local"
+	launchLocationUNC         launchLocation = "unc"
+	launchLocationRemoteDrive launchLocation = "remote_drive"
+)
 
 // resolveExecutablePath opens the launcher and asks Windows for the final DOS
 // path represented by that handle. Unlike filepath.EvalSymlinks, this resolves
@@ -57,4 +66,34 @@ func normalizeFinalWindowsPath(path string) string {
 
 func isASCIILetter(ch byte) bool {
 	return ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z'
+}
+
+func classifyLaunchLocation(path string) (launchLocation, error) {
+	return classifyLaunchLocationWith(path, windows.GetDriveType)
+}
+
+func classifyLaunchLocationWith(path string, getDriveType func(*uint16) uint32) (launchLocation, error) {
+	volume := filepath.VolumeName(filepath.Clean(path))
+	if volume == "" {
+		return "", fmt.Errorf("determine executable volume: path has no volume")
+	}
+	if strings.HasPrefix(volume, `\\`) {
+		return launchLocationUNC, nil
+	}
+	root := volume
+	if !strings.HasSuffix(root, `\`) {
+		root += `\`
+	}
+	rootPtr, err := windows.UTF16PtrFromString(root)
+	if err != nil {
+		return "", fmt.Errorf("determine executable volume: %w", err)
+	}
+	switch driveType := getDriveType(rootPtr); driveType {
+	case windows.DRIVE_REMOTE:
+		return launchLocationRemoteDrive, nil
+	case windows.DRIVE_UNKNOWN, windows.DRIVE_NO_ROOT_DIR:
+		return "", fmt.Errorf("determine executable volume: Windows returned drive type %d", driveType)
+	default:
+		return launchLocationLocal, nil
+	}
 }

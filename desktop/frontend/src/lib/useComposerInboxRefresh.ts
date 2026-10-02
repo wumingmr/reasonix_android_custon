@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { InboxSnapshotLike } from "./composerInboxQueue";
 import { app } from "./bridge";
 import {
   guidanceFromInboxSnapshot,
@@ -21,16 +22,29 @@ export function useComposerInboxRefresh(
   applyQueue: (items: PendingGuidance[]) => void,
   collapse: () => void,
   bump: () => void,
+  runtimeRevision?: number,
 ) {
   const inboxSessionKeyRef = useRef(inboxSessionKey);
+  const [snapshot, setSnapshot] = useState<InboxSnapshotLike>();
   const appliedRevisionRef = useRef<{ scope: string; revision: number }>({ scope: inboxSessionKey, revision: -1 });
   const clearQueue = useCallback(() => applyQueue([]), [applyQueue]);
   useLayoutEffect(() => {
     if (inboxSessionKeyRef.current === inboxSessionKey) return;
     inboxSessionKeyRef.current = inboxSessionKey;
     appliedRevisionRef.current = { scope: inboxSessionKey, revision: -1 };
+    setSnapshot(undefined);
+    collapse();
     clearQueue();
-  }, [draftKey, inboxSessionKey, clearQueue]);
+  }, [draftKey, inboxSessionKey, clearQueue, collapse]);
+  const acceptSnapshot = useCallback((snap: InboxSnapshotLike) => {
+    if (inboxSessionKeyRef.current !== inboxSessionKey || !inboxSnapshotBelongsToScope(snap.sessionPath, inboxSessionKey)) return false;
+    const revision = Number(snap.revision ?? -1);
+    if (!Number.isFinite(revision) || (appliedRevisionRef.current.scope === inboxSessionKey && revision < appliedRevisionRef.current.revision)) return false;
+    appliedRevisionRef.current = { scope: inboxSessionKey, revision };
+    setSnapshot(snap);
+    applyQueue(mergeGuidanceSnapshot(guidanceFromInboxSnapshot(snap), localGuidanceFallback(previewKey)));
+    return true;
+  }, [inboxSessionKey, applyQueue, previewKey]);
   useEffect(() => onInboxChanged((changed) => {
     if (changed.tabId && tabId && changed.tabId !== tabId) return;
     if (!inboxSnapshotBelongsToScope(changed.sessionPath, inboxSessionKey)) return;
@@ -45,26 +59,24 @@ export function useComposerInboxRefresh(
     const fallback = localGuidanceFallback(previewKey);
     if (typeof app.InboxSnapshot !== "function") {
       applyQueue(fallback);
-      collapse();
       return;
     }
     void app.InboxSnapshot(tabId || "").then((snap) => {
       if (!live || !inboxSnapshotBelongsToScope(snap?.sessionPath, inboxSessionKey)) return;
-      const rawRevision = Number(snap?.revision ?? -1);
-      const revision = Number.isFinite(rawRevision) ? rawRevision : -1;
-      if (appliedRevisionRef.current.scope === inboxSessionKey && revision < appliedRevisionRef.current.revision) return;
-      appliedRevisionRef.current = { scope: inboxSessionKey, revision };
+      if (!acceptSnapshot(snap)) return;
+      const revision = Number(snap?.revision ?? -1);
       const durable = guidanceFromInboxSnapshot(snap);
       applyQueue(mergeGuidanceSnapshot(durable, fallback));
-      collapse();
       void hydrateEmptyGuidancePreviews(durable, (id) => app.ReadInboxItem(tabId || "", id)).then((hydrated) => {
-        if (live && hydrated.some((item) => item.text.trim())) {
+        if (live && appliedRevisionRef.current.revision === revision && hydrated.some((item) => item.text.trim())) {
           applyQueue(mergeGuidanceSnapshot(hydrated, fallback));
         }
       });
     }).catch(() => {
-      if (live) applyQueue(localGuidanceFallback(previewKey));
+      // A transport failure must not erase the last authoritative queue.
+      if (live && appliedRevisionRef.current.revision < 0) applyQueue(localGuidanceFallback(previewKey));
     });
     return () => { live = false; };
-  }, [draftKey, guidanceDraftKey, previewKey, running, tabId, retryNonce, inboxSessionKey, applyQueue, collapse]);
+  }, [draftKey, guidanceDraftKey, previewKey, running, tabId, retryNonce, inboxSessionKey, applyQueue, runtimeRevision, acceptSnapshot]);
+  return { snapshot, acceptSnapshot };
 }

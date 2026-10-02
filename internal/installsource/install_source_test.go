@@ -1644,7 +1644,7 @@ func TestPlanIDIncludesActionDetails(t *testing.T) {
 	a := action{Kind: "mcp", Action: "install_mcp_server", Name: "same", URL: "https://mcp.one.example/mcp", Transport: "http", ConfigPath: "/repo/reasonix.toml"}
 	b := a
 	b.URL = "https://mcp.two.example/mcp"
-	if computePlanID(req, []action{a}) == computePlanID(req, []action{b}) {
+	if testPlanID(t, req, []action{a}) == testPlanID(t, req, []action{b}) {
 		t.Fatal("planId should change when action URL changes")
 	}
 }
@@ -1707,12 +1707,12 @@ func TestValidateMCPEntry(t *testing.T) {
 func TestComputePlanIDStable(t *testing.T) {
 	req := request{Op: "install", Source: "x", Scope: "project", Kind: "skill"}
 	actions := []action{{Kind: "skill", Name: "a", Action: "copy_skill"}}
-	id1 := computePlanID(req, actions)
-	id2 := computePlanID(req, actions)
+	id1 := testPlanID(t, req, actions)
+	id2 := testPlanID(t, req, actions)
 	if id1 != id2 {
 		t.Errorf("planId should be stable, got %q vs %q", id1, id2)
 	}
-	id3 := computePlanID(request{Op: "install", Source: "y", Scope: "project", Kind: "skill"}, actions)
+	id3 := testPlanID(t, request{Op: "install", Source: "y", Scope: "project", Kind: "skill"}, actions)
 	if id3 == id1 {
 		t.Errorf("planId should change with source")
 	}
@@ -1730,7 +1730,7 @@ func TestPlanIDUsesResolvedActionScope(t *testing.T) {
 		Scope:      "global",
 		ConfigPath: config.UserConfigPath(),
 	}}
-	if got, want := computePlanID(reqOmitted, actions), computePlanID(reqGlobal, actions); got != want {
+	if got, want := testPlanID(t, reqOmitted, actions), testPlanID(t, reqGlobal, actions); got != want {
 		t.Fatalf("planId with omitted scope = %q, explicit global = %q; want same resolved plan", got, want)
 	}
 }

@@ -153,3 +153,34 @@ func TestMarkdownMediaTokenBindsAuthorizedIdentity(t *testing.T) {
 		t.Fatalf("replacement identity response = %d, want 404", rec.Code)
 	}
 }
+
+func TestMediaTokenHandlerSelectsPercentFilenameExactly(t *testing.T) {
+	original, _ := os.Getwd()
+	defer os.Chdir(original)
+	dir := t.TempDir()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"raw%20name.pdf": "literal-percent",
+		"raw name.pdf":   "space",
+		"100%.pdf":       "percent-sign",
+		"中文#.pdf":        "unicode-hash",
+	}
+	app := NewApp()
+	handler := app.workspaceMediaMiddleware()(http.NotFoundHandler())
+	for name, body := range files {
+		if err := os.WriteFile(name, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		preview := app.ReadFile(name)
+		if preview.Err != "" || preview.URL == "" {
+			t.Fatalf("preview %q = %+v", name, preview)
+		}
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, preview.URL, nil))
+		if recorder.Code != http.StatusOK || recorder.Body.String() != body {
+			t.Fatalf("GET %q = %d %q, want exact %q", preview.URL, recorder.Code, recorder.Body.String(), body)
+		}
+	}
+}

@@ -68,6 +68,10 @@ type FileState struct {
 // conversation-rewind boundary — persisted so a resumed session can rewind the
 // conversation and fork, not just the code.
 type Checkpoint struct {
+	Recovery *RecoveryIdentity `json:"recovery,omitempty"`
+	// Result is a bounded, immutable view of this turn's confirmed net changes.
+	// Missing on older checkpoints; never reconstructed from today's workspace.
+	Result             *TurnChanges   `json:"result,omitempty"`
 	SchemaVersion      int            `json:"schemaVersion,omitempty"`
 	Turn               int            `json:"turn"`
 	Time               time.Time      `json:"time"`
@@ -165,8 +169,9 @@ type Store struct {
 
 // New returns a store for the given checkpoint dir and workspace root, loading any
 // checkpoints already persisted under dir. A "" dir disables persistence (the
-// store still works in memory for the session).
-func New(dir, root string) *Store {
+// store still works in memory for the session). Options override the retention
+// defaults.
+func New(dir, root string, opts ...Option) *Store {
 	s := &Store{
 		dir:          dir,
 		root:         root,
@@ -176,6 +181,14 @@ func New(dir, root string) *Store {
 		retainN:      DefaultRetainCheckpoints,
 		blobQuota:    DefaultBlobQuotaBytes,
 		protectTurns: map[int]bool{},
+	}
+	// Applied before the load/GC below: that startup prune reads retainN and
+	// blobQuota (gcLocked -> pruneV3TurnsLocked), so a configured retention must
+	// already be in place or reopening a session would trim using the defaults.
+	for _, opt := range opts {
+		if opt != nil {
+			opt(s)
+		}
 	}
 	if dir != "" {
 		s.blobs = NewBlobStore(filepath.Join(dir, "blobs"))
@@ -641,35 +654,6 @@ func (s *Store) pruneBlobsLocked() {
 	if err := s.blobs.Prune(live); err != nil {
 		slog.Warn("checkpoint: prune blobs", "err", err)
 	}
-}
-
-func (s *Store) expirePayloadLocked(c *Checkpoint) error {
-	if c == nil || c.ExpiredFilePayload {
-		return nil
-	}
-	expired := *c
-	expired.Files = append([]FileSnap(nil), c.Files...)
-	expired.CoverageGaps = append([]CoverageGap(nil), c.CoverageGaps...)
-	for i := range expired.Files {
-		expired.Files[i].BlobRef = ""
-		expired.Files[i].Content = nil
-		expired.Files[i].PayloadExpired = true
-	}
-	expired.ExpiredFilePayload = true
-	expired.Coverage = CoveragePartial
-	expired.CoverageGaps = append(expired.CoverageGaps, CoverageGap{Reason: GapExpiredPayload, Detail: "file recovery payload expired"})
-	if err := s.persist(&expired); err != nil {
-		return err
-	}
-	if s.dir != "" {
-		legacyVisible := filepath.Join(s.dir, fmt.Sprintf("turn-%d.json", c.Turn))
-		if err := os.Remove(legacyVisible); err != nil && !os.IsNotExist(err) {
-			_ = os.Remove(s.checkpointPath(&expired))
-			return err
-		}
-	}
-	*c = expired
-	return nil
 }
 
 // NextTurn returns the turn number a new checkpoint should take: one past the

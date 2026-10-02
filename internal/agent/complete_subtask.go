@@ -9,17 +9,16 @@ import (
 	"reasonix/internal/tool"
 )
 
-// CompleteSubtaskTool is visible only inside sub-agent registries. It ends a
-// delegated run with a structured, host-checkable claim instead of prose. It is
-// never registered on the parent agent's tool surface.
+// CompleteSubtaskTool optionally records the child's own completion report.
+// It is never registered on the parent agent's tool surface.
 type CompleteSubtaskTool struct{}
 
 func NewCompleteSubtaskTool() *CompleteSubtaskTool { return &CompleteSubtaskTool{} }
 
-func (*CompleteSubtaskTool) Name() string { return "complete_subtask" }
+func (*CompleteSubtaskTool) Name() string { return tool.HostCompleteSubtask }
 
 func (*CompleteSubtaskTool) Description() string {
-	return "Close out this delegated sub-task with a structured result the parent can verify. Call once, last. status is complete, partial, blocked, or failed; summary states what is now true; acceptance_criteria lists each condition with the evidence for it; unresolved lists what you did not finish. The host checks every cited command and path against what it actually observed you do, and lowers any claim it cannot back."
+	return "Optionally report this delegated sub-task's outcome to the parent. status is complete, partial, blocked, or failed; summary states what is now true; acceptance_criteria lists your assessment and supporting information; unresolved lists what remains. This is your report; the host displays actual execution facts separately. A final prose answer is also sufficient."
 }
 
 // ReadOnly is true: submitting a report changes no workspace state. It is the
@@ -32,11 +31,11 @@ func (*CompleteSubtaskTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
 "type":"object",
 "properties":{
-  "status":{"type":"string","description":"complete | partial | blocked | failed. Claim the truth: the host lowers a status its receipts cannot back."},
+  "status":{"type":"string","description":"Your assessment: complete | partial | blocked | failed."},
   "summary":{"type":"string","description":"What is now true as a result of this sub-task."},
   "acceptance_criteria":{
     "type":"array",
-    "description":"Each condition this sub-task had to meet, with proof.",
+    "description":"Your assessment of each condition and its supporting information.",
     "items":{
       "type":"object",
       "properties":{
@@ -70,19 +69,8 @@ func (*CompleteSubtaskTool) Execute(ctx context.Context, args json.RawMessage) (
 	if err != nil {
 		return "", err
 	}
-	led, ok := evidence.FromContext(ctx)
-	if !ok {
-		return "", fmt.Errorf("complete_subtask requires the host evidence ledger; submit it from inside a sub-agent run")
-	}
-	// The submission always succeeds: the parent is better served by a claim it
-	// can see the host lower than by a rejection the parent never learns about.
-	adjudicated, reasons := led.AdjudicateCompletion(report)
-	msg := fmt.Sprintf("complete_subtask accepted: status=%s criteria=%d unresolved=%d",
-		adjudicated.Status, len(adjudicated.Criteria), len(adjudicated.Unresolved))
-	if len(reasons) > 0 {
-		msg += fmt.Sprintf(" — the host lowered %d unbacked criterion claim(s); run the check or cite what you really did", len(reasons))
-	}
-	return msg, nil
+	return fmt.Sprintf("complete_subtask recorded as model report: status=%s criteria=%d unresolved=%d",
+		report.Status, len(report.Criteria), len(report.Unresolved)), nil
 }
 
 // AttachCompleteSubtaskTool adds complete_subtask to a sub-agent registry.
@@ -94,28 +82,18 @@ func AttachCompleteSubtaskTool(reg *tool.Registry) {
 	reg.Add(NewCompleteSubtaskTool())
 }
 
-// CompletionReport returns this agent's adjudicated completion claim, if it
-// submitted one. Adjudication re-runs here so the returned status reflects the
-// full run, including receipts recorded after the tool call itself.
-func (a *Agent) CompletionReport() (evidence.CompletionReport, []string, bool) {
+// CompletionReport returns the model's report without host adjudication.
+func (a *Agent) CompletionReport() (evidence.CompletionReport, bool) {
 	if a == nil || a.task.ledger == nil {
-		return evidence.CompletionReport{}, nil, false
+		return evidence.CompletionReport{}, false
 	}
-	report, ok := a.task.ledger.LatestCompletionReport()
-	if !ok {
-		return evidence.CompletionReport{}, nil, false
-	}
-	adjudicated, reasons := a.task.ledger.AdjudicateCompletion(report)
-	return adjudicated, reasons, true
+	return a.task.ledger.LatestCompletionReport()
 }
 
 // completeSubtaskContract is appended to a sub-agent's task prompt when the
-// host expects a typed completion claim. The profile body says how to work;
-// this states the non-negotiable closing protocol.
+// host offers a typed completion report as an alternative to prose.
 const completeSubtaskContract = `<completion-contract>
-End this sub-task by calling complete_subtask exactly once, as your final tool call.
-State the acceptance criteria you were held to and attach, for each, the command you
-ran or the paths you changed. The host checks every citation against what it observed
-you actually do and lowers any claim it cannot back, so cite real work only and put
-anything you assumed rather than verified in unresolved.
+Finish with a clear final answer, or optionally use complete_subtask to provide a
+structured report. State what you completed and what remains uncertain or undone.
+Your completion assessment is shown separately from host-recorded execution facts.
 </completion-contract>`

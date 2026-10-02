@@ -7,13 +7,8 @@
 // coverage. Fail-fast by default; --keep-going runs everything and summarizes.
 import { spawnSync } from "node:child_process";
 import { readdirSync } from "node:fs";
-import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-
-// Resolve the local tsx entry directly so the runner works both under pnpm
-// scripts and when invoked as plain `node scripts/run-tests.mjs`.
-const tsxCli = createRequire(import.meta.url).resolve("tsx/cli");
 
 const TESTS_DIR = "src/__tests__";
 const SCRIPTS_DIR = "scripts";
@@ -40,22 +35,22 @@ const OWNED_ELSEWHERE = new Map(Object.entries({
   "raf-batch.test.ts": "test:stream",
   "stream-delta-batch.test.ts": "test:stream",
   "use-controller-stream-progress.test.ts": "test:stream",
-  "transcript-virtuoso-index.test.ts": "test:transcript",
-  "transcript-scroll-release.test.ts": "test:transcript",
-  "transcript-virtualization.test.tsx": "test:transcript",
   "nested-scroll-handoff.test.ts": "test:transcript",
-  "creation-transcript-scrollbar.test.ts": "test:transcript",
-  "markdown-table-virtual.test.tsx": "test:transcript",
   "typography-overflow-contract.test.ts": "test:transcript",
-  "transcript-selection-retention.test.tsx": "test:transcript",
   "composer-menu-viewport.test.ts": "test:composer-menu-viewport",
   "virtual-menu-identity.test.tsx": "test:composer-menu-viewport",
   "remote-workspace-launch.test.ts": "test:remote",
   "remote-store.test.ts": "test:remote",
   "remote-error-ux.test.tsx": "test:remote",
   "remote-hosts-page.test.tsx": "test:remote",
+  "remote-connect-wizard.test.tsx": "test:remote (needs the css stub register)",
+  "add-project-entries.test.ts": "test:remote",
   "remote-secret-dialog.test.tsx": "test:remote",
   "remote-server-panel.test.tsx": "test:remote (needs the svg stub register)",
+  "remote-session-surface.test.tsx": "test:remote (needs the svg stub register)",
+  "remote-running-reconcile.test.ts": "test:remote",
+  "remote-project-tree.test.tsx": "test:remote",
+  "statusbar-workspace.test.tsx": "test:remote",
   "updater-shared-state.test.tsx": "test:updater",
   "window-state-ordering.test.ts": "test:window-state",
 }));
@@ -72,9 +67,10 @@ for (const [name, owner] of OWNED_ELSEWHERE) {
   }
 }
 
-// Suites that statically import CSS (e.g. HeartbeatPanel's heartbeat.css) need
-// the css-stub loader hook so tsx resolves the import under node.
-const CSS_STUB_SUITES = new Set(["heartbeat-editor.test.tsx", "heartbeat-next-run.test.ts"]);
+// Browser assets are not executable Node code. Use the same SVG/image/CSS
+// loader as dedicated component suites so discovered transitive imports work.
+// Asset rendering remains covered by the browser and stylesheet gates.
+const assetArgs = ["--import", pathToFileURL(resolve(SCRIPTS_DIR, "svg-stub-register.mjs")).href];
 
 const suites = files.filter((name) => !OWNED_ELSEWHERE.has(name));
 console.log(`run-tests: ${suites.length} discovered suites (${OWNED_ELSEWHERE.size} owned by dedicated scripts)`);
@@ -87,12 +83,9 @@ for (const name of suites) {
   // Node's built-in navigator.language follows the machine's ICU locale, and
   // suites assert English UI strings.
   const env = { ...process.env, LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" };
-  const extraArgs = CSS_STUB_SUITES.has(name)
-    // --import needs an absolute file URL: a bare relative path is resolved as
-    // a package specifier by Node and fails with ERR_MODULE_NOT_FOUND.
-    ? ["--import", pathToFileURL(resolve(SCRIPTS_DIR, "css-stub-register.mjs")).href]
-    : [];
-  const result = spawnSync(process.execPath, [tsxCli, ...extraArgs, path], { stdio: "inherit", env });
+  // Register asset hooks before tsx and the suite. Passing --import after the
+  // tsx CLI can leave lazy CSS imports unhandled in Node tests.
+  const result = spawnSync(process.execPath, [...assetArgs, "--import", "tsx", path], { stdio: "inherit", env });
   if (result.error) console.error(`run-tests: spawn failed for ${path}: ${result.error.message}`);
   if (result.status !== 0) {
     if (!keepGoing) {

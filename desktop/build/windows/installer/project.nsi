@@ -1,18 +1,21 @@
 ﻿Unicode true
 
+SetCompressor /SOLID /FINAL lzma
+SetCompressorDictSize 32
+
 ####
-## Reasonix per-user NSIS installer.
+## Reasonix per-user NSIS installer (Electron shell).
 ##
-## This file is COMMITTED and customized (Wails leaves an existing project.nsi
-## untouched and only regenerates wails_tools.nsh). The customizations vs.
-## Wails' default template:
+## This file is COMMITTED and fully self-contained: the Electron packaging
+## script (desktop/packaging/package.mjs) generates reasonix_project.nsh with
+## the INFO_* identity defines, and every macro the old Wails template provided
+## is inlined below. The customizations vs. a stock NSIS template:
 ##
 ##   1. REQUEST_EXECUTION_LEVEL "user" + InstallDir under $LOCALAPPDATA - install
 ##      without administrator rights. This lets the auto-updater re-run a freshly
 ##      downloaded installer in a visible progress-only mode with no UAC prompt.
-##   2. Uninstall registry under HKCU (not HKLM). Wails' wails.writeUninstaller /
-##      wails.deleteUninstaller macros hard-code HKLM, which a non-admin install
-##      cannot write - so we inline HKCU versions below instead.
+##   2. Uninstall registry under HKCU (not HKLM) - a non-admin install cannot
+##      write HKLM, so the uninstaller macros below use HKCU.
 ##   3. InstallDir is remembered across updates via InstallDirRegKey +
 ##      InstallLocation (HKCU\...\Uninstall\InstallLocation). When upgrading from
 ##      a build that did not write InstallLocation yet, .onInit falls back to the
@@ -21,20 +24,25 @@
 ##      moved the install to a different drive (e.g. D:\Tools\Reasonix); the
 ##      auto-updater would overwrite the wrong dir, leaving the old install
 ##      orphaned.
-##
-## Everything else mirrors Wails' generated default. Defines below override the
-## ProjectInfo values that wails_tools.nsh would otherwise populate.
+##   4. The payload is the flat Go executables plus the Electron app/ tree,
+##      installed recursively with `File /r` into the versioned staging
+##      directory that the signed Go activator publishes as versions/v<ver>/.
 ####
 
-## Install per-user (no admin). Must be defined BEFORE including wails_tools.nsh,
-## which only sets the "admin" default when REQUEST_EXECUTION_LEVEL is undefined.
+## Install per-user (no admin).
 !define REQUEST_EXECUTION_LEVEL "user"
 
 ####
-## Include the wails tools (auto-generated; provides INFO_* defines and the
-## wails.* macros used below).
+## Product identity. REASONIX_VERSION_TAG is the release/install identity;
+## INFO_PRODUCTVERSION is numeric metadata only.
 ####
-!include "wails_tools.nsh"
+!if /FileExists "reasonix_project.nsh"
+!include "reasonix_project.nsh"
+!else
+!error "reasonix_project.nsh is missing; run desktop/packaging/package.mjs first"
+!endif
+!include "x64.nsh"
+!include "WinVer.nsh"
 !include "FileFunc.nsh"
 !include "LogicLib.nsh"
 
@@ -48,14 +56,100 @@
 !define REASONIX_UNINST_FINALIZE 'cmd.exe /C copy /Y "%1" "reasonix-uninstall.exe" >NUL'
 !endif
 
+# The service executable stays the active version entry the thin launcher
+# starts; it bootstraps app\Reasonix.exe (Electron) and exits.
+!define PRODUCT_EXECUTABLE "${INFO_PROJECTNAME}.exe"
+!define REASONIX_ELECTRON_EXECUTABLE "Reasonix.exe"
+!define UNINST_KEY_NAME "${INFO_COMPANYNAME}${INFO_PRODUCTNAME}"
+!define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINST_KEY_NAME}"
+RequestExecutionLevel "${REQUEST_EXECUTION_LEVEL}"
+
+# Exactly one target architecture per installer, selected by the build script
+# through the binary define it passes (values point at the staged service
+# executable; only their presence selects the architecture).
+!ifdef ARG_REASONIX_AMD64_BINARY
+!define ARCH "amd64"
+!endif
+!ifdef ARG_REASONIX_ARM64_BINARY
+!define ARCH "arm64"
+!endif
+!ifndef ARCH
+!error "one of ARG_REASONIX_AMD64_BINARY or ARG_REASONIX_ARM64_BINARY is required; package-windows-desktop.sh passes it"
+!endif
+
+!macro reasonix.checkArchitecture
+    ${If} ${AtLeastWin10}
+        !if "${ARCH}" == "amd64"
+            ${if} ${IsNativeAMD64}
+                Goto reasonix_arch_ok
+            ${EndIf}
+        !else
+            ${if} ${IsNativeARM64}
+                Goto reasonix_arch_ok
+            ${EndIf}
+        !endif
+
+        IfSilent reasonix_arch_silent reasonix_arch_interactive
+        reasonix_arch_silent:
+            SetErrorLevel 65
+            Abort
+        reasonix_arch_interactive:
+            MessageBox MB_OK "This product can't be installed on the current Windows architecture. Supports: ${ARCH}"
+            Quit
+    ${else}
+        IfSilent reasonix_win_silent reasonix_win_interactive
+        reasonix_win_silent:
+            SetErrorLevel 64
+            Abort
+        reasonix_win_interactive:
+            MessageBox MB_OK "This product is only supported on Windows 10 (Server 2016) and later."
+            Quit
+    ${EndIf}
+
+    reasonix_arch_ok:
+!macroend
+
+!macro reasonix.setShellContext
+    ${If} ${REQUEST_EXECUTION_LEVEL} == "admin"
+        SetShellVarContext all
+    ${else}
+        SetShellVarContext current
+    ${EndIf}
+!macroend
+
+# The release unit: the Go service executable plus the Electron app/ tree.
+# package-windows-desktop.sh stages both next to this script before makensis.
+!macro reasonix.files
+    File "/oname=${PRODUCT_EXECUTABLE}" "${PRODUCT_EXECUTABLE}"
+    !if /FileExists "app\${REASONIX_ELECTRON_EXECUTABLE}"
+    File /r "app"
+    !else
+    !error "the Electron app tree is missing; run desktop/packaging/package.mjs first"
+    !endif
+!macroend
+
+# Reasonix registers no file associations or custom protocols; keep the hooks
+# as no-ops so the install/uninstall flow keeps its shape.
+!macro reasonix.associateFiles
+!macroend
+
+!macro reasonix.unassociateFiles
+!macroend
+
+!macro reasonix.associateCustomProtocols
+!macroend
+
+!macro reasonix.unassociateCustomProtocols
+!macroend
+
 # The version information for this two must consist of 4 parts
 VIProductVersion "${INFO_PRODUCTVERSION}.0"
 VIFileVersion    "${INFO_PRODUCTVERSION}.0"
 
 VIAddVersionKey "CompanyName"     "${INFO_COMPANYNAME}"
 VIAddVersionKey "FileDescription" "${INFO_PRODUCTNAME} Installer"
-VIAddVersionKey "ProductVersion"  "${INFO_PRODUCTVERSION}"
-VIAddVersionKey "FileVersion"     "${INFO_PRODUCTVERSION}"
+VIAddVersionKey "ProductVersion"  "${REASONIX_DISPLAY_VERSION}"
+VIAddVersionKey "FileVersion"     "${REASONIX_DISPLAY_VERSION}"
 VIAddVersionKey "LegalCopyright"  "${INFO_COPYRIGHT}"
 VIAddVersionKey "ProductName"     "${INFO_PRODUCTNAME}"
 
@@ -92,6 +186,12 @@ LangString reasonixUpdateTitle ${LANG_TRADCHINESE} "正在更新 Reasonix"
 LangString reasonixUpdateSubtitle ${LANG_ENGLISH} "Installing the verified update. Reasonix will restart automatically."
 LangString reasonixUpdateSubtitle ${LANG_SIMPCHINESE} "正在安装已验证的更新，完成后 Reasonix 将自动重启。"
 LangString reasonixUpdateSubtitle ${LANG_TRADCHINESE} "正在安裝已驗證的更新，完成後 Reasonix 將自動重新啟動。"
+LangString reasonixActivateBusy ${LANG_ENGLISH} "Reasonix is still running or another installation is in progress. Close it and click Retry. Details: %APPDATA%\reasonix\desktop-shell\logs\recovery.log"
+LangString reasonixActivateBusy ${LANG_SIMPCHINESE} "Reasonix 仍在运行，或另一个安装正在进行。请关闭后点击“重试”。详情见 %APPDATA%\reasonix\desktop-shell\logs\recovery.log"
+LangString reasonixActivateBusy ${LANG_TRADCHINESE} "Reasonix 仍在執行，或另一個安裝正在進行。請關閉後點擊「重試」。詳情見 %APPDATA%\reasonix\desktop-shell\logs\recovery.log"
+LangString reasonixActivateLocked ${LANG_ENGLISH} "Reasonix could not activate the release, often because a file was temporarily locked by antivirus or sync software. Wait a moment and click Retry. Details: %APPDATA%\reasonix\desktop-shell\logs\recovery.log"
+LangString reasonixActivateLocked ${LANG_SIMPCHINESE} "Reasonix 无法启用新版本，通常是文件被杀毒或同步软件临时锁定。请稍候再点击“重试”。详情见 %APPDATA%\reasonix\desktop-shell\logs\recovery.log"
+LangString reasonixActivateLocked ${LANG_TRADCHINESE} "Reasonix 無法啟用新版本，通常是檔案被防毒或同步軟體暫時鎖定。請稍候再點擊「重試」。詳情見 %APPDATA%\reasonix\desktop-shell\logs\recovery.log"
 
 ## Preserve the first-pass generated uninstaller so the release workflow can
 ## Authenticode-sign it together with the other installed payload files.
@@ -115,7 +215,6 @@ OutFile "..\..\bin\${INFO_PROJECTNAME}-${ARCH}-installer.exe" # Name of the inst
 !define REASONIX_PAYLOAD_SIGNATURE "reasonix-payload.json.minisig"
 !define REASONIX_LEGACY_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Reasonix"
 !define REASONIX_LEGACY_PRODUCT_KEY "Software\reasonix\Reasonix"
-!define REASONIX_UNLOCK_RETRIES 60
 Var ReasonixUpdateMode
 Var ReasonixStageMode
 InstallDirRegKey HKCU "${UNINST_KEY}" "InstallLocation" # Reuse the previous install path on update; .onInit falls back to the default on first install.
@@ -123,8 +222,8 @@ InstallDir "${REASONIX_DEFAULT_INSTALLDIR}" # Per-user install location (no admi
 ShowInstDetails show # This will always show the installation details.
 
 ####
-## Per-user uninstaller registry (HKCU). Replaces wails.writeUninstaller /
-## wails.deleteUninstaller, which write HKLM and would fail without admin rights.
+## Per-user uninstaller registry (HKCU). HKLM writes would fail without admin
+## rights, so the uninstaller registration lives entirely under HKCU.
 ####
 !macro reasonix.writeUninstaller
     !ifdef ARG_REASONIX_SIGNED_UNINSTALLER
@@ -135,9 +234,9 @@ ShowInstDetails show # This will always show the installation details.
 
     WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "${INFO_COMPANYNAME}"
     WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "${INFO_PRODUCTNAME}"
-    WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "${INFO_PRODUCTVERSION}"
+    WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "${REASONIX_DISPLAY_VERSION}"
     !if /FileExists "${REASONIX_LAUNCHER}"
-    WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\${REASONIX_LAUNCHER}"
+    WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\${REASONIX_PORTABLE_ENTRY}"
     !else
     WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     !endif
@@ -204,7 +303,12 @@ ShowInstDetails show # This will always show the installation details.
 !macroend
 
 Function .onInit
-   !insertmacro wails.checkArchitecture
+   !ifdef ARG_REASONIX_UNINSTALLER_ONLY
+   ; This compiler artifact exists only to extract the shared uninstaller.
+   ; It is never an installable or publishable product.
+   Quit
+   !endif
+   !insertmacro reasonix.checkArchitecture
 
    ; The helper passes /REASONIXUPDATE=1 and a final /D=<current directory>.
    ; This mode remains visible but skips every page that could change the
@@ -304,87 +408,102 @@ Function reasonix.skipFinishPageForUpdate
 reasonix_show_finish_page:
 FunctionEnd
 
+# Check every stable entry point before extracting a replacement.  A running
+# shell may have already exited its Go service while still holding one of
+# these files open; treating that as an installable state recreates the
+# "installed but does not open" failure.  Silent installs fail closed.
 Function reasonix.waitForExecutableUnlock
-   StrCpy $0 0
-
-retry:
-   IfFileExists "$INSTDIR\${PRODUCT_EXECUTABLE}" 0 check_versioned_target
+   StrCpy $3 40
+reasonix_unlock_check:
+   StrCpy $2 0
+   IfFileExists "$INSTDIR\${PRODUCT_EXECUTABLE}" 0 reasonix_unlock_versioned
    ClearErrors
    FileOpen $1 "$INSTDIR\${PRODUCT_EXECUTABLE}" a
-   IfErrors locked
+   IfErrors reasonix_unlock_stable_locked
    FileClose $1
-
-check_versioned_target:
-   ; A same-version recovery install replaces this directory transactionally.
-   ; Detect the running active binary before asking the Go activator to rename it.
-   IfFileExists "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}" 0 check_guard
+   Goto reasonix_unlock_versioned
+reasonix_unlock_stable_locked:
+   StrCpy $2 1
+reasonix_unlock_versioned:
+   IfFileExists "$INSTDIR\versions\${REASONIX_VERSION_TAG}\${PRODUCT_EXECUTABLE}" 0 reasonix_unlock_guard
    ClearErrors
-   FileOpen $1 "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}" a
-   IfErrors locked
+   FileOpen $1 "$INSTDIR\versions\${REASONIX_VERSION_TAG}\${PRODUCT_EXECUTABLE}" a
+   IfErrors reasonix_unlock_versioned_locked
    FileClose $1
-
-check_guard:
-   IfFileExists "$INSTDIR\${REASONIX_GUARD}" 0 check_launcher
+   Goto reasonix_unlock_guard
+reasonix_unlock_versioned_locked:
+   StrCpy $2 1
+reasonix_unlock_guard:
+   IfFileExists "$INSTDIR\${REASONIX_GUARD}" 0 reasonix_unlock_launcher
    ClearErrors
    FileOpen $1 "$INSTDIR\${REASONIX_GUARD}" a
-   IfErrors locked
+   IfErrors reasonix_unlock_guard_locked
    FileClose $1
-
-check_launcher:
-	IfFileExists "$INSTDIR\${REASONIX_LAUNCHER}" 0 check_cli
-	ClearErrors
-	FileOpen $1 "$INSTDIR\${REASONIX_LAUNCHER}" a
-	IfErrors locked
-	FileClose $1
-
-check_cli:
-	IfFileExists "$INSTDIR\${REASONIX_CLI}" 0 check_portable_entry
-	ClearErrors
-	FileOpen $1 "$INSTDIR\${REASONIX_CLI}" a
-	IfErrors locked
-	FileClose $1
-
-check_portable_entry:
-   IfFileExists "$INSTDIR\${REASONIX_PORTABLE_ENTRY}" 0 done
+   Goto reasonix_unlock_launcher
+reasonix_unlock_guard_locked:
+   StrCpy $2 1
+reasonix_unlock_launcher:
+   IfFileExists "$INSTDIR\${REASONIX_LAUNCHER}" 0 reasonix_unlock_cli
+   ClearErrors
+   FileOpen $1 "$INSTDIR\${REASONIX_LAUNCHER}" a
+   IfErrors reasonix_unlock_launcher_locked
+   FileClose $1
+   Goto reasonix_unlock_cli
+reasonix_unlock_launcher_locked:
+   StrCpy $2 1
+reasonix_unlock_cli:
+   IfFileExists "$INSTDIR\${REASONIX_CLI}" 0 reasonix_unlock_portable
+   ClearErrors
+   FileOpen $1 "$INSTDIR\${REASONIX_CLI}" a
+   IfErrors reasonix_unlock_cli_locked
+   FileClose $1
+   Goto reasonix_unlock_portable
+reasonix_unlock_cli_locked:
+   StrCpy $2 1
+reasonix_unlock_portable:
+   IfFileExists "$INSTDIR\${REASONIX_PORTABLE_ENTRY}" 0 reasonix_unlock_result
    ClearErrors
    FileOpen $1 "$INSTDIR\${REASONIX_PORTABLE_ENTRY}" a
-   IfErrors locked
+   IfErrors reasonix_unlock_portable_locked
    FileClose $1
-   Goto done
-
-locked:
-   IntOp $0 $0 + 1
-   IntCmp $0 ${REASONIX_UNLOCK_RETRIES} failed 0 0
-   Sleep 1000
-   Goto retry
-
-failed:
-   IfSilent silent interactive
-
-interactive:
-   MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "Reasonix is still running. Close Reasonix, then click Retry to continue the installation." IDRETRY retry IDCANCEL abort
-   Goto retry
-
-silent:
+   Goto reasonix_unlock_result
+reasonix_unlock_portable_locked:
+   StrCpy $2 1
+reasonix_unlock_result:
+   StrCmp $2 0 reasonix_unlock_ok
+   IntOp $3 $3 - 1
+   IntCmp $3 0 reasonix_unlock_failed reasonix_unlock_retry reasonix_unlock_retry
+reasonix_unlock_retry:
+   Sleep 500
+   Goto reasonix_unlock_check
+reasonix_unlock_failed:
    SetErrorLevel 1618
-
-abort:
-   Abort "Reasonix is still running. Close Reasonix and run the installer again."
-
-done:
+   IfSilent reasonix_unlock_abort reasonix_unlock_prompt
+reasonix_unlock_prompt:
+   MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "Reasonix is still running. Close it and click Retry, or cancel this installation." IDRETRY reasonix_unlock_check
+reasonix_unlock_abort:
+   Abort
+reasonix_unlock_ok:
 FunctionEnd
 
-Section
-    !insertmacro wails.setShellContext
 
-    ; /REASONIXSTAGE=1: flat six-member payload for 1.18–1.19.1 helpers (and
-    ; the new helper's staging extract). Do not write shortcuts/uninstaller.
-    ; Normal install: versioned-v1 layout under versions/v${INFO_PRODUCTVERSION}/
+!ifdef ARG_REASONIX_UNINSTALLER_ONLY
+Section
+    WriteUninstaller "$INSTDIR\uninstall.exe"
+SectionEnd
+!else
+Section
+    !insertmacro reasonix.setShellContext
+
+    ; /REASONIXSTAGE=1: flat executables plus the Electron app/ tree for
+    ; 1.18–1.19.1 helpers (and the new helper's staging extract). Do not write
+    ; shortcuts/uninstaller.
+    ; Normal install: versioned-v1 layout under versions/${REASONIX_VERSION_TAG}/
     ; with a permanent thin launcher at InstallRoot. Guard is only present in
     ; STAGE payloads (as the one-shot legacy migrator) and is not persisted on
     ; a normal install.
     StrCmp $ReasonixStageMode "1" reasonix_stage_payload
-    !insertmacro wails.webview2runtime
+    ; The signed activator coordinates all installed versions before committing.
     Call reasonix.waitForExecutableUnlock
     Goto reasonix_normal_install
 
@@ -396,7 +515,7 @@ reasonix_stage_payload:
     !if /FileExists "${REASONIX_PAYLOAD_SIGNATURE}"
     File "/oname=${REASONIX_PAYLOAD_SIGNATURE}" "${REASONIX_PAYLOAD_SIGNATURE}"
     !endif
-    !insertmacro wails.files
+    !insertmacro reasonix.files
     !if /FileExists "${REASONIX_UPDATE_HELPER}"
     File "/oname=${REASONIX_UPDATE_HELPER}" "${REASONIX_UPDATE_HELPER}"
     !endif
@@ -419,11 +538,11 @@ reasonix_normal_install:
     ; automatic updates instead of writing live files or current.json in place.
     System::Call 'kernel32::GetCurrentProcessId() i .R8'
     CreateDirectory "$INSTDIR\versions"
-    StrCpy $R9 "$INSTDIR\versions\.installer-v${INFO_PRODUCTVERSION}-$R8"
+    StrCpy $R9 "$INSTDIR\versions\.installer-${REASONIX_VERSION_TAG}-$R8"
     RMDir /r "$R9"
     CreateDirectory "$R9"
     SetOutPath "$R9"
-    !insertmacro wails.files
+    !insertmacro reasonix.files
     !if /FileExists "${REASONIX_UPDATE_HELPER}"
     File "/oname=${REASONIX_UPDATE_HELPER}" "${REASONIX_UPDATE_HELPER}"
     !else
@@ -445,12 +564,36 @@ reasonix_normal_install:
     !error "${REASONIX_GUARD} was not found; normal installs require the signed layout activator."
     !endif
     DetailPrint "Reasonix layout activator output:"
-    nsExec::ExecToLog /OEM '"$PLUGINSDIR\${REASONIX_LAYOUT_INSTALLER}" --install-root "$INSTDIR" --version "v${INFO_PRODUCTVERSION}" --activate-staging "$R9" --no-relaunch'
+    StrCpy $R7 ""
+    IfSilent +2 0
+    StrCpy $R7 "--interactive-recovery"
+reasonix_layout_activate:
+    nsExec::ExecToLog /OEM '"$PLUGINSDIR\${REASONIX_LAYOUT_INSTALLER}" --install-root "$INSTDIR" --version "${REASONIX_VERSION_TAG}" --activate-staging "$R9" --no-relaunch $R7'
     Pop $0
     StrCmp $0 "0" reasonix_layout_activated
     DetailPrint "Reasonix layout activation failed with exit code $0; the previous version remains active."
+    ; 1602 is the user's own cancel in the recovery dialog. Every other failure
+    ; keeps $R9 so Retry re-runs the activator against the same verified files;
+    ; the exit code is set only once the attempt is truly abandoned.
+    StrCmp $0 "1602" reasonix_activation_cancelled
+    IfSilent reasonix_activation_failed 0
+    StrCmp $0 "1618" reasonix_activation_busy_prompt reasonix_activation_locked_prompt
+reasonix_activation_busy_prompt:
+    MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "$(reasonixActivateBusy)" IDRETRY reasonix_layout_activate
+    Goto reasonix_activation_failed
+reasonix_activation_locked_prompt:
+    MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "$(reasonixActivateLocked)" IDRETRY reasonix_layout_activate
+reasonix_activation_failed:
     RMDir /r "$R9"
+    StrCmp $0 "1618" 0 +3
+    SetErrorLevel 1618
+    Goto reasonix_activation_abort
     SetErrorLevel 1
+    Goto reasonix_activation_abort
+reasonix_activation_cancelled:
+    RMDir /r "$R9"
+    SetErrorLevel 1602
+reasonix_activation_abort:
     Abort "Reasonix could not activate the verified release. The previous version was left unchanged."
 
 reasonix_layout_activated:
@@ -466,25 +609,36 @@ reasonix_layout_activated:
     ; Keep both target and icon on the stable launcher. Pointing IconLocation at
     ; versions\vX\reasonix-desktop.exe leaves a blank shortcut as soon as version
     ; retention removes that directory after a later update.
-    CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "" "$INSTDIR\${REASONIX_LAUNCHER}" 0
-    CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "" "$INSTDIR\${REASONIX_LAUNCHER}" 0
+    ; Preserve user arguments, icons and working directories on existing links;
+    ; the owned-link repair below migrates their targets without replacing them.
+    IfFileExists "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" +2 0
+    CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_PORTABLE_ENTRY}" "" "$INSTDIR\${REASONIX_PORTABLE_ENTRY}" 0
+    IfFileExists "$DESKTOP\${INFO_PRODUCTNAME}.lnk" +2 0
+    CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_PORTABLE_ENTRY}" "" "$INSTDIR\${REASONIX_PORTABLE_ENTRY}" 0
+    ; Stamp the exact paths created in this shell context before the user can pin them.
+    nsExec::ExecToLog /OEM '"$INSTDIR\${REASONIX_PORTABLE_ENTRY}" --repair-shortcuts "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$DESKTOP\${INFO_PRODUCTNAME}.lnk"'
+    Pop $0
+    ${If} $0 != "0"
+        DetailPrint "Warning: shortcut identity repair failed ($0); the next normal launch will retry."
+    ${EndIf}
     !else
-    CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}"
-    CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}"
+    CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\versions\${REASONIX_VERSION_TAG}\${PRODUCT_EXECUTABLE}"
+    CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\versions\${REASONIX_VERSION_TAG}\${PRODUCT_EXECUTABLE}"
     !endif
 
-    !insertmacro wails.associateFiles
-    !insertmacro wails.associateCustomProtocols
+    !insertmacro reasonix.associateFiles
+    !insertmacro reasonix.associateCustomProtocols
     !insertmacro reasonix.writeUninstaller
     !insertmacro reasonix.deleteLegacyInstallerStateIfOwned
 
 reasonix_section_done:
 SectionEnd
+!endif
 
 Section "uninstall"
-    !insertmacro wails.setShellContext
+    !insertmacro reasonix.setShellContext
 
-    RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
+    RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the legacy webview data directory
 
     ; Precision uninstall: flat leftovers, thin entry points, and version trees.
     Delete "$INSTDIR\${PRODUCT_EXECUTABLE}"
@@ -499,8 +653,8 @@ Section "uninstall"
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk"
     Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"
 
-    !insertmacro wails.unassociateFiles
-    !insertmacro wails.unassociateCustomProtocols
+    !insertmacro reasonix.unassociateFiles
+    !insertmacro reasonix.unassociateCustomProtocols
 
     !insertmacro reasonix.deleteUninstaller
     !insertmacro reasonix.deleteLegacyInstallerStateIfOwned

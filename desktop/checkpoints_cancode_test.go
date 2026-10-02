@@ -17,7 +17,7 @@ import (
 )
 
 func TestDesktopRewindCommitAndUndoUseAuthoritativeControllerState(t *testing.T) {
-	isolateDesktopUserDirs(t)
+	isolateDesktopUserDirsSchemaOne(t)
 	dir := t.TempDir()
 	root := t.TempDir()
 	sessionPath := filepath.Join(dir, "s.jsonl")
@@ -210,6 +210,7 @@ func TestCheckpointsCanCodePropagatesToEarlierTurns(t *testing.T) {
 
 	ag := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
 	ctrl := control.New(control.Options{Executor: ag, SessionDir: dir, Label: "test"})
+	t.Cleanup(ctrl.Close)
 	ctrl.SetSessionPath(sessionPath)
 
 	app := &App{}
@@ -265,6 +266,7 @@ func TestCheckpointsCanCodeDoesNotReenableLegacySuffix(t *testing.T) {
 
 	ag := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
 	ctrl := control.New(control.Options{Executor: ag, SessionDir: dir, Label: "test"})
+	t.Cleanup(ctrl.Close)
 	ctrl.SetSessionPath(sessionPath)
 	app := &App{}
 	app.setTestCtrl(ctrl, "test")
@@ -298,6 +300,7 @@ func TestCheckpointsForTabLimitsCumulativeFilePreview(t *testing.T) {
 
 	ag := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
 	ctrl := control.New(control.Options{Executor: ag, SessionDir: dir, Label: "test"})
+	t.Cleanup(ctrl.Close)
 	ctrl.SetSessionPath(sessionPath)
 
 	app := &App{}

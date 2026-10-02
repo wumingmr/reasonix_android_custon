@@ -2,12 +2,14 @@ package boot
 
 import (
 	"reasonix/internal/agentpreset"
+	"reasonix/internal/tool"
 )
 
 // Role vocabulary re-exported for old frontends. Runtime constraints live in
 // internal/runtimepolicy; these names only parse compat inputs.
 
-// AgentPreset label constants; light and its aliases fold to standard.
+// AgentPreset label constants retained for wire compatibility. Every known
+// value folds to standard and no longer changes runtime behavior.
 const (
 	AgentPresetStandard = string(agentpreset.Standard)
 	AgentPresetDelivery = string(agentpreset.Delivery)
@@ -21,7 +23,7 @@ const (
 )
 
 // NormalizeAgentPreset maps free-form and legacy values to the canonical
-// role label. Light folds to standard; unknown values return the input
+// compatibility label. Known legacy values fold to standard; unknown values return the input
 // unchanged so callers can surface an error.
 func NormalizeAgentPreset(raw string) string {
 	if p, err := agentpreset.Normalize(raw); err == nil {
@@ -36,8 +38,8 @@ func NormalizeAgentPresetErr(raw string) (string, error) {
 	return string(p), err
 }
 
-// NormalizeTokenMode is the deprecated alias that returns legacy tokenMode
-// names (full/delivery) for dual-write and older clients.
+// NormalizeTokenMode is the deprecated alias that returns the fixed full
+// tokenMode value for older clients.
 func NormalizeTokenMode(mode string) string {
 	return agentpreset.LegacyTokenMode(agentpreset.FromLegacyTokenMode(mode))
 }
@@ -54,19 +56,37 @@ func TokenModeFromAgentPreset(preset string) string {
 
 // CoreProviderToolNames is the stable top-level tool surface shared by every
 // Agent role setting under identical configuration. Host-control tools
-// (ask, update_goal, todo_write, complete_step) are appended when enabled.
+// (ask, create_goal, get_goal, update_goal, todo_write) are appended when enabled.
 func CoreProviderToolNames() []string {
 	return []string{
 		"bash",
-		"bash_output",
-		"kill_shell",
-		"wait",
+		"job_output",
+		"job_kill",
 		"read_file",
+		"view_image",
 		"edit_file",
 		"write_file",
 		"compress",
 		"use_capability",
+		"web_search",
 	}
+}
+
+func coreProviderToolNamesForRegistry(reg *tool.Registry) []string {
+	names := CoreProviderToolNames()
+	if reg == nil {
+		return names
+	}
+	if _, ok := reg.Get("pwsh"); !ok {
+		return names
+	}
+	for i, name := range names {
+		if name == "bash" {
+			names[i] = "pwsh"
+			break
+		}
+	}
+	return names
 }
 
 // HostControlToolNames are collaboration/contract tools that may appear in the
@@ -74,9 +94,10 @@ func CoreProviderToolNames() []string {
 func HostControlToolNames() []string {
 	return []string{
 		"ask",
+		"create_goal",
+		"get_goal",
 		"update_goal",
 		"todo_write",
-		"complete_step",
 	}
 }
 
@@ -89,4 +110,28 @@ func UnifiedProviderToolNames() []string {
 	out = append(out, core...)
 	out = append(out, host...)
 	return out
+}
+
+// applyUnifiedProviderToolSurface restricts Schemas/ContractEntries to the
+// shared core + host-control tools. use_capability can still Get every
+// registered tool, including those hidden from the provider schema.
+func applyUnifiedProviderToolSurface(reg *tool.Registry) {
+	if reg == nil {
+		return
+	}
+	allow := make([]string, 0, 16)
+	names := coreProviderToolNamesForRegistry(reg)
+	names = append(names, HostControlToolNames()...)
+	for _, name := range names {
+		if _, ok := reg.Get(name); ok {
+			allow = append(allow, name)
+		}
+	}
+	// Always keep use_capability if somehow only that remains.
+	if len(allow) == 0 {
+		if _, ok := reg.Get("use_capability"); ok {
+			allow = []string{"use_capability"}
+		}
+	}
+	reg.SetProviderVisibleTools(allow)
 }

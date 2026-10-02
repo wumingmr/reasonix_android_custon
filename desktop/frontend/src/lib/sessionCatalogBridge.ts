@@ -1,4 +1,7 @@
 import { asArray } from "./array";
+import { desktopHost } from "./desktopHost";
+import { mockProjectGroups } from "./mockProjectTreeOrganization";
+import { mockReadSnapshotPage, releaseMockReadSnapshot } from "./mockReadSnapshot";
 import type {
   ProjectNode,
   ProjectTopicKey,
@@ -9,8 +12,9 @@ import type {
 } from "./types";
 
 export function onProjectTreeChangedV2(cb: (event: ProjectTreeChangedV2) => void): () => void {
-  if (typeof window !== "undefined" && window.runtime) {
-    return window.runtime.EventsOn("project-tree:changed-v2", (payload?: unknown) => {
+  const host = desktopHost();
+  if (host.kind !== "none") {
+    return host.events.on("project-tree:changed-v2", (payload?: unknown) => {
       if (!payload || typeof payload !== "object") return;
       const event = payload as Partial<ProjectTreeChangedV2>;
       cb({
@@ -30,18 +34,20 @@ export function makeMockSessionCatalogBindings(cloneProjectTree: () => ProjectNo
       : cloneProjectTree().find((item) => item.kind === "project" && item.root === req.workspaceRoot);
     const query = (req.query ?? "").trim().toLocaleLowerCase();
     const created = req.sortMode === "created";
+    const groups = mockProjectGroups(req.scope, req.workspaceRoot ?? "");
+    const grouped = new Set(groups.flatMap((group) => group.topicIds ?? []));
+    const selectedGroup = groups.find((group) => group.id === req.groupId);
     const all = asArray(folder?.children)
       .filter((item) => !query || item.label.toLocaleLowerCase().includes(query))
+      .filter((item) => !req.excludePinned || !item.pinned)
+      .filter((item) => req.groupFilter !== "ungrouped" || !grouped.has(item.topicId ?? ""))
+      .filter((item) => req.groupFilter !== "group" || Boolean(selectedGroup?.topicIds?.includes(item.topicId ?? "")))
       .sort((left, right) => Number(Boolean(right.pinned)) - Number(Boolean(left.pinned))
         || (created ? right.createdAt || right.lastActivityAt || 0 : right.lastActivityAt || right.createdAt || 0)
           - (created ? left.createdAt || left.lastActivityAt || 0 : left.lastActivityAt || left.createdAt || 0)
         || (left.topicId ?? "").localeCompare(right.topicId ?? ""));
-    const start = Math.max(0, Number.parseInt(req.cursor ?? "0", 10) || 0);
-    const limit = Math.min(200, Math.max(1, req.limit ?? 50));
-    const items = all.slice(start, start + limit);
     return {
-      items,
-      nextCursor: start + items.length < all.length ? String(start + items.length) : undefined,
+      ...mockReadSnapshotPage("project-topics", [req.scope, req.workspaceRoot, query, req.sortMode, req.groupFilter, req.groupId, req.excludePinned], req.cursor, req.limit, all),
       revision: 1,
       complete: true,
       readyDirectories: 1,
@@ -50,6 +56,7 @@ export function makeMockSessionCatalogBindings(cloneProjectTree: () => ProjectNo
     };
   };
   return {
+    async ReleaseReadSnapshot(id: string) { releaseMockReadSnapshot(id); },
     async GetProjectTreeSnapshot() {
       return {
         revision: 1,
@@ -57,7 +64,7 @@ export function makeMockSessionCatalogBindings(cloneProjectTree: () => ProjectNo
           ...project,
           children: asArray(project.children).filter((topic) => Boolean(topic.pinned)),
         })),
-        catalog: { state: "ready", mode: "memory", revision: 1, indexed: 4, total: 4, repairPending: 0, sourceCount: 4, unindexedTargetCount: 0, canRebuild: true },
+        catalog: { state: "ready", mode: "memory", revision: 1, indexed: 4, total: 4, repairPending: 0, sourceCount: 4, unindexedTargetCount: 0, canRebuild: false },
         indexed: 4,
         total: 4,
         indexingDone: true,
@@ -70,7 +77,7 @@ export function makeMockSessionCatalogBindings(cloneProjectTree: () => ProjectNo
         ?? { key: "", kind: key.scope === "global" ? "global_topic" : "topic", label: "", children: [] };
     },
     async GetSessionCatalogStatus() {
-      return { state: "ready", mode: "memory", revision: 1, indexed: 4, total: 4, repairPending: 0, sourceCount: 4, unindexedTargetCount: 0, canRebuild: true };
+      return { state: "ready", mode: "memory", revision: 1, indexed: 4, total: 4, repairPending: 0, sourceCount: 4, unindexedTargetCount: 0, canRebuild: false };
     },
     async RebuildSessionCatalog() {},
   };

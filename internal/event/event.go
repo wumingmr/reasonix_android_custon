@@ -12,6 +12,8 @@
 package event
 
 import (
+	"encoding/json"
+
 	"reasonix/internal/billing"
 	"reasonix/internal/evidence"
 	"reasonix/internal/nilutil"
@@ -103,7 +105,8 @@ const (
 	ExtensionStatus
 	// StreamAttempt marks the local lifecycle of one sampling attempt within a
 	// model round (StreamAttempt payload: begin | discard | commit). IDs are
-	// host-local only — never persisted or sent to the model. Appended last to
+	// local transcript identities — persisted in the event ledger, never sent
+	// to the model. Appended last to
 	// keep earlier Kind values wire-stable; older clients ignore unknown kinds.
 	StreamAttempt
 	// ContextMaintenance reports a free tool-result maintenance or a durable
@@ -123,6 +126,27 @@ const (
 	// render the successful state early; append-only consumers should ignore it.
 	// The later ToolResult remains the call's only terminal event.
 	ToolResultPreview
+	// TurnStatusChanged is a content-free lifecycle transition such as
+	// waiting_user, cancelling, or returning to in_progress after an answer.
+	TurnStatusChanged
+	// PromptAnswered records that a durable Ask/approval item was answered and the same turn resumed; ItemID carries the stable prompt id and answer content remains in its purpose-built decision receipt.
+	PromptAnswered
+	// MCPInteractionRequest carries a server-initiated MCP elicitation (form
+	// or URL) for the frontend to answer via the MCP interaction resolve call.
+	// Appended last to keep the Kind values before it wire-stable.
+	MCPInteractionRequest
+	// SessionChanged is a content-free Serve routing barrier for all-session clients.
+	SessionChanged
+	// ReadStatus upserts one logical read's delivery state instead of per page.
+	ReadStatus
+	ToolStarted // Persisted after policy/validation and before execution.
+	// UserMessage binds an admitted user bubble to its persisted message ID.
+	// Text is display text; provider-only framing must never be emitted here.
+	UserMessage
+	// SessionOperation is a controller-owned, provider-excluded maintenance
+	// lifecycle. One stable operation id is upserted from running through its
+	// terminal state without inventing a user turn.
+	SessionOperation
 	// KindCount is a sentinel one past the last real Kind. New event kinds must
 	// be inserted above it so completeness tests cover them automatically.
 	KindCount
@@ -145,6 +169,7 @@ type CompletionSummaryInfo struct {
 	Preset             string // deprecated wire-compat label; pinned to "balanced"
 	Verdict            string // complete | partial | blocked | continue
 	Mutations          int
+	ChangedFiles       int
 	ChecksPassed       int
 	ChecksFailed       int
 	ChecksSuppressed   int
@@ -164,17 +189,6 @@ const (
 	StreamAttemptCommit  StreamAttemptAction = "commit"
 )
 
-// RetryScope distinguishes connection+header retries, body-phase stream
-// retries, and host-classified protocol recovery. Older clients ignore an
-// unknown value and still render the generic retry state.
-type RetryScope string
-
-const (
-	RetryScopeHeaders  RetryScope = "headers"
-	RetryScopeStream   RetryScope = "stream"
-	RetryScopeProtocol RetryScope = "protocol"
-)
-
 // StreamAttemptInfo carries host-local bookkeeping for one sampling attempt.
 // Reason is a fixed enum (connection_reset | premature_eof | idle_timeout).
 type StreamAttemptInfo struct {
@@ -184,13 +198,6 @@ type StreamAttemptInfo struct {
 	Max     int // total attempts including the first (typically 6)
 	Reason  string
 }
-
-const TurnOutcomeFinalReadiness = "final_readiness"
-
-// TurnOutcomeRecoveryPaused marks an Auto recovery Episode budget stop. New
-// clients show an informational status (not send-failed); older clients still
-// read Err text and ignore the unknown outcome.
-const TurnOutcomeRecoveryPaused = "recovery_paused"
 
 // Level classifies a Notice so sinks can style or filter it.
 type Level int
@@ -223,19 +230,29 @@ type Profile struct {
 // Output/Err/Truncated are filled in. Args is the raw JSON arguments — a sink
 // compacts it for display.
 type Tool struct {
-	ID   string
-	Name string
-	Args string
+	RunState   provider.ToolRunState
+	Diagnostic json.RawMessage `json:"diagnostic,omitempty"`
+	// Verifying is emitted only once an authorized check actually enters execution.
+	Verifying bool
+	ID        string
+	Name      string
+	Args      string
+	// Todos is the complete semantic todo replacement committed with a
+	// successful todo_write result. TodoWritten distinguishes an empty list
+	// from an older event with no semantic payload.
+	Todos       []Todo
+	TodoWritten bool
 	// ResolvedName/CapabilityID describe the real target behind a stable proxy
 	// while Name/Args remain the provider-visible call. They are optional local
 	// display metadata and never enter provider requests.
-	ResolvedName string
-	CapabilityID string
-	Output       string // ToolResult: the result text fed to the model
-	Err          string // ToolResult: non-empty when the call failed or was blocked
-	ReadOnly     bool
-	Truncated    bool  // ToolResult: Output was head+tailed before display/model
-	DurationMs   int64 // ToolResult: wall-clock execution time in milliseconds
+	ResolvedName   string
+	CapabilityID   string
+	Output         string // ToolResult: the result text fed to the model
+	Err            string // ToolResult: non-empty when the call failed or was blocked
+	PresentedFiles []provider.PresentedFile
+	ReadOnly       bool
+	Truncated      bool  // ToolResult: Output was head+tailed before display/model
+	DurationMs     int64 // ToolResult: wall-clock execution time in milliseconds
 	// StartedAt/EndedAt are unix-millisecond execution bounds (ToolResult).
 	// Zero when the call never ran (dependency-skipped, cancelled, synthetic).
 	StartedAt int64
@@ -264,6 +281,11 @@ type Tool struct {
 	AttemptID string
 	FileDiff
 	Profile *Profile // ToolDispatch: subagent model/effort (set for task/skill calls)
+	// Subagent outcome metadata is host/UI-only and never enters provider requests.
+	SubagentRef       string
+	SubagentStatus    string
+	SubagentErrorCode string
+	SubagentRetryable bool
 	// Execution is optional local shell metadata (ToolResult). Never sent to
 	// model providers; omitempty keeps old wire readers compatible.
 	Execution *ShellExecution
@@ -320,95 +342,22 @@ type AskQuestion struct {
 type Ask struct {
 	ID        string
 	Questions []AskQuestion
+	TurnID    string
 }
 
-// Extension surface kind values carried by ExtensionSurfacePayload.Kind. They
-// mirror the extension protocol's structured surface kinds; "request" is
-// reserved for stage-8b request surfaces (stage 8a routes blocking prompts
-// through the ordinary AskRequest channel instead).
-const (
-	ExtensionSurfaceStatus       = "status"
-	ExtensionSurfaceCard         = "card"
-	ExtensionSurfaceForm         = "form"
-	ExtensionSurfaceNotification = "notification"
-	ExtensionSurfaceRequest      = "request"
-)
-
-// ExtensionSurfacePayload carries one extension sidecar's structured UI
-// contribution for the ExtensionSurface / ExtensionStatus kinds. The structs
-// mirror the Extension Protocol v2 UI payload DTOs field-for-field so any
-// frontend can render them with native widgets; the protocol stays
-// structured-only (no HTML/CSS/JS/URLs). All user-visible strings are already
-// credential-redacted by the host UI hub before the event is emitted. Exactly
-// one sub-struct is set, selected by Kind.
-type ExtensionSurfacePayload struct {
-	PluginID     string
-	SurfaceID    string
-	SessionID    string
-	Generation   uint64
-	Kind         string // status | card | form | notification (request reserved)
-	Status       *ExtensionStatusView
-	Card         *ExtensionCardView
-	Form         *ExtensionFormView
-	Notification *ExtensionNotificationView
-}
-
-// ExtensionStatusView is a one-line status contribution (mirrors the
-// protocol's UIStatusPayload).
-type ExtensionStatusView struct {
-	Label    string
-	Detail   string
-	Severity string // info | warn | error
-	Progress *float64
-}
-
-// ExtensionKeyValue is one labelled value row in a card (mirrors UIKeyValue).
-type ExtensionKeyValue struct {
-	Key   string
-	Value string
-}
-
-// ExtensionActionRef renders a button invoking a declared extension action
-// (mirrors UIActionRef).
-type ExtensionActionRef struct {
-	ActionID string
-	Label    string
-}
-
-// ExtensionCardView is a rich read-only surface (mirrors UICardPayload).
-type ExtensionCardView struct {
-	Title    string
-	Markdown string
-	Text     string
-	Fields   []ExtensionKeyValue
-	Progress *float64
-	Actions  []ExtensionActionRef
-}
-
-// ExtensionFormField is one input row of a form surface (mirrors UIFormField).
-type ExtensionFormField struct {
-	Key      string
-	Label    string
-	Kind     string // confirm | input | select | multiselect
-	Options  []string
-	Default  any
-	Required bool
-}
-
-// ExtensionFormView is an editable surface; submissions return to the
-// extension through the UI hub (mirrors UIFormPayload).
-type ExtensionFormView struct {
-	Title   string
-	Message string
-	Fields  []ExtensionFormField
-}
-
-// ExtensionNotificationView is a transient toast-style message (mirrors
-// UINotificationPayload).
-type ExtensionNotificationView struct {
-	Title    string
-	Body     string
-	Severity string // info | warn | error
+// MCPInteraction carries one MCPInteractionRequest: a server-initiated
+// elicitation the frontend must answer with accept/decline/cancel. Mode is
+// "form" (RequestedSchema is a flat primitive JSON schema) or "url" (URL is a
+// credential-free HTTP(S) target the user opens explicitly).
+type MCPInteraction struct {
+	ID              string
+	Server          string
+	Mode            string
+	Message         string
+	RequestedSchema json.RawMessage
+	URL             string
+	ElicitationID   string
+	TurnID          string
 }
 
 // Compaction carries a context-compaction pass for the CompactionStarted /
@@ -461,21 +410,6 @@ type AskAnswer struct {
 	Selected   []string
 }
 
-// CacheDiagnostics describes whether and why the cacheable prefix changed since
-// the last turn. It rides on the Usage event so every frontend can show
-// cache-churn attribution.
-type CacheDiagnostics struct {
-	PrefixHash          string
-	PrefixChanged       bool
-	PrefixChangeReasons []string // "system", "tools", "log_rewrite"
-	SystemHash          string
-	ToolsHash           string
-	LogRewriteVersion   int
-	ToolSchemaTokens    int
-	CacheMissTokens     int
-	CacheHitTokens      int
-}
-
 // FinalReadiness carries machine-readable recovery requirements on TurnDone.
 // Missing values are stable category ids; user-facing detail stays localized in
 // the frontend instead of scraping the diagnostic error string.
@@ -498,34 +432,21 @@ const (
 
 // Event is one increment in a turn's event stream. Read the field(s) documented
 // for Kind; the others are zero.
-// Notice codes are stable machine-readable identifiers for known notices.
-// Frontends localize a notice's main copy by Code and fall back to matching
-// the English Text (or showing it raw) when Code is empty or unknown, so
-// wording edits in Go no longer silently break localization. Values are
-// wire-stable: never rename or reuse one once shipped.
-const (
-	NoticeCodeFinalReadiness                                    = "final_readiness"
-	NoticeCodeEmptyFinal                                        = "empty_final"
-	NoticeCodeExecutorHandoff                                   = "executor_handoff"
-	NoticeCodeToolBudget                                        = "tool_budget"
-	NoticeCodePromptQueued                                      = "prompt_queued"
-	NoticeCodeLoopGuard                                         = "loop_guard"
-	NoticeCodeProgressGuard                                     = "progress_guard"
-	NoticeCodeEvidenceNudge                                     = "evidence_nudge"
-	NoticeCodeReasoningGovernor                                 = "reasoning_governor"
-	NoticeCodeWorkspaceLease                                    = "workspace_lease"
-	NoticeCodeCancelledTurn                                     = "cancelled_turn_display"
-	NoticeCodeUnappliedSteer                                    = "unapplied_steer"
-	NoticeCodeSessionRecoveryForked                             = "session_recovery_forked"
-	NoticeCodeSessionRecoveryAdopted                            = "session_recovery_adopted"
-	NoticeCodeSessionRecoveryAdoptedCovered                     = "session_recovery_adopted_covered"
-	NoticeCodeSessionRecoveryDepthCap                           = "session_recovery_depth_cap"
-	NoticeCodeSessionShutdownRecoveryForked                     = "session_shutdown_recovery_forked"
-	NoticeCodeDecisionReceipt, NoticeCodeContextEditingFallback = "decision_receipt", "context_editing_fallback"
-)
-
 type Event struct {
 	Kind             Kind
+	MessageID        string                    // local identity shared by streaming and persisted messages
+	AttemptID        string                    // owning sampling attempt; never provider-visible
+	SessionID        string                    // durable display routing, stamped after append
+	RuntimeEpoch     string                    // originating controller incarnation
+	SubmissionID     string                    // exact optimistic submit correlation
+	PromptKind       string                    // interactive prompt kind for lifecycle events
+	Replayed         bool                      // pending prompt re-emitted for a frontend rebuilding its card; not a new request
+	InteractionState string                    // PromptAnswered: answered | rejected | cancelled | unavailable
+	DomainKind       string                    // host-internal state event committed atomically with this lifecycle event
+	DomainPayload    json.RawMessage           // host-internal payload for DomainKind
+	TurnID           string                    // stable id of the owning top-level turn
+	Sequence         uint64                    // monotonic session-local event sequence
+	Status           TurnStatus                // lifecycle state after this event
 	Text             string                    // Reasoning / Text / Message / Notice / Phase
 	ModelRef         string                    // Usage: canonical "provider/model" ref that produced this usage
 	Detail           string                    // Notice: optional diagnostic text for expandable details
@@ -543,35 +464,50 @@ type Event struct {
 	// session (Usage events only), so a frontend can show the aggregate hit-rate
 	// — which doesn't crater on a short turn or after compaction — alongside
 	// Usage's single-turn numbers.
-	SessionHit      int                      // Usage: cumulative cache-hit prompt tokens this session
-	SessionMiss     int                      // Usage: cumulative cache-miss prompt tokens this session
-	Level           Level                    // Notice
-	Audience        NoticeAudience           // Notice: empty = ordinary frontend delivery; operator = no end-user chat forwarding
-	Approval        Approval                 // ApprovalRequest
-	Ask             Ask                      // AskRequest
-	Extension       *ExtensionSurfacePayload // ExtensionSurface / ExtensionStatus (nil for every other kind)
-	Err             error                    // TurnDone: non-nil on failure
-	Cancelled       bool                     // TurnDone: Cancel was requested while the turn was active
-	Outcome         string                   // TurnDone: optional machine-readable recoverable outcome
-	Readiness       *FinalReadiness          // TurnDone: structured final-readiness recovery state
-	Receipt         *CompletionReceipt       // TurnDone: what the host verified, and what it could not
-	CheckpointTurn  *int                     // TurnDone: authoritative checkpoint for this turn's visible user message
-	Compaction      Compaction               // Compaction
-	Maintenance     *ContextMaintenance      // ContextMaintenanceEvent
-	Guardian        GuardianResult
-	DecisionReceipt *provider.DecisionReceipt // Notice: durable user decision receipt
-	RetryAttempt    int                       // Retrying: 1-based attempt about to be made
-	RetryMax        int                       // Retrying: total attempts before giving up
-	RetryScope      RetryScope                // Retrying: optional "headers" | "stream"; empty for older emitters
-	StreamAttempt   StreamAttemptInfo         // StreamAttempt lifecycle
-	// ItemID correlates Steer / unapplied-steer / TurnDone with a durable
-	// session-inbox entry. Empty for legacy callers that still use text only.
-	ItemID    string
-	Workspace *WorkspaceChangedPayload // WorkspaceChanged (host-local)
+	SessionHit         int                      // Usage: cumulative cache-hit prompt tokens this session
+	SessionMiss        int                      // Usage: cumulative cache-miss prompt tokens this session
+	Level              Level                    // Notice
+	Audience           NoticeAudience           // Notice: empty = ordinary frontend delivery; operator = no end-user chat forwarding
+	Approval           Approval                 // ApprovalRequest
+	Ask                Ask                      // AskRequest
+	MCPInteraction     MCPInteraction           // MCPInteractionRequest
+	Extension          *ExtensionSurfacePayload // ExtensionSurface / ExtensionStatus (nil for every other kind)
+	Err                error                    // TurnDone: non-nil on failure
+	Cancelled          bool                     // TurnDone: Cancel was requested while the turn was active
+	Outcome            string                   // TurnDone: optional machine-readable recoverable outcome
+	Readiness          *FinalReadiness          // TurnDone: structured final-readiness recovery state
+	ProtocolRecovery   *provider.ProtocolRecoveryAction
+	Diagnostic         *provider.FailureDiagnostic
+	RecoveryCheckpoint bool                  // local durable recovery checkpoint, not a notice
+	Receipt            *CompletionReceipt    // TurnDone: what the host verified, and what it could not
+	CheckpointTurn     *int                  // TurnDone: authoritative checkpoint for this turn's visible user message
+	Compaction         Compaction            // Compaction
+	Maintenance        *ContextMaintenance   // ContextMaintenanceEvent
+	SessionOperation   *SessionOperationInfo // SessionOperation
+	Guardian           GuardianResult
+	DecisionReceipt    *provider.DecisionReceipt // Notice: durable user decision receipt
+	WriteIntent        bool                      // local write-ahead checkpoint, not a user notice
+	Recovery           *RecoveryStatus           // optional local recovery details
+	RetryAttempt       int                       // Retrying: 1-based attempt about to be made
+	RetryMax           int                       // Retrying: total attempts before giving up
+	RetryScope         RetryScope                // Retrying: optional "headers" | "stream"; empty for older emitters
+	StreamAttempt      StreamAttemptInfo         // StreamAttempt lifecycle
+	ReadStatus         *ReadStatusPayload        // ReadStatus: one logical read's delivery state
+	ReadPause          *provider.ReadPause       // TurnDone: durable display-only pause receipt
+	ReadCompletion     *provider.ReadCompletion  // TurnDone: accepted partial coverage, display-only
+	ItemID             string                    // correlates durable inbox events
+	SessionPath        string                    // routes Serve frames
+	SessionReset       bool                      // SessionChanged came from /new or /clear, not resume/recovery
+	Workspace          *WorkspaceChangedPayload  // WorkspaceChanged (host-local)
 	// PhaseName is set on TurnPhase events (working|checking|verifying|reviewing).
 	PhaseName TurnPhaseName
 	// Completion is set on CompletionSummary events.
 	Completion *CompletionSummaryInfo
+	// CommittedMessage is the exact provider transcript record paired with a
+	// terminal tool result. It is host-internal and omitted from frontend wire
+	// payloads; the session event store commits it atomically with tool/result
+	// and any todo/write state transition.
+	CommittedMessage *provider.Message
 }
 
 type WorkspaceWatchState string
@@ -683,6 +619,8 @@ const (
 	ProtocolRecoveryClientToolRejected              ProtocolRecoveryKind = "client_tool_rejected_unreplayable_reasoning"
 	ProtocolRecoveryServerSearchSalvaged            ProtocolRecoveryKind = "server_search_history_salvaged"
 	ProtocolRecoveryHistoryRepaired                 ProtocolRecoveryKind = "unreplayable_history_repaired"
+	ProtocolRecoveryReasoningReplay400Detected      ProtocolRecoveryKind = "reasoning_replay_400_detected"
+	ProtocolRecoveryReasoningReplay400Recovered     ProtocolRecoveryKind = "reasoning_replay_400_recovered"
 )
 
 type ProtocolRecoveryAudit struct {
@@ -859,26 +797,3 @@ func RecordProtocolRecovery(s Sink, a ProtocolRecoveryAudit) {
 		rs.RecordProtocolRecovery(a)
 	}
 }
-
-// Sink consumes a turn's events. The agent calls Emit serially from its run
-// loop (tool execution may fan out across goroutines, but emission does not),
-// so an implementation need not be safe for concurrent Emit. Emit must not
-// block indefinitely — a channel-backed sink should be buffered or drained by
-// a live reader.
-type Sink interface {
-	Emit(Event)
-}
-
-// FuncSink adapts a plain function to a Sink.
-type FuncSink func(Event)
-
-// Emit calls the wrapped function.
-func (f FuncSink) Emit(e Event) {
-	if f != nil {
-		f(e)
-	}
-}
-
-// Discard is a Sink that drops every event. Useful in tests and for runs that
-// only care about the final session state.
-var Discard Sink = FuncSink(func(Event) {})

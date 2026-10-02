@@ -31,7 +31,7 @@ func (f *fakeExtensionClient) UISubmit(_ context.Context, p protocol.UISubmitPar
 
 func newExtensionUIController(t *testing.T, client uihub.ActionClient) (*Controller, *uihub.Hub) {
 	t.Helper()
-	c := New(Options{Sink: event.Discard})
+	c := newOwnedTestController(t, Options{Sink: event.Discard})
 	hub := uihub.New(uihub.Options{
 		SessionID: "sess-1", Generation: 3,
 		Resolve: func(string) uihub.ActionClient { return client },
@@ -44,7 +44,7 @@ func newExtensionUIController(t *testing.T, client uihub.ActionClient) (*Control
 }
 
 func TestExtensionUIPortNilHub(t *testing.T) {
-	c := New(Options{Sink: event.Discard})
+	c := newOwnedTestController(t, Options{Sink: event.Discard})
 	if got := c.ExtensionActions(); len(got) != 0 {
 		t.Fatalf("ExtensionActions = %+v, want empty without a hub", got)
 	}
@@ -111,7 +111,7 @@ func TestSetExtensionUIFirstInstallWins(t *testing.T) {
 
 func TestEmitExtensionEventReachesSink(t *testing.T) {
 	var got []event.Event
-	c := New(Options{Sink: event.FuncSink(func(e event.Event) { got = append(got, e) })})
+	c := newOwnedTestController(t, Options{Sink: event.FuncSink(func(e event.Event) { got = append(got, e) })})
 	c.EmitExtensionEvent(event.Event{
 		Kind: event.ExtensionStatus,
 		Extension: &event.ExtensionSurfacePayload{

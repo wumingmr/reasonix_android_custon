@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { manualTopicOrder, projectTreeFolderHasActiveRuntime, reorderedTopicIDs } from "../components/ProjectTreeOrganization";
+import { manualTopicOrder, projectTreeFolderHasActiveRuntime, projectTreeGroupContainsNode, reorderedSessionKeys, reorderedTopicIDs } from "../components/ProjectTreeOrganization";
 import type { ProjectNode } from "../lib/types";
 
 const tree: ProjectNode[] = [
@@ -18,6 +18,15 @@ assert.equal(reorderedTopicIDs(tree, "project", "/a", "b2", "same", "before"), n
 assert.equal(reorderedTopicIDs([{ ...tree[0]!, children: [...tree[0]!.children!, {
   key: "runtime", kind: "topic", label: "Runtime", root: "/a", topicId: "runtime", runtimeOnly: true, children: [],
 }] }], "project", "/a", "runtime", "same", "before"), null, "runtime-only topics are not persisted into manual order");
+
+const sharedSessions: ProjectNode[] = [{ key: "p", kind: "project", label: "P", root: "/p", children: [
+  { key: "a", kind: "topic", label: "A", root: "/p", topicId: "shared", sessionPath: "/s/a", children: [] },
+  { key: "b", kind: "topic", label: "B", root: "/p", topicId: "shared", sessionPath: "/s/b", children: [] },
+] }];
+assert.deepEqual(reorderedSessionKeys(sharedSessions, "project", "/p", "path\u0000/s/b", "path\u0000/s/a", "before"), ["path\u0000/s/b", "path\u0000/s/a"]);
+const splitGroup = { id: "g", title: "G", topicIds: ["shared"], excludedSessionKeys: ["path\u0000/s/b"] };
+assert.equal(projectTreeGroupContainsNode(splitGroup, sharedSessions[0]!.children![0]!), true);
+assert.equal(projectTreeGroupContainsNode(splitGroup, sharedSessions[0]!.children![1]!), false);
 
 assert.equal(manualTopicOrder({ key: "a", kind: "topic", label: "A", sortOrder: -1 }, { key: "b", kind: "topic", label: "B" }), 0);
 assert.ok(manualTopicOrder({ key: "a", kind: "topic", label: "A", sortOrder: 1 }, { key: "b", kind: "topic", label: "B", sortOrder: 2 }) < 0);

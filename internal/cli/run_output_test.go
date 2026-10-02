@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
 )
@@ -51,6 +52,28 @@ func TestRunOutputJSONResult(t *testing.T) {
 	}
 	if !result.Usage.Estimated {
 		t.Fatalf("usage lost estimated marker: %+v", result.Usage)
+	}
+}
+
+func TestRunOutputJSONIncludesAuthenticationRecovery(t *testing.T) {
+	var out bytes.Buffer
+	sink := newRunOutputSink(&out, runOutputJSON)
+	err := &control.AuthenticationError{State: control.AuthenticationState{
+		Status: control.AuthenticationMissingCredential,
+		Code:   "missing_credential",
+	}}
+	if finalizeErr := sink.Finalize("", time.Now(), err); finalizeErr != nil {
+		t.Fatal(finalizeErr)
+	}
+	var result runResult
+	if decodeErr := json.Unmarshal(out.Bytes(), &result); decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	if result.ErrorCode != "missing_credential" || result.Authentication != string(control.AuthenticationMissingCredential) {
+		t.Fatalf("authentication metadata = %+v", result)
+	}
+	if got := strings.Join(result.Recovery, ","); got != "configure_credentials,select_model,diagnose_credentials" {
+		t.Fatalf("recovery actions = %q", got)
 	}
 }
 
@@ -275,10 +298,34 @@ func TestRunOutputEventsJSONLClassifiesRecoveryPauseAsControlledOutcome(t *testi
 	}
 }
 
+func TestRunOutputJSONPreservesCompletionUncertainAsControlledOutcome(t *testing.T) {
+	var out bytes.Buffer
+	sink := newRunOutputSink(&out, runOutputJSON)
+	runErr := &agent.CompletionUncertainError{Cause: agent.CompletionUncertainContextTool}
+	if err := sink.Finalize("abc", time.Now(), runErr); err != nil {
+		t.Fatal(err)
+	}
+	var result runResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError || result.Subtype != event.TurnOutcomeCompletionUncertain || result.Result != runErr.Error() || result.NumTurns != 1 {
+		t.Fatalf("completion uncertain result = %+v", result)
+	}
+}
+
 func TestClassifyRunCompletion(t *testing.T) {
 	pause := fmt.Errorf("wrapped: %w", &agent.RecoveryPauseError{Message: "paused"})
 	if got := classifyRunCompletion(pause); got.outcome != event.TurnOutcomeRecoveryPaused || got.isError || got.exitCode != 0 {
 		t.Fatalf("pause completion = %+v", got)
+	}
+	uncertain := fmt.Errorf("wrapped: %w", &agent.CompletionUncertainError{Cause: agent.CompletionUncertainContextTool})
+	if got := classifyRunCompletion(uncertain); got.outcome != event.TurnOutcomeCompletionUncertain || got.subtype != event.TurnOutcomeCompletionUncertain || got.isError || got.exitCode != 1 {
+		t.Fatalf("completion uncertain = %+v", got)
+	}
+	incomplete := fmt.Errorf("wrapped: %w", &agent.IncompleteReadError{Reason: "page budget"})
+	if got := classifyRunCompletion(incomplete); got.outcome != event.TurnOutcomeIncompleteRead || got.subtype != event.TurnOutcomeIncompleteRead || got.isError || got.exitCode != 1 {
+		t.Fatalf("incomplete read = %+v", got)
 	}
 	if got := classifyRunCompletion(errors.New("provider failed")); got.outcome != "" || !got.isError || got.exitCode != 1 {
 		t.Fatalf("error completion = %+v", got)

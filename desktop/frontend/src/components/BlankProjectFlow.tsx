@@ -20,6 +20,7 @@ export function BlankProjectFlow({
   const [draft, setDraft] = useState<{ parentDirectory: string; createdPath?: string; error?: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
+  const openedPathRef = useRef("");
 
   useEffect(() => {
     let cancelled = false;
@@ -46,7 +47,10 @@ export function BlankProjectFlow({
         createdPath = await app.CreateBlankProject(draft.parentDirectory, projectName);
         setDraft((current) => current ? { ...current, createdPath } : current);
       }
-      await onOpenProject(createdPath);
+      if (openedPathRef.current !== createdPath) {
+        await onOpenProject(createdPath);
+        openedPathRef.current = createdPath;
+      }
       await onRefresh();
       busyRef.current = false;
       setBusy(false);

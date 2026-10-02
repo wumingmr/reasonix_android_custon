@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/sys/windows"
 )
 
 func TestResolveInstallRootThroughDirectoryJunction(t *testing.T) {
@@ -37,6 +39,13 @@ func TestResolveInstallRootThroughDirectoryJunction(t *testing.T) {
 	if !os.SameFile(gotInfo, wantInfo) {
 		t.Fatalf("resolveInstallRoot() = %q, want %q", got, root)
 	}
+	location, err := classifyLaunchLocation(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if location != launchLocationLocal {
+		t.Fatalf("junction target location = %q, want local", location)
+	}
 }
 
 func TestNormalizeFinalWindowsPath(t *testing.T) {
@@ -54,6 +63,43 @@ func TestNormalizeFinalWindowsPath(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			if got := normalizeFinalWindowsPath(test.path); got != test.want {
 				t.Fatalf("normalizeFinalWindowsPath(%q) = %q, want %q", test.path, got, test.want)
+			}
+		})
+	}
+}
+
+func TestClassifyLaunchLocation(t *testing.T) {
+	tests := []struct {
+		name      string
+		path      string
+		driveType uint32
+		want      launchLocation
+		wantErr   bool
+		wantQuery bool
+	}{
+		{name: "Parallels UNC", path: `\\psf\Home\Desktop\Reasonix`, want: launchLocationUNC},
+		{name: "ordinary UNC", path: `\\server\share\Reasonix`, want: launchLocationUNC},
+		{name: "mapped remote drive", path: `Z:\Reasonix`, driveType: windows.DRIVE_REMOTE, want: launchLocationRemoteDrive, wantQuery: true},
+		{name: "local fixed drive", path: `C:\Reasonix`, driveType: windows.DRIVE_FIXED, want: launchLocationLocal, wantQuery: true},
+		{name: "local removable drive", path: `E:\Reasonix`, driveType: windows.DRIVE_REMOVABLE, want: launchLocationLocal, wantQuery: true},
+		{name: "unknown drive", path: `Q:\Reasonix`, driveType: windows.DRIVE_UNKNOWN, wantErr: true, wantQuery: true},
+		{name: "missing volume", path: `Reasonix`, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			queried := false
+			got, err := classifyLaunchLocationWith(test.path, func(*uint16) uint32 {
+				queried = true
+				return test.driveType
+			})
+			if (err != nil) != test.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, test.wantErr)
+			}
+			if got != test.want {
+				t.Errorf("location = %q, want %q", got, test.want)
+			}
+			if queried != test.wantQuery {
+				t.Errorf("GetDriveType queried = %v, want %v", queried, test.wantQuery)
 			}
 		})
 	}

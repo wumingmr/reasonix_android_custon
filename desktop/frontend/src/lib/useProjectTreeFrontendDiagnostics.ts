@@ -7,9 +7,7 @@ export type ProjectTreeDiagnosticSnapshot = ProjectTreeSessionDiagnosticSummary 
   directoryState: string;
   scope: string;
   variant: ProjectTreeVariant;
-  timeFilter: string;
   queryActive: boolean;
-  timeFilterActive: boolean;
   catalogPartial: boolean;
   catalogRebuilding: boolean;
   catalogRevision: number;
@@ -26,7 +24,7 @@ function changeReason(previous: ProjectTreeDiagnosticSnapshot | null, current: P
   if (previous.recoveryCopies !== current.recoveryCopies || previous.recoveryCopySessions !== current.recoveryCopySessions) return "recovery-copy";
   if (previous.runtimeOnlySessions !== current.runtimeOnlySessions || previous.runtimeSessions !== current.runtimeSessions) return "runtime-session";
   if (previous.activeSessions !== current.activeSessions || previous.activeVisibleSessions !== current.activeVisibleSessions) return "active-session";
-  if (previous.queryActive !== current.queryActive || previous.timeFilterActive !== current.timeFilterActive || previous.hiddenByFilter !== current.hiddenByFilter) return "filter";
+  if (previous.queryActive !== current.queryActive || previous.hiddenByFilter !== current.hiddenByFilter) return "filter";
   if (previous.visibleSessions !== current.visibleSessions || previous.hiddenSessions !== current.hiddenSessions || previous.hiddenByCollapsed !== current.hiddenByCollapsed || previous.hiddenByTruncation !== current.hiddenByTruncation || previous.expandedFolders !== current.expandedFolders || previous.showAllFolders !== current.showAllFolders) return "visibility";
   if (previous.workspaceSessions !== current.workspaceSessions || previous.folderCount !== current.folderCount || previous.catalogRevision !== current.catalogRevision || previous.catalogIndexed !== current.catalogIndexed || previous.catalogTotal !== current.catalogTotal || previous.unloadedSessions !== current.unloadedSessions || previous.repairPending !== current.repairPending || previous.treeRevision !== current.treeRevision || previous.organizationRevision !== current.organizationRevision || previous.directoryState !== current.directoryState) return "catalog";
   return "directory-update";

@@ -12,7 +12,7 @@ import (
 )
 
 func TestDesktopBranchTransitionMovesLeaseAndTabAtomically(t *testing.T) {
-	dir := t.TempDir()
+	dir := schemaOneTempDir(t)
 	originalPath := filepath.Join(dir, "session.jsonl")
 	sess := agent.NewSession("sys")
 	sess.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
@@ -26,7 +26,7 @@ func TestDesktopBranchTransitionMovesLeaseAndTabAtomically(t *testing.T) {
 		detachedSessions: map[string]*WorkspaceTab{},
 	}
 	tab := &WorkspaceTab{ID: "tab", SessionPath: originalPath, Ready: true}
-	ctrl := control.New(control.Options{
+	ctrl := newFixtureController(t, control.Options{
 		Runner:              ag,
 		Executor:            ag,
 		SessionDir:          dir,

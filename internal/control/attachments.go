@@ -12,10 +12,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"reasonix/internal/attachment"
 	"reasonix/internal/proc"
 	"reasonix/internal/secrets"
 )
@@ -25,10 +28,30 @@ const maxFileAttachmentBytes = 25 * 1024 * 1024
 const maxAttachmentCreateAttempts = 1000
 
 // ErrNoClipboardImage reports that the clipboard was read successfully but holds
-// no image. It is distinct from a missing clipboard tool: callers offering an
-// image-first paste shortcut use it to fall back to text instead of surfacing a
-// failure the user cannot act on.
+// no supported image. It is distinct from a missing clipboard tool: callers
+// offering an image-first paste shortcut use it to fall back to text before
+// surfacing an image-specific diagnostic.
 var ErrNoClipboardImage = errors.New("clipboard does not contain an image")
+
+// ErrUnsupportedClipboardImage marks the more specific no-pasteable-image case
+// where the clipboard advertised only image formats Reasonix cannot save.
+var ErrUnsupportedClipboardImage = errors.New("clipboard image type is not supported")
+
+type unsupportedClipboardImageError struct {
+	tool  string
+	types []string
+}
+
+func (e unsupportedClipboardImageError) Error() string {
+	return fmt.Sprintf("%s offers unsupported image types: %s", e.tool, strings.Join(e.types, ", "))
+}
+
+// Unsupported image formats still mean there is no image Reasonix can paste.
+// Wrapping the sentinel lets image-first shortcuts try their normal text
+// fallback before surfacing the more specific diagnostic.
+func (e unsupportedClipboardImageError) Unwrap() []error {
+	return []error{ErrNoClipboardImage, ErrUnsupportedClipboardImage}
+}
 
 var (
 	lookClipboardTool = exec.LookPath
@@ -51,6 +74,10 @@ var safeAttachmentExt = regexp.MustCompile(`^\.[a-z0-9]{1,12}$`)
 // .reasonix/attachments and returns its repo-relative path for @referencing.
 // origName supplies only the extension; the stored name is generated.
 func SaveAttachmentDataURL(origName, dataURL string) (string, error) {
+	return SaveAttachmentDataURLInRoot(".", origName, dataURL)
+}
+
+func SaveAttachmentDataURLInRoot(root, origName, dataURL string) (string, error) {
 	const marker = ";base64,"
 	_, after, ok := strings.Cut(dataURL, marker)
 	if !strings.HasPrefix(dataURL, "data:") || !ok {
@@ -60,7 +87,7 @@ func SaveAttachmentDataURL(origName, dataURL string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("decode pasted file: %w", err)
 	}
-	return SaveAttachmentBytes(origName, raw)
+	return SaveAttachmentBytesInRoot(root, origName, raw)
 }
 
 func SaveAttachmentBytes(origName string, raw []byte) (string, error) {
@@ -79,6 +106,10 @@ func SaveAttachmentBytesInRoot(root, origName string, raw []byte) (string, error
 }
 
 func SaveImageDataURL(dataURL string) (string, error) {
+	return SaveImageDataURLInRoot(".", dataURL)
+}
+
+func SaveImageDataURLInRoot(root, dataURL string) (string, error) {
 	const prefix = "data:"
 	const marker = ";base64,"
 	if !strings.HasPrefix(dataURL, prefix) {
@@ -93,7 +124,7 @@ func SaveImageDataURL(dataURL string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("decode pasted image: %w", err)
 	}
-	return SaveImageBytes(mime, raw)
+	return SaveImageBytesInRoot(root, mime, raw)
 }
 
 func SaveImageBytes(declaredMime string, raw []byte) (string, error) {
@@ -147,6 +178,10 @@ func saveAttachmentBytesInRoot(root, ext string, raw []byte) (string, error) {
 }
 
 func SaveImageFile(path string) (string, error) {
+	return SaveImageFileInRoot(".", path)
+}
+
+func SaveImageFileInRoot(root, path string) (string, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return "", err
@@ -181,10 +216,14 @@ func SaveImageFile(path string) (string, error) {
 	} else if !os.SameFile(opened, after) || after.Size() != opened.Size() {
 		return "", fmt.Errorf("pasted image changed while reading")
 	}
-	return SaveImageBytes("", raw)
+	return SaveImageBytesInRoot(root, "", raw)
 }
 
 func SaveAttachmentFile(path string) (string, error) {
+	return SaveAttachmentFileInRoot(".", path)
+}
+
+func SaveAttachmentFileInRoot(root, path string) (string, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return "", err
@@ -223,39 +262,27 @@ func SaveAttachmentFile(path string) (string, error) {
 	if !safeAttachmentExt.MatchString(ext) {
 		ext = ".bin"
 	}
-	if err := ensureAttachmentRoot(); err != nil {
-		return "", err
-	}
-	rel, dst, err := createAttachmentFile(ext)
-	if err != nil {
-		return "", err
-	}
-	if _, err := dst.Write(raw); err != nil {
-		_ = dst.Close()
-		_ = os.Remove(rel)
-		return "", err
-	}
-	if err := dst.Close(); err != nil {
-		_ = os.Remove(rel)
-		return "", err
-	}
-	return filepath.ToSlash(rel), nil
+	return saveAttachmentBytesInRoot(root, ext, raw)
 }
 
 func SaveClipboardImage() (string, error) {
+	return SaveClipboardImageInRoot(".")
+}
+
+func SaveClipboardImageInRoot(root string) (string, error) {
 	switch runtime.GOOS {
 	case "darwin":
-		return saveDarwinClipboardImage()
+		return saveDarwinClipboardImageInRoot(root)
 	case "windows":
-		return saveWindowsClipboardImage()
+		return saveWindowsClipboardImageInRoot(root)
 	case "linux":
-		return saveLinuxClipboardImage()
+		return saveLinuxClipboardImageInRoot(root)
 	default:
 		return "", fmt.Errorf("clipboard image paste is not supported on %s yet", runtime.GOOS)
 	}
 }
 
-func saveWindowsClipboardImage() (string, error) {
+func saveWindowsClipboardImageInRoot(root string) (string, error) {
 	// Windows PowerShell 5.1 (preinstalled) reaches the GUI clipboard; pwsh (Core)
 	// lacks Get-Clipboard -Format Image, so invoke powershell.exe. The PNG is
 	// returned as base64 on stdout so no temp file is involved.
@@ -280,18 +307,32 @@ $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
 	if err != nil {
 		return "", fmt.Errorf("decode clipboard image: %w", err)
 	}
-	return SaveImageBytes("", raw)
+	return SaveImageBytesInRoot(root, "", raw)
+}
+
+// clipboardImageTypes lists the image mimes we can save, most preferred
+// first; Wayland compositors and screenshot apps offer any of these.
+var clipboardImageTypes = []string{"image/png", "image/jpeg", "image/gif", "image/webp"}
+
+func clipboardImageReadArgs(tool, mime string) []string {
+	if tool == "wl-paste" {
+		return []string{"--type", mime, "--no-newline"}
+	}
+	return []string{"-selection", "clipboard", "-t", mime, "-o"}
 }
 
 func saveLinuxClipboardImage() (string, error) {
+	return saveLinuxClipboardImageInRoot(".")
+}
+
+func saveLinuxClipboardImageInRoot(root string) (string, error) {
 	type clipboardTool struct {
 		name      string
 		typesArgs []string
-		imageArgs []string
 	}
 	tools := []clipboardTool{
-		{name: "wl-paste", typesArgs: []string{"--list-types"}, imageArgs: []string{"--type", "image/png", "--no-newline"}},
-		{name: "xclip", typesArgs: []string{"-selection", "clipboard", "-t", "TARGETS", "-o"}, imageArgs: []string{"-selection", "clipboard", "-t", "image/png", "-o"}},
+		{name: "wl-paste", typesArgs: []string{"--list-types"}},
+		{name: "xclip", typesArgs: []string{"-selection", "clipboard", "-t", "TARGETS", "-o"}},
 	}
 	foundTool := false
 	confirmedNoImage := false
@@ -311,11 +352,22 @@ func saveLinuxClipboardImage() (string, error) {
 			probeFailures = append(probeFailures, fmt.Errorf("probe %s clipboard types: %w", tool.name, err))
 			continue
 		}
-		if !clipboardTypeListed(types, "image/png") {
+		mime := ""
+		for _, want := range clipboardImageTypes {
+			if clipboardTypeListed(types, want) {
+				mime = want
+				break
+			}
+		}
+		if mime == "" {
+			if offered := offeredImageTypes(types); len(offered) > 0 {
+				readFailures = append(readFailures, unsupportedClipboardImageError{tool: tool.name, types: offered})
+				continue
+			}
 			confirmedNoImage = true
 			continue
 		}
-		out, _, err := runClipboardTool(path, tool.imageArgs...)
+		out, _, err := runClipboardTool(path, clipboardImageReadArgs(tool.name, mime)...)
 		if err != nil {
 			readFailures = append(readFailures, fmt.Errorf("read clipboard image with %s: %w", tool.name, err))
 			continue
@@ -324,7 +376,7 @@ func saveLinuxClipboardImage() (string, error) {
 			readFailures = append(readFailures, fmt.Errorf("read clipboard image with %s: empty image data", tool.name))
 			continue
 		}
-		rel, err := SaveImageBytes("", out)
+		rel, err := SaveImageBytesInRoot(root, "", out)
 		if err != nil {
 			readFailures = append(readFailures, fmt.Errorf("save clipboard image from %s: %w", tool.name, err))
 			continue
@@ -352,6 +404,20 @@ func clipboardTypeListed(raw []byte, want string) bool {
 	return false
 }
 
+// offeredImageTypes returns safely quoted image/* MIME names that Reasonix
+// cannot save. Clipboard owners control these strings, so errors must never
+// contain their terminal control sequences verbatim.
+func offeredImageTypes(raw []byte) []string {
+	var offered []string
+	for field := range strings.FieldsSeq(string(raw)) {
+		lower := strings.ToLower(field)
+		if strings.HasPrefix(lower, "image/") && !slices.Contains(clipboardImageTypes, lower) {
+			offered = append(offered, strconv.QuoteToASCII(field))
+		}
+	}
+	return offered
+}
+
 func clipboardProbeMeansNoImage(tool string, stderr []byte) bool {
 	message := string(stderr)
 	switch tool {
@@ -365,19 +431,20 @@ func clipboardProbeMeansNoImage(tool string, stderr []byte) bool {
 }
 
 func ImageDataURL(path string) (string, error) {
-	raw, mime, err := readAttachmentImage(path)
+	return ImageDataURLInRoot(".", path)
+}
+
+func ImageDataURLInRoot(root, path string) (string, error) {
+	raw, mime, err := readAttachmentImageInRoot(root, path)
 	if err != nil {
 		return "", err
 	}
 	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(raw), nil
 }
 
-// visionImageDataURL reads an attachment and, unlike ImageDataURL (which feeds
-// the desktop preview at full resolution), downscales/recompresses it before
-// base64 so an oversized photo doesn't balloon the request bytes and image
-// tokens. Best-effort: an undecodable format passes through at original size.
-func visionImageDataURL(path string) (string, error) {
-	raw, mime, err := readAttachmentImage(path)
+// visionImageDataURLInRoot prepares a bounded request image from a workspace attachment.
+func visionImageDataURLInRoot(root, path string) (string, error) {
+	raw, mime, err := readAttachmentImageInRoot(root, path)
 	if err != nil {
 		return "", err
 	}
@@ -385,44 +452,13 @@ func visionImageDataURL(path string) (string, error) {
 	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(raw), nil
 }
 
-func readAttachmentImage(path string) (raw []byte, mime string, err error) {
-	clean, err := cleanAttachmentPath(path)
+func readAttachmentImageInRoot(root, path string) (raw []byte, mime string, err error) {
+	if _, err := cleanAttachmentPathInRoot(root, path); err != nil {
+		return nil, "", err
+	}
+	raw, err = attachment.ReadWorkspaceImageBytes(root, path, maxImageAttachmentBytes)
 	if err != nil {
 		return nil, "", err
-	}
-	info, err := os.Lstat(clean)
-	if err != nil {
-		return nil, "", err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, "", fmt.Errorf("attachment path must not be a symlink")
-	}
-	if info.IsDir() || info.Size() <= 0 || info.Size() > maxImageAttachmentBytes {
-		return nil, "", fmt.Errorf("attachment image must be between 1 byte and 64 MB")
-	}
-	f, err := os.Open(clean)
-	if err != nil {
-		return nil, "", err
-	}
-	defer f.Close()
-	opened, err := f.Stat()
-	if err != nil {
-		return nil, "", err
-	}
-	if !os.SameFile(info, opened) {
-		return nil, "", fmt.Errorf("attachment changed while opening")
-	}
-	raw, err = io.ReadAll(io.LimitReader(f, maxImageAttachmentBytes+1))
-	if err != nil {
-		return nil, "", err
-	}
-	if len(raw) == 0 || len(raw) > maxImageAttachmentBytes {
-		return nil, "", fmt.Errorf("attachment image must be between 1 byte and 64 MB")
-	}
-	if after, err := f.Stat(); err != nil {
-		return nil, "", err
-	} else if !os.SameFile(opened, after) || after.Size() != opened.Size() {
-		return nil, "", fmt.Errorf("attachment changed while reading")
 	}
 	mime = detectedImageMime(raw)
 	if mime == "" {
@@ -431,22 +467,77 @@ func readAttachmentImage(path string) (raw []byte, mime string, err error) {
 	return raw, mime, nil
 }
 
-func cleanAttachmentPath(path string) (string, error) {
+// ValidateAttachmentInRoot checks a persisted attachment without loading its
+// contents. The bounded root prevents parent replacement from escaping the
+// workspace and Lstat rejects a final symlink.
+func ValidateAttachmentInRoot(root, path string) error {
+	clean, err := cleanAttachmentPathInRoot(root, path)
+	if err != nil {
+		return err
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(absRoot, clean)
+	if err != nil || !filepath.IsLocal(rel) {
+		return fmt.Errorf("attachment path is outside workspace")
+	}
+	bounded, err := os.OpenRoot(absRoot)
+	if err != nil {
+		return err
+	}
+	defer bounded.Close()
+	info, err := bounded.Lstat(rel)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("attachment path must not be a symlink")
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 {
+		return fmt.Errorf("attachment is missing or empty")
+	}
+	f, err := bounded.OpenFile(rel, os.O_RDONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(info, opened) {
+		return fmt.Errorf("attachment changed while opening")
+	}
+	return nil
+}
+
+func cleanAttachmentPathInRoot(base, path string) (string, error) {
 	if filepath.IsAbs(path) {
 		return "", fmt.Errorf("attachment path must be relative")
 	}
 	clean := filepath.Clean(filepath.FromSlash(path))
-	root := filepath.Join(".reasonix", "attachments")
-	if clean == "." || clean == root || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || !strings.HasPrefix(clean, root+string(filepath.Separator)) {
+	relRoot := filepath.Join(".reasonix", "attachments")
+	if clean == "." || clean == relRoot || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || !strings.HasPrefix(clean, relRoot+string(filepath.Separator)) {
 		return "", fmt.Errorf("attachment path is outside .reasonix/attachments")
 	}
-	if err := ensureAttachmentRoot(); err != nil {
+	if strings.TrimSpace(base) == "" {
+		base = "."
+	}
+	absBase, err := filepath.Abs(base)
+	if err != nil {
 		return "", err
 	}
-	if err := rejectSymlinkComponents(clean, root); err != nil {
+	root := filepath.Join(absBase, relRoot)
+	if err := validateAttachmentDirectories(absBase); err != nil {
 		return "", err
 	}
-	return clean, nil
+	absPath := filepath.Join(absBase, clean)
+	if err := rejectSymlinkComponents(absPath, root); err != nil {
+		return "", err
+	}
+	return absPath, nil
 }
 
 func rejectSymlinkComponents(path, root string) error {
@@ -479,6 +570,16 @@ func ensureAttachmentRoot() error {
 }
 
 func ensureAttachmentRootIn(base string) error {
+	if info, err := os.Lstat(filepath.Join(base, ".reasonix")); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("attachment path must not contain symlinks")
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("attachment path exists but is not a directory")
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	root := filepath.Join(base, ".reasonix", "attachments")
 	if info, err := os.Lstat(root); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
@@ -504,8 +605,29 @@ func ensureAttachmentRootIn(base string) error {
 	return nil
 }
 
-func saveDarwinClipboardImage() (string, error) {
-	return saveDarwinClipboardImageWith(saveDarwinClipboardClass)
+func validateAttachmentDirectories(base string) error {
+	for _, path := range []string{
+		filepath.Join(base, ".reasonix"),
+		filepath.Join(base, ".reasonix", "attachments"),
+	} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("attachment path must not contain symlinks")
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("attachment path exists but is not a directory")
+		}
+	}
+	return nil
+}
+
+func saveDarwinClipboardImageInRoot(root string) (string, error) {
+	return saveDarwinClipboardImageWith(func(class string) (string, error) {
+		return saveDarwinClipboardClassInRoot(root, class)
+	})
 }
 
 func saveDarwinClipboardImageWith(readClass func(string) (string, error)) (string, error) {
@@ -521,23 +643,26 @@ func saveDarwinClipboardImageWith(readClass func(string) (string, error)) (strin
 	return "", ErrNoClipboardImage
 }
 
-func saveDarwinClipboardClass(class string) (string, error) {
-	if err := ensureAttachmentRoot(); err != nil {
+func saveDarwinClipboardClassInRoot(root, class string) (string, error) {
+	if strings.TrimSpace(root) == "" {
+		root = "."
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
 		return "", err
 	}
-	rel, f, err := createAttachmentFile(".bin")
+	if err := ensureAttachmentRootIn(absRoot); err != nil {
+		return "", err
+	}
+	rel, f, err := createAttachmentFileIn(absRoot, ".bin")
 	if err != nil {
 		return "", err
 	}
 	if err := f.Close(); err != nil {
-		_ = os.Remove(rel)
+		_ = os.Remove(filepath.Join(absRoot, rel))
 		return "", err
 	}
-	abs, err := filepath.Abs(rel)
-	if err != nil {
-		_ = os.Remove(rel)
-		return "", err
-	}
+	abs := filepath.Join(absRoot, rel)
 	const noImageMarker = "__REASONIX_NO_CLIPBOARD_IMAGE__"
 	script := fmt.Sprintf(`
 set hasImageType to false
@@ -566,15 +691,15 @@ end try
 	clip.Env = secrets.ProcessEnv()
 	out, runErr := clip.CombinedOutput()
 	if err := classifyDarwinClipboardResult(out, runErr, noImageMarker); err != nil {
-		_ = os.Remove(rel)
+		_ = os.Remove(abs)
 		return "", err
 	}
-	raw, err := os.ReadFile(rel)
-	_ = os.Remove(rel)
+	raw, err := os.ReadFile(abs)
+	_ = os.Remove(abs)
 	if err != nil {
 		return "", err
 	}
-	return SaveImageBytes("", raw)
+	return SaveImageBytesInRoot(absRoot, "", raw)
 }
 
 func classifyDarwinClipboardResult(out []byte, runErr error, noImageMarker string) error {

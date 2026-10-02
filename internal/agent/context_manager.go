@@ -41,6 +41,9 @@ type ContextPreparePolicy struct {
 	// old post-turn shim directly. Production Prepare estimates the current view
 	// from its calibrated final request shape.
 	ObservedInputTokens int
+	// AllowChunkedFallback enables fragment/tree-reduce recovery after a single
+	// summary fails. Ordinary pressure/overflow leave this false.
+	AllowChunkedFallback bool
 }
 
 // PreparedContext is the frozen result of a successful Prepare transaction.
@@ -68,15 +71,31 @@ func (m ContextManager) ObserveUsage(u *provider.Usage) {
 // Prepare is the sole automatic maintenance entry. Below compact_ratio it does
 // nothing. At or above the trigger it runs one single-flight prune/summary
 // transaction, with at most two successful summary attempts under pressure.
-func (m ContextManager) Prepare(ctx context.Context, policy ContextPreparePolicy) (PreparedContext, error) {
+func (m ContextManager) Prepare(ctx context.Context, policy ContextPreparePolicy) (result PreparedContext, err error) {
+	// Legacy desktop callers can compact before their runtime context is installed.
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return PreparedContext{}, err
+	}
 	if policy.Trigger == "" {
 		policy.Trigger = CompactionTriggerPressure
 	}
 	if m.agent == nil {
 		return PreparedContext{}, nil
 	}
-	m.agent.sess.compactionRunMu.Lock()
+	ctx, finish := m.agent.beginCompactionRun(ctx)
+	defer func() { err = finish(err) }()
+	if err := m.agent.sess.compactionRunMu.acquire(ctx); err != nil {
+		return PreparedContext{}, err
+	}
 	defer m.agent.sess.compactionRunMu.Unlock()
+	// Cancellation may have arrived while another maintenance transaction held the lock.
+	// Reject it before any fast path or projection maintenance can run.
+	if err := ctx.Err(); err != nil {
+		return PreparedContext{}, err
+	}
 	return m.prepareOnce(ctx, policy)
 }
 
@@ -91,12 +110,18 @@ func (m ContextManager) prepareOnce(ctx context.Context, policy ContextPreparePo
 	// request so side-effecting plugins are not double-invoked; if they expand
 	// the prompt past the hard ceiling, overflow recovery still fires.
 	est := a.estimatedVisibleRequestTokens(visible)
+	viewEst := est
 	prepared := PreparedContext{
 		Messages:          append([]provider.Message(nil), visible...),
 		InputTokens:       est,
 		ProjectionVersion: a.currentProjectionVersion(),
 	}
-	if a.contextWindow <= 0 || len(visible) == 0 {
+	if len(visible) == 0 {
+		return prepared, nil
+	}
+	// Disabling automatic maintenance must not bypass the shared recovery
+	// ladder for an explicit request, including when the window is unknown.
+	if a.contextWindow <= 0 && policy.Trigger != CompactionTriggerManual {
 		return prepared, nil
 	}
 	fold := a.compactTrigger()
@@ -106,17 +131,14 @@ func (m ContextManager) prepareOnce(ctx context.Context, policy ContextPreparePo
 		prepared.InputTokens = est
 	}
 	inputHash := a.contextMaintenanceInputHash(visible)
-	// Receipts back off sub-critical retries only. Physical overflow may retry
-	// maintenance once, but a failed summary never fabricates fallback content.
-	if blocked, _ := a.contextMaintenanceBlocked(inputHash); blocked && policy.Trigger != CompactionTriggerManual &&
+	// Receipts back off sub-critical retries only. At the ceiling a failed
+	// summary blocks this attempt and preserves the last committed view.
+	if blocked, _ := a.contextMaintenanceBlocked(inputHash, viewEst); blocked && policy.Trigger != CompactionTriggerManual &&
 		policy.Trigger != CompactionTriggerOverflow && est < hard {
 		return prepared, nil
 	}
 	if est < fold {
-		a.sess.compaction.consecutive = 0
-		a.sess.compaction.stuck = false
-		a.sess.compaction.stuckInputHash = ""
-		a.sess.compaction.failedTurn.Store(0)
+		a.resetCompactionProgress()
 	}
 	if a.sess.compaction.stuck && a.sess.compaction.stuckInputHash != inputHash {
 		// The previous projection could not reclaim enough from its exact view,
@@ -134,8 +156,10 @@ func (m ContextManager) prepareOnce(ctx context.Context, policy ContextPreparePo
 		return prepared, nil
 	}
 
-	if policy.Trigger == CompactionTriggerPressure || policy.Trigger == CompactionTriggerOverflow {
-		applied, err := a.pruneToolResultsToProjectionLocked(policy.Trigger)
+	// A manual compact over the hard ceiling is a rescue, not a convenience:
+	// prune first so the never-folded recent tail can shrink too.
+	if shouldPruneBeforeFold(policy.Trigger, hard > 0 && est >= hard) {
+		applied, err := a.pruneToolResultsToProjectionLocked(ctx, policy.Trigger)
 		if err != nil {
 			return PreparedContext{}, err
 		}
@@ -153,60 +177,65 @@ func (m ContextManager) prepareOnce(ctx context.Context, policy ContextPreparePo
 	return m.foldContext(ctx, prepared, policy, inputHash, est, fold, hard, forceFold)
 }
 
+func shouldPruneBeforeFold(trigger string, overHardCeiling bool) bool {
+	switch trigger {
+	case CompactionTriggerPressure, CompactionTriggerOverflow:
+		return true
+	case CompactionTriggerManual:
+		return overHardCeiling
+	default:
+		return false
+	}
+}
+
+// manualRecoverySummaries bounds the rescue loop for a manual compact that
+// starts at or above the hard input ceiling. Each batch folds the largest
+// admissible prefix, so a handful of batches recovers even a view several
+// times the window while capping summarizer spend on pathological input.
+const manualRecoverySummaries = 4
+
+func maxSummariesFor(policy ContextPreparePolicy, overCeiling bool) int {
+	switch {
+	case policy.Trigger == CompactionTriggerManual && overCeiling:
+		return manualRecoverySummaries
+	case policy.Trigger == CompactionTriggerPressure:
+		return 2
+	default:
+		return 1
+	}
+}
+
 func (m ContextManager) foldContext(ctx context.Context, prepared PreparedContext, policy ContextPreparePolicy, inputHash string, est, fold, hard int, forceFold bool) (PreparedContext, error) {
 	a := m.agent
-	maxSummaries := 1
-	if policy.Trigger == CompactionTriggerPressure {
-		maxSummaries = 2
-	}
+	// Reserve the manual rescue budget when an overflow may reveal a window.
+	// With no known ceiling, the first successful fold completes the request.
+	maxSummaries := maxSummariesFor(policy, hard <= 0 || est >= hard)
+	ladder := newSummaryLadder(maxSummaries)
 	result := prepared
-	for range maxSummaries {
-		mustFree := policy.Trigger != CompactionTriggerManual && (policy.Trigger == CompactionTriggerOverflow || result.InputTokens >= hard)
-		outcome, err := a.compactToProjectionLocked(ctx, policy.Trigger, policy.Instructions, forceFold, mustFree)
+	for ladder.next() {
+		mustFree := policy.Trigger == CompactionTriggerOverflow || hard > 0 && result.InputTokens >= hard
+		outcome, err := a.compactToProjectionLocked(ctx, policy.Trigger, policy.Instructions,
+			ladder.request(forceFold, mustFree, policy.AllowChunkedFallback))
 		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return PreparedContext{}, err
+			if ctxErr := ctx.Err(); ctxErr != nil && !errors.Is(context.Cause(ctx), errSummaryBudget) {
+				return PreparedContext{}, ctxErr
 			}
-			if errors.Is(err, errCompressStaleContext) && policy.Trigger != CompactionTriggerManual {
-				reason := "context changed during summary; automatic retry blocked for this generation"
-				a.recordContextMaintenanceBlocked(inputHash, policy.Trigger, "summary", reason)
-				if policy.Trigger == CompactionTriggerOverflow || result.InputTokens >= hard {
-					return PreparedContext{}, fmt.Errorf("%w: %s", ErrCompactionRequired, reason)
-				}
-				return m.currentPrepared(), nil
+			if ladder.absorbOverflow(err) {
+				// Summary feedback may have learned both the physical window and
+				// a denser tokenizer. Re-plan against those measurements.
+				fold, hard = a.compactTrigger(), a.hardInputCeiling()
+				result = m.currentPrepared()
+				continue
 			}
-			status := "failed"
-			if errors.Is(err, errSummaryOutputTruncated) || errors.Is(err, errCheckpointRejected) {
-				status = "blocked"
-			}
-			reason := fmt.Sprintf("context summary failed: %v", err)
-			a.recordContextMaintenanceOutcome(inputHash, policy.Trigger, "summary", status, reason)
-			if policy.Trigger == CompactionTriggerManual {
-				return PreparedContext{}, err
-			}
-			latest := m.currentPrepared()
-			if policy.Trigger == CompactionTriggerOverflow || latest.InputTokens >= hard {
-				return PreparedContext{}, fmt.Errorf("%w: %w", ErrCompactionRequired, err)
-			}
-			return latest, nil
+			return m.summaryFailed(ctx, policy, inputHash, hard, err)
 		}
 		if outcome == CompactionNoop {
-			reason := "context is above the maintenance threshold but no foldable region remains"
-			a.recordContextMaintenanceBlocked(inputHash, policy.Trigger, "summary", reason)
-			latest := m.currentPrepared()
-			if policy.Trigger == CompactionTriggerOverflow || policy.Force || latest.InputTokens >= hard {
-				return PreparedContext{}, fmt.Errorf("%w: %s", ErrCompactionRequired, reason)
-			}
-			return latest, nil
+			return m.summaryNoop(ctx, policy, inputHash, hard)
 		}
 
 		result = m.currentPrepared()
-		if policy.Trigger == CompactionTriggerManual || result.InputTokens < fold ||
-			(policy.Trigger == CompactionTriggerOverflow && result.InputTokens < hard) {
-			a.sess.compaction.stuck = false
-			a.sess.compaction.stuckInputHash = ""
-			a.sess.compaction.consecutive = 0
-			a.sess.compaction.failedTurn.Store(0)
+		if foldLanded(policy, result.InputTokens, fold, hard) {
+			a.resetCompactionProgress()
 			return result, nil
 		}
 		forceFold = false
@@ -219,11 +248,85 @@ func (m ContextManager) foldContext(ctx context.Context, prepared PreparedContex
 	a.sess.compaction.stuck = true
 	a.sess.compaction.stuckInputHash = blockedInputHash
 	a.sess.compaction.consecutive += maxSummaries
-	if policy.Trigger == CompactionTriggerOverflow || result.InputTokens >= hard {
-		return PreparedContext{}, fmt.Errorf("%w: %s", ErrCompactionRequired, reason)
+	if policy.Trigger == CompactionTriggerOverflow || hard > 0 && result.InputTokens >= hard {
+		return PreparedContext{}, fmt.Errorf("%w: %w", ErrCompactionRequired, summaryError(fmt.Errorf("%w: %s", errCheckpointRejected, reason)))
 	}
 	slog.Info("agent: context maintenance paused below hard ceiling", "reason", reason)
 	return result, nil
+}
+
+func foldLanded(policy ContextPreparePolicy, tokens, fold, hard int) bool {
+	switch policy.Trigger {
+	case CompactionTriggerManual, CompactionTriggerOverflow:
+		return hard <= 0 || tokens < hard || tokens < fold
+	default:
+		return tokens < fold
+	}
+}
+
+func (m ContextManager) summaryFailed(ctx context.Context, policy ContextPreparePolicy, inputHash string, hard int, err error) (PreparedContext, error) {
+	a := m.agent
+	var persistence *compactionPersistenceError
+	if errors.As(err, &persistence) {
+		return PreparedContext{}, err
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil && !errors.Is(context.Cause(ctx), errSummaryBudget) {
+		return PreparedContext{}, ctxErr
+	}
+	err = summaryError(compactionError(ctx, err))
+	if errors.Is(err, errCompressStaleContext) && policy.Trigger != CompactionTriggerManual {
+		reason := "context changed during summary; automatic retry blocked for this generation"
+		a.recordContextMaintenanceBlocked(inputHash, policy.Trigger, "summary", reason)
+		return m.rescueOrFail(ctx, policy, hard, err)
+	}
+	status := "failed"
+	if errors.Is(err, errSummaryOutputTruncated) || errors.Is(err, errCheckpointRejected) {
+		status = "blocked"
+	}
+	a.recordContextMaintenanceOutcome(inputHash, policy.Trigger, "summary", status, fmt.Sprintf("context summary failed: %v", err))
+	return m.rescueOrFail(ctx, policy, hard, err)
+}
+
+func (m ContextManager) summaryNoop(ctx context.Context, policy ContextPreparePolicy, inputHash string, hard int) (PreparedContext, error) {
+	if err := ctx.Err(); err != nil {
+		return PreparedContext{}, err
+	}
+	reason := "context is above the maintenance threshold but no foldable region remains"
+	latest := m.currentPrepared()
+	switch {
+	case policy.Trigger == CompactionTriggerOverflow || hard > 0 && latest.InputTokens >= hard:
+		m.agent.recordContextMaintenanceBlocked(inputHash, policy.Trigger, "summary", reason)
+		return PreparedContext{}, fmt.Errorf("%w: %w", ErrCompactionRequired, summaryError(fmt.Errorf("%w: %s", errCheckpointRejected, reason)))
+	case policy.Force:
+		// A requested compaction with no eligible history is a successful no-op.
+		// It must not poison the retry ledger or masquerade as a hard-limit failure.
+		return latest, nil
+	default:
+		return latest, nil
+	}
+}
+
+// rescueOrFail keeps the last committed view below the ceiling. At the hard
+// boundary it stops the attempt without installing any lossy fallback.
+func (m ContextManager) rescueOrFail(ctx context.Context, policy ContextPreparePolicy, hard int, cause error) (PreparedContext, error) {
+	if err := ctx.Err(); err != nil && !errors.Is(context.Cause(ctx), errSummaryBudget) {
+		return PreparedContext{}, err
+	}
+	latest := m.currentPrepared()
+	if policy.Trigger != CompactionTriggerOverflow && (hard <= 0 || latest.InputTokens < hard) {
+		if policy.Trigger == CompactionTriggerManual {
+			return PreparedContext{}, cause
+		}
+		return latest, nil
+	}
+	return PreparedContext{}, fmt.Errorf("%w: %w", ErrCompactionRequired, cause)
+}
+
+func (a *Agent) resetCompactionProgress() {
+	a.sess.compaction.stuck = false
+	a.sess.compaction.stuckInputHash = ""
+	a.sess.compaction.consecutive = 0
+	a.sess.compaction.failedTurn.Store(0)
 }
 
 func (m ContextManager) currentPrepared() PreparedContext {
@@ -246,10 +349,7 @@ func (a *Agent) estimatedVisibleRequestTokens(visible []provider.Message) int {
 		return 0
 	}
 	msgs := a.normalizeModelRequestMessages(visible)
-	var tools []provider.ToolSchema
-	if a.svc.tools != nil {
-		tools = a.svc.tools.Schemas()
-	}
+	tools := a.providerToolSchemas()
 	return a.estimatedRequestTokens(provider.Request{
 		Messages:    msgs,
 		Tools:       tools,

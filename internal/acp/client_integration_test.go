@@ -168,19 +168,19 @@ func TestUpdateSinkToolLocations(t *testing.T) {
 	}
 }
 
-func TestPlanEntriesFromTodoArgs(t *testing.T) {
-	entries, ok := planEntriesFromTodoArgs(`{"todos":[
-		{"content":"Phase one","status":"in_progress","level":0},
-		{"content":"Sub step","status":"pending","level":1},
-		{"content":"Done step","status":"completed"},
-		{"content":"","status":"pending"},
-		{"content":"Weird","status":"???"}
-	]}`)
-	if !ok || len(entries) != 4 {
-		t.Fatalf("entries = %+v, ok=%v; want 4 entries", entries, ok)
+func TestPlanEntriesFromCommittedTodos(t *testing.T) {
+	entries := planEntriesFromTodos([]event.Todo{
+		{Content: "First", Status: "in_progress"},
+		{Content: "Second", Status: "pending"},
+		{Content: "Done", Status: "completed"},
+		{Content: "", Status: "pending"},
+		{Content: "Weird", Status: "???"},
+	})
+	if len(entries) != 4 {
+		t.Fatalf("entries = %+v; want 4 entries", entries)
 	}
-	if entries[0].Priority != "high" || entries[0].Status != "in_progress" {
-		t.Fatalf("phase entry = %+v", entries[0])
+	if entries[0].Priority != "medium" || entries[0].Status != "in_progress" {
+		t.Fatalf("first entry = %+v", entries[0])
 	}
 	if entries[1].Priority != "medium" {
 		t.Fatalf("sub-step entry = %+v", entries[1])
@@ -188,11 +188,8 @@ func TestPlanEntriesFromTodoArgs(t *testing.T) {
 	if entries[3].Status != "pending" {
 		t.Fatalf("unknown status must degrade to pending, got %+v", entries[3])
 	}
-	if _, ok := planEntriesFromTodoArgs(`{"todos":[]}`); ok {
-		t.Fatal("empty todos must not produce a plan update")
-	}
-	if _, ok := planEntriesFromTodoArgs(`not json`); ok {
-		t.Fatal("malformed args must not produce a plan update")
+	if got := planEntriesFromTodos(nil); len(got) != 0 {
+		t.Fatalf("empty committed todos = %+v", got)
 	}
 }
 
@@ -202,18 +199,24 @@ func TestUpdateSinkEmitsPlanForTodoWrite(t *testing.T) {
 	s.Emit(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{
 		ID: "t1", Name: "todo_write", Args: `{"todos":[{"content":"Do it","status":"pending"}]}`,
 	}})
-	// The plan update precedes the tool_call for the same dispatch.
-	plan := n.updateMap(t, 0)
+	if call := n.updateMap(t, 0); call["sessionUpdate"] != "tool_call" {
+		t.Fatalf("dispatch update = %v, want tool_call", call["sessionUpdate"])
+	}
+	s.Emit(event.Event{Kind: event.ToolResult, Tool: event.Tool{
+		ID: "t1", Name: "todo_write", TodoWritten: true,
+		Todos: []event.Todo{{Content: "Do it", Status: "pending"}},
+	}})
+	plan := n.updateMap(t, 1)
 	if plan["sessionUpdate"] != "plan" {
-		t.Fatalf("first update = %v, want plan", plan["sessionUpdate"])
+		t.Fatalf("committed update = %v, want plan", plan["sessionUpdate"])
 	}
 	raw, _ := json.Marshal(plan)
 	if !strings.Contains(string(raw), `"content":"Do it"`) {
 		t.Fatalf("plan update missing entry: %s", raw)
 	}
-	call := n.updateMap(t, 1)
-	if call["sessionUpdate"] != "tool_call" {
-		t.Fatalf("second update = %v, want tool_call", call["sessionUpdate"])
+	call := n.updateMap(t, 2)
+	if call["sessionUpdate"] != "tool_call_update" {
+		t.Fatalf("result update = %v, want tool_call_update", call["sessionUpdate"])
 	}
 }
 
@@ -393,6 +396,11 @@ func TestRebuildSessionKeepsClientIOAndMode(t *testing.T) {
 	}
 	sess.lease = lease
 	t.Cleanup(sess.releaseSessionLease)
+	t.Cleanup(func() {
+		if ctrl := sess.currentCtrl(); ctrl != nil {
+			ctrl.Close()
+		}
+	})
 
 	factory := &configurableFactory{dir: dir}
 	svc := &service{

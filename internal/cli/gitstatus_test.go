@@ -2,15 +2,17 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/charmbracelet/x/ansi"
+
+	"reasonix/internal/gitcmd"
 )
 
 func TestParseGitNumstat(t *testing.T) {
@@ -107,9 +109,8 @@ func TestLoadGitStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	status, err := loadGitStatus(ctx, filepath.Join(root, "subdir"))
+	// This checks Git semantics, not subprocess speed on a shared CI runner.
+	status, err := loadGitStatus(t.Context(), openedRepo(t, filepath.Join(root, "subdir")))
 	if err != nil {
 		t.Fatalf("loadGitStatus: %v", err)
 	}
@@ -122,6 +123,51 @@ func TestLoadGitStatus(t *testing.T) {
 	if plain := ansi.Strip(status.Render()); !strings.Contains(plain, filepath.Base(root)+"@main") || !strings.Contains(plain, "+2 -1 ?1") {
 		t.Fatalf("rendered status = %q", plain)
 	}
+}
+
+func TestLoadGitStatusRejectsCanceledSnapshot(t *testing.T) {
+	for _, cancelAt := range []string{"symbolic-ref", "diff", "status"} {
+		t.Run(cancelAt, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			run := func(ctx context.Context, _ gitcmd.Repo, args ...string) (string, error) {
+				if args[0] == cancelAt {
+					cancel()
+				}
+				if err := ctx.Err(); err != nil {
+					return "", err
+				}
+				switch args[0] {
+				case "rev-parse":
+					return filepath.Join("workspace", "repo"), nil
+				case "symbolic-ref":
+					return "main", nil
+				case "diff":
+					return "2\t1\ttracked.txt\n", nil
+				case "status":
+					return "?? new.txt\n", nil
+				default:
+					t.Fatalf("unexpected git args: %v", args)
+					return "", nil
+				}
+			}
+			repo := gitcmd.Repo{Dir: "repo", GitDir: "repo", CommonDir: "repo", WorkTree: "repo"}
+			status, err := loadGitStatusWithRunner(ctx, repo, run)
+			if !errors.Is(err, context.Canceled) || status != (gitStatus{}) {
+				t.Fatalf("canceled query returned status=%+v err=%v", status, err)
+			}
+		})
+	}
+}
+
+// openedRepo is dir's identity as a session opening it resolves it.
+func openedRepo(t *testing.T, dir string) gitcmd.Repo {
+	t.Helper()
+	repo, err := gitcmd.Open(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("Open(%s): %v", dir, err)
+	}
+	return repo
 }
 
 func TestRunGitDisablesOptionalLocks(t *testing.T) {
@@ -139,7 +185,8 @@ func TestRunGitDisablesOptionalLocks(t *testing.T) {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	out, err := runGit(context.Background(), "", "status")
+	dir := t.TempDir()
+	out, err := runGit(context.Background(), gitcmd.Repo{Dir: dir, GitDir: dir, CommonDir: dir, WorkTree: dir}, "status")
 	if err != nil {
 		t.Fatalf("runGit: %v", err)
 	}

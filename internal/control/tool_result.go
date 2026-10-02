@@ -3,15 +3,45 @@ package control
 import (
 	"slices"
 
+	"reasonix/internal/event"
 	"reasonix/internal/provider"
 )
+
+// Bind stable local message IDs before publishing a result. Provider call IDs
+// can be reused in later turns; an ambiguous source stays unavailable.
+func bindCompletionLogSources(receipt *event.CompletionReceipt, messages []provider.Message) *event.CompletionReceipt {
+	if receipt == nil {
+		return nil
+	}
+	out := *receipt
+	out.Verifications = append([]event.ReceiptVerification(nil), receipt.Verifications...)
+	sources := make(map[string]string)
+	for _, message := range messages {
+		if message.Role != provider.RoleTool || message.ToolCallID == "" {
+			continue
+		}
+		if _, exists := sources[message.ToolCallID]; exists {
+			sources[message.ToolCallID] = ""
+		} else {
+			sources[message.ToolCallID] = message.ID
+		}
+	}
+	for i := range out.Verifications {
+		out.Verifications[i].ToolResultID = sources[out.Verifications[i].ToolCallID]
+	}
+	return &out
+}
 
 // ToolResultData holds the full arguments and output for one tool call, loaded
 // on demand when a frontend expands a collapsed tool card.
 type ToolResultData struct {
+	Name      string                  `json:"name"`
 	Args      string                  `json:"args"`
 	Output    string                  `json:"output"`
 	Execution *provider.ToolExecution `json:"execution,omitempty"`
+	// MCPApp is the optional Apps presentation for inline rendering.
+	MCPApp         *provider.MCPAppPresentation `json:"mcpApp,omitempty"`
+	PresentedFiles []provider.PresentedFile     `json:"presentedFiles,omitempty"`
 }
 
 // ToolResult looks up a tool call by its ID in the session history and returns
@@ -36,9 +66,12 @@ func lookupToolResult(msgs []provider.Message, toolID string) *ToolResultData {
 			continue
 		}
 		out := &ToolResultData{
-			Args:      "",
-			Output:    msg.Content,
-			Execution: msg.ToolExecution,
+			Name:           msg.Name,
+			Args:           "",
+			Output:         msg.Content,
+			Execution:      msg.ToolExecution,
+			MCPApp:         msg.MCPApp,
+			PresentedFiles: provider.PresentedFileList(msg.PresentedFiles),
 		}
 		// Walk back to find the assistant turn that issued this call.
 		for j := i; j >= 0; j-- {
@@ -64,7 +97,7 @@ func lookupToolResult(msgs []provider.Message, toolID string) *ToolResultData {
 			}
 			return &ToolResultData{
 				Args:   provider.FormatServerSearchArgs(search.Query),
-				Output: provider.FormatServerSearchOutput(search.Results),
+				Output: provider.ServerSearchDisplayOutput(search),
 			}
 		}
 	}

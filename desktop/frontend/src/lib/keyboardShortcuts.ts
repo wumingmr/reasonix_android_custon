@@ -1,3 +1,4 @@
+import { useAppNavigationStore } from "../store/appNavigation";
 import { useEffect, useState, type DependencyList } from "react";
 import type { DictKey } from "./i18n";
 
@@ -20,7 +21,6 @@ export type ShortcutAction =
   | "textSize.increase"
   | "textSize.decrease"
   | "textSize.reset"
-  | "toolApproval.yolo"
   | "shortcuts.show"
   | "topic.goto.1"
   | "topic.goto.2"
@@ -215,15 +215,6 @@ export const SHORTCUT_DEFINITIONS: readonly ShortcutDefinition[] = [
     descriptionKey: "shortcuts.desc.textSizeReset",
     defaults: modCombo("0"),
     preventDefault: true,
-  },
-  {
-    action: "toolApproval.yolo",
-    section: "tools",
-    labelKey: "shortcuts.action.yoloToggle",
-    descriptionKey: "shortcuts.desc.yoloToggle",
-    defaults: modCombo("y"),
-    preventDefault: true,
-    allowInEditable: true,
   },
   {
     action: "shortcuts.show",
@@ -512,6 +503,10 @@ export function useGlobalShortcut(
     const platform = detectShortcutPlatform();
     const onKey = (event: globalThis.KeyboardEvent) => {
       if (isShortcutRecorderTarget(event.target)) return;
+      if (useAppNavigationStore.getState().page.kind !== "workspace") {
+        if (!["commandPalette.open", "settings.open", "app.newSession", "tab.close", "shortcuts.show", "textSize.increase", "textSize.decrease", "textSize.reset"].includes(action)) return;
+        if (document.querySelector('[aria-modal="true"]') && !action.startsWith("textSize.")) return;
+      }
       const editableTarget = isEditableTarget(event.target);
       if (!definition.allowInEditable && editableTarget) return;
       // Existing installations may already have a global action stored on

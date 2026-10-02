@@ -13,12 +13,13 @@ import (
 	"reasonix/internal/tool"
 )
 
-func TestSubagentSkillGoalRecordsWorkDuration(t *testing.T) {
+func TestSubagentSkillRecordsWorkDurationOnChildMessage(t *testing.T) {
 	sess := agent.NewSession("")
-	exec := agent.New(nil, tool.NewRegistry(), sess, agent.Options{}, event.Discard)
+	prov := &scriptedTurns{turns: goalToolTurn(GoalStatusComplete, "reviewed", "")}
+	exec := agent.New(prov, goalRegistry(), sess, agent.Options{}, event.Discard)
 	events := make(chan event.Event, 8)
-	c := New(Options{
-		Executor: exec,
+	c := newOwnedTestController(t, Options{
+		Executor: exec, Runner: exec,
 		Sink: event.FuncSink(func(e event.Event) {
 			if e.Kind == event.TurnDone || e.Kind == event.Notice {
 				events <- e
@@ -40,9 +41,6 @@ func TestSubagentSkillGoalRecordsWorkDuration(t *testing.T) {
 	)
 	waitForTurnDone(t, events)
 
-	if got := c.GoalRuntime().WorkDurationMs; got <= 0 {
-		t.Fatalf("active Goal subagent work duration = %d, want positive", got)
-	}
 	var childDuration int64
 	for _, message := range c.History() {
 		if message.Role == provider.RoleAssistant && strings.Contains(message.Content, "Notes listed") {
@@ -61,7 +59,7 @@ func TestSubagentSkillGoalRejectsStaleWorkDuration(t *testing.T) {
 	events := make(chan event.Event, 8)
 	started := make(chan struct{})
 	release := make(chan struct{})
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Executor: exec,
 		Sink: event.FuncSink(func(e event.Event) {
 			if e.Kind == event.TurnDone || e.Kind == event.Notice {

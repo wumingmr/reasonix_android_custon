@@ -19,7 +19,7 @@ type closeProbeBotController struct {
 }
 
 type stopWaitBotController struct {
-	botController
+	stubBotController
 	started chan struct{}
 	release chan struct{}
 }
@@ -198,10 +198,41 @@ func (a *typingHoldAdapter) SendTyping(context.Context, string) error {
 }
 
 type cancelPublishBotController struct {
-	botController
+	stubBotController
 	closeEntered chan struct{} // one send when Close begins
 	closeHold    chan struct{} // Close parks here, pinning Stop inside the closeSessions loop
 	turnCtx      chan error    // ctx.Err() observed on RunTurn entry
+}
+
+type panickingRootBotController struct {
+	stubBotController
+}
+
+func (panickingRootBotController) WorkspaceRoot() string { panic("workspace root unavailable") }
+
+func TestAPanicWhileClaimingASessionReleasesTheGatewayLock(t *testing.T) {
+	gw := NewGateway(GatewayConfig{Allowlist: AllowlistConfig{AllowAll: true}}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	msg := InboundMessage{Platform: PlatformWeixin, ConnectionID: "weixin", ChatType: ChatDM, ChatID: "chat", UserID: "user"}
+	key := BuildSessionKey(msg.Session())
+	gw.controllers[key] = &sessionState{ctrl: panickingRootBotController{}, sink: &sessionEventSink{}}
+
+	panicked := make(chan any, 1)
+	go func() {
+		defer func() { panicked <- recover() }()
+		gw.getOrCreateSession(context.Background(), key, msg)
+	}()
+	if recovered := <-panicked; recovered == nil {
+		t.Fatal("the controller's panic did not reach the caller")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for !gw.mu.TryLock() {
+		if time.Now().After(deadline) {
+			t.Fatal("the gateway lock is still held after the panic unwound")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	gw.mu.Unlock()
 }
 
 func (c *cancelPublishBotController) RunTurn(ctx context.Context, _ string) error {

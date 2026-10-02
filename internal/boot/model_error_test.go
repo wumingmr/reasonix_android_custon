@@ -2,10 +2,14 @@ package boot
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"reasonix/internal/config"
+	"reasonix/internal/control"
 	"reasonix/internal/event"
 
 	_ "reasonix/internal/provider/openai"
@@ -33,6 +37,7 @@ base_url = "https://example.invalid"
 model = "deepseek-v4-flash"
 api_key_env = "REASONIX_TEST_KEY_UNSET"
 `)
+	approveWorkspace(t, dir)
 
 	_, err := Build(context.Background(), Options{Sink: event.Discard})
 	if err == nil {
@@ -66,6 +71,7 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 	writeFile(t, dir, "reasonix.toml", `
 default_model = "deepseek-flash"
 `)
+	approveWorkspace(t, dir)
 
 	var notices []event.Event
 	ctrl, err := Build(context.Background(), Options{
@@ -105,6 +111,7 @@ base_url = "https://example.invalid"
 model = "deepseek-v4-flash"
 api_key_env = "REASONIX_TEST_KEY_UNSET"
 `)
+	approveWorkspace(t, dir)
 
 	ctrl, err := Build(context.Background(), Options{Sink: event.Discard, Model: "mimo-v2.5-pro"})
 	if err != nil {
@@ -134,6 +141,7 @@ base_url = "https://example.invalid"
 model = "m"
 api_key_env = "`+keyEnv+`"
 `)
+	approveWorkspace(t, dir)
 
 	var notices []event.Event
 	ctrl, err := Build(context.Background(), Options{
@@ -159,6 +167,42 @@ api_key_env = "`+keyEnv+`"
 	}
 }
 
+func TestBuildClassifiesUnavailableCredentialStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	if err := os.Mkdir(filepath.Join(home, ".env"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, home, "config.toml", `
+default_model = "relay/chat"
+
+[[providers]]
+name = "relay"
+kind = "openai"
+base_url = "https://example.invalid/v1"
+model = "chat"
+api_key_env = "RELAY_TEST_KEY"
+`)
+	dir := robustTempDir(t)
+	fenceBootTestHistoryCatalog(t)
+	t.Chdir(dir)
+
+	ctrl, err := Build(context.Background(), Options{Sink: event.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ctrl.Close()
+	if got := ctrl.AuthenticationState(); got.Status != control.AuthenticationCredentialStoreUnavailable || got.Code != "credential_store_unavailable" {
+		t.Fatalf("authentication state = %+v", got)
+	}
+
+	_, err = Build(context.Background(), Options{Sink: event.Discard, RequireKey: true, Model: "relay/chat"})
+	var authErr *control.AuthenticationError
+	if !errors.As(err, &authErr) || authErr.State.Status != control.AuthenticationCredentialStoreUnavailable {
+		t.Fatalf("headless build error = %v, want credential-store AuthenticationError", err)
+	}
+}
+
 func TestBuildDoesNotNoticeMissingAPIKeyForNoAuthLoopback(t *testing.T) {
 	const keyEnv = "REASONIX_LOCAL_GATEWAY_KEY_FOR_TEST"
 	dir := robustTempDir(t)
@@ -175,6 +219,7 @@ base_url = "http://127.0.0.1:23333/v1"
 models = ["model-a"]
 api_key_env = "`+keyEnv+`"
 `)
+	approveWorkspace(t, dir)
 
 	var notices []string
 	ctrl, err := Build(context.Background(), Options{
@@ -240,6 +285,7 @@ base_url = "https://api.MiniMax.chat/v1"
 model = "MiniMax-M3"
 api_key_env = "`+configuredEnv+`"
 `)
+	approveWorkspace(t, dir)
 
 	ctrl, err := Build(context.Background(), Options{Sink: event.Discard})
 	if err != nil {
@@ -286,6 +332,7 @@ base_url = "https://api.MiniMax.chat/v1"
 model = "MiniMax-M3"
 api_key_env = "`+configuredEnv+`"
 `)
+	approveWorkspace(t, dir)
 
 	_, err := Build(context.Background(), Options{
 		Sink:       event.Discard,

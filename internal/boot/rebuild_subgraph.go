@@ -53,13 +53,12 @@ func tryRebuildSubgraph(ctx context.Context, old *control.Controller, previous *
 	plan.ToGeneration = gen
 	plan.Graph = to
 
-	// Checkpoint live controller bindings for fail-atomic restore.
+	// Checkpoint bindings for fail-atomic restore.
 	prevDispatcher := previous.Dispatcher
 	prevResolver := previous.ProviderResolver
 	prevUI := previous.ExtensionUI
 	prevUISession := controllerSessionID(previous.Controller)
 	prevUIGen := previous.Snapshot.Generation()
-
 	res = &BuildResult{
 		Controller:           previous.Controller,
 		Snapshot:             previous.Snapshot.WithGeneration(gen),
@@ -71,6 +70,7 @@ func tryRebuildSubgraph(ctx context.Context, old *control.Controller, previous *
 		ProviderResolver:     previous.ProviderResolver,
 		BaseProviderResolver: previous.BaseProviderResolver,
 		Assembly:             previous.Assembly,
+		SkillWatchService:    previous.SkillWatchService,
 		Plan:                 plan,
 		ReusedController:     true,
 	}
@@ -300,7 +300,7 @@ func registerControllerDrainCancel(owner *extension.RuntimeOwner, gen uint64, ct
 		owner = extension.RuntimeOwnerOrDefault(nil)
 	}
 	owner.Gate.RegisterDrainCancel(gen, func() {
-		if ctrl.RuntimeGeneration() == gen || ctrl.RuntimeGeneration() == 0 {
+		if ctrl.Running() && (ctrl.RuntimeGeneration() == gen || ctrl.RuntimeGeneration() == 0) {
 			ctrl.Cancel()
 		}
 	})

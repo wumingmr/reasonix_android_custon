@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -30,24 +31,66 @@ type Location struct {
 }
 
 func pathToURI(p string) string {
+	return pathToURIForOS(p, runtime.GOOS)
+}
+
+func pathToURIForOS(p, goos string) string {
 	p = filepath.ToSlash(p)
-	if runtime.GOOS == "windows" && len(p) > 1 && p[1] == ':' {
-		p = "/" + p // C:/x → /C:/x so the URI becomes file:///C:/x
+	if goos == "windows" {
+		p = strings.ReplaceAll(p, `\`, "/")
+		if hostAndPath, ok := strings.CutPrefix(p, "//"); ok {
+			host, uriPath, found := strings.Cut(hostAndPath, "/")
+			if found && host != "" {
+				return (&url.URL{Scheme: "file", Host: host, Path: "/" + uriPath}).String()
+			}
+		}
+		if len(p) > 1 && p[1] == ':' {
+			p = "/" + p // C:/x → /C:/x so the URI becomes file:///C:/x
+		}
 	}
 	u := url.URL{Scheme: "file", Path: p}
 	return u.String()
 }
 
-func uriToPath(uri string) string {
+func uriToPath(uri string) (string, error) {
+	return uriToPathForOS(uri, runtime.GOOS)
+}
+
+func uriToPathForOS(uri, goos string) (string, error) {
 	u, err := url.Parse(uri)
 	if err != nil {
-		return uri
+		return "", fmt.Errorf("parse URI: %w", err)
+	}
+	if !strings.EqualFold(u.Scheme, "file") || u.Opaque != "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", errors.New("URI is not a local file URI")
+	}
+	if strings.ContainsRune(u.Path, 0) {
+		return "", errors.New("file URI path contains NUL")
+	}
+	host := u.Hostname()
+	if u.Host != "" && (host == "" || u.Port() != "") {
+		return "", errors.New("file URI has an invalid authority")
+	}
+	if host != "" && !strings.EqualFold(host, "localhost") {
+		if goos != "windows" {
+			return "", fmt.Errorf("remote file URI authority %q is not local on %s", host, goos)
+		}
+		if u.Path == "" || u.Path == "/" {
+			return "", errors.New("UNC file URI is missing a share path")
+		}
+		return `\\` + host + `\` + strings.ReplaceAll(strings.TrimPrefix(u.Path, "/"), "/", `\`), nil
 	}
 	p := u.Path
-	if runtime.GOOS == "windows" && len(p) > 2 && p[0] == '/' && p[2] == ':' {
+	if p == "" {
+		return "", errors.New("file URI path is empty")
+	}
+	if goos == "windows" && len(p) > 2 && p[0] == '/' && p[2] == ':' {
 		p = p[1:]
 	}
-	return filepath.FromSlash(p)
+	if goos == "windows" {
+		return strings.ReplaceAll(p, "/", `\`), nil
+	}
+	return p, nil
 }
 
 // locate finds symbol on the 1-based line of content and returns the LSP position

@@ -14,12 +14,6 @@ type taskRuntime struct {
 	outcome    *evidence.OutcomeTracker
 	budget     runBudget
 	ebm        ebmState
-	governor   governorState
-	// repeatFailures outlives a Run: re-reading a file and resending the same
-	// stale anchor is still zero progress, so prepareScope — not the ledger
-	// restart — decides what survives a scope-stable continuation.
-	repeatFailures map[string]repeatFailureRecord
-	repeatScope    string
 }
 
 // restartLedger begins a new task's accounting. It is written as one assignment
@@ -27,33 +21,14 @@ type taskRuntime struct {
 // forward are named because each answers to its own condition in beginRunTurn.
 func (t *taskRuntime) restartLedger() {
 	*t = taskRuntime{
-		scopeID:        t.scopeID,
-		checkpoint:     t.checkpoint,
-		repeatFailures: t.repeatFailures,
-		repeatScope:    t.repeatScope,
-		ledger:         t.ledger,
-		outcome:        evidence.NewOutcomeTracker(),
-		budget:         runBudget{limit: t.budget.limit},
+		scopeID:    t.scopeID,
+		checkpoint: t.checkpoint,
+		ledger:     t.ledger,
+		outcome:    evidence.NewOutcomeTracker(),
+		budget:     runBudget{limit: t.budget.limit},
 	}
 	t.ledger.Reset()
 }
 
-// prepareScope reconciles the repeat-failure records against the scope this Run
-// belongs to. A scope-stable continuation keeps only the records whose anchor
-// still needs re-checking; anything else starts from empty.
 func (t *taskRuntime) prepareScope(scoped bool, scopeID string) {
-	if !scoped || t.repeatScope != scopeID {
-		t.repeatFailures = nil
-	} else {
-		for sig, failure := range t.repeatFailures {
-			if !failure.stateRecheck {
-				delete(t.repeatFailures, sig)
-			}
-		}
-	}
-	if scoped {
-		t.repeatScope = scopeID
-	} else {
-		t.repeatScope = ""
-	}
 }

@@ -61,6 +61,10 @@ func (a *Agent) InvalidateProjection() {
 	if a == nil {
 		return
 	}
+	// A strong reasoning-replay overlay is indexed against the old canonical
+	// history. Clear it together with the compaction projection so rewind,
+	// branch, and model/system lineage changes cannot reuse a stale anchor.
+	a.sess.clearReasoningReplayStrongProjection()
 	a.sess.compactionMu.Lock()
 	path := a.sess.path
 	a.sess.compactionState = CompactionState{}
@@ -84,6 +88,10 @@ func (a *Agent) InvalidateProjectionIfStale() {
 	if a == nil {
 		return
 	}
+	// This helper is called after a history rewrite even when the existing
+	// compaction fold remains valid (for example a tail-only rewind). The
+	// reasoning-replay overlay still belongs to the pre-rewrite shape.
+	a.sess.clearReasoningReplayStrongProjection()
 	a.sess.compactionMu.Lock()
 	st := a.sess.compactionState
 	if len(st.Projection.Messages) > 0 && a.sess.conversation != nil {
@@ -109,6 +117,7 @@ func (a *Agent) LoadProjectionSidecar(sessionPath string) {
 	a.sess.path = sessionPath
 	a.sess.compactionState = CompactionState{}
 	a.sess.checkpointState = "none"
+	a.sess.pendingModelContextCommit = nil
 	a.sess.compactionMu.Unlock()
 	if sessionPath == "" {
 		a.resetCompactionState()
@@ -214,6 +223,7 @@ func (a *Agent) resetCompactionState() {
 	a.sess.compactionMu.Lock()
 	a.sess.compactionState = CompactionState{}
 	a.sess.checkpointState = "none"
+	a.sess.pendingModelContextCommit = nil
 	a.sess.compactionMu.Unlock()
 }
 
@@ -232,6 +242,7 @@ func (a *Agent) BindSessionPath(path string, loadSidecar bool) {
 	a.sess.path = path
 	a.sess.compactionState = CompactionState{}
 	a.sess.checkpointState = "none"
+	a.sess.pendingModelContextCommit = nil
 	a.sess.cacheState = CacheStateUnknown
 	a.sess.compactionMu.Unlock()
 	a.sess.compaction.stuck = false

@@ -1,3 +1,5 @@
+import { ErrorMessage } from "./ErrorMessage";
+import { SettingsOptions } from "./SettingsOptions";
 // UsageStatsPanel renders the "usage statistics" subtab inside the Models
 // settings page. It reads aggregated stats from the Go backend (App.UsageStats)
 // and draws three charts by hand in SVG — a GitHub-style activity heatmap, a
@@ -24,8 +26,7 @@ const RANGE_PRESETS = ["7", "14", "30", "90"] as const;
 // kernel). "all" is the unfiltered aggregate; the rest match one source label.
 const SOURCES = ["all", "desktop", "cli", "serve", "bot", "remote"] as const;
 
-// The heatmap always shows a fixed 40-week window regardless of the range
-// preset (it only follows the source filter).
+// The heatmap always shows 40 weeks and only follows the source filter.
 const HEAT_WEEKS = 40;
 // Custom ranges may span up to ten years. Keep the detailed trend bounded so
 // one unusual range cannot create thousands of interactive SVG nodes.
@@ -319,8 +320,8 @@ export function UsageStatsPanel() {
   return (
     <div className="usage-stats">
       {/* Section 1: range + source pickers, each in its own framed group */}
-      <div className="usage-stats__toolbar">
-        <div className="usage-stats__group" role="group" aria-label={t("settings.stats.range")}>
+      <div className="usage-stats__toolbar settings-toolbar">
+        <SettingsOptions className="usage-stats__group" role="group" aria-label={t("settings.stats.range")}>
           {RANGE_PRESETS.map((r) => (
             <button
               key={r}
@@ -340,7 +341,7 @@ export function UsageStatsPanel() {
           >
             {t("settings.stats.rangeCustom")}
           </button>
-        </div>
+        </SettingsOptions>
         {range === "custom" && (
           <div className="usage-stats__custom">
             <input
@@ -363,7 +364,7 @@ export function UsageStatsPanel() {
             />
           </div>
         )}
-        <div className="usage-stats__group" role="group" aria-label={t("settings.stats.source")}>
+        <SettingsOptions className="usage-stats__group" role="group" aria-label={t("settings.stats.source")}>
           {SOURCES.map((s) => (
             <button
               key={s}
@@ -375,13 +376,13 @@ export function UsageStatsPanel() {
               {t(`settings.stats.source.${s}`)}
             </button>
           ))}
-        </div>
+        </SettingsOptions>
         <button type="button" className="usage-stats__refresh" onClick={() => { void load(); void loadHeat(); }} disabled={loading} aria-label={t("settings.stats.refresh")}>
           {t("settings.stats.refresh")}
         </button>
       </div>
 
-      {error && <div className="provider-fetch-banner provider-fetch-banner--warn">{error}</div>}
+      {error && <div className="provider-fetch-banner provider-fetch-banner--warn"><ErrorMessage error={error} /></div>}
       {loading && !stats && <div className="usage-stats__loading">{t("common.loading")}</div>}
       {!loading && stats && (
         <>

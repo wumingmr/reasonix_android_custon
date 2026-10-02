@@ -6,6 +6,7 @@ export function PromptShelf({
   className,
   cardClassName,
   titleId,
+  descriptionId,
   title,
   badges,
   meta,
@@ -27,6 +28,7 @@ export function PromptShelf({
   className?: string;
   cardClassName?: string;
   titleId: string;
+  descriptionId?: string;
   title: ReactNode;
   badges?: ReactNode;
   meta?: ReactNode;
@@ -58,6 +60,7 @@ export function PromptShelf({
     <div
       className={[
         "prompt-shelf",
+        "prompt-shelf--harness",
         decision ? "prompt-shelf--decision" : "",
         className ?? "",
       ]
@@ -78,9 +81,16 @@ export function PromptShelf({
         role={role}
         aria-modal={role === "dialog" ? "false" : undefined}
         aria-labelledby={titleId}
+        aria-describedby={descriptionId}
         tabIndex={cardCollapsible ? 0 : -1}
-        onClick={cardCollapsible ? onToggleCollapse : undefined}
+        onClick={cardCollapsible ? (event) => {
+          const target = event.target as HTMLElement;
+          if (target.closest("button, input, textarea, select, a, [role='button'], [role='option'], [role='radio'], [role='checkbox']")) return;
+          onToggleCollapse?.();
+        } : undefined}
         onKeyDown={cardCollapsible && onToggleCollapse ? (event) => {
+          const target = event.target as HTMLElement;
+          if (target.closest("button, input, textarea, select, a, [role='button'], [role='option'], [role='radio'], [role='checkbox']")) return;
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
             onToggleCollapse();

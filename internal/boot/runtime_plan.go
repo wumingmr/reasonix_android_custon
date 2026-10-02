@@ -171,10 +171,10 @@ func planForPreflight(opts Options, toGen uint64) *extension.RuntimePlan {
 		return nil
 	}
 	plan := extension.DiffRuntimePlan(opts.Graph, toGraph, opts.Generation, toGen)
-	if opts.ForceFullRebuild && opts.Extensions != nil {
-		// Explicit reloads refresh linked binaries even when graph metadata is unchanged.
-		// Preflight replaces them beside the live manager; publishing the new
-		// controller retires the old processes.
+	if (opts.ForceFullRebuild || opts.deferPublish) && opts.Extensions != nil {
+		// A full candidate must not detach clients from the live manager before
+		// the host commits publication. Stage its sidecars independently so any
+		// build failure or host rejection leaves the outgoing manager intact.
 		plan.RestartUnchangedSidecars = true
 	}
 	return plan
@@ -196,6 +196,15 @@ func finalizeBuildResult(res *BuildResult, publish bool) *BuildResult {
 }
 
 func publishBuildResult(res *BuildResult) {
+	if res != nil && res.Owner != nil {
+		_ = res.Owner.Gate.SweepAndForceExpire()
+	}
+	publishPreparedBuildResult(res)
+}
+
+// The host may call this in its publication critical section: expiry callbacks
+// are performed beforehand by the builder, not while publishing metadata.
+func publishPreparedBuildResult(res *BuildResult) {
 	if res == nil || res.Snapshot == nil {
 		return
 	}
@@ -209,8 +218,6 @@ func publishBuildResult(res *BuildResult) {
 		res.Owner = owner
 	}
 	gate := owner.Gate
-	// Expire any previous drain TTLs before publishing the new generation.
-	_ = gate.SweepAndForceExpire()
 	gate.Publish(gen)
 	// Product path: force-expire old generations after drainTTL so in-flight
 	// work cannot linger forever after rebuild.

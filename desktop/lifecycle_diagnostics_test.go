@@ -39,6 +39,29 @@ func TestDesktopLifecycleDeadRecordIsConsumedOnce(t *testing.T) {
 	}
 }
 
+func TestDesktopLifecycleClaimIsRestoredWhenPendingQueueWriteFails(t *testing.T) {
+	root := t.TempDir()
+	dead := lifecycleTrackerForTest(t, root, 4242, "dead-retry")
+	if err := dead.start(); err != nil {
+		t.Fatal(err)
+	}
+	dead.stopWriter()
+	reader := lifecycleTrackerForTest(t, root, os.Getpid(), "reader")
+	first := reader.consumePrevious(true)
+	if len(first) != 1 {
+		t.Fatalf("first claim = %+v", first)
+	}
+	reader.finalizeObservation(first[0], false)
+	second := reader.consumePrevious(true)
+	if len(second) != 1 || second[0].RunID != "dead-retry" {
+		t.Fatalf("restored claim was not retryable: %+v", second)
+	}
+	reader.finalizeObservation(second[0], true)
+	if _, err := os.Stat(dead.path); !os.IsNotExist(err) {
+		t.Fatalf("persisted evidence was not acknowledged: %v", err)
+	}
+}
+
 func TestDesktopLifecycleConcurrentConsumersClaimOnce(t *testing.T) {
 	root := t.TempDir()
 	dead := lifecycleTrackerForTest(t, root, 4242, "dead-concurrent")
@@ -110,13 +133,6 @@ func TestDesktopDiagnosticsSkipsNonPrimaryLaunchModes(t *testing.T) {
 	t.Cleanup(func() {
 		version = oldVersion
 	})
-
-	remote := NewApp()
-	remote.remoteWindowTicket = "remote"
-	prepareDesktopDiagnostics(remote)
-	if remote.diagnosticsOwner {
-		t.Fatal("remote window claimed diagnostics ownership")
-	}
 
 	version = "dev"
 	dev := NewApp()

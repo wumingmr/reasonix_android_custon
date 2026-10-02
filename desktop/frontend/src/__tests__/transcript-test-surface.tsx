@@ -1,15 +1,15 @@
 import type { ComponentProps } from "react";
-import { VirtuosoMockContext } from "react-virtuoso";
 import { Transcript } from "../components/Transcript";
+import type { TranscriptTestClock } from "./transcript-test-clock";
 
 export function TranscriptTestSurface({
   viewportHeight,
   rowHeight,
+  kernelClock,
   ...props
-}: ComponentProps<typeof Transcript> & { viewportHeight: number; rowHeight: number }) {
-  return (
-    <VirtuosoMockContext.Provider value={{ viewportHeight, itemHeight: rowHeight }}>
-      <Transcript {...props} />
-    </VirtuosoMockContext.Provider>
-  );
+}: ComponentProps<typeof Transcript> & { viewportHeight: number; rowHeight: number; kernelClock?: TranscriptTestClock }) {
+  void viewportHeight;
+  void rowHeight;
+  void kernelClock;
+  return <Transcript {...props} />;
 }

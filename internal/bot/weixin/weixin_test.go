@@ -174,3 +174,18 @@ func TestGetUpdatesAcceptsNumericIlinkMessageID(t *testing.T) {
 		t.Fatal("expected queued inbound message")
 	}
 }
+
+func TestSaveAccountRejectsTraversalID(t *testing.T) {
+	isolateWeixinUserConfig(t)
+	for _, id := range []string{"../../evil", `..\evil`, "a/b", ".."} {
+		if err := saveAccount(id, savedAccount{Token: "t"}); err == nil {
+			t.Fatalf("saveAccount(%q) accepted a non-local id", id)
+		}
+		if path := savedAccountPath(id); path != "" {
+			t.Fatalf("savedAccountPath(%q) = %q, want empty", id, path)
+		}
+	}
+	if err := saveAccount("bot-123", savedAccount{Token: "t"}); err != nil {
+		t.Fatalf("saveAccount(valid id): %v", err)
+	}
+}

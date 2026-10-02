@@ -1,3 +1,8 @@
+export const SIDEBAR_AUTO_COLLAPSE_WIDTH = 1024;
+export const DOCK_FULLSCREEN_WIDTH = 768;
+export const DOCK_DEFAULT_RATIO = 0.45;
+export const DOCK_MAX_RATIO = 0.7;
+
 export function availableWorkspacePanelWidth({
   viewportWidth,
   sidebarCollapsed,
@@ -11,7 +16,7 @@ export function availableWorkspacePanelWidth({
   chatMinWidth: number;
   resizerWidth: number;
 }): number {
-  return Math.max(0, viewportWidth - (sidebarCollapsed ? 0 : sidebarWidth) - chatMinWidth - resizerWidth);
+  return Math.max(0, Math.min(viewportWidth * DOCK_MAX_RATIO, viewportWidth - (sidebarCollapsed ? 0 : sidebarWidth) - chatMinWidth - resizerWidth));
 }
 
 export function resolveWorkspacePanelWidth({
@@ -83,11 +88,12 @@ export function resolveWorkspacePanelPlacement({
     viewportWidth, sidebarCollapsed, sidebarWidth, chatMinWidth, resizerWidth,
     open, maximized, preferredWidth, minWidth,
   });
-  const overlay = open && !maximized && resolvedWidth < minRenderWidth;
+  const fullscreen = open && viewportWidth < DOCK_FULLSCREEN_WIDTH;
+  const overlay = fullscreen || (open && !maximized && resolvedWidth < minRenderWidth);
   const storedWidth = maximized
     ? preferredWidth
     : overlay ? Math.min(preferredWidth, Math.max(minWidth, viewportWidth - 16)) : resolvedWidth;
-  const renderWidth = liveWidth ?? storedWidth;
+  const renderWidth = fullscreen ? viewportWidth : liveWidth ?? storedWidth;
   const renderable = open && (maximized || overlay || renderWidth >= minRenderWidth);
   return { renderWidth, overlay, renderable, gridOpen: renderable && !maximized && !overlay };
 }

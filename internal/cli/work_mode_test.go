@@ -35,8 +35,8 @@ func TestParseAgentPresetAcceptsLegacyLabels(t *testing.T) {
 		"balanced": "standard",
 		"full":     "standard",
 		"standard": "standard",
-		"delivery": "delivery",
-		"deliver":  "delivery",
+		"delivery": "standard",
+		"deliver":  "standard",
 	} {
 		got, ok := parseAgentPreset(input)
 		if !ok || got != want {
@@ -48,16 +48,16 @@ func TestParseAgentPresetAcceptsLegacyLabels(t *testing.T) {
 	}
 }
 
-func TestWorkModeCompletionHidesCompatibilityCommands(t *testing.T) {
+func TestRetiredPresetCommandsAreHiddenFromCompletion(t *testing.T) {
 	m := newTestChatTUI()
 	for _, command := range []string{"/preset", "/profile", "/work-mode"} {
 		if hasLabel(m.slashItems(), command) {
-			t.Fatalf("compatibility command %q should not appear in slash completion", command)
+			t.Fatalf("retired compatibility command %q appeared in slash completion", command)
 		}
 	}
 	for _, input := range []string{"/preset ", "/work-mode ", "/profile "} {
 		if _, _, ok := m.slashArgItems(input); ok {
-			t.Fatalf("%q should not offer execution-mode argument completion", input)
+			t.Fatalf("%q offered retired execution-mode argument completion", input)
 		}
 	}
 }
@@ -109,21 +109,31 @@ func TestLegacyModeFlagsAreHiddenFromCommandHelp(t *testing.T) {
 	}
 }
 
-func TestWorkModeHelpHidesDeprecatedCommand(t *testing.T) {
-	if hasLabel(builtinHelpItems(), "/preset") {
-		t.Fatal("deprecated /preset should not appear in built-in help")
-	}
-	if hasLabel(builtinHelpItems(), "/profile") {
-		t.Fatal("built-in help should not list the technical /profile alias")
-	}
-	if hasLabel(builtinHelpItems(), "/work-mode") {
-		t.Fatal("built-in help should not list the legacy /work-mode alias")
+func TestRetiredPresetCommandsAreHiddenFromHelp(t *testing.T) {
+	for _, command := range []string{"/preset", "/profile", "/work-mode"} {
+		if hasLabel(builtinHelpItems(), command) {
+			t.Fatalf("built-in help listed retired command %q", command)
+		}
 	}
 }
 
-func TestPresetCommandSwitchesFloorInPlace(t *testing.T) {
+func TestPresetTagStaysHiddenForLegacyInputs(t *testing.T) {
+	ctrl := newOwnedTestController(t, control.Options{})
+	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
+	if tag := m.presetTag(); tag != "" {
+		t.Fatalf("standard floor should stay quiet, got %q", tag)
+	}
+	if err := ctrl.SetQualityFloor(control.QualityFloorDelivery); err != nil {
+		t.Fatal(err)
+	}
+	if tag := m.presetTag(); tag != "" {
+		t.Fatalf("retired delivery setting surfaced a footer tag: %q", tag)
+	}
+}
+
+func TestPresetCommandIsInPlaceCompatibilityNoOp(t *testing.T) {
 	resetPresetDeprecationForTest()
-	oldCtrl := control.New(control.Options{Label: "old"})
+	oldCtrl := newOwnedTestController(t, control.Options{Label: "old"})
 	oldCtrl.SetToolApprovalMode(control.ToolApprovalAuto)
 	oldCtrl.SetPlanMode(true)
 	m := newChatTUI(oldCtrl, "", make(chan event.Event, 1), 100)
@@ -131,7 +141,7 @@ func TestPresetCommandSwitchesFloorInPlace(t *testing.T) {
 	builds := 0
 	m.buildController = func(controllerBuildSpec, []provider.Message, string, control.SessionAPI) (*control.Controller, error) {
 		builds++
-		return control.New(control.Options{Label: "new"}), nil
+		return newOwnedTestController(t, control.Options{Label: "new"}), nil
 	}
 
 	cmd := m.runWorkModeCommand("/preset delivery")
@@ -141,14 +151,14 @@ func TestPresetCommandSwitchesFloorInPlace(t *testing.T) {
 	if m.ctrl != oldCtrl {
 		t.Fatal("controller must stay the same instance")
 	}
-	if m.ctrl.AgentPreset() != boot.AgentPresetDelivery {
-		t.Fatalf("controller preset = %q, want delivery", m.ctrl.AgentPreset())
+	if m.ctrl.AgentPreset() != boot.AgentPresetStandard {
+		t.Fatalf("controller preset = %q, want standard", m.ctrl.AgentPreset())
 	}
 	if builds != 0 {
 		t.Fatalf("unexpected rebuilds: %d", builds)
 	}
-	if out := committedNotices(m); !strings.Contains(out, i18n.M.QualityFloorApplied) {
-		t.Fatalf("applied /preset missing floor notice:\n%s", out)
+	if out := committedNotices(m); !strings.Contains(out, i18n.M.WorkModeDeprecatedNotice) {
+		t.Fatalf("legacy /preset missing retirement notice:\n%s", out)
 	}
 
 	if cmd := m.runWorkModeCommand("/preset light"); cmd != nil {
@@ -162,12 +172,12 @@ func TestPresetCommandSwitchesFloorInPlace(t *testing.T) {
 func TestPresetCommandRejectsInvalidValue(t *testing.T) {
 	resetPresetDeprecationForTest()
 	m := newTestChatTUI()
-	m.ctrl = control.New(control.Options{Label: "model"})
+	m.ctrl = newOwnedTestController(t, control.Options{Label: "model"})
 	m.modelRef = "provider/model"
 	builds := 0
 	m.buildController = func(controllerBuildSpec, []provider.Message, string, control.SessionAPI) (*control.Controller, error) {
 		builds++
-		return control.New(control.Options{Label: "new"}), nil
+		return newOwnedTestController(t, control.Options{Label: "new"}), nil
 	}
 
 	if cmd := m.runWorkModeCommand("/preset unknown"); cmd != nil {
@@ -188,13 +198,13 @@ func TestPresetCommandRejectsInvalidValue(t *testing.T) {
 func TestPresetCommandSwitchesWhenBusy(t *testing.T) {
 	resetPresetDeprecationForTest()
 	m := newTestChatTUI()
-	m.ctrl = control.New(control.Options{Label: "model"})
+	m.ctrl = newOwnedTestController(t, control.Options{Label: "model"})
 	m.modelRef = "provider/model"
 	m.pendingApproval = &event.Approval{ID: "approval", Tool: "bash"}
 	builds := 0
 	m.buildController = func(controllerBuildSpec, []provider.Message, string, control.SessionAPI) (*control.Controller, error) {
 		builds++
-		return control.New(control.Options{Label: "new"}), nil
+		return newOwnedTestController(t, control.Options{Label: "new"}), nil
 	}
 	if cmd := m.runWorkModeCommand("/preset light"); cmd != nil {
 		t.Fatal("busy /preset must not rebuild")
@@ -210,7 +220,7 @@ func TestPresetCommandSwitchesWhenBusy(t *testing.T) {
 func TestPresetCommandSwitchesDuringRunningTurn(t *testing.T) {
 	resetPresetDeprecationForTest()
 	runner := &blockingTurnRunner{started: make(chan struct{})}
-	ctrl := control.New(control.Options{Runner: runner, Sink: event.Discard, SessionDir: t.TempDir(), Label: "model"})
+	ctrl := newOwnedTestController(t, control.Options{Runner: runner, Sink: event.Discard, SessionDir: t.TempDir(), Label: "model"})
 	ctrl.Send("keep running")
 	<-runner.started
 	t.Cleanup(func() {
@@ -227,18 +237,18 @@ func TestPresetCommandSwitchesDuringRunningTurn(t *testing.T) {
 	builds := 0
 	m.buildController = func(controllerBuildSpec, []provider.Message, string, control.SessionAPI) (*control.Controller, error) {
 		builds++
-		return control.New(control.Options{}), nil
+		return newOwnedTestController(t, control.Options{}), nil
 	}
 	if cmd := m.runWorkModeCommand("/preset delivery"); cmd != nil {
 		t.Fatal("running-turn /preset must not rebuild")
 	}
-	if m.ctrl.AgentPreset() != boot.AgentPresetDelivery {
-		t.Fatalf("running-turn /preset AgentPreset = %q, want delivery", m.ctrl.AgentPreset())
+	if m.ctrl.AgentPreset() != boot.AgentPresetStandard {
+		t.Fatalf("running-turn /preset AgentPreset = %q, want standard", m.ctrl.AgentPreset())
 	}
 	if builds != 0 {
 		t.Fatalf("running-turn /preset triggered %d builds", builds)
 	}
-	if out := committedNotices(m); !strings.Contains(out, i18n.M.QualityFloorApplied) {
-		t.Fatalf("running-turn /preset missing floor notice:\n%s", out)
+	if out := committedNotices(m); !strings.Contains(out, i18n.M.WorkModeDeprecatedNotice) {
+		t.Fatalf("running-turn /preset missing retirement notice:\n%s", out)
 	}
 }

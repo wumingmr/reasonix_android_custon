@@ -205,6 +205,7 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	orig.Desktop.CloseBehavior = "background"
 	orig.Desktop.DisplayMode = "compact"
 	orig.Desktop.StatusBarStyle = "text"
+	orig.Desktop.StatusBarStyleInitialized = true
 	orig.Desktop.StatusBarItems = []string{"model", "balance", "cache"}
 	orig.Desktop.DefaultToolApprovalMode = "auto"
 	orig.Desktop.CheckUpdates = boolPtr(false)
@@ -374,8 +375,8 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	if want := []string{"model", "balance", "cache"}; !reflect.DeepEqual(got.Desktop.StatusBarItems, want) {
 		t.Errorf("desktop.status_bar_items = %v, want %v", got.Desktop.StatusBarItems, want)
 	}
-	if got.DesktopDefaultToolApprovalMode() != "auto" {
-		t.Errorf("desktop.default_tool_approval_mode = %q, want auto", got.DesktopDefaultToolApprovalMode())
+	if got.DesktopDefaultToolApprovalMode() != "workspace-write" {
+		t.Errorf("desktop.default_tool_approval_mode = %q, want workspace-write", got.DesktopDefaultToolApprovalMode())
 	}
 	if got.Desktop.CheckUpdates == nil || *got.Desktop.CheckUpdates {
 		t.Errorf("desktop.check_updates = %+v, want false", got.Desktop.CheckUpdates)
@@ -383,8 +384,8 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	if got.DesktopUpdateChannel() != "stable" {
 		t.Errorf("desktop.update_channel = %q, want stable", got.DesktopUpdateChannel())
 	}
-	if got.Agent.RecoveryModel != "mimo-pro" || got.Agent.RecoveryTemperature != 0 {
-		t.Errorf("agent recovery settings not preserved: %+v", got.Agent)
+	if got.Agent.RecoveryModel != "" || got.Agent.RecoveryTemperature != 0 {
+		t.Errorf("retired agent recovery settings rendered: %+v", got.Agent)
 	}
 	if !got.Notifications.Enabled || !got.Notifications.TurnDone || !got.Notifications.ApprovalRequest || !got.Notifications.AskRequest {
 		t.Errorf("notifications not preserved: %+v", got.Notifications)
@@ -398,8 +399,8 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	if len(got.Bot.Connections) != 1 || got.Bot.Connections[0].Model != "deepseek-pro" || got.Bot.Connections[0].WorkspaceRoot != "/tmp/reasonix-bot" {
 		t.Errorf("bot connection not preserved: %+v", got.Bot.Connections)
 	}
-	if got.Bot.ToolApprovalMode != "auto" || got.Bot.Connections[0].ToolApprovalMode != "yolo" {
-		t.Errorf("bot tool approval mode not preserved: bot=%q connection=%q", got.Bot.ToolApprovalMode, got.Bot.Connections[0].ToolApprovalMode)
+	if got.Bot.ToolApprovalMode != "workspace-write" || got.Bot.Connections[0].ToolApprovalMode != "workspace-write" {
+		t.Errorf("bot tool approval mode not migrated: bot=%q connection=%q", got.Bot.ToolApprovalMode, got.Bot.Connections[0].ToolApprovalMode)
 	}
 	if !got.Bot.Control.Enabled || got.Bot.Control.Addr != "127.0.0.1:39001" || got.Bot.Control.TokenEnv != "BOT_CONTROL_TOKEN" {
 		t.Errorf("bot control not preserved: %+v", got.Bot.Control)
@@ -775,61 +776,6 @@ func TestNotificationsDefaultsKeepEventSwitchesEnabled(t *testing.T) {
 	}
 }
 
-func TestScopedRenderSeparatesUserAndProjectConfig(t *testing.T) {
-	c := Default()
-	c.Language = "zh"
-	c.Desktop.Language = "zh"
-	c.Desktop.Currency = "CNY"
-	c.Desktop.Theme = "dark"
-	c.Desktop.ThemeStyle = "graphite"
-	c.Desktop.CloseBehavior = "background"
-	c.Desktop.StatusBarStyle = "text"
-	c.Desktop.DefaultToolApprovalMode = "auto"
-	c.Desktop.CheckUpdates = boolPtr(false)
-	c.Desktop.UpdateChannel = "preview"
-	c.Agent.RecoveryModel = "deepseek-pro"
-	c.Agent.RecoveryTemperature = 0.2
-
-	user := RenderTOMLForScope(c, RenderScopeUser)
-	for _, want := range []string{"config_version = 7", "[desktop]", `currency = "CNY"`, "[billing]", `display_currency = "CNY"`, `theme = "dark"`, `terminal_theme = "auto"`, `close_behavior = "background"`, `status_bar_style = "text"`, `default_tool_approval_mode = "auto"`, `check_updates = false`, `recovery_model = "deepseek-pro"`, "[notifications]", "[tools.shell]"} {
-		if !strings.Contains(user, want) {
-			t.Fatalf("user render missing %q:\n%s", want, user)
-		}
-	}
-	if strings.Contains(user, "update_channel") || strings.Contains(user, "[cli]") {
-		t.Fatalf("user render retained retired update channel:\n%s", user)
-	}
-
-	project := RenderTOMLForScope(c, RenderScopeProject)
-	for _, forbidden := range []string{"[desktop]", "[notifications]", "close_behavior =", "default_tool_approval_mode =", "default_auto_recovery_checkpoint =", "check_updates =", "update_channel =", "max_steps", "planner_max_steps"} {
-		if strings.Contains(project, forbidden) {
-			t.Fatalf("project render should not contain %q:\n%s", forbidden, project)
-		}
-	}
-	for _, retired := range []string{"default_auto_recovery_checkpoint", "auto_recovery_checkpoint"} {
-		if strings.Contains(user, retired) || strings.Contains(project, retired) {
-			t.Fatalf("retired Auto Guard key %q must not be rendered:\nuser:\n%s\nproject:\n%s", retired, user, project)
-		}
-	}
-	if strings.Contains(project, "\nsystem_prompt = \"\"\"") {
-		t.Fatalf("project render should not pin the built-in system prompt:\n%s", project)
-	}
-	if !strings.Contains(project, "# system_prompt =") {
-		t.Fatalf("project render should leave a system prompt hint:\n%s", project)
-	}
-	for _, want := range []string{`recovery_model = "deepseek-pro"`} {
-		if !strings.Contains(project, want) {
-			t.Fatalf("project render missing %q:\n%s", want, project)
-		}
-	}
-	if strings.Contains(user, "auto_plan") || strings.Contains(project, "auto_plan") {
-		t.Fatalf("retired auto-plan keys must not be rendered:\nuser:\n%s\nproject:\n%s", user, project)
-	}
-	if strings.Contains(user, "recovery_temperature") || strings.Contains(project, "recovery_temperature") {
-		t.Fatalf("deprecated recovery_temperature must not be rendered:\nuser:\n%s\nproject:\n%s", user, project)
-	}
-}
-
 func TestScopedRenderKeepsPluginsInTheirOwningConfig(t *testing.T) {
 	cfg := Default()
 	cfg.Plugins = []PluginEntry{
@@ -868,16 +814,14 @@ func TestScopedRenderKeepsPluginsInTheirOwningConfig(t *testing.T) {
 	}
 }
 
-func TestProjectDeltaRendersRecoveryReviewerOverride(t *testing.T) {
+func TestProjectDeltaOmitsRetiredRecoveryReviewerOverride(t *testing.T) {
 	c := Default()
 	c.Agent.RecoveryModel = "deepseek-pro"
 	c.Agent.RecoveryTemperature = 0.2
 
 	delta := RenderTOMLProjectDelta(c)
-	for _, want := range []string{"[agent]", `recovery_model = "deepseek-pro"`} {
-		if !strings.Contains(delta, want) {
-			t.Fatalf("project delta missing %q:\n%s", want, delta)
-		}
+	if strings.Contains(delta, "recovery_model") {
+		t.Fatalf("retired recovery_model rendered:\n%s", delta)
 	}
 	if strings.Contains(delta, "recovery_temperature") {
 		t.Fatalf("deprecated recovery_temperature rendered:\n%s", delta)
@@ -1012,7 +956,7 @@ func TestRenderTOMLRoundTripsPerModelPrices(t *testing.T) {
 	if !ok {
 		t.Fatal("deepseek provider missing after round trip")
 	}
-	if p.Prices["deepseek-v4-flash"].Input != 3 || p.Prices["deepseek-v4-pro"].Output != 27 {
+	if p.Prices["deepseek-v4-flash"].Input != 2 || p.Prices["deepseek-v4-pro"].Output != 27 {
 		t.Fatalf("prices after round trip = %+v", p.Prices)
 	}
 }

@@ -1,23 +1,63 @@
-import { memo, useEffect, useRef, useState, type ReactNode } from "react";
+import { isShellToolName } from "../lib/shellToolIdentity";
+import { searchOutputMetadata } from "../lib/searchSources";
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Suspense, lazy } from "react";
 import { ChevronRight, Compass } from "lucide-react";
 import { CodeViewer } from "./CodeViewer";
 import { DiffView } from "./DiffView";
 import { useT } from "../lib/i18n";
+import { presentError } from "../lib/errorPresentation";
 import { diffsFor, languageForToolArgs, subjectOf, summarize, summarizeFileDiff } from "../lib/tools";
 import { useShellExpand } from "../lib/shellExpand";
 import { app } from "../lib/bridge";
+import type { MCPAppInstanceView, MCPAppPresentation } from "../lib/types";
+
+const MCPAppCard = lazy(() => import("./MCPAppCard").then((m) => ({ default: m.MCPAppCard })));
+const SubagentOutcomeCard = lazy(() => import("./SubagentOutcomeCard").then((m) => ({ default: m.SubagentOutcomeCard })));
+const SubagentPreview = lazy(() => import("./SubagentPreview").then((m) => ({ default: m.SubagentPreview })));
+
+function MCPAppCardLazy({
+  instance,
+  presentation,
+  toolArgs,
+  toolOutput,
+  onDispose,
+}: {
+  instance: MCPAppInstanceView;
+  presentation: MCPAppPresentation;
+  toolArgs: string;
+  toolOutput?: string;
+  onDispose: (instanceToken: string) => void;
+}) {
+  return (
+    <Suspense fallback={null}>
+      <MCPAppCard
+        instance={instance}
+        presentation={presentation}
+        toolArgs={toolArgs}
+        toolOutput={toolOutput}
+        onDispose={onDispose}
+      />
+    </Suspense>
+  );
+}
 import { useCollapseAnimation } from "../lib/useCollapseAnimation";
 import { isBatchedReadOnlyTool, isTerminalSubagentPhase, type Item, type SubagentPhase } from "../lib/useController";
 import type { Translator } from "../lib/i18n";
 import { ReadOnlyBatch } from "./ReadOnlyBatch";
-import { Markdown } from "./Markdown";
-import { ReasoningSummary } from "./ReasoningSummary";
-import { useReasoningDisplayMode } from "../lib/reasoningDisplayPreference";
-import { useTranscriptUserResizeIntent } from "./TranscriptLayoutIntentContext";
-import { resolveToolCardDefaultOpen } from "../lib/transcriptRowGeometry";
+import { useWorkProcessPresentation } from "../lib/sessionExperience";
+import { resolveToolCardDefaultOpen } from "../lib/toolCardDisclosure";
+import { useArchivedToolData } from "../lib/useArchivedToolData";
 import type { SearchSourcePresentation } from "../lib/searchSourcesPresentation";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
+
+function commandLanguage(shell: string | undefined, name: string): string | undefined {
+  const knownShell = shell?.toLowerCase() || (isShellToolName(name) ? name.toLowerCase() : "");
+  if (knownShell === "powershell" || knownShell === "pwsh") return "powershell";
+  if (knownShell === "bash" || knownShell === "sh" || knownShell === "zsh") return "bash";
+  return undefined;
+}
 
 const SUBAGENT_TOOLS = new Set(["task", "run_skill", "explore", "research", "review", "security_review"]);
 
@@ -30,6 +70,7 @@ function subagentPhaseLabel(t: Translator, phase: SubagentPhase): string {
     case "tool": return t("subagent.phase.tool");
     case "retrying": return t("subagent.phase.retrying");
     case "completed": return t("subagent.phase.completed");
+    case "partial": return t("subagent.phase.partial");
     case "failed": return t("subagent.phase.failed");
     case "cancelled": return t("subagent.phase.cancelled");
   }
@@ -37,6 +78,11 @@ function subagentPhaseLabel(t: Translator, phase: SubagentPhase): string {
 
 function formatElapsedSeconds(ms: number): string {
   return String(Math.max(0, Math.round(ms / 1000)));
+}
+
+function formatRunningElapsed(ms: number): string {
+  const seconds = Number(formatElapsedSeconds(ms));
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m${seconds % 60}s`;
 }
 
 /** Lines shown by default in a shell output block before the "show all" button. */
@@ -57,8 +103,9 @@ function formatToolDuration(ms?: number): string {
   return `${Math.round(ms)} ms`;
 }
 
-function shellDisplayName(execution?: { shell?: string; shellVersion?: string }): string {
-  switch (execution?.shell) {
+function shellDisplayName(execution: { shell?: string; shellVersion?: string } | undefined, toolName: string): string {
+  const shell = execution?.shell || (isShellToolName(toolName) ? toolName.trim().toLowerCase() : "");
+  switch (shell) {
     case "git-bash":
       return "Git Bash";
     case "powershell":
@@ -68,7 +115,7 @@ function shellDisplayName(execution?: { shell?: string; shellVersion?: string })
     case "bash":
       return "bash";
     default:
-      return execution?.shell || "bash";
+      return shell || "bash";
   }
 }
 
@@ -148,13 +195,13 @@ function toolOutputDuplicatesError(output: string | undefined, error: string | u
   return normalizedOutput === normalizedError || withoutErrorPrefix(normalizedOutput) === withoutErrorPrefix(normalizedError);
 }
 
-function summarizeToolError(error: string, receiptMismatchText: string): string {
+function summarizeToolError(error: string, receiptMismatchText: string, localizedSummary: string): string {
   const text = withoutErrorPrefix(error);
   if (!text) return "";
   if (/has no matching successful receipt/i.test(text)) {
     return receiptMismatchText;
   }
-  const firstLine = text.split("\n")[0]?.trim() ?? "";
+  const firstLine = localizedSummary;
   if (firstLine.length <= ERROR_SUMMARY_MAX_CHARS) return firstLine;
   return `${firstLine.slice(0, ERROR_SUMMARY_MAX_CHARS - 1)}…`;
 }
@@ -180,7 +227,6 @@ function splitPreview(text: string, n: number): { preview: string; total: number
 // the sub-agent's work is visible as it happens.
 export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayName }: { item: ToolItem; subcalls?: ToolItem[]; tabId?: string; displayName?: string }) {
   const t = useT();
-  const beginUserResize = useTranscriptUserResizeIntent();
   const nested = subcalls ?? [];
   const hasNested = nested.length > 0;
   const isSubagent = SUBAGENT_TOOLS.has(item.name);
@@ -189,17 +235,17 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
       ? [item.profile.model, item.profile.effort ? `effort ${item.profile.effort}` : ""].filter(Boolean).join(" · ")
       : "";
 
-  // Sub-agent progress chip: phase + running elapsed + recent activity. The
-  // 1s ticker only runs while a progress card is live; terminal cards show
-  // the final duration instead.
+  // One 1s ticker per live card feeds both the sub-agent chip and the plain
+  // running-elapsed label; terminal cards show the final duration instead.
   const sp = item.subagentProgress;
+  const ticking = sp ? !isTerminalSubagentPhase(sp.phase) : item.status === "running" && item.startedAt !== undefined;
   const [nowTick, setNowTick] = useState(() => Date.now());
   useEffect(() => {
-    if (!sp || isTerminalSubagentPhase(sp.phase)) return;
+    if (!ticking) return;
     const id = window.setInterval(() => setNowTick(Date.now()), 1000);
     return () => window.clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sp]);
+  }, [ticking]);
+  const liveElapsed = ticking && !sp && item.startedAt !== undefined ? formatRunningElapsed(nowTick - item.startedAt) : "";
   const subagentChip = sp
     ? (() => {
         const label = subagentPhaseLabel(t, sp.phase);
@@ -210,15 +256,17 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
         return `${label} · ${t("subagent.phase.elapsed", { n: formatElapsedSeconds(nowTick - sp.startedAt) })} · ${t("subagent.activity.ago", { n: formatElapsedSeconds(nowTick - sp.lastActivityAt) })}`;
       })()
     : "";
-  const reasoningDisplayMode = useReasoningDisplayMode();
-  const hasSubagentPreview = Boolean(sp && ((sp.reasoning && reasoningDisplayMode !== "hidden" && reasoningDisplayMode !== "pending") || sp.text || sp.notice));
+  const presentation = useWorkProcessPresentation();
+  const hasSubagentPreview = Boolean(sp && ((sp.reasoning && presentation.showWhileRunning) || sp.text || sp.notice));
 
   // All tools default to collapsed. Sub-agent tools open while running so the
   // user sees nested calls; they collapse when done. Reasoning (AssistantMessage)
-  // also opens while streaming and closes on finish.
+  // stays open for the same owner lifecycle instead of collapsing between the
+  // reasoning and response/tool phases.
   const subagentReasoningRunning = sp?.phase === "reasoning";
-  const liveFollow = reasoningDisplayMode === "auto" || reasoningDisplayMode === "expanded";
-  const defaultOpen = resolveToolCardDefaultOpen(item, nested.length, reasoningDisplayMode);
+  const subagentActive = Boolean(sp) && item.status === "running";
+  const liveFollow = presentation.showWhileRunning;
+  const defaultOpen = resolveToolCardDefaultOpen(item, nested.length, presentation);
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
   const open = userOpen ?? defaultOpen;
   const openRef = useRef(open);
@@ -228,34 +276,41 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   // The sub-agent reasoning preview opens as a one-line summary; the full
   // Markdown only mounts after the user expands the reasoning section.
   const [subagentReasoningOpen, setSubagentReasoningOpen] = useState(
-    () => reasoningDisplayMode === "expanded" || (reasoningDisplayMode === "auto" && subagentReasoningRunning),
+    () => presentation.keepExpandedAfterCompletion || (presentation.showWhileRunning && subagentActive),
   );
   const subagentReasoningUserOverridden = useRef(false);
   const previousSubagentReasoningRunning = useRef(subagentReasoningRunning);
-  const previousReasoningDisplayMode = useRef(reasoningDisplayMode);
+  const previousSubagentActive = useRef(subagentActive);
+  const previousExperience = useRef(presentation.experience);
   useEffect(() => {
-    const modeChanged = previousReasoningDisplayMode.current !== reasoningDisplayMode;
+    const modeChanged = previousExperience.current !== presentation.experience;
     const wasRunning = previousSubagentReasoningRunning.current;
-    previousReasoningDisplayMode.current = reasoningDisplayMode;
+    const wasActive = previousSubagentActive.current;
+    previousExperience.current = presentation.experience;
     previousSubagentReasoningRunning.current = subagentReasoningRunning;
+    previousSubagentActive.current = subagentActive;
     if (modeChanged) {
       subagentReasoningUserOverridden.current = false;
-      setSubagentReasoningOpen(reasoningDisplayMode === "expanded" || (reasoningDisplayMode === "auto" && subagentReasoningRunning));
+      setSubagentReasoningOpen(presentation.keepExpandedAfterCompletion || (presentation.showWhileRunning && subagentActive));
       return;
     }
-    if (subagentReasoningRunning && !wasRunning) {
+    if ((subagentActive && !wasActive) || (subagentReasoningRunning && !wasRunning)) {
       subagentReasoningUserOverridden.current = false;
       if (liveFollow) setSubagentReasoningOpen(true);
       return;
     }
-    if (reasoningDisplayMode !== "auto") return;
-    if (!subagentReasoningRunning && wasRunning && !subagentReasoningUserOverridden.current) {
+    if (!presentation.showWhileRunning) return;
+    if (!subagentActive && wasActive && !presentation.keepExpandedAfterCompletion && !subagentReasoningUserOverridden.current) {
       setSubagentReasoningOpen(false);
     }
-  }, [reasoningDisplayMode, subagentReasoningRunning]);
+  }, [liveFollow, presentation, subagentActive, subagentReasoningRunning]);
   // Lazy-load full tool data from the backend when the card is expanded and
   // the in-memory copy was archived for memory efficiency.
-  const [fullData, setFullData] = useState<{ args: string; output?: string; execution?: ToolItem["execution"] } | null>(null);
+  const { data: fullData, loading: fullDataLoading, failed: fullDataFailed, retry: retryFullData } = useArchivedToolData(item, tabId, open);
+  const [appInstance, setAppInstance] = useState<MCPAppInstanceView | null>(null);
+  const disposeAppInstance = useCallback((instanceToken: string) => {
+    setAppInstance((current) => current?.instanceToken === instanceToken ? null : current);
+  }, []);
   const archivedWithoutFullData = Boolean(item.dataArchived && !fullData);
   const effectiveArgs = archivedWithoutFullData ? "" : fullData?.args ?? item.args;
   const effectiveOutput = fullData?.output ?? item.output;
@@ -272,48 +327,48 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   }, [isWebSearch, item.searchSources]);
   const searchVisibleCount = searchPresentation?.visible.length ?? item.searchSources?.length ?? 0;
   const searchHiddenCount = searchPresentation?.hiddenCount ?? 0;
-  const searchResultLabel = isWebSearch && searchVisibleCount === 0 && searchHiddenCount > 0
+  const searchMetadata = searchOutputMetadata(effectiveOutput);
+  const searchSummary = searchMetadata.summary ?? item.searchSummary;
+  const searchSourcesMissing = (item.searchSourcesStatus ?? searchMetadata.status) === "not_provided";
+  const searchResultLabel = searchSourcesMissing ? t("sources.notProvided") : isWebSearch && searchVisibleCount === 0 && searchHiddenCount > 0
     ? t("sources.noValid")
     : t("tool.searchResults", { n: searchVisibleCount });
-  const isShellCard = Boolean(item.isShell || item.name === "bash" || execution);
+  const isShellCard = Boolean(item.isShell || isShellToolName(item.name) || execution);
+  const shellCommand = isShellCard ? subjectOf("bash", effectiveArgs) : "";
   const displayOutput = isWebSearch || toolOutputDuplicatesError(effectiveOutput, item.error) ? undefined : effectiveOutput;
   const previewDiff = item.fileDiff?.diff ? item.fileDiff : undefined;
   const diffs = previewDiff || archivedWithoutFullData ? [] : diffsFor(item.name, effectiveArgs);
   const subject = fullData ? subjectOf(item.name, effectiveArgs) : item.subject || subjectOf(item.name, effectiveArgs);
-  const shellName = isShellCard ? shellDisplayName(execution) : (displayName ?? item.name);
+  const shellName = isShellCard ? shellDisplayName(execution, item.name) : (displayName ?? item.name);
   const shellSummary = execution && item.status !== "running" ? shellSettledSummary(t, execution, item.durationMs) : "";
   const verificationLabel = shellVerificationLabel(t, execution?.verification);
   const riskLabel = shellRiskLabel(t, execution);
   const tailSummary = firstTailLine(execution?.outputTail);
-  // Reset cached fullData when the item identity changes (e.g. after rewind).
+  // An MCP app instance must not outlive the payload identity that created it.
   useEffect(() => {
-    return () => setFullData(null);
-  }, [item]);
+    return () => setAppInstance(null);
+  }, [item, tabId]);
 
   // edit diffs are the point of the card, so they're shown inline; everything
   // else folds its args/output away by default.  Open while running so the
   // user sees progress; closed by default once settled.
   const hasArchivedOnDemandBody = Boolean(item.dataArchived && tabId);
   const hasArgsOrOutput = !previewDiff && diffs.length === 0 && (isWebSearch
-    ? Boolean(effectiveArgs || searchVisibleCount || searchHiddenCount)
+    ? Boolean(effectiveArgs || searchVisibleCount || searchHiddenCount || searchSourcesMissing || searchSummary || hasArchivedOnDemandBody)
     : Boolean(effectiveArgs || displayOutput || hasArchivedOnDemandBody));
 
   // Shell output: split into preview + "show all" toggle.
   const shellOutput = isShellCard && displayOutput ? displayOutput : null;
   const shellPreview = shellOutput ? splitPreview(shellOutput, SHELL_PREVIEW_LINES) : null;
   const hasStderrDetails = Boolean(execution?.outputTail && execution.outputTail.trim());
-  const hasBody = Boolean(previewDiff || diffs.length || hasNested || shellPreview || (!shellPreview && hasArgsOrOutput) || item.error || hasSubagentPreview || hasStderrDetails || riskLabel || verificationLabel);
+  const hasSubagentOutcome = Boolean(item.subagentOutcome || effectiveOutput?.includes("Subagent outcome:"));
+  const hasBody = Boolean(previewDiff || diffs.length || hasNested || shellPreview || (!shellPreview && hasArgsOrOutput) || item.error || hasSubagentPreview || hasSubagentOutcome || hasStderrDetails || riskLabel || verificationLabel);
   const errorText = item.error ? normalizeErrorText(item.error) : "";
-  const errorSummary = errorText ? summarizeToolError(errorText, t("tool.errorReceiptMismatch")) : "";
+  const errorSummary = errorText ? summarizeToolError(errorText, t("tool.errorReceiptMismatch"), presentError(errorText, t).summary) : "";
   const hasErrorDetails = errorText ? errorNeedsDetails(errorText, errorSummary) : false;
   useEffect(() => {
-    if (!open || !item.dataArchived || fullData || !tabId) return;
-    let cancelled = false;
-    void app.ToolResultForTab(tabId, item.id).then((d) => {
-      if (!cancelled && d) setFullData(d);
-    }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [open, item.id, item.dataArchived, fullData, tabId]);
+    if (!open) setAppInstance(null);
+  }, [open, item.id]);
 
   // Register this shell card's toggle with the global ShellExpand context so
   // Ctrl/Cmd+B can expand/collapse the most recent shell output. openRef keeps the
@@ -330,7 +385,7 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   const quiet =
     item.readOnly && item.name !== "web_search" && !hasNested && item.status !== "error" && item.status !== "stopped";
 
-  const duration = item.status === "running" ? "" : (shellSummary || formatToolDuration(item.durationMs));
+  const duration = item.status === "running" ? liveElapsed : (shellSummary || formatToolDuration(item.durationMs));
   // While the model is still streaming this call's arguments (partial
   // dispatch), show the received volume as the live subject so a long
   // write_file body reads as progress instead of a silent stall.
@@ -361,7 +416,7 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
         type="button"
         className="tool__head"
         data-running={item.status === "running" ? "" : undefined}
-        onClick={() => { if (hasBody) { beginUserResize(); setUserOpen(!open); } }}
+        onClick={() => { if (hasBody) {  setUserOpen(!open); } }}
         aria-expanded={hasBody ? open : undefined}
         aria-label={a11yLabel}
       >
@@ -374,8 +429,10 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
           )}
           {item.status === "error" && <span className="tool__status-icon tool__status-icon--err">✗</span>}
           {item.status === "done" && <span className="tool__status-icon tool__status-icon--ok">✓</span>}
+          {item.status === "unknown" && <span className="tool__status-icon" title={t("tool.statusUnknown")}>?</span>}
           {item.status === "stopped" && <span className="tool__status-icon tool__status-icon--stopped">—</span>}
           <span className="tool__name">{isShellCard ? shellName : (displayName ?? item.name)}</span>
+          {item.identityConflict && <span className="tool__subject" title={t("tool.identityConflict")}>{t("tool.identityConflict")}</span>}
           {subject && <span className="tool__subject">{subject}</span>}
         </span>
         {profileText && <span className="tool__profile">{profileText}</span>}
@@ -402,6 +459,13 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
 
       <div ref={toolBodyRef} className="tool__body">
 
+        {open && (fullDataLoading || fullDataFailed) && (
+          <div className="tool__data-status" role={fullDataFailed ? "alert" : "status"}>
+            <span>{t(fullDataFailed ? "tool.loadFailed" : "common.loading")}</span>
+            {fullDataFailed && tabId && <button type="button" className="btn btn--small" onClick={() => {  retryFullData(); }}>{t("common.retry")}</button>}
+          </div>
+        )}
+
         {previewDiff ? (
           <DiffView diff={previewDiff.diff} language={languageForToolArgs(fullData?.args ?? item.args)} maxHeight={260} />
         ) : (
@@ -414,55 +478,35 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
         )}
 
         {open && hasSubagentPreview && sp && (
-          <div className="tool__subagent-preview">
-            {sp.reasoning && reasoningDisplayMode !== "hidden" && reasoningDisplayMode !== "pending" && (
-              <div className="tool__subagent-preview-section">
-                <button
-                  type="button"
-                  className="tool__subagent-preview-label tool__subagent-preview-label--toggle"
-                  onClick={() => {
-                    beginUserResize();
-                    subagentReasoningUserOverridden.current = true;
-                    const next = !subagentReasoningOpen;
-                    if (next) setUserOpen(true);
-                    setSubagentReasoningOpen(next);
-                  }}
-                  aria-expanded={subagentReasoningOpen}
-                >
-                  {t("subagent.preview.reasoning")}
-                </button>
-                {subagentReasoningOpen ? (
-                  <div className="tool__subagent-preview-text tool__subagent-preview-text--markdown">
-                    <Markdown text={sp.reasoning} streaming={sp.phase === "reasoning"} />
-                  </div>
-                ) : (
-                  <ReasoningSummary
-                    text={sp.reasoning}
-                    streaming={sp.phase === "reasoning"}
-                    onOpen={() => {
-                      beginUserResize();
-                      subagentReasoningUserOverridden.current = true;
-                      setUserOpen(true);
-                      setSubagentReasoningOpen(true);
-                    }}
-                  />
-                )}
-              </div>
-            )}
-            {sp.text && (
-              <div className="tool__subagent-preview-section">
-                <div className="tool__subagent-preview-label">{t("subagent.preview.text")}</div>
-                <pre className="tool__subagent-preview-text">{sp.text}</pre>
-              </div>
-            )}
-            {sp.notice && (
-              <div className="tool__subagent-preview-section">
-                <div className="tool__subagent-preview-label">{t("subagent.preview.notice")}</div>
-                <pre className="tool__subagent-preview-text">{sp.notice}</pre>
-              </div>
-            )}
-            {sp.truncated && <div className="tool__note">{t("subagent.preview.truncated")}</div>}
-          </div>
+          <Suspense fallback={null}>
+            <SubagentPreview
+              progress={sp}
+              showReasoning={presentation.showWhileRunning}
+              reasoningOpen={subagentReasoningOpen}
+              onReasoningToggle={() => {
+
+                subagentReasoningUserOverridden.current = true;
+                const next = !subagentReasoningOpen;
+                if (next) setUserOpen(true);
+                setSubagentReasoningOpen(next);
+              }}
+              onReasoningOpen={() => {
+
+                subagentReasoningUserOverridden.current = true;
+                setUserOpen(true);
+                setSubagentReasoningOpen(true);
+              }}
+            />
+          </Suspense>
+        )}
+
+        {open && hasSubagentOutcome && (
+          <Suspense fallback={null}>
+            <SubagentOutcomeCard
+              text={effectiveOutput}
+              outcome={item.subagentOutcome}
+            />
+          </Suspense>
         )}
 
         {hasNested && (
@@ -495,11 +539,18 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
           </div>
         )}
 
+        {open && shellCommand && (
+          <div className="tool__command">
+            <div className="tool__command-label">{t("tool.command")}</div>
+            <CodeViewer value={shellCommand} language={commandLanguage(execution?.shell, item.name)} maxHeight={240} />
+          </div>
+        )}
+
         {shellPreview && (
           <>
             <CodeViewer value={showAll ? shellOutput! : shellPreview.preview} maxHeight={showAll ? 480 : 260} />
             {shellPreview.hasMore && !showAll && (
-              <button className="tool__showall" onClick={() => { beginUserResize(); setShowAll(true); }}>
+              <button className="tool__showall" onClick={() => {  setShowAll(true); }}>
                 {t("tool.showAllLines", { n: shellPreview.total })}
               </button>
             )}
@@ -517,6 +568,7 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
         {isWebSearch && hasArgsOrOutput && (
           <div className="tool__search-summary">
             {subject && <div className="tool__search-query">{t("tool.searchQuery", { query: subject })}</div>}
+            {searchSummary && <div className="tool__search-summary-text">{searchSummary}</div>}
             <div className="tool__search-count">
               {searchResultLabel}
               {searchHiddenCount > 0 && ` · ${t("sources.hidden", { n: searchHiddenCount })}`}
@@ -524,16 +576,47 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
           </div>
         )}
 
-        {!isWebSearch && !shellPreview && hasArgsOrOutput && (
+        {!isWebSearch && hasArgsOrOutput && (
           <>
-            {effectiveArgs && <CodeViewer value={pretty(effectiveArgs)} language="json" maxHeight={180} />}
-            {displayOutput && (
+            {effectiveArgs && !shellCommand && <CodeViewer value={pretty(effectiveArgs)} language="json" maxHeight={180} />}
+            {!shellPreview && displayOutput && (
               <>
                 <CodeViewer value={displayOutput} maxHeight={280} />
                 {item.truncated && <div className="tool__note">{t("tool.truncated")}</div>}
               </>
             )}
           </>
+        )}
+
+        {open && tabId && fullData?.mcpApp?.resourceUri && (
+          <div className="tool__mcp-app">
+            {appInstance ? (
+              <MCPAppCardLazy
+                instance={appInstance}
+                presentation={fullData.mcpApp}
+                toolArgs={fullData.args}
+                toolOutput={fullData.output}
+                onDispose={disposeAppInstance}
+              />
+            ) : (
+              <button
+                type="button"
+                className="tool__mcp-app-open"
+                onClick={() => {
+                  const mcpApp = fullData?.mcpApp as MCPAppPresentation | undefined;
+                  if (!mcpApp?.resourceUri) return;
+                  void app
+                    .MCPOpenAppInstanceForTab(tabId, mcpApp.server, mcpApp.tool, mcpApp.generation, item.id, mcpApp.resourceUri)
+                    .then((instance: MCPAppInstanceView | null) => {
+                      if (instance) setAppInstance(instance);
+                    })
+                    .catch(() => undefined);
+                }}
+              >
+                {t("mcp.app.open")}
+              </button>
+            )}
+          </div>
         )}
 
         {errorText && (
@@ -544,7 +627,7 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
                 <button
                   type="button"
                   className="tool__err-toggle"
-                  onClick={() => { beginUserResize(); setShowErrorDetails((value) => !value); }}
+                  onClick={() => {  setShowErrorDetails((value) => !value); }}
                   aria-expanded={showErrorDetails}
                 >
                   <ChevronRight className={`tool__err-toggle-icon${showErrorDetails ? " tool__err-toggle-icon--open" : ""}`} size={12} aria-hidden="true" />

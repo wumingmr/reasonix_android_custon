@@ -46,6 +46,9 @@ func savedAccountPath(accountID string) string {
 	if root == "" || accountID == "" {
 		return ""
 	}
+	if !validAccountID(accountID) {
+		return ""
+	}
 	return filepath.Join(weixinAccountDir(root), accountID+".json")
 }
 
@@ -100,7 +103,17 @@ func HasSavedAccount(accountID string) bool {
 	return err == nil && account.Token != ""
 }
 
+// validAccountID keeps an id from the upstream login response to one file name.
+// validAccountID accepts one file name. Either separator is refused on every
+// OS: the config directory can be read from a system where the other one is.
+func validAccountID(accountID string) bool {
+	return !strings.ContainsAny(accountID, `/\`) && filepath.IsLocal(accountID) && filepath.Base(accountID) == accountID
+}
+
 func saveAccount(accountID string, account savedAccount) error {
+	if !validAccountID(accountID) {
+		return fmt.Errorf("weixin account id %q is not a valid file name", accountID)
+	}
 	path := savedAccountPath(accountID)
 	if path == "" {
 		return fmt.Errorf("reasonix user config dir is unavailable")

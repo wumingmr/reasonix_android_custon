@@ -32,6 +32,24 @@ func TestBuildRequestEmbedsImagesForVisionModel(t *testing.T) {
 	}
 }
 
+func TestModelInfoEnablesImageWireSerialization(t *testing.T) {
+	p, err := New(provider.Config{
+		Name: "catalog", BaseURL: "https://example.test/v1", Model: "kimi-k3",
+		ModelInfo: &provider.ModelInfo{ID: "kimi-k3", InputModalities: []provider.ModelModality{provider.ModalityText, provider.ModalityImage}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	c := p.(*client)
+	if !c.vision {
+		t.Fatal("model metadata should enable image wire serialization")
+	}
+	req := c.buildRequest(provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "describe", Images: []string{"data:image/png;base64,AAAA"}}}})
+	if _, ok := req.Messages[0].Content.([]chatContentPart); !ok {
+		t.Fatalf("content = %#v, want image content parts", req.Messages[0].Content)
+	}
+}
+
 func TestBuildRequestEmbedsOfficialDeepSeekImageURLAndFileID(t *testing.T) {
 	c := &client{model: OfficialDeepSeekVisionModel, vision: true, deepseek: true}
 	req := c.buildRequest(provider.Request{
@@ -103,7 +121,7 @@ func TestOfficialDeepSeekProviderWideVisionInputMatchesTextOnlyRequest(t *testin
 	}
 }
 
-func TestOfficialDeepSeekExplicitModelVisionInputMatchesTextOnlyRequest(t *testing.T) {
+func TestOfficialDeepSeekUnknownModelExplicitVisionSerializesImages(t *testing.T) {
 	p, err := New(provider.Config{
 		Name:    "deepseek",
 		BaseURL: "https://api.deepseek.com",
@@ -117,8 +135,8 @@ func TestOfficialDeepSeekExplicitModelVisionInputMatchesTextOnlyRequest(t *testi
 		t.Fatalf("New: %v", err)
 	}
 	c := p.(*client)
-	if c.vision {
-		t.Fatal("explicit model-scoped vision must not bypass the official DeepSeek endpoint guard")
+	if !c.vision {
+		t.Fatal("explicit vision must enable unknown DeepSeek models")
 	}
 
 	textOnly := provider.Request{Messages: []provider.Message{{
@@ -136,8 +154,8 @@ func TestOfficialDeepSeekExplicitModelVisionInputMatchesTextOnlyRequest(t *testi
 	if err != nil {
 		t.Fatalf("marshal image request: %v", err)
 	}
-	if !bytes.Equal(imageBody, textBody) {
-		t.Fatalf("explicit official DeepSeek image request changed provider-visible bytes:\ntext:  %s\nimage: %s", textBody, imageBody)
+	if bytes.Equal(imageBody, textBody) || !bytes.Contains(imageBody, []byte("data:image/png;base64,AAAA")) {
+		t.Fatalf("explicit unknown DeepSeek image missing from request: %s", imageBody)
 	}
 }
 
@@ -219,7 +237,59 @@ func TestOfficialDeepSeekVisionSKUEmbedsUserImages(t *testing.T) {
 	}
 }
 
-func TestOfficialDeepSeekVisionSKUOmitsToolImages(t *testing.T) {
+// V4.1 Flash is natively multimodal, so the official endpoint must serialize
+// images for it — and for the ids the vendor still aliases to it — without the
+// caller first resolving capability metadata.
+func TestOfficialDeepSeekMultimodalSKUsEmbedUserImages(t *testing.T) {
+	for _, model := range []string{"deepseek-flash", "deepseek-v4-flash", "deepseek-v4.1-flash-expires-on-0910"} {
+		p, err := New(provider.Config{Name: "deepseek", BaseURL: "https://api.deepseek.com", Model: model})
+		if err != nil {
+			t.Fatalf("New(%s): %v", model, err)
+		}
+		c := p.(*client)
+		if !c.vision {
+			t.Fatalf("%s must serialize user images without resolved metadata", model)
+		}
+		req := c.buildRequest(provider.Request{Messages: []provider.Message{{
+			Role: provider.RoleUser, Content: "describe",
+			Images: []string{"data:image/png;base64,AAAA"},
+		}}})
+		parts, ok := req.Messages[0].Content.([]chatContentPart)
+		if !ok || len(parts) != 2 || parts[0].Type != "text" || parts[1].Type != "image_url" {
+			t.Fatalf("%s user content = %#v, want [text, image_url]", model, req.Messages[0].Content)
+		}
+		if parts[1].ImageURL == nil || parts[1].ImageURL.URL != "data:image/png;base64,AAAA" {
+			t.Fatalf("%s image_url = %+v", model, parts[1].ImageURL)
+		}
+	}
+}
+
+func TestOfficialRequestURLImageHardLimit(t *testing.T) {
+	p, err := New(provider.Config{BaseURL: "https://relay.test", Model: "deepseek-v4-pro", Extra: map[string]any{"request_url": "https://api.deepseek.com/v1/chat/completions", "vision": true}, ModelInfo: &provider.ModelInfo{InputModalities: []provider.ModelModality{provider.ModalityText, provider.ModalityImage}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(p.(*client).buildRequest(provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "describe", Images: []string{"data:image/png;base64,AAAA"}}}}))
+	if err != nil || strings.Contains(string(body), "AAAA") {
+		t.Fatalf("official request URL leaked image: %s %v", body, err)
+	}
+}
+
+func TestOfficialVisionExplicitOffRespectsResolvedMetadata(t *testing.T) {
+	p, err := New(provider.Config{BaseURL: "https://api.deepseek.com", Model: OfficialDeepSeekVisionModel, Extra: map[string]any{"vision": true}, ModelInfo: &provider.ModelInfo{InputModalities: []provider.ModelModality{provider.ModalityText}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(p.(*client).buildRequest(provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "describe", Images: []string{"data:image/png;base64,AAAA"}}}}))
+	if err != nil || strings.Contains(string(body), "AAAA") {
+		t.Fatalf("explicit off leaked image: %s %v", body, err)
+	}
+	if p.(provider.ModelInfoProvider).ModelInfo().SupportsInput(provider.ModalityImage) {
+		t.Fatal("metadata disagrees with serializer")
+	}
+}
+
+func TestOfficialDeepSeekVisionSKUEmbedsToolImages(t *testing.T) {
 	p, err := New(provider.Config{
 		Name:    "deepseek",
 		BaseURL: "https://api.deepseek.com",
@@ -243,14 +313,14 @@ func TestOfficialDeepSeekVisionSKUOmitsToolImages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if strings.Contains(string(body), "base64,AAAA") {
-		t.Fatalf("official DeepSeek vision SKU leaked tool image payload: %s", body)
+	if !strings.Contains(string(body), "base64,AAAA") {
+		t.Fatalf("official DeepSeek vision SKU omitted tool image payload: %s", body)
 	}
 	plainBody, err := json.Marshal(c.buildRequest(provider.Request{Messages: plain}))
 	if err != nil {
 		t.Fatalf("marshal plain: %v", err)
 	}
-	if !bytes.Equal(body, plainBody) {
+	if bytes.Equal(body, plainBody) {
 		t.Fatalf("tool images changed official DeepSeek vision SKU bytes:\nplain: %s\nimage: %s", plainBody, body)
 	}
 }

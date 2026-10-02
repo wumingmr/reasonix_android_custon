@@ -103,8 +103,8 @@ func TestQuickPickerEscCancels(t *testing.T) {
 // m.pendingModelSwitch but returned nil as the tea.Cmd, causing the async
 // controller build to never execute.
 func TestQuickPickerModelSwitch(t *testing.T) {
-	oldCtrl := control.New(control.Options{Label: "old"})
-	newCtrl := control.New(control.Options{Label: "new-model", Commands: []command.Command{{Name: "cmd"}}, Skills: []skill.Skill{{Name: "sk"}}})
+	oldCtrl := newOwnedTestController(t, control.Options{Label: "old"})
+	newCtrl := newOwnedTestController(t, control.Options{Label: "new-model", Commands: []command.Command{{Name: "cmd"}}, Skills: []skill.Skill{{Name: "sk"}}})
 	m := newChatTUI(oldCtrl, "", make(chan event.Event, 1), 100)
 	m.modelRef = "provider/old-model"
 	m.quickPick = &quickPicker{
@@ -172,8 +172,8 @@ func TestQuickPickerProviderSingleModelSwitch(t *testing.T) {
 		t.Fatalf("save provider config: %v", err)
 	}
 
-	oldCtrl := control.New(control.Options{Label: "old"})
-	newCtrl := control.New(control.Options{Label: "new-model"})
+	oldCtrl := newOwnedTestController(t, control.Options{Label: "old"})
+	newCtrl := newOwnedTestController(t, control.Options{Label: "new-model"})
 	m := newChatTUI(oldCtrl, "", make(chan event.Event, 1), 100)
 	m.modelRef = "old-provider/old-model"
 	m.quickPick = &quickPicker{

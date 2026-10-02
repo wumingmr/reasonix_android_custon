@@ -13,7 +13,6 @@ import (
 	"reasonix/internal/evidence"
 	"reasonix/internal/provider"
 	"reasonix/internal/runtimepolicy"
-	"reasonix/internal/taskcontract"
 	"reasonix/internal/tool"
 )
 
@@ -23,21 +22,12 @@ func setTurnConstraints(a *Agent, raw string) {
 	a.turn.engine = runtimepolicy.NewEngine(c)
 }
 
-func TestRebuildTurnContractEnforcesExplicitFullVerification(t *testing.T) {
+func TestExplicitFullVerificationRemainsModelInstruction(t *testing.T) {
 	a := New(nil, tool.NewRegistry(), NewSession(""), Options{}, event.Discard)
-	a.resetTurnEvidence()
-	setTurnConstraints(a, "请闭环交付")
-	a.task.ledger.Record(evidence.Receipt{
-		ToolName: "edit_file", Success: true, Write: true, Mutation: true,
-		Args: json.RawMessage(`{"path":"README.md"}`), Paths: []string{"README.md"},
-	})
-	a.rebuildTurnContract()
-	for _, obligation := range a.turn.engine.Snapshot().Unsatisfied() {
-		if obligation.Kind == taskcontract.ObligationFullVerify && obligation.Enforcement == taskcontract.EnforcementStrict {
-			return
-		}
+	setTurnConstraints(a, "请完整验证并交付")
+	if result := a.ReadinessResult(); !result.Ready || len(result.Missing) != 0 {
+		t.Fatalf("natural language created host quality requirements: %+v", result)
 	}
-	t.Fatalf("Agent rebuild dropped explicit full verification: %+v", a.turn.engine.Snapshot().Obligations)
 }
 
 func TestTaskPolicyUsesStructuredCommandEffects(t *testing.T) {
@@ -93,7 +83,6 @@ func TestTaskPolicyEnforcesVerificationAllowlist(t *testing.T) {
 	reg.Add(fakeTool{name: "bash", readOnly: true, calls: &calls})
 	a := New(&scriptedProvider{name: "p"}, reg, NewSession("sys"), Options{}, event.Discard)
 	setTurnConstraints(a, "fix it; only run go test ./internal/parser")
-	a.turn.deliveryCriteriaEstablished = true
 
 	for _, command := range []string{"npm test", "go vet ./...", "golangci-lint run", "npm run typecheck"} {
 		blocked := a.executeOne(context.Background(), &a.turn, provider.ToolCall{
@@ -121,7 +110,6 @@ func TestTaskPolicyForbidTestsBlocksEveryVerifier(t *testing.T) {
 	reg.Add(fakeTool{name: "bash", readOnly: true, calls: &calls})
 	a := New(&scriptedProvider{name: "p"}, reg, NewSession("sys"), Options{}, event.Discard)
 	setTurnConstraints(a, "fix it; don't run tests")
-	a.turn.deliveryCriteriaEstablished = true
 
 	for _, command := range []string{"go test ./...", "go vet ./...", "golangci-lint run", "npm run typecheck"} {
 		got := a.executeOne(context.Background(), &a.turn, provider.ToolCall{
@@ -141,7 +129,6 @@ func TestTaskPolicyBlocksExternalActionCommandVariants(t *testing.T) {
 	reg.Add(fakeTool{name: "bash", readOnly: false})
 	a := New(&scriptedProvider{name: "p"}, reg, NewSession("sys"), Options{}, event.Discard)
 	setTurnConstraints(a, "fix it, but don't push")
-	a.turn.deliveryCriteriaEstablished = true
 	a.setTodoState([]evidence.TodoItem{{Content: "fix it", Status: "in_progress"}})
 
 	for _, command := range []string{
@@ -192,11 +179,11 @@ func TestTaskPolicyReportsPostMutationVerificationGapWithoutBlockingTargetedTurn
 		svc:  agentServices{tools: reg},
 		turn: turnRuntime{engine: runtimepolicy.NewEngine(runtimepolicy.Constraints{})},
 	}
-	if got := a.finalReadinessCheckFor(); got.reason != "" {
+	if got := a.ReadinessResult(); got.Reason != "" {
 		t.Fatalf("targeted readiness = %+v, want quality gap to remain non-blocking", got)
 	}
 	a.task.ledger.Record(check)
-	if got := a.finalReadinessCheckFor(); got.reason != "" {
+	if got := a.ReadinessResult(); got.Reason != "" {
 		t.Fatalf("readiness after verification = %+v, want ready", got)
 	}
 }
@@ -213,29 +200,8 @@ func TestPolicyEscalatesBeforeFirstSensitiveMutation(t *testing.T) {
 		Name:      "edit_file",
 		Arguments: `{"path":"internal/auth/session.go","old_string":"old","new_string":"new"}`,
 	})
-	if !got.blocked || !strings.Contains(got.errMsg, "acceptance criteria") {
-		t.Fatalf("sensitive first mutation outcome = %+v, want pre-execution criteria block", got)
-	}
-	if got := atomic.LoadInt32(&calls); got != 0 {
-		t.Fatalf("sensitive writer executed %d times before escalation, want 0", got)
-	}
-	if len(permission.checked) != 0 {
-		t.Fatalf("permission was requested for a deterministically blocked call: %v", permission.checked)
-	}
-	a.turn.deliveryCriteriaEstablished = true
-	a.setTodoState([]evidence.TodoItem{{Content: "update session handling", Status: "in_progress"}})
-	got = a.executeOne(context.Background(), &a.turn, provider.ToolCall{
-		Name:      "edit_file",
-		Arguments: `{"path":"internal/auth/session.go","old_string":"old","new_string":"new"}`,
-	})
-	if got.blocked || got.errMsg != "" {
-		t.Fatalf("sensitive mutation with host contract = %+v, want execution", got)
-	}
-	if got := atomic.LoadInt32(&calls); got != 1 {
-		t.Fatalf("sensitive writer executed %d times after contract, want 1", got)
-	}
-	if len(permission.checked) != 1 {
-		t.Fatalf("permission checks = %v, want exactly one for executable call", permission.checked)
+	if got.blocked || got.errMsg != "" || atomic.LoadInt32(&calls) != 1 || len(permission.checked) != 1 {
+		t.Fatalf("sensitive path must use ordinary permissioned execution: %+v calls=%d permission=%v", got, calls, permission.checked)
 	}
 }
 

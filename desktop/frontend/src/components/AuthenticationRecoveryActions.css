@@ -1,0 +1,13 @@
+.composer-toolbar-send__configure {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.composer-toolbar-send__configure:hover {
+  text-decoration: underline;
+}

@@ -26,7 +26,7 @@ Context Engine v2 为 Reasonix 提供两个权限不同的持久上下文层：
 # Build and verify
 
 - Run `go test ./...` before reporting completion.
-- Do not edit generated files under `desktop/frontend/wailsjs/`.
+- Do not edit generated files under `desktop/frontend/src/generated/`.
 - Keep public API changes backward compatible.
 ```
 
@@ -99,14 +99,14 @@ subject key 是知识冲突模型：同一 scope 内每个 subject 至多一个 
 `/memory` 仍展示两者，并解释覆盖关系，而不是删除或隐藏任何来源。
 
 第三个维度 `activation` 与前两者正交：`relevant`（默认）表示事实只走检索；`pinned`
-表示正文在会话开始时快照进低优先级稳定指导区。pin 必须是用户显式选择（`/memory pin
+表示正文在下一真实用户回合前快照进低优先级 `session-context`。pin 必须是用户显式选择（`/memory pin
 <id-or-name>`，或明确要求助手），且 pinned 正文总量上限 1,500 字符——在 pin 时强制
 执行，超限会提示把"永远必须遵守的规则"移入 REASONIX.md/AGENTS.md instructions。
-一个事实要么 pinned（在前缀里）、要么 relevant（可被召回）：不会两者皆是，也不会
+一个事实要么 pinned（在 `session-context` 里）、要么 relevant（可被召回）：不会两者皆是，也不会
 两者皆非。
 
 为兼容旧数据，早于该字段的全局 `user`/`feedback` 事实保持 pinned，直到显式 unpin。
-存在等价项目事实时，它会在稳定前缀构建前屏蔽对应的全局 pinned 指导，因此"项目覆盖
+存在等价项目事实时，它会在背景快照构建前屏蔽对应的全局 pinned 指导，因此"项目覆盖
 全局"不依赖后续查询是否恰好触发召回。
 
 ## 自动召回
@@ -172,7 +172,7 @@ omitted 数量和 suppressed 原因。
 
 授权是一次性的，存储层还会强制 create-only，因此评估后并发出现的事实也不会被覆盖。
 
-在 Ask 下，其余情况仍需显式确认：
+在“仅可查看”下，其余情况仍需显式确认：
 
 - 全局事实；
 - `user` 偏好和 `feedback`；
@@ -181,10 +181,10 @@ omitted 数量和 suppressed 原因。
 - 敏感或超长内容；
 - 所有 `forget` 操作。
 
-Ask 保留这些确认。交互式 Auto 把 `remember`/`forget` 作为普通策略 fallback：默认调用直接
-执行，显式 `ask` / `deny` 仍生效。交互式 YOLO 会绕过记忆 ask 审批，除非命中显式 deny。
+“仅可查看”保留这些确认。“工作区内修改”把作用域内的 `remember`/`forget` 作为普通策略
+fallback，显式 `ask` / `deny` 仍生效。“完全权限”会绕过普通记忆审批，除非命中显式 deny。
 Guardian 和 permission hook 不能替用户批准。顶层
-headless controller（包括无头 YOLO）只能使用上述同一个一次性低风险创建路径；子智能体以及不拥有该作用域
+headless controller 只能使用上述同一个一次性低风险创建路径；子智能体以及不拥有该作用域
 controller 的 headless surface 会 fail closed，其他无头记忆变更仍必须有交互式确认界面。
 
 用户直接在 Context Center、`/remember`、restore 或 recover 命令中发起的操作，本身就是

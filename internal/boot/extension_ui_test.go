@@ -164,6 +164,7 @@ func TestRebuildRebindsExtensionUIHub(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
+	t.Cleanup(newRes.Controller.Close)
 	if newRes.ExtensionUI == nil {
 		t.Fatal("rebuilt runtime has no UI hub")
 	}

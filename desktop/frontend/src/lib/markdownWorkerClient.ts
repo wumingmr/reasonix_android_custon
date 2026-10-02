@@ -23,6 +23,16 @@
 
 import type { MarkdownParseResult } from "./markdownPipeline";
 import { registerMarkdownWorkerDiagnostics } from "./sessionDiagnostics";
+import {
+  markdownPriorityRank,
+  type MarkdownDocumentRequest,
+  type MarkdownParseRequest,
+  type MarkdownParseResponse,
+  type MarkdownWorkerPriority,
+  type MarkdownWorkerRequest,
+} from "./markdownWorkerProtocol";
+
+export type { MarkdownParseRequest, MarkdownParseResponse, MarkdownWorkerPriority } from "./markdownWorkerProtocol";
 
 type MarkdownPipelineModule = typeof import("./markdownPipeline");
 let pipelinePromise: Promise<MarkdownPipelineModule> | null = null;
@@ -31,21 +41,10 @@ function loadPipeline(): Promise<MarkdownPipelineModule> {
   return pipelinePromise;
 }
 
-export interface MarkdownParseRequest {
-  id: number;
-  text: string;
-}
-
-export interface MarkdownParseResponse {
-  id: number;
-  result?: MarkdownParseResult;
-  error?: string;
-}
-
 export interface MarkdownWorkerLike {
   onmessage: ((event: MessageEvent<MarkdownParseResponse>) => void) | null;
   onerror: ((event: ErrorEvent) => void) | null;
-  postMessage(request: MarkdownParseRequest): void;
+  postMessage(request: MarkdownWorkerRequest): void;
   terminate(): void;
 }
 
@@ -70,6 +69,14 @@ interface PendingRequest {
   startedAt: number;
   text: string;
   state: "queued" | "worker" | "fallback";
+  priority: number;
+  documentId?: string;
+  final?: boolean;
+  cancelled?: boolean;
+}
+
+interface WorkerDocumentState {
+  sentText: string | null;
 }
 
 function nowMs(): number {
@@ -82,6 +89,7 @@ export class MarkdownWorkerClient {
   private worker: MarkdownWorkerLike | null = null;
   private workerPromise: Promise<MarkdownWorkerLike | null> | null = null;
   private readonly pending = new Map<number, PendingRequest>();
+  private readonly documents = new Map<string, WorkerDocumentState>();
   private activeRequestId: number | null = null;
   private pumping = false;
   private nextId = 1;
@@ -115,19 +123,53 @@ export class MarkdownWorkerClient {
   }
 
   parse(text: string): MarkdownParseHandle {
+    return this.enqueue(text, "visible");
+  }
+
+  /**
+   * Parse a retained worker document. Prefix growth crosses the bridge as an
+   * append; replacements and finalization carry an authoritative snapshot.
+   * Superseding an active document parse drops its response without killing
+   * the worker, so a live stream does not churn parser threads.
+   */
+  parseDocument(documentId: string, text: string, options: {
+    final?: boolean;
+    priority?: MarkdownWorkerPriority;
+  } = {}): MarkdownParseHandle {
+    if (!documentId) return this.parse(text);
+    if (!this.documents.has(documentId)) this.documents.set(documentId, { sentText: null });
+    return this.enqueue(text, options.priority ?? "visible", documentId, options.final ?? false);
+  }
+
+  private enqueue(
+    text: string,
+    priority: MarkdownWorkerPriority,
+    documentId?: string,
+    final = false,
+  ): MarkdownParseHandle {
     if (this.disposed) {
       return { promise: Promise.resolve(undefined), cancel: () => {} };
     }
     const id = this.nextId;
     this.nextId += 1;
     const promise = new Promise<MarkdownParseResult | undefined>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, startedAt: nowMs(), text, state: "queued" });
+      this.pending.set(id, {
+        resolve, reject, startedAt: nowMs(), text, state: "queued",
+        priority: markdownPriorityRank(priority), documentId, final,
+      });
     });
     const cancel = () => {
       const entry = this.pending.get(id);
       if (!entry) return;
-      this.pending.delete(id);
       entry.resolve(undefined);
+      if (this.activeRequestId === id && entry.documentId) {
+        // A worker parse is synchronous once dispatched. Retain only its
+        // bookkeeping until the response arrives, then schedule the newest
+        // document snapshot without terminating the shared worker.
+        entry.cancelled = true;
+        return;
+      }
+      this.pending.delete(id);
       if (this.activeRequestId !== id) return;
       if (entry.state === "fallback") {
         // Synchronous fallback work cannot be interrupted. Keep the queue
@@ -142,11 +184,27 @@ export class MarkdownWorkerClient {
     return { promise, cancel };
   }
 
+  /** Release worker-side source/AST ownership when its row unmounts. */
+  releaseDocument(documentId: string): void {
+    if (!this.documents.delete(documentId)) return;
+    for (const [id, entry] of this.pending) {
+      if (entry.documentId !== documentId) continue;
+      entry.resolve(undefined);
+      if (this.activeRequestId === id) entry.cancelled = true;
+      else this.pending.delete(id);
+    }
+    if (this.worker) {
+      this.worker.postMessage({ id: 0, op: "release", documentId });
+    }
+  }
+
   private async pump(): Promise<void> {
     if (this.disposed || this.activeRequestId !== null || this.pumping) return;
     this.pumping = true;
     try {
-      const next = Array.from(this.pending.entries()).find(([, entry]) => entry.state === "queued");
+      const next = Array.from(this.pending.entries())
+        .filter(([, entry]) => entry.state === "queued" && !entry.cancelled)
+        .sort((left, right) => left[1].priority - right[1].priority || left[0] - right[0])[0];
       if (!next) return;
       const [id, entry] = next;
       const worker = typeof Worker === "undefined" ? null : await this.ensureWorker();
@@ -158,7 +216,7 @@ export class MarkdownWorkerClient {
         return;
       }
       entry.state = "worker";
-      worker.postMessage({ id, text: entry.text } satisfies MarkdownParseRequest);
+      worker.postMessage(this.workerRequest(id, entry));
     } finally {
       this.pumping = false;
       if (
@@ -169,6 +227,24 @@ export class MarkdownWorkerClient {
         queueMicrotask(() => void this.pump());
       }
     }
+  }
+
+  private workerRequest(id: number, entry: PendingRequest): MarkdownWorkerRequest {
+    if (!entry.documentId) return { id, text: entry.text } satisfies MarkdownParseRequest;
+    const document = this.documents.get(entry.documentId);
+    const sentText = document?.sentText ?? null;
+    let request: MarkdownDocumentRequest;
+    if (entry.final) {
+      request = { id, op: "finalize", documentId: entry.documentId, text: entry.text };
+    } else if (sentText === null) {
+      request = { id, op: "open", documentId: entry.documentId, text: entry.text };
+    } else if (entry.text.startsWith(sentText)) {
+      request = { id, op: "append", documentId: entry.documentId, text: entry.text.slice(sentText.length) };
+    } else {
+      request = { id, op: "replace", documentId: entry.documentId, text: entry.text };
+    }
+    if (document) document.sentText = entry.text;
+    return request;
   }
 
   // noteSettled records one completed parse attempt (success or error) for
@@ -238,9 +314,13 @@ export class MarkdownWorkerClient {
 
   private handleMessage(response: MarkdownParseResponse): void {
     const entry = this.pending.get(response.id);
-    if (!entry) return; // cancelled or superseded — drop the stale response
+    if (!entry) return; // cancelled one-shot or superseded queued work
     this.pending.delete(response.id);
     if (this.activeRequestId === response.id) this.activeRequestId = null;
+    if (entry.cancelled) {
+      void this.pump();
+      return;
+    }
     this.noteSettled(entry);
     this.fallbackActive = false;
     if (response.error !== undefined) {
@@ -259,6 +339,7 @@ export class MarkdownWorkerClient {
     }
     this.worker = null;
     this.workerPromise = null;
+    for (const document of this.documents.values()) document.sentText = null;
   }
 
   /** A broken worker must not wedge parsing: reject pending work so callers
@@ -280,6 +361,7 @@ export class MarkdownWorkerClient {
     this.activeRequestId = null;
     for (const entry of this.pending.values()) entry.resolve(undefined);
     this.pending.clear();
+    this.documents.clear();
   }
 }
 
@@ -295,6 +377,9 @@ async function createInlineMarkdownWorker(): Promise<MarkdownWorkerLike> {
 
 let singleton: MarkdownWorkerClient | null = null;
 let leases = 0;
+// Process-lifetime numeric diagnostics survive worker release without retaining
+// tasks, source text or ASTs. pending/fallback still describe the live instance.
+const retired = { completed: 0, parseMs: 0, maxParseMs: 0, workerFailures: 0 };
 
 export function getMarkdownWorkerClient(): MarkdownWorkerClient {
   if (!singleton) singleton = new MarkdownWorkerClient();
@@ -310,6 +395,11 @@ export function releaseMarkdownWorkerClient(): void {
   if (leases === 0) return;
   leases -= 1;
   if (leases === 0 && singleton) {
+    const stats = singleton.stats();
+    retired.completed += stats.completed;
+    retired.parseMs += stats.avgParseMs * stats.completed;
+    retired.maxParseMs = Math.max(retired.maxParseMs, stats.maxParseMs);
+    retired.workerFailures += stats.workerFailures;
     singleton.dispose();
     singleton = null;
   }
@@ -331,6 +421,10 @@ export function setMarkdownWorkerClientForTest(client: MarkdownWorkerClient | nu
 
 // Diagnostics provider: lets crash.ts/bench read worker counters without an
 // eager import of this lazy-chunk module.
-registerMarkdownWorkerDiagnostics(() =>
-  singleton?.stats() ?? { pending: 0, completed: 0, avgParseMs: 0, maxParseMs: 0, fallbackActive: false, workerFailures: 0 },
-);
+registerMarkdownWorkerDiagnostics(() => {
+  const current = singleton?.stats() ?? { pending: 0, completed: 0, avgParseMs: 0, maxParseMs: 0, fallbackActive: false, workerFailures: 0 };
+  const completed = retired.completed + current.completed;
+  return { ...current, completed,
+    avgParseMs: completed ? (retired.parseMs + current.completed * current.avgParseMs) / completed : 0,
+    maxParseMs: Math.max(retired.maxParseMs, current.maxParseMs), workerFailures: retired.workerFailures + current.workerFailures };
+});

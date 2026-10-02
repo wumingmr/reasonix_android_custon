@@ -11,6 +11,13 @@ import {
   noteActivationSettled,
   noteActivationStarted,
   noteHistoryPage,
+  noteNavigationComposerEnabled,
+  noteNavigationFirstPaint,
+  noteNavigationHistoryReadable,
+  noteNavigationHistoryRequested,
+  noteNavigationIdentityPublished,
+  noteNavigationRequested,
+  noteNavigationRuntimeReady,
   noteTranscriptRowCounts,
   registerMarkdownWorkerDiagnostics,
   registerTranscriptCacheDiagnostics,
@@ -32,6 +39,26 @@ function ok(cond: boolean, label: string) {
 }
 
 resetSessionDiagnostics();
+
+// --- local navigation readable/runtime milestones ---
+{
+  noteNavigationRequested(7);
+  noteNavigationIdentityPublished(7, "tab-fast");
+  noteNavigationHistoryRequested(7, true);
+  noteNavigationHistoryReadable(7, true);
+  noteNavigationFirstPaint(7);
+  noteNavigationRuntimeReady(7, true);
+  noteNavigationComposerEnabled("tab-fast");
+  const navigation = sessionPipelineDiagnostics().navigation;
+  ok(navigation?.tabId === "tab-fast", "navigation carries the selected tab identity");
+  ok(navigation?.historyCacheHit === true, "navigation records the bounded cache hit");
+  ok(navigation?.runtimeReattached === true, "navigation records runtime reattachment");
+  ok((navigation?.clickToIdentityMs ?? -1) >= 0, "click→identity is derived");
+  ok((navigation?.clickToFirstHistoryMs ?? -1) >= 0, "click→first history is derived");
+  ok((navigation?.clickToFirstPaintMs ?? -1) >= 0, "click→first paint is derived");
+  ok((navigation?.clickToRuntimeReadyMs ?? -1) >= 0, "click→runtime ready is derived");
+  ok((navigation?.clickToComposerEnabledMs ?? -1) >= 0, "click→composer enabled is derived");
+}
 
 // --- activation lifecycle with derived phase timings ---
 {
@@ -97,6 +124,9 @@ resetSessionDiagnostics();
     markdownBudgetBytes: 16 << 20,
     historyEvictions: 1,
     markdownEvictions: 0,
+    reclaimedPages: 2,
+    residentWindowEntries: 96,
+    windowMaxPages: 3,
   }));
   const snapshot = sessionPipelineDiagnostics();
   ok(snapshot.mountedRows?.mounted === 30 && snapshot.mountedRows.total === 412, "mounted row counts flow through");
@@ -126,7 +156,7 @@ resetSessionDiagnostics();
 {
   resetSessionDiagnostics();
   const snapshot = sessionPipelineDiagnostics();
-  ok(snapshot.activation === undefined && snapshot.history === undefined, "reset drops activation/history");
+  ok(snapshot.activation === undefined && snapshot.navigation === undefined && snapshot.history === undefined, "reset drops activation/navigation/history");
   ok(activationLog().length === 0, "reset clears the log");
 }
 

@@ -31,7 +31,7 @@ func TestCompletedJobPersistsOutputAndReleasesMemory(t *testing.T) {
 
 	j.mu.Lock()
 	tailLen := len(j.tail)
-	result := j.result
+	result := j.outcome.text
 	artifactPath := j.artifactPath
 	j.mu.Unlock()
 
@@ -547,12 +547,12 @@ func TestTaskMutationEvidencePersistsWithoutSensitiveReceiptData(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, leaked := range []string{secret, "content", "go test ./..."} {
+	for _, leaked := range []string{secret, "content", "go test ./...", `"risk"`} {
 		if strings.Contains(text, leaked) {
 			t.Fatalf("job metadata persisted sensitive receipt data %q:\n%s", leaked, text)
 		}
 	}
-	for _, want := range []string{`"mutationEvidenceVersion": 1`, `"risk": "medium"`, `"internal/agent/task.go"`} {
+	for _, want := range []string{`"mutationEvidenceVersion": 1`, `"internal/agent/task.go"`} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("job metadata missing %q:\n%s", want, text)
 		}
@@ -582,9 +582,6 @@ func TestTaskMutationEvidencePersistsWithoutSensitiveReceiptData(t *testing.T) {
 	if !ok || ledger.HasSuccessfulReviewAfter(mutation) || ledger.HasSuccessfulVerificationCommand() {
 		t.Fatalf("restored evidence bypassed fresh review/verification: %+v", ledger.Summary())
 	}
-	if got := ledger.MutationRiskAfter(mutation); got != evidence.RiskMedium {
-		t.Fatalf("restored mutation risk = %s, want medium", got)
-	}
 	// Lease does not consume: the receipts stay available until the collecting
 	// turn commits. Only then is the persisted summary drained.
 	if again := second.LeaseEvidenceForSession("session", j.ID); len(again.Receipts) != 1 {
@@ -605,23 +602,23 @@ func TestTaskMutationEvidencePersistsWithoutSensitiveReceiptData(t *testing.T) {
 	}
 }
 
-func TestHighRiskTaskMutationEvidenceRestoresAsOpaque(t *testing.T) {
+func TestLegacyRiskDoesNotEraseRecordedTaskPaths(t *testing.T) {
 	meta := artifactMeta{
 		Kind:                    "task",
 		MutationEvidenceVersion: mutationEvidenceVersion,
 		MutationEvidence: &artifactMutationEvidence{
-			Risk:  string(evidence.RiskHigh),
+			Risk:  "high",
 			Paths: []string{"ordinary-looking.go"},
 		},
 	}
 	summary := mutationEvidenceFromArtifact(meta)
-	if len(summary.Receipts) != 1 || len(summary.Receipts[0].Paths) != 0 {
-		t.Fatalf("high-risk restored evidence = %+v, want opaque mutation", summary)
+	if len(summary.Receipts) != 1 || len(summary.Receipts[0].Paths) != 1 || summary.Receipts[0].Paths[0] != "ordinary-looking.go" {
+		t.Fatalf("high-risk restored evidence = %+v, want recorded mutation paths", summary)
 	}
 	ledger := evidence.NewLedger()
 	ledger.MergeChild(summary)
-	mutation, ok := ledger.LatestSuccessfulMutationIndex()
-	if !ok || ledger.MutationRiskAfter(mutation) != evidence.RiskHigh {
+	_, ok := ledger.LatestSuccessfulMutationIndex()
+	if !ok || !ledger.Summary().HasMutation() {
 		t.Fatalf("high-risk mutation was downgraded during recovery: %+v", ledger.Summary())
 	}
 }
@@ -660,8 +657,8 @@ func TestLegacyTaskArtifactRecoversAsOpaqueHighRiskMutation(t *testing.T) {
 	}
 	ledger := evidence.NewLedger()
 	ledger.MergeChild(summary)
-	mutation, ok := ledger.LatestSuccessfulMutationIndex()
-	if !ok || ledger.MutationRiskAfter(mutation) != evidence.RiskHigh {
+	_, ok := ledger.LatestSuccessfulMutationIndex()
+	if !ok || !ledger.Summary().HasMutation() {
 		t.Fatalf("legacy task mutation was not recovered conservatively: %+v", ledger.Summary())
 	}
 }
@@ -680,8 +677,8 @@ func TestFutureVersionTaskArtifactRecoversAsOpaqueHighRiskMutation(t *testing.T)
 	}
 	ledger := evidence.NewLedger()
 	ledger.MergeChild(summary)
-	mutation, ok := ledger.LatestSuccessfulMutationIndex()
-	if !ok || ledger.MutationRiskAfter(mutation) != evidence.RiskHigh {
+	_, ok := ledger.LatestSuccessfulMutationIndex()
+	if !ok || !ledger.Summary().HasMutation() {
 		t.Fatalf("future-version mutation was not recovered conservatively: %+v", ledger.Summary())
 	}
 }

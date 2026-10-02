@@ -128,6 +128,23 @@ func (c *Controller) SubmitExtensionForm(ctx context.Context, pluginID, surfaceI
 	return nil
 }
 
+// SubmitExtensionFormExact validates the host-issued publication instance
+// before the sidecar receives any values.
+func (c *Controller) SubmitExtensionFormExact(ctx context.Context, pluginID, surfaceID string, generation uint64, formInstanceID string, values map[string]any) error {
+	h := c.extensionUIHub()
+	if h == nil {
+		return errors.New("no extension UI hub is installed (no extension runtimes started)")
+	}
+	result, err := h.SubmitExact(ctx, pluginID, surfaceID, h.SessionID(), generation, formInstanceID, values)
+	if err != nil {
+		return err
+	}
+	if !result.Accepted {
+		return fmt.Errorf("extension %s did not accept the submission for surface %s", pluginID, surfaceID)
+	}
+	return nil
+}
+
 // ParseExtensionActionArgs maps the trailing fields of a
 // "/<plugin>:<action> args…" invocation onto the action's string map:
 // key=value fields become named entries, bare fields land in positional

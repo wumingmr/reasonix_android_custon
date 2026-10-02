@@ -13,15 +13,19 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
-	"reasonix/internal/filelock"
+	filelock "reasonix/internal/identitylock"
+	"reasonix/internal/sqliteuri"
 
 	moderncsqlite "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
 type Mode string
+
+var memoryDatabaseSequence atomic.Uint64
 
 const (
 	ModeDisk   Mode = "disk"
@@ -69,6 +73,25 @@ type OpenOptions struct {
 	// RetainBackup keeps the previous database at its generated .replaced-
 	// timestamp path so disposable projections can offer a rollback point.
 	RetainBackup bool
+	// QuickCheck uses SQLite's quick_check for a disposable projection.
+	// Authoritative stores keep the full integrity_check default.
+	QuickCheck bool
+	// ResumeKey opts Rebuild into a single persistent staging database. The
+	// callback atomically commits data and position. Cancellation retains staging;
+	// a changed key starts fresh. Progress is disposable, never business authority.
+	ResumeKey string
+}
+
+// WALSizeLimit is the size a disk projection's WAL is truncated back to after
+// a checkpoint.
+const WALSizeLimit = 4 << 20
+
+// CheckpointBeforeClose folds the WAL into the database and truncates it. It is
+// best-effort: another process's reader leaves the WAL for its next checkpoint.
+func CheckpointBeforeClose(ctx context.Context, db *sql.DB) {
+	if db != nil {
+		_, _ = db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
+	}
 }
 
 type Handle struct {
@@ -86,6 +109,17 @@ func (e *FutureSchemaError) Error() string {
 }
 
 func Open(ctx context.Context, opts OpenOptions) (*Handle, error) {
+	return openProjection(ctx, opts, true)
+}
+
+// OpenAdvisory opens disposable metadata before a full integrity audit. The
+// owner must call CheckIntegrity in its maintenance lifecycle and invalidate
+// all readers on corruption. This must never certify content or execution.
+func OpenAdvisory(ctx context.Context, opts OpenOptions) (*Handle, error) {
+	return openProjection(ctx, opts, false)
+}
+
+func openProjection(ctx context.Context, opts OpenOptions, checkIntegrity bool) (*Handle, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -125,7 +159,7 @@ func Open(ctx context.Context, opts OpenOptions) (*Handle, error) {
 		mode = ModeMemory
 	}
 
-	db, err := open(ctx, opts, mode)
+	db, err := open(ctx, opts, mode, checkIntegrity)
 	if err != nil && mode == ModeDisk {
 		var future *FutureSchemaError
 		switch {
@@ -139,11 +173,11 @@ func Open(ctx context.Context, opts OpenOptions) (*Handle, error) {
 			status.State = StateDegraded
 			status.LastError = err.Error()
 			mode = ModeMemory
-			db, err = open(ctx, opts, mode)
+			db, err = open(ctx, opts, mode, checkIntegrity)
 		case isCorruptionError(err):
 			// Only integrity-level failures may rename the on-disk projection.
 			status.QuarantinedPath = Quarantine(opts.Path, opts.Now())
-			db, err = open(ctx, opts, mode)
+			db, err = open(ctx, opts, mode, checkIntegrity)
 			if err != nil {
 				if opts.RequireDisk {
 					return nil, err
@@ -151,7 +185,7 @@ func Open(ctx context.Context, opts OpenOptions) (*Handle, error) {
 				status.State = StateDegraded
 				status.LastError = err.Error()
 				mode = ModeMemory
-				db, err = open(ctx, opts, mode)
+				db, err = open(ctx, opts, mode, checkIntegrity)
 			}
 		default:
 			// Busy, permission, IO, or transient open errors must never rename
@@ -162,7 +196,7 @@ func Open(ctx context.Context, opts OpenOptions) (*Handle, error) {
 			status.State = StateDegraded
 			status.LastError = err.Error()
 			mode = ModeMemory
-			db, err = open(ctx, opts, mode)
+			db, err = open(ctx, opts, mode, checkIntegrity)
 		}
 	}
 	if err != nil {
@@ -175,29 +209,24 @@ func Open(ctx context.Context, opts OpenOptions) (*Handle, error) {
 	return &Handle{DB: db, Status: status}, nil
 }
 
-// diskFileDSN builds a cross-platform SQLite file URI. Windows drive paths must
-// be file:///C:/...; a bare file:C:\... URI fails to open and previously forced
-// silent memory fallback during rebuild.
-func diskFileDSN(path string) string {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		abs = path
-	}
-	slash := filepath.ToSlash(abs)
-	if runtime.GOOS == "windows" && len(slash) >= 2 && slash[1] == ':' {
-		// C:/Users/... → /C:/Users/... so the URI becomes file:///C:/Users/...
-		slash = "/" + slash
-	}
-	u := &url.URL{Scheme: "file", Path: slash}
-	return u.String() + "?_pragma=busy_timeout%28150%29&_pragma=foreign_keys%281%29"
-}
-
-func open(ctx context.Context, opts OpenOptions, mode Mode) (*sql.DB, error) {
+func open(ctx context.Context, opts OpenOptions, mode Mode, checkIntegrity bool) (*sql.DB, error) {
 	var dsn string
 	if mode == ModeMemory {
-		dsn = fmt.Sprintf("file:reasonix-%s-%d?mode=memory&cache=shared", url.PathEscape(opts.MemoryName), opts.Now().UnixNano())
+		// time.Now has coarse resolution on some platforms, notably Windows.
+		// A process-local sequence prevents concurrently opened projections with
+		// the same logical name from sharing one SQLite memory database by accident.
+		dsn = fmt.Sprintf("file:reasonix-%s-%d-%d?mode=memory&cache=shared", url.PathEscape(opts.MemoryName),
+			opts.Now().UnixNano(), memoryDatabaseSequence.Add(1))
 	} else {
-		dsn = diskFileDSN(opts.Path)
+		var err error
+		// journal_size_limit is per connection, so it rides the DSN to reach
+		// every pooled one; without it a checkpointed WAL keeps its peak size.
+		dsn, err = sqliteuri.Disk(opts.Path, url.Values{
+			"_pragma": {"busy_timeout(150)", "foreign_keys(1)", fmt.Sprintf("journal_size_limit(%d)", WALSizeLimit)},
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -241,12 +270,10 @@ func open(ctx context.Context, opts OpenOptions, mode Mode) (*sql.DB, error) {
 		// on already-initialized files so open does not degrade to memory.
 		_, _ = db.ExecContext(ctx, `PRAGMA auto_vacuum=INCREMENTAL`)
 	}
-	var integrity string
-	if err := db.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&integrity); err != nil {
-		return fail(err)
-	}
-	if integrity != "ok" {
-		return fail(fmt.Errorf("projection integrity check: %s", integrity))
+	if checkIntegrity {
+		if err := checkDatabaseIntegrity(ctx, db, opts.QuickCheck); err != nil {
+			return fail(err)
+		}
 	}
 	if err := ApplyMigrations(ctx, db, opts.Migrations, opts.Now); err != nil {
 		return fail(err)
@@ -332,7 +359,17 @@ func Inspect(ctx context.Context, path string) Inspection {
 	}
 	out.Exists = true
 	out.Size = info.Size()
-	db, err := sql.Open("sqlite", diskFileDSN(path)+"&mode=ro&immutable=1")
+	// A live projection may hold its schema and latest commits only in WAL.
+	// immutable=1 would ignore that WAL and report a healthy database as broken.
+	dsn, err := sqliteuri.Disk(path, url.Values{
+		"_pragma": {"busy_timeout(150)", "foreign_keys(1)"},
+		"mode":    {"ro"},
+	})
+	if err != nil {
+		out.Error = err.Error()
+		return out
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		out.Error = err.Error()
 		return out
@@ -378,6 +415,8 @@ func isCorruptionError(err error) bool {
 		switch se.Code() & 0xff {
 		case sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB:
 			return true
+		default:
+			return false
 		}
 	}
 	msg := strings.ToLower(err.Error())
@@ -416,6 +455,9 @@ func Rebuild(ctx context.Context, opts OpenOptions, populate func(context.Contex
 		opts.Now = time.Now
 	}
 	temporary := fmt.Sprintf("%s.rebuild-%d", opts.Path, opts.Now().UnixNano())
+	if opts.ResumeKey != "" {
+		temporary = opts.Path + ".rebuild-pending"
+	}
 	replacement := opts
 	replacement.Path = temporary
 	replacement.InMemory = false
@@ -438,25 +480,13 @@ func Rebuild(ctx context.Context, opts OpenOptions, populate func(context.Contex
 		}
 		return fmt.Errorf("projection replacement could not use disk storage: %s", detail)
 	}
-	if populate != nil {
-		if err := populate(ctx, handle.DB); err != nil {
-			_ = handle.DB.Close()
-			cleanupTemporary()
-			return fmt.Errorf("populate projection replacement: %w", err)
-		}
-	}
-	var integrity string
-	if err := handle.DB.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {
-		_ = handle.DB.Close()
-		cleanupTemporary()
+	if opts.ResumeKey != "" {
+		handle, err = resumeRebuildReplacement(ctx, handle, replacement, cleanupTemporary)
 		if err != nil {
-			return fmt.Errorf("validate projection replacement: %w", err)
+			return err
 		}
-		return fmt.Errorf("validate projection replacement: %s", integrity)
 	}
-	_, _ = handle.DB.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
-	if err := handle.DB.Close(); err != nil {
-		cleanupTemporary()
+	if err := populateRebuildReplacement(ctx, opts, handle, populate, cleanupTemporary); err != nil {
 		return err
 	}
 

@@ -154,7 +154,7 @@ description: 使用中文回答
 type: user
 ---
 用户希望默认使用中文。`
-	if err := os.WriteFile(filepath.Join(s.Dir, "cn-pref.md"), fileencoding.Encode(body, fileencoding.GB18030), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(s.Dir, "cn-pref.md"), fileencoding.MustEncode(body, fileencoding.GB18030), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

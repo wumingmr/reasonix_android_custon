@@ -4,6 +4,9 @@ Reasonix 1.0 is a **ground-up rewrite in Go**. It is a new codebase, not an
 incremental upgrade of the `0.x` TypeScript releases. This guide explains what
 changed and how to move over.
 
+For the current file-observation, scheduling, and interruption behavior, see
+[Harness-style execution migration](DSH_EXECUTION_MIGRATION.md).
+
 ## TL;DR
 
 | | Legacy (v1) | Reasonix 1.0+ (v2) |
@@ -16,6 +19,19 @@ changed and how to move over.
 
 "v1" and "v2" are **codebase generations**, not semver: the v1 line never reached
 1.0, so the Go rewrite takes the `1.x` major.
+
+## Windows shell and background jobs
+
+New Windows sessions expose `pwsh` instead of `bash`. Foreground calls are
+one-shot PowerShell processes; servers and watchers use
+`run_in_background=true`, then `job_output` and `job_kill`. The old `bash`,
+`PowerShell`, `bash_output`, `wait`, and `kill_shell` names remain hidden
+compatibility routes for saved sessions, permission rules, and hooks. Existing
+JSONL files do not need migration. PowerShell 7 is preferred, with Windows
+PowerShell 5.1 fallback; portable commands use `;` and `if ($?) {}` rather than
+`&&` or `||`. The first provider request after upgrading has a new tool-schema
+prefix and therefore one expected prompt-cache miss; the schema then remains
+fixed for the rest of the session.
 
 ## Installing 1.0
 
@@ -85,6 +101,18 @@ v0.x sessions are in a custom Windows install/data directory, use
 See
 [Configuration paths](./CONFIG_PATHS.md) for the full path list and limitations.
 
+### Desktop topic metadata
+
+Desktop automatically migrates its four legacy `desktop-topic-*.json` indexes
+to an authoritative per-scope SQLite database under the Reasonix state root.
+Existing scopes keep the JSON files synchronized so a normal downgrade to the
+previous Desktop can still read titles and timestamps. Fresh scopes write only
+SQLite. An older Desktop cannot read that SQLite-only state directly: existing
+session metadata may recover titles, but creation times and automatic-title
+stages are not guaranteed. The migration never deletes the legacy files or
+changes project-owned `.reasonix` assets. Running old and new Desktop versions
+concurrently against the same workspace is not supported.
+
 ## Context Engine v2 upgrade
 
 Instruction and memory upgrades are automatic and do not require a setup mode,
@@ -138,7 +166,8 @@ and DeepSeek prefix-cache–oriented design.
   `grep` / `read_file` / `glob` for local understanding. The legacy v1 semantic
   search + tree-sitter symbol index is not bundled in v2 yet, and CodeGraph is no
   longer shipped as an internal MCP server.
-- **Plan mode** + `complete_step` (evidence-backed step sign-off).
+- **Plan mode** retains its approval boundary. `complete_step` is retired; models
+  update task state directly with `todo_write`.
 - **MCP project identity and schema-cache URLs are credential-aware**: userinfo
   and credential query values (token, api_key, password, ...) do not enter the
   project launch identity digest or schema cache key, so credential rotation
@@ -159,11 +188,10 @@ and DeepSeek prefix-cache–oriented design.
 - **stdio MCP connections are persistent.** This fixes stateful servers that
   lost browser/session state when writer calls received a fresh process.
 - **Plan mode and permission policy are now independent**: Plan directs the
-  model to plan first. Ordinary built-in and Bash calls still use the active
-  Ask/Auto/YOLO rules and Sandbox, while installed MCP and proxy-resolved MCP
+  model to plan first. Ordinary built-in and Bash calls use the active Read
+  only, Workspace access, or Full access preset and its OS sandbox, while installed MCP and proxy-resolved MCP
   writer/destructive targets plus readers from unauthorized servers stay hard-blocked for the
-  whole planning phase. Explicit execution-phase tools such as `complete_step` also
-  remain unavailable until plan approval. `plan_mode_read_only_commands` is
+  whole planning phase. `plan_mode_read_only_commands` is
   still parsed and round-tripped for old configs, but it no longer controls
   main Plan availability. Installed or project-configured servers contribute their
   non-destructive `readOnlyHint` tools to planner/read-only registries
@@ -183,7 +211,7 @@ and DeepSeek prefix-cache–oriented design.
   delegation in Plan uses Permissions/Sandbox.
 - **Web dashboard remains available; desktop is recommended**: run
   `reasonix serve` when a local browser UI is useful. For the primary visual
-  experience, prefer the Wails desktop app; CLI/TUI remains the terminal-native
+  experience, prefer the desktop app; CLI/TUI remains the terminal-native
   path.
 - Some granular v1 tools are intentionally consolidated (e.g. file-management ops
   go through `bash`); a few v1 tools are not yet ported (tracked on Discussions).

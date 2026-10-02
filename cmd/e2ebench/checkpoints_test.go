@@ -20,6 +20,7 @@ func writeTaskVerify(t *testing.T, taskDir, script string) {
 }
 
 func TestGradeCheckpointsFindsEarliestCorrectState(t *testing.T) {
+	requireRealBash(t)
 	taskDir := filepath.Join(t.TempDir(), "task")
 	writeTaskVerify(t, taskDir, "#!/usr/bin/env bash\ngrep -q done answer.txt\n")
 

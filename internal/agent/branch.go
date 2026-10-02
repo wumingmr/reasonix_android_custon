@@ -1,19 +1,19 @@
 package agent
 
 import (
-	"encoding/json"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	fileencoding "reasonix/internal/fileutil/encoding"
+	"reasonix/internal/store"
 	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
-
-	"reasonix/internal/fileutil"
-	fileencoding "reasonix/internal/fileutil/encoding"
-	"reasonix/internal/store"
 )
 
 // ErrSessionTitleChanged reports that a conditional rename observed a newer
@@ -36,7 +36,13 @@ type BranchMeta struct {
 	TopicID          string    `json:"topic_id,omitempty"`
 	TopicTitle       string    `json:"topic_title,omitempty"`
 	CustomTitle      string    `json:"custom_title,omitempty"`
-	Model            string    `json:"model,omitempty"`
+	// TitleRevision is an opaque mutation identity for CustomTitle. It is
+	// independent from the transcript Revision: saving the same title again
+	// still advances this token so a delayed AI completion cannot pass an
+	// A→B→A value comparison.
+	TitleRevision string `json:"title_revision,omitempty"`
+	Model         string `json:"model,omitempty"`
+	ModelIdentity string `json:"model_identity,omitempty"`
 	// TokenMode and AgentPreset are deprecated dual-write fields derived from
 	// QualityFloor; delivery writes "delivery", standard writes "full"/"".
 	TokenMode   string `json:"token_mode,omitempty"`
@@ -48,8 +54,16 @@ type BranchMeta struct {
 	ToolApprovalMode string `json:"tool_approval_mode,omitempty"`
 	Goal             string `json:"goal,omitempty"`
 	Recovered        bool   `json:"recovered,omitempty"`
-	RecoveryReason   string `json:"recovery_reason,omitempty"`
-	RecoveryDigest   string `json:"recovery_digest,omitempty"`
+	// VersionKind separates ordinary transcripts, recovery copies, and
+	// session-backed subagents. Older sidecars infer recovery from Recovered.
+	VersionKind          SessionVersionKind  `json:"version_kind,omitempty"`
+	VersionState         SessionVersionState `json:"version_state,omitempty"`
+	ParentConversationID string              `json:"parent_conversation_id,omitempty"`
+	ParentVersionID      string              `json:"parent_version_id,omitempty"`
+	BaseRevision         int64               `json:"base_revision,omitempty"`
+	DiskRevision         int64               `json:"disk_revision,omitempty"`
+	RecoveryReason       string              `json:"recovery_reason,omitempty"`
+	RecoveryDigest       string              `json:"recovery_digest,omitempty"`
 	// RecoveryDepth is 1 for new stable recovery branches. Older nested
 	// files may still carry a larger historical value.
 	RecoveryDepth int `json:"recovery_depth,omitempty"`
@@ -65,14 +79,57 @@ type BranchMeta struct {
 	// listing fields (Turns/Preview). Only snapshot/Fork/Branch stamp it; readers
 	// use it to distinguish authoritative current counts from legacy zeros.
 	SchemaVersion int `json:"schema_version,omitempty"`
-	// Turns and Preview are listing-only fields for sidebar/CLI pickers. Autosave
-	// keeps them fresh from the in-memory conversation, so ListSessions avoids
-	// decoding the transcript; SchemaVersion marks whether zero counts are authoritative.
-	Turns        int               `json:"turns,omitempty"`
-	Preview      string            `json:"preview,omitempty"`
-	InFlightTurn *InFlightTurnMeta `json:"in_flight_turn,omitempty"`
-	// Closed completed todo shelves; desktop remounts hide the same fingerprint.
-	DismissedTodoBatches []string `json:"dismissed_todo_batches,omitempty"`
+	// Turns/Preview accelerate listings; the listing identity binds them to the
+	// transcript generation they describe, so a failed projection write makes
+	// old counts visibly stale instead of silently reusable.
+	Turns                int               `json:"turns,omitempty"`
+	Preview              string            `json:"preview,omitempty"`
+	ListingRevision      int64             `json:"listing_revision,omitempty"`
+	ListingContentDigest string            `json:"listing_content_digest,omitempty"`
+	InFlightTurn         *InFlightTurnMeta `json:"in_flight_turn,omitempty"`
+	// HeadID and its companions mirror the schema-2 log's selected head for
+	// listings that must not replay the log; they are absent for schema 1.
+	HeadID        string `json:"head_id,omitempty"`
+	HeadCount     int    `json:"head_count,omitempty"`
+	LogSchema     int    `json:"log_schema,omitempty"`
+	LogGeneration int64  `json:"log_generation,omitempty"`
+}
+
+// SessionVersionKind is the durable identity class of a physical transcript.
+// It is intentionally separate from Recovered for compatibility with older
+// sidecars and from subagent metadata, which carries richer child lifecycle.
+type SessionVersionKind string
+
+const (
+	VersionNormal   SessionVersionKind = "normal"
+	VersionRecovery SessionVersionKind = "recovery"
+	VersionSubagent SessionVersionKind = "subagent"
+)
+
+type SessionVersionState string
+
+const (
+	VersionActive   SessionVersionState = "active"
+	VersionPending  SessionVersionState = "pending"
+	VersionResolved SessionVersionState = "resolved"
+	VersionTrashed  SessionVersionState = "trashed"
+)
+
+func (m BranchMeta) EffectiveVersionKind() SessionVersionKind {
+	if m.VersionKind != "" {
+		return m.VersionKind
+	}
+	if m.Recovered {
+		return VersionRecovery
+	}
+	return VersionNormal
+}
+
+func (m BranchMeta) EffectiveVersionState() SessionVersionState {
+	if m.VersionState != "" {
+		return m.VersionState
+	}
+	return VersionActive
 }
 
 const (
@@ -102,6 +159,9 @@ type InFlightTurnMeta struct {
 	// this exact transcript on disk, the snapshot committed and only marker
 	// cleanup was interrupted; no message recovery is necessary.
 	CommitDigest string `json:"commit_digest,omitempty"`
+	// HeadID marks a schema-2 turn whose begin/end markers live in the log
+	// rather than in this sidecar; such markers are never persisted here.
+	HeadID string `json:"head_id,omitempty"`
 }
 
 func (m BranchMeta) DefaultScope() string {
@@ -121,6 +181,10 @@ type BranchInfo struct {
 	ModTime time.Time
 	Preview string
 	Turns   int
+	// HeadID and HeadKind are set for a head inside a schema-2 log; Path is
+	// then the log the head lives in and ID is the head id.
+	HeadID   string
+	HeadKind string
 }
 
 func BranchID(path string) string {
@@ -150,20 +214,7 @@ func LoadBranchMeta(sessionPath string) (BranchMeta, bool, error) {
 		}
 		return BranchMeta{}, false, err
 	}
-	var m BranchMeta
-	if err := json.Unmarshal(b, &m); err != nil {
-		// Treat an all-NUL/JSON-whitespace sidecar as a torn write so callers
-		// rebuild it; retain errors for partial JSON to avoid swallowing corruption.
-		if metaIsUnparseableAsAbsent(b) {
-			return BranchMeta{}, false, nil
-		}
-		return BranchMeta{}, false, fmt.Errorf("decode branch meta %s: %w", metaPath, err)
-	}
-	if m.ID == "" {
-		m.ID = BranchID(sessionPath)
-	}
-	m.sanitizeDisplayFields()
-	return m, true, nil
+	return decodeBranchMeta(sessionPath, b)
 }
 
 // metaIsUnparseableAsAbsent recognizes an empty or all-NUL/JSON-whitespace torn
@@ -227,19 +278,12 @@ func loadBranchMetaRetry(sessionPath string) (BranchMeta, bool, error) {
 
 func SaveBranchMeta(sessionPath string, m BranchMeta) error {
 	return UpdateBranchMeta(sessionPath, true, func(current *BranchMeta) error {
-		preserveBranchMetaPersistence(&m, *current)
-		*current = m
-		return nil
-	})
-}
-
-// saveBranchMetaKeepInFlightTurn keeps any existing in-flight turn on rewrite.
-func saveBranchMetaKeepInFlightTurn(sessionPath string, m BranchMeta) error {
-	return UpdateBranchMeta(sessionPath, true, func(current *BranchMeta) error {
-		if m.InFlightTurn == nil {
-			m.InFlightTurn = current.InFlightTurn
-		}
-		preserveBranchMetaPersistence(&m, *current)
+		// SaveBranchMeta is the compatibility full-record writer. Callers that
+		// intentionally supply CustomTitle must still be able to change it; the
+		// cross-process lock held by UpdateBranchMeta makes that replacement
+		// authoritative. Transcript/listing writers use saveBranchMeta below,
+		// which preserves the title fields from the latest sidecar.
+		preserveBranchMetaPersistence(&m, *current, false)
 		*current = m
 		return nil
 	})
@@ -247,7 +291,7 @@ func saveBranchMetaKeepInFlightTurn(sessionPath string, m BranchMeta) error {
 
 func SaveBranchMetaPreserveUpdated(sessionPath string, m BranchMeta) error {
 	return UpdateBranchMeta(sessionPath, false, func(current *BranchMeta) error {
-		preserveBranchMetaPersistence(&m, *current)
+		preserveBranchMetaPersistence(&m, *current, false)
 		*current = m
 		return nil
 	})
@@ -256,10 +300,22 @@ func SaveBranchMetaPreserveUpdated(sessionPath string, m BranchMeta) error {
 // SaveBranchMetaPreserveUpdatedLocked is for callers that already hold
 // LockSessionMetaPath for a larger read-modify-write transaction.
 func SaveBranchMetaPreserveUpdatedLocked(sessionPath string, m BranchMeta) error {
-	return saveBranchMeta(sessionPath, m, false)
+	return saveBranchMetaContextMode(context.Background(), sessionPath, m, false, false)
 }
 
 func saveBranchMeta(sessionPath string, m BranchMeta, touchUpdated bool) error {
+	return saveBranchMetaContextMode(context.Background(), sessionPath, m, touchUpdated, true)
+}
+
+func saveBranchMetaContext(ctx context.Context, sessionPath string, m BranchMeta, touchUpdated bool) error {
+	return saveBranchMetaContextMode(ctx, sessionPath, m, touchUpdated, true)
+}
+
+func saveBranchMetaTitle(sessionPath string, m BranchMeta) error {
+	return saveBranchMetaContextMode(context.Background(), sessionPath, m, false, false)
+}
+
+func saveBranchMetaContextMode(ctx context.Context, sessionPath string, m BranchMeta, touchUpdated, preserveTitle bool) error {
 	metaPath := BranchMetaPath(sessionPath)
 	if metaPath == "" {
 		return fmt.Errorf("empty session path")
@@ -281,47 +337,35 @@ func saveBranchMeta(sessionPath string, m BranchMeta, touchUpdated bool) error {
 		}
 	}
 	if existing, ok, err := LoadBranchMeta(sessionPath); err == nil && ok {
-		preserveBranchMetaPersistence(&m, existing)
+		preserveBranchMetaPersistence(&m, existing, preserveTitle)
 	}
-	fileutil.Crash("branch-meta", metaPath)
 	if err := os.MkdirAll(filepath.Dir(metaPath), 0o755); err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(m, "", "  ")
+	b, err := marshalJSONIndentContext(ctx, m)
 	if err != nil {
 		return err
 	}
 	b = append(b, '\n')
-	tmp, err := os.CreateTemp(filepath.Dir(metaPath), ".branch.*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := fileutil.ReplaceFile(tmpPath, metaPath); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	return nil
+	return atomicWriteFileContext(ctx, metaPath, ".branch.*.tmp", "branch-meta", b, 0o600, false)
 }
 
-func preserveBranchMetaPersistence(next *BranchMeta, existing BranchMeta) {
+func preserveBranchMetaPersistence(next *BranchMeta, existing BranchMeta, preserveTitle ...bool) {
 	if next == nil {
 		return
 	}
-	next.DismissedTodoBatches = MergeDismissedTodoBatches(existing.DismissedTodoBatches, next.DismissedTodoBatches)
+	// Title metadata is owned by the title mutation path, not by transcript
+	// snapshots or listing projection refreshes. A stale in-memory BranchMeta
+	// must never roll it back while preserving newer transcript fields.
+	if len(preserveTitle) == 0 || preserveTitle[0] {
+		next.CustomTitle = existing.CustomTitle
+		next.TitleRevision = existing.TitleRevision
+	}
 	if existing.Revision > next.Revision {
 		next.Revision = existing.Revision
 		next.ContentDigest = existing.ContentDigest
 		next.WriterID = existing.WriterID
+		preserveBranchMetaListingProjection(next, existing)
 		return
 	}
 	if existing.Revision == next.Revision {
@@ -331,7 +375,19 @@ func preserveBranchMetaPersistence(next *BranchMeta, existing BranchMeta) {
 		if strings.TrimSpace(next.WriterID) == "" {
 			next.WriterID = existing.WriterID
 		}
+		if next.ListingRevision == 0 && existing.ListingRevision != 0 ||
+			strings.TrimSpace(next.ListingContentDigest) == "" && strings.TrimSpace(existing.ListingContentDigest) != "" {
+			preserveBranchMetaListingProjection(next, existing)
+		}
 	}
+}
+
+func preserveBranchMetaListingProjection(next *BranchMeta, existing BranchMeta) {
+	next.SchemaVersion = existing.SchemaVersion
+	next.Turns = existing.Turns
+	next.Preview = existing.Preview
+	next.ListingRevision = existing.ListingRevision
+	next.ListingContentDigest = existing.ListingContentDigest
 }
 
 func EnsureBranchMeta(sessionPath string) (BranchMeta, error) {
@@ -577,57 +633,118 @@ func ListBranches(dir string) ([]BranchInfo, error) {
 // topic title remains a separate grouping label, so explicit session names do
 // not fight topic auto-titling.
 func RenameSession(sessionPath string, title string) error {
-	return renameSession(sessionPath, nil, title)
+	_, err := renameSession(sessionPath, "", false, title)
+	return err
 }
 
-// RenameSessionIfTitleUnchanged atomically updates a session title only when
-// no newer title writer has changed it since expectedTitle was observed. The
-// comparison and write share the BranchMeta path lock, so a delayed AI result
-// cannot overwrite a newer manual or AI rename.
-func RenameSessionIfTitleUnchanged(sessionPath, expectedTitle, title string) error {
-	return renameSession(sessionPath, &expectedTitle, title)
-}
-
-func renameSession(sessionPath string, expectedTitle *string, title string) error {
+// SessionTitleSnapshot returns the title and an opaque mutation revision from
+// one locked BranchMeta generation. Missing revisions are initialized before
+// returning, upgrading old sidecars without changing their title.
+func SessionTitleSnapshot(sessionPath string) (title, revision string, err error) {
 	if sessionPath == "" {
-		return fmt.Errorf("empty session path")
+		return "", "", fmt.Errorf("empty session path")
+	}
+	unlock, err := LockSessionMetaPath(sessionPath)
+	if err != nil {
+		return "", "", err
+	}
+	defer unlock()
+	m, err := ensureBranchMetaUnlocked(sessionPath)
+	if err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(m.TitleRevision) == "" {
+		m.TitleRevision, err = newTitleRevision()
+		if err != nil {
+			return "", "", err
+		}
+		if err = saveBranchMetaTitle(sessionPath, m); err != nil {
+			return "", "", err
+		}
+	}
+	return m.CustomTitle, m.TitleRevision, nil
+}
+
+// RenameSessionIfTitleRevision atomically updates a title only when the opaque
+// title mutation identity still matches. This detects A→B→A and same-value
+// manual saves, unlike a text-only comparison.
+func RenameSessionIfTitleRevision(sessionPath, expectedRevision, title string) error {
+	_, err := renameSession(sessionPath, expectedRevision, true, title)
+	return err
+}
+
+func renameSession(sessionPath, expectedRevision string, conditional bool, title string) (string, error) {
+	if sessionPath == "" {
+		return "", fmt.Errorf("empty session path")
 	}
 	// Read-modify-write on the sidecar: hold the per-path meta lock so a
 	// concurrent save (recordSessionContentRevision) can't have its Revision
 	// bump clobbered by a stale read-back here.
 	unlock, err := LockSessionMetaPath(sessionPath)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer unlock()
 	m, err := ensureBranchMetaUnlocked(sessionPath)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if expectedTitle != nil && m.CustomTitle != *expectedTitle {
-		return fmt.Errorf("%w: expected %q, found %q", ErrSessionTitleChanged, *expectedTitle, m.CustomTitle)
+	if conditional && m.TitleRevision != expectedRevision {
+		return "", fmt.Errorf("%w: title revision changed", ErrSessionTitleChanged)
 	}
 	m.CustomTitle = strings.TrimSpace(title)
-	return saveBranchMeta(sessionPath, m, false)
+	m.TitleRevision, err = newTitleRevision()
+	if err != nil {
+		return "", err
+	}
+	if err := saveBranchMetaTitle(sessionPath, m); err != nil {
+		return "", err
+	}
+	return m.TitleRevision, nil
+}
+
+func newTitleRevision() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("generate title revision: %w", err)
+	}
+	return hex.EncodeToString(value[:]), nil
 }
 
 // LoadSessionModel reads the canonical provider/model ref saved beside a
 // session transcript.
 func LoadSessionModel(sessionPath string) (string, bool) {
+	model, _, ok := LoadSessionModelSelection(sessionPath)
+	return model, ok
+}
+
+// LoadSessionModelSelection reads model and identity from the same sidecar
+// generation. Missing identity denotes a legacy, unacknowledged selection.
+func LoadSessionModelSelection(sessionPath string) (string, string, bool) {
 	meta, ok, err := LoadBranchMeta(sessionPath)
 	if err != nil || !ok {
-		return "", false
+		return "", "", false
 	}
 	model := strings.TrimSpace(meta.Model)
 	if model == "" {
-		return "", false
+		return "", "", false
 	}
-	return model, true
+	return model, meta.ModelIdentity, true
 }
 
 // SetBranchModelPreserveUpdated stores the canonical provider/model ref without
 // changing the session activity timestamp.
 func SetBranchModelPreserveUpdated(sessionPath, model string) error {
+	return setBranchModelSelection(sessionPath, model, nil)
+}
+
+// SetBranchModelSelectionPreserveUpdated atomically acknowledges the selected
+// connection without changing the session's activity timestamp.
+func SetBranchModelSelectionPreserveUpdated(sessionPath, model, identity string) error {
+	return setBranchModelSelection(sessionPath, model, &identity)
+}
+
+func setBranchModelSelection(sessionPath, model string, identity *string) error {
 	if sessionPath == "" {
 		return fmt.Errorf("empty session path")
 	}
@@ -640,8 +757,19 @@ func SetBranchModelPreserveUpdated(sessionPath, model string) error {
 	if err != nil {
 		return err
 	}
-	meta.Model = strings.TrimSpace(model)
+	setMetaModelSelection(&meta, model, identity)
 	return saveBranchMeta(sessionPath, meta, false)
+}
+
+func setMetaModelSelection(meta *BranchMeta, model string, identity *string) {
+	model = strings.TrimSpace(model)
+	if meta.Model != model {
+		meta.ModelIdentity = ""
+	}
+	meta.Model = model
+	if identity != nil {
+		meta.ModelIdentity = *identity
+	}
 }
 
 // UpdateSessionMeta refreshes the listing-only sidecar fields (model, preview,
@@ -663,12 +791,13 @@ func UpdateSessionMeta(sessionPath, model, preview string, turns int, markActivi
 		return err
 	}
 	if strings.TrimSpace(model) != "" {
-		m.Model = strings.TrimSpace(model)
+		setMetaModelSelection(&m, model, nil)
 	}
 	m.Preview = preview
 	m.Turns = turns
 	// These counts were derived from the current content, so mark them
 	// authoritative — listing can then trust Turns (even 0) without re-decoding.
 	m.SchemaVersion = BranchMetaCountsVersion
+	stampSessionListingProjection(&m)
 	return saveBranchMeta(sessionPath, m, markActivity)
 }

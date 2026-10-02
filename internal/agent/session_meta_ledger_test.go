@@ -391,22 +391,29 @@ func TestSessionMetaConcurrentWritersKeepRevisionMonotonic(t *testing.T) {
 	assertNoRecoveryBranches(t, path)
 }
 
-func TestRenameSessionIfTitleUnchangedPreservesNewerTitle(t *testing.T) {
+func TestRenameSessionIfTitleRevisionPreservesNewerTitleAndRejectsABA(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	if err := RenameSession(path, "original"); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenameSessionIfTitleUnchanged(path, "original", "first AI title"); err != nil {
+	_, originalRevision, err := SessionTitleSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RenameSessionIfTitleRevision(path, originalRevision, "first AI title"); err != nil {
 		t.Fatalf("compare-and-rename: %v", err)
 	}
 	if err := RenameSession(path, "newer manual title"); err != nil {
 		t.Fatal(err)
 	}
-	if err := RenameSessionIfTitleUnchanged(path, "first AI title", "stale AI title"); !errors.Is(err, ErrSessionTitleChanged) {
+	if err := RenameSession(path, "original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenameSessionIfTitleRevision(path, originalRevision, "stale AI title"); !errors.Is(err, ErrSessionTitleChanged) {
 		t.Fatalf("stale compare-and-rename error = %v", err)
 	}
 	meta, ok, err := LoadBranchMeta(path)
-	if err != nil || !ok || meta.CustomTitle != "newer manual title" {
+	if err != nil || !ok || meta.CustomTitle != "original" || meta.TitleRevision == originalRevision {
 		t.Fatalf("meta = %+v, ok=%v, err=%v", meta, ok, err)
 	}
 }
@@ -511,7 +518,7 @@ func TestConcurrentSnapshotSaversNeverConflict(t *testing.T) {
 // the up-to-date path and must heal the ledger — record the revision and
 // digest the interrupted save deferred — instead of skipping it forever.
 func TestSameContentSaveHealsStaleLedgerDigest(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	metaPath := BranchMetaPath(path)
 	s := NewSession("sys")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
@@ -577,7 +584,7 @@ func TestSameContentSaveHealsStaleLedgerDigest(t *testing.T) {
 // failed save returned before markPersisted — heals through the same
 // up-to-date path on its autosave retry of the identical snapshot.
 func TestSameContentRetryHealsLedgerForSurvivingSaver(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	metaPath := BranchMetaPath(path)
 	s := NewSession("sys")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "first"})

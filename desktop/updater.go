@@ -33,8 +33,8 @@ import (
 
 // updater.go is the transport-free core of the desktop auto-updater: manifest
 // fetch, version comparison, signed download, and per-platform apply/relaunch. It
-// has no Wails dependency so the logic is unit-tested directly; updater_app.go is
-// the thin Wails binding that wires these into App methods and progress events.
+// has no shell dependency so the logic is unit-tested directly; updater_app.go is
+// the thin bridge binding that wires these into App methods and progress events.
 
 // Manifest endpoints — R2 CDN first (fast, especially in CN), then the crash
 // worker release gateway, then GitHub as the stable channel's last resort. The
@@ -59,27 +59,6 @@ var fetchAttemptTimeout = 5 * time.Second
 var (
 	stableDesktopVersionRE = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 	sha256RE               = regexp.MustCompile(`^[0-9a-f]{64}$`)
-)
-
-type requiredDesktopAsset struct {
-	group    string
-	key      string
-	filename string
-}
-
-var (
-	requiredDesktopUpdaterAssets = []requiredDesktopAsset{
-		{group: "platforms", key: "darwin-arm64", filename: "Reasonix-darwin-arm64.zip"},
-		{group: "platforms", key: "darwin-amd64", filename: "Reasonix-darwin-amd64.zip"},
-		{group: "platforms", key: "windows-amd64", filename: "Reasonix-windows-amd64-installer.exe"},
-		{group: "platforms", key: "windows-arm64", filename: "Reasonix-windows-arm64-installer.exe"},
-		{group: "platforms", key: "linux-amd64", filename: "Reasonix-linux-amd64.tar.gz"},
-		{group: "native_packages", key: "linux-amd64", filename: "Reasonix-linux-amd64.deb"},
-	}
-	requiredDesktopDownloadAssets = []requiredDesktopAsset{
-		{group: "downloads", key: "Reasonix-darwin-universal.dmg", filename: "Reasonix-darwin-universal.dmg"},
-		{group: "downloads", key: "Reasonix-windows-amd64.zip", filename: "Reasonix-windows-amd64.zip"},
-	}
 )
 
 // githubManifestFallback is the stable channel's last-resort manifest source.
@@ -196,7 +175,7 @@ type UpdateDownloadResult struct {
 	SHA256    string `json:"sha256"`
 }
 
-// updateProgress is the payload of the "updater:progress" Wails event emitted
+// updateProgress is the payload of the "updater:progress" bridge event emitted
 // throughout DownloadUpdate / InstallUpdate.
 type updateProgress struct {
 	RequestID string `json:"requestId"`
@@ -344,7 +323,7 @@ func validateManifestAsset(selected, version, filename string, asset update.Asse
 // client never partially installs an unrecognized package shape.
 func validateAssetInstallLayout(layout string) error {
 	switch strings.TrimSpace(layout) {
-	case "", installlayout.InstallLayoutVersionedV1:
+	case "", installlayout.InstallLayoutVersionedV1, update.ElectronInstallLayout:
 		return nil
 	default:
 		return fmt.Errorf("unsupported install_layout %q (keeping current version)", layout)
@@ -359,14 +338,20 @@ func validateDesktopManifest(selected string, m *update.Manifest) error {
 	if m.DownloadPage != manifestDownloadPageURL {
 		return fmt.Errorf("%s manifest has invalid download page %q", selected, m.DownloadPage)
 	}
-	// Older public manifests predate the two website-only download assets. Keep
-	// accepting their six signed updater artifacts so an upgrade to the first
-	// single-channel release does not strand existing users. Once downloads is
-	// present it is a new-format manifest and all eight assets are mandatory.
+	// Historical manifests either omitted website downloads or carried only the
+	// Universal DMG and Windows portable ZIP. New manifests add both native-arch
+	// DMGs. Seeing either new key switches validation to the complete new set so a
+	// partially published architecture matrix cannot reach the website.
 	legacyManifest := m.Downloads == nil
 	requiredAssets := append([]requiredDesktopAsset(nil), requiredDesktopUpdaterAssets...)
 	if !legacyManifest {
-		requiredAssets = append(requiredAssets, requiredDesktopDownloadAssets...)
+		downloadAssets := legacyDesktopDownloadAssets
+		if _, arm := m.Downloads["Reasonix-darwin-arm64.dmg"]; arm {
+			downloadAssets = requiredDesktopDownloadAssets
+		} else if _, intel := m.Downloads["Reasonix-darwin-amd64.dmg"]; intel {
+			downloadAssets = requiredDesktopDownloadAssets
+		}
+		requiredAssets = append(requiredAssets, downloadAssets...)
 	}
 	base := ""
 	for _, required := range requiredAssets {
@@ -1130,48 +1115,7 @@ func applyLinux(targz []byte, prepared *repair.UpdateTransaction) error {
 // one-shot reasonix-guard member for v1.18-v1.19 updaters, but v1.20+ ignores
 // that member and never persists it again.
 func applyLinuxVersioned(targz []byte, targetVersion string) error {
-	release, err := extractLinuxReleaseUnit(targz)
-	if err != nil {
-		return err
-	}
-	root := currentInstallDirForLinuxUpdate()
-	if _, err := installlayout.ReadCurrent(root); err != nil {
-		return fmt.Errorf("update: resolve active Linux layout: %w", err)
-	}
-	targetVersion = strings.TrimSpace(targetVersion)
-	if !strings.HasPrefix(targetVersion, "v") {
-		targetVersion = "v" + targetVersion
-	}
-	if err := installlayout.ValidateVersionName(targetVersion); err != nil {
-		return err
-	}
-	staging, err := os.MkdirTemp(root, ".reasonix-linux-update-*")
-	if err != nil {
-		return fmt.Errorf("update: create Linux version staging: %w", err)
-	}
-	defer os.RemoveAll(staging)
-	desktopPath := filepath.Join(staging, installlayout.DesktopBinaryName())
-	cliPath := filepath.Join(staging, installlayout.CLIBinaryName())
-	if err := os.WriteFile(desktopPath, release["reasonix-desktop"], 0o700); err != nil {
-		return fmt.Errorf("update: stage Linux desktop: %w", err)
-	}
-	if err := os.WriteFile(cliPath, release["reasonix"], 0o700); err != nil {
-		return fmt.Errorf("update: stage Linux CLI: %w", err)
-	}
-	if err := installlayout.ActivateVersion(installlayout.ActivationRequest{
-		InstallRoot: root,
-		Version:     targetVersion,
-		RequestID:   "linux-" + targetVersion,
-		Members: []installlayout.Member{
-			{Name: installlayout.DesktopBinaryName(), Path: desktopPath, Mode: 0o700},
-			{Name: installlayout.CLIBinaryName(), Path: cliPath, Mode: 0o700},
-		},
-		RequiredNames: []string{installlayout.DesktopBinaryName(), installlayout.CLIBinaryName()},
-	}); err != nil {
-		return fmt.Errorf("update: activate Linux version: %w", err)
-	}
-	_ = installlayout.RetainPreviousVersions(root, 0)
-	return nil
+	return activateLinuxShellRelease(targz, targetVersion, currentInstallDirForLinuxUpdate())
 }
 
 var currentExecutablePathForLinux = currentExecutablePath
@@ -1376,7 +1320,10 @@ func updateSiblingNames(goos string) []string {
 }
 
 func currentLauncherPath() string {
-	exe := currentExecutablePath()
+	return launcherPathForExecutable(currentExecutablePath())
+}
+
+func launcherPathForExecutable(exe string) string {
 	if exe == "" {
 		return ""
 	}
@@ -1384,27 +1331,11 @@ func currentLauncherPath() string {
 	if resolved, err := installlayout.ResolveInstallRoot(exe); err == nil && resolved != "" {
 		root = resolved
 	}
-	for _, name := range []string{"reasonix-launcher.exe", "Reasonix.exe", "reasonix-launcher", "reasonix-guard.exe", "reasonix-guard"} {
-		if runtime.GOOS != "windows" && strings.HasSuffix(name, ".exe") {
-			continue
-		}
-		if runtime.GOOS == "windows" && !strings.HasSuffix(name, ".exe") && name != "Reasonix.exe" {
-			// Unix names on Windows are unused.
-			if !strings.HasSuffix(name, ".exe") {
-				continue
-			}
-		}
-		path := filepath.Join(root, name)
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
+	if path, err := installlayout.StableRelaunchPath(root); err == nil {
+		return path
 	}
-	// Fall through to previous flat-dir behavior for incomplete installs.
-	if runtime.GOOS == "windows" {
-		guard := filepath.Join(filepath.Dir(exe), "reasonix-guard.exe")
-		if _, err := os.Stat(guard); err == nil {
-			return guard
-		}
+	if installlayout.IsSupersededVersionedDesktop(root, exe) {
+		return filepath.Join(root, installlayout.LauncherBinaryName())
 	}
 	return exe
 }

@@ -25,22 +25,35 @@ func (c *Controller) prepareOrchestratedTurnImages(turn orchestratedTurn) orches
 }
 
 func (c *Controller) imagesForOrchestratedTurn(ctx context.Context, turn orchestratedTurn) (userImages, imageCandidates []string) {
+	if prepared, ok := ctx.Value(preparedImageReferencesContextKey{}).(preparedImageReferences); ok && len(prepared.inputs) > 0 {
+		return nil, nil
+	}
 	if turn.imagesResolved {
 		return turn.userImages, turn.imageCandidates
-	}
-	if turn.goalContinuation != nil {
-		// A Goal continuation belongs to the same visible user turn, so keep its
-		// child-only image candidates. Do not add them to the synthetic parent
-		// message: a vision parent already has the image in its earlier history.
-		return nil, agent.SubagentImageCandidates(ctx)
 	}
 	return c.resolveTurnImages(turn.imageReferenceInput())
 }
 
 func (c *Controller) withTurnImages(ctx context.Context, line string) context.Context {
+	prepared, _ := ctx.Value(preparedImageReferencesContextKey{}).(preparedImageReferences)
+	if inputs := prepared.inputs; len(inputs) > 0 {
+		ctx = agent.WithUserImageInputs(ctx, inputs)
+		ctx = agent.WithSubagentImageInputs(ctx, inputs)
+		return ctx
+	}
 	userImages, imageCandidates := c.resolveTurnImages(line)
 	ctx = agent.WithUserImages(ctx, userImages)
 	return agent.WithSubagentImageCandidates(ctx, imageCandidates)
+}
+
+func (c *Controller) withPreparedTurnImages(ctx context.Context) context.Context {
+	prepared, _ := ctx.Value(preparedImageReferencesContextKey{}).(preparedImageReferences)
+	if len(prepared.inputs) == 0 {
+		return ctx
+	}
+	ctx = agent.WithUserImages(ctx, nil)
+	ctx = agent.WithUserImageInputs(ctx, prepared.inputs)
+	return agent.WithSubagentImageInputs(ctx, prepared.inputs)
 }
 
 func (turn orchestratedTurn) imageReferenceInput() string {
@@ -50,14 +63,10 @@ func (turn orchestratedTurn) imageReferenceInput() string {
 	return turn.raw
 }
 
-func (c *Controller) runGoalLoopWithImageRefsRawDisplay(ctx context.Context, input, raw, imageRefs, display string) error {
-	return newTurnOrchestrator(c).runGoalLoopWithImageRefsRawDisplay(ctx, input, raw, imageRefs, display)
-}
-
 func (c *Controller) runGoalLoopWithFrozenImagesRawDisplay(ctx context.Context, input, raw, display string, images []string) error {
 	return newTurnOrchestrator(c).runGoalLoopWithFrozenImagesRawDisplay(ctx, input, raw, display, images)
 }
 
-func (c *Controller) runEditedGoalLoopWithImageRefsRawDisplay(ctx context.Context, input, raw, imageRefs, display, original string) error {
-	return newTurnOrchestrator(c).runEditedGoalLoopWithImageRefsRawDisplay(ctx, input, raw, imageRefs, display, original)
+func (c *Controller) runEditedGoalLoopWithFrozenImagesRawDisplay(ctx context.Context, input, raw, display, original string, images []string) error {
+	return newTurnOrchestrator(c).runEditedGoalLoopWithFrozenImagesRawDisplay(ctx, input, raw, display, original, images)
 }

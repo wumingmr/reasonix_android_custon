@@ -15,10 +15,8 @@ import { classifyInlineMath, isLikelyInlineMath } from "../components/mathClassi
 import { reasonixRehypePlugins, reasonixRemarkPlugins } from "../components/markdownRemarkPlugins";
 import {
   normalizeMath,
-  resolveProtectedInlineMathSource,
   restoreProtectedInlineMathSource,
 } from "../components/mathNormalize";
-import { expandYoungDiagrams } from "../components/youngDiagrams";
 
 let passed = 0;
 let failed = 0;
@@ -146,27 +144,15 @@ check("$p = +\\alpha$", () => isLikelyInlineMath("p = +\\alpha") === true);
 check("$+$", () => isLikelyInlineMath("+") === true);
 check("$=$", () => isLikelyInlineMath("=") === true);
 
-console.log("\nisLikelyInlineMath — numeric syntax and contextual currency");
-check("$5 defaults to literal without math context", () => isLikelyInlineMath("5") === false);
-check("$10 defaults to literal without math context", () => isLikelyInlineMath("10") === false);
-check("$10.50 defaults to literal without math context", () => isLikelyInlineMath("10.50") === false);
+console.log("\nisLikelyInlineMath — numeric syntax");
+check("$5 is math by default (glued $ delimiters)", () => isLikelyInlineMath("5") === true);
+check("$10 is math by default", () => isLikelyInlineMath("10") === true);
+check("$10.50 is math by default", () => isLikelyInlineMath("10.50") === true);
 check("$100% defaults to math", () => isLikelyInlineMath("100%") === true);
-check("costs $5$ is contextual currency", () =>
-  classifyInlineMath("5", { before: "it costs ", after: " today" }) === "currency");
-check("price is $10.50$ each is contextual currency", () =>
-  classifyInlineMath("10.50", { before: "price is ", after: " each" }) === "currency");
-check("10–$20$ MeV remains math", () =>
-  classifyInlineMath("20", { before: "10–", after: " MeV" }) === "math");
-check("$20$ MeV uses a scientific unit as positive math context", () =>
-  classifyInlineMath("20", { after: " MeV" }) === "math");
-check("$5$ cm uses an SI-prefixed unit as positive math context", () =>
-  classifyInlineMath("5", { after: " cm" }) === "math");
-check("$2$ L uses a scientific unit symbol as positive math context", () =>
-  classifyInlineMath("2", { after: " L" }) === "math");
-check("$3$ dB uses a common scientific unit as positive math context", () =>
-  classifyInlineMath("3", { after: " dB" }) === "math");
-check("x = $2$ uses an operator as positive math context", () =>
-  classifyInlineMath("2", { before: "x = " }) === "math");
+check("assistant-ui parity: price-word context no longer demotes pure numbers", () =>
+  classifyInlineMath("5") === "math" && classifyInlineMath("10.50") === "math");
+check("range/unit/operator context is irrelevant now: pure numbers are always math", () =>
+  classifyInlineMath("20") === "math" && classifyInlineMath("1") === "math");
 check("URL", () => isLikelyInlineMath("https://example.com") === false);
 check("prose text", () => isLikelyInlineMath("hello world today") === false);
 check("prose $x y z$ (spaces)", () => isLikelyInlineMath("x y z") === false);
@@ -193,11 +179,11 @@ check("$[\\mathbf{56}]$ → math", () => isLikelyInlineMath("[\\mathbf{56}]") ==
 
 console.log("\nisLikelyInlineMath — minimal LaTeX patterns (regression)");
 // LLMs frequently emit minimal LaTeX in math contexts that the older
-// classifier rejected as currency / word tokens. These tests pin down the
-// deliberately-permissive rules for common math patterns while keeping
-// context-free pure numbers literal until the AST policy sees a math signal.
-check("single-digit $1$, $2$, $5$ → literal without context", () => isLikelyInlineMath("1") === false);
-check("multi-digit $42$ → literal without context", () => isLikelyInlineMath("42") === false);
+// classifier rejected as word tokens. These tests pin down the
+// deliberately-permissive rules for common math patterns; pure numbers are
+// math by default (assistant-ui parity).
+check("single-digit $1$, $2$, $5$ → math by default", () => isLikelyInlineMath("1") === true);
+check("multi-digit $42$ → math by default", () => isLikelyInlineMath("42") === true);
 check("$2.5x$ is math (number with variable)", () => isLikelyInlineMath("2.5x") === true);
 check("$10\%$ is math (percentage with LaTeX)", () => isLikelyInlineMath("10\\%") === true);
 check("$2.5x dollars$ → NOT math (prefix-only numeric variable)", () => isLikelyInlineMath("2.5x dollars") === false);
@@ -340,7 +326,7 @@ eq(normalizeMath("solve $x^2 + y^2 = z^2$ please"), "solve $x^2 + y^2 = z^2$ ple
 eq(normalizeMath("$\\alpha + \\beta$"), "$\\alpha + \\beta$", "$\\alpha+\\beta$ is math");
 eq(normalizeMath("price is $10.50$ each"), "price is $10.50$ each", "$10.50$ preserved for contextual classification");
 eq(normalizeMath("$I$ think"), "$I$ think", "$I$ is math (uppercase single letter)");
-eq(normalizeMath("it costs $5 and $10 total"), "it costs $5 and $10 total", "multiple prose dollars preserved for parser-aware policy");
+eq(normalizeMath("it costs $5 and $10 total"), "it costs \\$5 and \\$10 total", "cross-amount prose dollars escaped by the currency pre-pass");
 
 console.log("\nnormalizeMath — Markdown code regions stay literal");
 eq(normalizeMath("`$PATH$`"), "`$PATH$`", "inline code with env token");
@@ -480,7 +466,7 @@ for (const [src, label] of e2e) {
 console.log("\nnormalizeMath — non-math inputs pass through");
 type Passthrough = { src: string; expected: string; label: string };
 const passthrough: Passthrough[] = [
-  { src: "costs $100$ today", expected: "costs $100$ today", label: "multi-digit currency preserved for AST policy" },
+  { src: "costs $100$ today", expected: "costs $100$ today", label: "multi-digit pair passes through the pre-pass untouched" },
   { src: "line break \\\\[4pt] here", expected: "line break \\\\[4pt] here", label: "LaTeX line-break spacing" },
   { src: "hello world", expected: "hello world", label: "plain text" },
 ];
@@ -505,65 +491,67 @@ function renderHtml(src: string): string {
   );
 }
 
-check("currency '$5 and $6' renders as literal dollars, not math", () => {
+check("cross-amount pairing '$5 and $6' renders as literal dollars, not math", () => {
   const html = renderHtml("These two apples cost $5 and $6");
   return !html.includes("katex") && html.includes("$5") && html.includes("$6");
 });
-check("paired currency 'costs $1$ today' drops the spurious closing delimiter", () => {
-  const html = renderHtml("costs $1$ today");
-  return !html.includes("katex") && html.includes("$1 today") && !html.includes("$1$");
+// Assistant-ui `escapeCurrencyDollars` parity: a glued $N$ pair is math even
+// when price words or currency units sit next to it. Humans and models that
+// want literal dollars write `\$5` (escaped) or a single `$5`; the cross-
+// amount prose pair above is the real-world currency artifact, and it stays
+// literal via the classifier catch-all rather than this demotion.
+const PARITY_MATH_CASES: ReadonlyArray<readonly [string, string]> = [
+  ["costs $1$ today", "1"],
+  ["price is $10.50$ each", "10.50"],
+  ["价格是$5$", "5"],
+  ["价格：$5$", "5"],
+  ["The price ($5$) includes tax.", "5"],
+  ["The price {$5$} includes tax.", "5"],
+  ["The price ‘$5$’ includes tax.", "5"],
+  ["价格（$5$）含税。", "5"],
+  ["It is $5$ (USD).", "5"],
+  ["It is $5$—cash.", "5"],
+  ["I have $5$ in cash", "5"],
+  ["costs **$5$** today", "5"],
+  ["price is *$10.50$* each", "10.50"],
+];
+for (const [src, num] of PARITY_MATH_CASES) {
+  check(`assistant-ui parity: "${src}" renders as math`, () => {
+    const html = renderHtml(src);
+    return html.includes("katex") && html.includes(`<mn>${num}</mn>`);
+  });
+}
+check("escaped \\$ dollars stay literal and never pair", () => {
+  const html = renderHtml("It costs \\$5 today, not \\$6");
+  return !html.includes("katex") && html.includes("$5") && html.includes("$6");
 });
-check("paired decimal currency uses surrounding price context", () => {
-  const html = renderHtml("price is $10.50$ each");
-  return !html.includes("katex") && html.includes("$10.50 each") && !html.includes("$10.50$");
+// Currency pre-pass (assistant-ui escapeCurrencyDollars parity): a `$`
+// followed by a digit is escaped unless its span to the next `$` reads as a
+// math body, so a stray amount can no longer swallow a later formula.
+check("lone unpaired $5 stays literal", () => {
+  const html = renderHtml("It costs $5 today.");
+  return !html.includes("katex") && html.includes("$5 today.");
 });
-check("Chinese paired currency uses localized price context", () => {
-  const html = renderHtml("价格是$5$");
-  return !html.includes("katex") && html.includes("价格是$5") && !html.includes("$5$");
+check("currency $ escapes so a later math span renders: 'budget is $100 … $42$'", () => {
+  const html = renderHtml("The budget is $100 and the answer is $42$.");
+  return html.includes("katex") && html.includes("<mn>42</mn>")
+    && html.includes("$100") && !html.includes("$42$");
 });
-check("full-width punctuation keeps paired currency literal", () => {
-  const html = renderHtml("价格：$5$");
-  return !html.includes("katex") && html.includes("价格：$5") && !html.includes("$5$");
+check("currency $ escapes so a later symbol formula renders", () => {
+  const html = renderHtml("It costs $5, and $x+y$ is the formula.");
+  return html.includes("katex") && !html.includes("$x+y$");
 });
-check("parentheses do not hide preceding currency context", () => {
-  const html = renderHtml("The price ($5$) includes tax.");
-  return !html.includes("katex") && html.includes("The price ($5) includes tax.");
+check("digit-led math bodies survive currency escaping", () => {
+  const html = renderHtml("digit-led $2x$ and $5x = 10$ both render");
+  return html.includes("katex") && !html.includes("$2x$") && !html.includes("$5x = 10$");
 });
-check("braces do not hide preceding currency context", () => {
-  const html = renderHtml("The price {$5$} includes tax.");
-  return !html.includes("katex") && html.includes("The price {$5} includes tax.");
-});
-check("curly quotes do not hide preceding currency context", () => {
-  const html = renderHtml("The price ‘$5$’ includes tax.");
-  return !html.includes("katex") && html.includes("The price ‘$5’ includes tax.");
-});
-check("full-width parentheses do not hide Chinese currency context", () => {
-  const html = renderHtml("价格（$5$）含税。");
-  return !html.includes("katex") && html.includes("价格（$5）含税。");
-});
-check("parenthesized suffix currency unit repairs paired dollars", () => {
-  const html = renderHtml("It is $5$ (USD).");
-  return !html.includes("katex") && html.includes("It is $5 (USD).");
-});
-check("dash-separated cash suffix repairs paired dollars", () => {
-  const html = renderHtml("It is $5$—cash.");
-  return !html.includes("katex") && html.includes("It is $5—cash.");
-});
-check("cash context keeps paired currency literal", () => {
-  const html = renderHtml("I have $5$ in cash");
-  return !html.includes("katex") && html.includes("$5 in cash") && !html.includes("$5$");
-});
-check("bold markup does not hide preceding currency context", () => {
-  const html = renderHtml("costs **$5$** today");
-  return !html.includes("katex") && html.includes("<strong>$5</strong>");
-});
-check("emphasis does not hide surrounding currency context", () => {
-  const html = renderHtml("price is *$10.50$* each");
-  return !html.includes("katex") && html.includes("<em>$10.50</em>");
-});
-check("ambiguous paired numbers remain literal without positive math context", () => {
+eq(normalizeMath("The budget is $100 and the answer is $42$."),
+  "The budget is \\$100 and the answer is $42$.",
+  "currency pre-pass escapes only the amount dollar");
+check("paired numbers 'from $5$ to $10$' render as math (global default)", () => {
   const html = renderHtml("from $5$ to $10$");
-  return !html.includes("katex") && html.includes("$5$") && html.includes("$10$");
+  return html.includes("katex") && html.includes("<mn>5</mn>") && html.includes("<mn>10</mn>")
+    && !html.includes("$5$") && !html.includes("$10$");
 });
 check("env var $PATH$ renders as literal, not math", () => {
   const html = renderHtml("env $PATH$ here");
@@ -573,9 +561,49 @@ check("range endpoint 10–$20$ MeV renders numeric math", () => {
   const html = renderHtml("10–$20$ MeV");
   return html.includes("katex") && html.includes("<mn>20</mn>");
 });
-check("standalone $42$ remains literal without positive math context", () => {
+check("standalone $42$ renders as math without other context", () => {
   const html = renderHtml("$42$ elements");
-  return !html.includes("katex") && html.includes("$42$ elements");
+  return html.includes("katex") && html.includes("<mn>42</mn>") && !html.includes("$42$");
+});
+// GFM table cells: pure numbers render as math by default (GitHub and
+// assistant-ui parity), in cells and prose alike.
+check("pure number $1$ in a GFM table cell renders as math", () => {
+  const html = renderHtml([
+    "| Quantity | SU(6) prediction | Experiment |",
+    "|---|---|---|",
+    "| $\\Delta\\Sigma$ | $1$ | $1.2754$ |",
+  ].join("\n"));
+  return html.includes("katex") && html.includes("<mn>1</mn>") && html.includes("<mn>1.2754</mn>")
+    && !html.includes("$1$") && !html.includes("$1.2754$");
+});
+check("bold pure number in a GFM table cell still renders as math", () => {
+  const html = renderHtml(["| a | b |", "|---|---|", "| **$5$** | $3$ |"].join("\n"));
+  return html.includes("katex") && html.includes("<mn>5</mn>") && html.includes("<mn>3</mn>")
+    && !html.includes("$5$") && !html.includes("$3$");
+});
+check("currency prose inside a GFM table cell renders as math (parity)", () => {
+  const html = renderHtml(["| note |", "|---|", "| costs $5$ today |"].join("\n"));
+  return html.includes("katex") && html.includes("<mn>5</mn>");
+});
+// Spacing & pairing: remark-math v6 pairs $…$ greedily, even across spaces
+// and words, so these judgements live in the policy, not the tokenizer.
+// Content is trimmed before classification, and cross-word pairs restore
+// verbatim because they match no math pattern.
+check("sloppy spaced delimiters with price words still render as math (parity)", () => {
+  const html = renderHtml("It costs $ 5$ today");
+  return html.includes("katex") && html.includes("<mn>5</mn>");
+});
+check("spaced closing delimiter with cash context stays literal (assistant-ui parity)", () => {
+  const html = renderHtml("I paid $5 $ cash");
+  return !html.includes("katex") && html.includes("$5") && !html.includes("$5$");
+});
+check("cross-word $…$ pairing restores verbatim, never math", () => {
+  const html = renderHtml("from $5 to $10");
+  return !html.includes("katex") && html.includes("from $5 to $10");
+});
+check("bare number with sloppy spaced delimiters renders as math (global default)", () => {
+  const html = renderHtml("the value is $ 5$ here");
+  return html.includes("katex") && html.includes("<mn>5</mn>");
 });
 check("scientific unit makes a paired number mathematical", () => {
   const html = renderHtml("$20$ MeV");
@@ -715,189 +743,6 @@ check("multi-line blockquote display math strips quote markers from the formula"
     && !html.includes("katex-error")
     && !html.includes("&gt; E")
     && html.includes(">x</mi>");
-});
-
-// ── Young diagram / tableau macros ─────────────────────────────────────────────
-// `\yng` (ytableau) and `\young` (youngtab) are common in physics —
-// SU(N) irreps, tensor decompositions, character tables — but KaTeX
-// doesn't bundle either macro package. The pre-pass translates them
-// to KaTeX-compatible `\boxed{array}` forms inside the math body so
-// the diagram renders as a grid of boxes.
-
-console.log("\nnormalizeMath — Young diagram macros");
-
-check("\\yng(2,1) renders as (2,1) Young diagram", () => {
-  const html = renderHtml("$$\\yng(2,1)$$");
-  return html.includes("katex-display") && !html.includes("katex-error");
-});
-check("\\yng(2,1) in prose (no $ delimiters) gets wrapped and rendered", () => {
-  // A model that writes "the partition \\yng(2,1) corresponds to the
-  // (2,1) irrep" doesn't usually put $$ around the macro. The
-  // translator wraps bare \\yng in `$…$` so remark-math sees it as
-  // inline math and katex renders the diagram.
-  const html = renderHtml("The partition \\yng(2,1) is symmetric.");
-  return html.includes("katex")
-    && !html.includes("katex-error")
-    && !html.includes("reasonixInternal")
-    && html.includes('data-latex-source="\\yng(2,1)"');
-});
-check("\\yng inside \\(...\\) does not get double-wrapped", () => {
-  const out = resolveProtectedInlineMathSource(normalizeMath("\\(\\yng(2,1)\\)"));
-  return out.source === "$\\yng(2,1)$"
-    && out.rendered === "$\\begin{array}{l}\\square \\! \\square \\\\[-0.525em] \\square\\end{array}$";
-});
-check("\\yng inside \\[...\\] stays display math without triple dollars", () => {
-  const out = resolveProtectedInlineMathSource(normalizeMath("\\[\\yng(2,1)\\]"));
-  return out.source === "$$\n\\yng(2,1)\n$$"
-    && out.rendered.startsWith("$$\n\\begin{array}{l}")
-    && out.rendered.endsWith("$$")
-    && !out.rendered.includes("$$$");
-});
-check("escaped dollar before bare \\yng does not suppress wrapping", () => {
-  const src = String.raw`Price is \$5; shape \yng(2,1)`;
-  const expected = String.raw`Price is \$5; shape $\begin{array}{l}\square \! \square \\[-0.525em] \square\end{array}$`;
-  const out = resolveProtectedInlineMathSource(normalizeMath(src));
-  return out.source === String.raw`Price is \$5; shape $\yng(2,1)$`
-    && out.rendered === expected;
-});
-check("digit-starting inline math with \\yng does not get nested wrappers", () => {
-  const out = resolveProtectedInlineMathSource(normalizeMath("$3\\,\\yng(2,1)$"));
-  return out.source === "$3\\,\\yng(2,1)$"
-    && out.rendered === "$3\\,\\begin{array}{l}\\square \\! \\square \\\\[-0.525em] \\square\\end{array}$";
-});
-check("digit-starting inline math with \\young does not get nested wrappers", () => {
-  const out = resolveProtectedInlineMathSource(normalizeMath("$2 + \\young(ab,c)$"));
-  return out.source === "$2 + \\young(ab,c)$"
-    && out.rendered === "$2 + \\begin{array}{l}\\boxed{a} \\! \\boxed{b} \\\\[-0.525em] \\boxed{c}\\end{array}$";
-});
-check("display math ending in digit closes before following bare \\yng", () => {
-  const out = resolveProtectedInlineMathSource(normalizeMath("$$x^2$$ \\yng(1)"));
-  return out.source === "$$\nx^2\n$$\n $\\yng(1)$"
-    && out.rendered === "$$\nx^2\n$$\n $\\begin{array}{l}\\square\\end{array}$";
-});
-check("bare \\yng after inline math is separated from adjacent dollars", () => {
-  const out = resolveProtectedInlineMathSource(normalizeMath("$x$\\yng(1)"));
-  return out.source === "$x$ $\\yng(1)$"
-    && out.rendered === "$x$ $\\begin{array}{l}\\square\\end{array}$";
-});
-check("bare \\yng before inline math is separated from adjacent dollars", () => {
-  const out = resolveProtectedInlineMathSource(normalizeMath("\\yng(1)$x$"));
-  return out.source === "$\\yng(1)$ $x$"
-    && out.rendered === "$\\begin{array}{l}\\square\\end{array}$ $x$";
-});
-check("\\yng (2,1) with a space before parens gets wrapped and rendered", () => {
-  const html = renderHtml("The partition \\yng (2,1) is symmetric.");
-  return html.includes("katex")
-    && !html.includes("katex-error")
-    && !html.includes("reasonixInternal")
-    && html.includes('data-latex-source="\\yng (2,1)"');
-});
-check("\\yng(3,2,1) renders as (3,2,1) Young diagram", () => {
-  const html = renderHtml("$$\\yng(3,2,1)$$");
-  return html.includes("katex-display") && !html.includes("katex-error");
-});
-check("\\yng(2,1){a&b\\\\c\\\\d&e} renders filled Young tableau", () => {
-  const html = renderHtml("$$\\yng(2,1){a&b\\\\c\\\\d&e}$$");
-  return html.includes("katex-display") && !html.includes("katex-error");
-});
-check("\\young(2 1) compatibility shorthand renders as (2,1) diagram", () => {
-  const html = renderHtml("$$\\young(2 1)$$");
-  return html.includes("katex-display") && !html.includes("katex-error");
-});
-check("\\young(ab,c) labelled youngtab syntax renders labels", () => {
-  const html = renderHtml("$$\\young(ab,c)$$");
-  return html.includes("katex-display")
-    && !html.includes("katex-error")
-    && !html.includes("reasonixInternal")
-    && html.includes('data-latex-source="\\young(ab,c)"')
-    && ["a", "b", "c"].every((label) => html.includes(label));
-});
-check("\\young(ab,c) labelled cells keep boxes", () => {
-  const out = expandYoungDiagrams("\\young(ab,c)");
-  return out.includes("\\boxed{a}")
-    && out.includes("\\boxed{b}")
-    && out.includes("\\boxed{c}");
-});
-check("\\young(abcd,:cd,:c) skew placeholders are invisible offsets", () => {
-  const out = expandYoungDiagrams("\\young(abcd,:cd,:c)");
-  return out.includes("\\hphantom{\\boxed{x}}")
-    && !out.includes("\\boxed{:}");
-});
-check("\\yng(4,3,2,1) renders as (4,3,2,1) Young diagram", () => {
-  const html = renderHtml("$$\\yng(4,3,2,1)$$");
-  return html.includes("katex-display") && !html.includes("katex-error");
-});
-check("\\yng(3,2,1) uses left-aligned array (rows start at same x)", () => {
-  // A Young diagram's shorter rows must start at the same x-position
-  // as the longest row's first cell — `{l}` (left) instead of `{c}`
-  // (centered) gives that layout. Without this, the diagram looks
-  // like each row is independently centred, which isn't a Young
-  // diagram.
-  const out = expandYoungDiagrams("\\yng(3,2,1)");
-  return out.includes("\\begin{array}{l}")
-    && !out.includes("\\begin{array}{c}");
-});
-check("expandYoungDiagrams uses flush cells (\\! cancels \\,) ", () => {
-  // Adjacent \square boxes should be flush — the convention for Young
-  // diagrams. The translator uses `\!` (negative thin space, -0.1667em)
-  // which exactly cancels `\,` so cells touch without visible gap.
-  // `\,` (positive thin space) would leave a gap.
-  const out = expandYoungDiagrams("\\yng(3)");
-  return out.includes("\\!") && !out.includes("\\, ");
-});
-check("expandYoungDiagrams uses flush rows (\\[-0.525em] closes the math-axis gap)", () => {
-  // The math axis positions a \square glyph centred on the row
-  // baseline, which leaves a visible ~0.4em gap between the bottom of
-  // one row's box and the top of the next row's box when the default
-  // 1.2em baseline-to-baseline spacing is used. Using `\\[-0.4em]`
-  // between rows pulls each subsequent row up by the math-axis offset,
-  // so consecutive rows touch. (Earlier versions tried wrapping each
-  // cell in `\raisebox{-0.35em}` which does NOT close the gap —
-  // uniform translation can't change the relative distance between
-  // row baselines.)
-  const out = expandYoungDiagrams("\\yng(2,1)");
-  return out.includes("\\\\[-0.525em]");
-});
-check("expandYoungDiagrams substitutes correct array form", () => {
-  // Direct unit test on the translator — no need to go through the
-  // full pipeline for this assertion.
-  const out = expandYoungDiagrams("\\yng(2,1)");
-  return out.includes("\\begin{array}{l}")
-    && out.includes("\\square")
-    && out.includes(" \\\\[-0.525em] ");
-});
-check("expandYoungDiagrams handles \\yng with content", () => {
-  // Bare \yng in prose gets wrapped in `$…$` so remark-math sees it as
-  // math; macros already inside a `$…$` block just substitute the inner
-  // form (the surrounding delimiters are preserved).
-  // Cells are joined with `\!` (negative thin space) so adjacent
-  // boxes are flush. Row separators use `\\[-0.525em]` (per-row
-  // negative spacing) so consecutive rows touch — the visible
-  // glyph height of `\square` is 0.675em (measured from katex's
-  // single-glyph strut), and the default 1.2em baseline spacing
-  // leaves 0.525em of gap. `\\[-0.525em]` subtracts exactly that.
-  const out = expandYoungDiagrams("\\yng(2,1){a&b\\\\c}");
-  return out === "$\\begin{array}{l}\\boxed{a} \\! \\boxed{b} \\\\[-0.525em] \\boxed{c}\\end{array}$";
-});
-check("expandYoungDiagrams handles labelled \\young rows", () => {
-  const out = expandYoungDiagrams("\\young(ab,c)");
-  return out === "$\\begin{array}{l}\\boxed{a} \\! \\boxed{b} \\\\[-0.525em] \\boxed{c}\\end{array}$";
-});
-check("expandYoungDiagrams treats comma-separated numeric \\young as labels, not a 12-cell row", () => {
-  const out = expandYoungDiagrams("\\young(12,3)");
-  return out === "$\\begin{array}{l}\\boxed{1} \\! \\boxed{2} \\\\[-0.525em] \\boxed{3}\\end{array}$";
-});
-check("expandYoungDiagrams leaves invalid negative \\yng shape alone", () => {
-  const out = expandYoungDiagrams("\\yng(-1)");
-  return out === "\\yng(-1)";
-});
-check("expandYoungDiagrams leaves oversized \\yng shape alone", () => {
-  const out = expandYoungDiagrams("\\yng(513)");
-  return out === "\\yng(513)";
-});
-check("expandYoungDiagrams leaves non-Young macros alone", () => {
-  const out = expandYoungDiagrams("\\frac{a}{b}");
-  return out === "\\frac{a}{b}";
 });
 
 // ── Summary ───────────────────────────────────────────────────────────────────

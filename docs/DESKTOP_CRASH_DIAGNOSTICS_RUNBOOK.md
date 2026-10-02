@@ -7,23 +7,132 @@ cross-platform Desktop diagnostics pipeline. Windows build `17763` remains a
 priority experiment, not a code whitelist. A diagnostic release does not by
 itself resolve a crash issue.
 
+## Local transcript initialization failures
+
+When session creation, opening, or legacy migration fails to initialize the
+transcript, search the Electron shell's `service.log` (and rotated
+`service.log.1`) for `session transcript initialization failed`. The service
+emits a structured `diagnostic` group to stderr, which the shell persists through
+its existing log writer. This diagnostic has `version=1` and
+`code=transcript_initialization_failed`; it does not change the migration ledger
+format. The separate content-free online report is described below.
+
+| Field | Meaning |
+| --- | --- |
+| `diagnostic.session_key` | SHA-256 of the session ID; correlates failures for that runtime session |
+| `diagnostic.covered_sequence` | Event sequence covered by the initial transcript |
+| `diagnostic.baseline_message_count` | Input messages selected for initialization, at most 96 |
+| `diagnostic.baseline_total_message_count` | Available candidate messages before tail selection; not necessarily the full history size |
+| `diagnostic.baseline.record_count` | Transcript records produced from those input messages |
+| `diagnostic.baseline.record_index` / `previous_record_index` | Zero-based failing record / first conflicting record in that selected baseline, when known |
+| `diagnostic.baseline.role` | Allowlisted role, or `other` |
+| `diagnostic.baseline.record_key` / `message_key` / `tool_call_key` | SHA-256 identity fingerprints; empty when the identity is absent |
+
+`diagnostic.baseline.code` distinguishes `duplicate_record_identity`,
+`missing_record_identity`, `baseline_encode_failed`, and
+`baseline_decode_failed`. Encoding/decoding failures have no record position.
+Positions refer to transcript records, not global message offsets.
+
+Legacy migration also emits
+`desktop session migration transcript initialization failed` with the same
+diagnostic, `stage=legacy_import`, and `source_key`. Match `source_key` to the
+existing `sourceKey` in `desktop/session-migration-v5.json` under the Reasonix
+configuration directory. It identifies the same source across retries even
+when a new attempt creates a different target session ID. Each failed attempt
+emits one runtime diagnostic and, for this migration path, one migration
+diagnostic. The failed source is retained and healthy migrations can continue.
+
+These new records exclude chat/reasoning bodies, tool arguments, original
+paths, raw identifiers, and unrestricted error text. Fingerprints support
+correlation; they do not by themselves prove which original data caused a
+reported failure. Old `1.38.10` logs cannot retroactively supply these fields;
+collect logs from a build containing this change after reproducing the failure.
+
+The same handled migration failure is queued as an `exception` report with
+`source=desktop.session_migration`, `label=transcript.initialization`, and a
+content-free classification in its fingerprint hint. It is delivered to
+`https://crash.reasonix.io/v1/report` and appears on `/stats/diagnostics` under
+the existing Desktop telemetry consent, retry, and per-version deduplication
+rules. Session/source fingerprints and record identity fingerprints remain
+local-only. Unrecovered panics from older builds continue through the existing
+`go.runtime` / `go.fatal` crash path and are shown as high-severity crashes.
+
 ## Release order
 
-1. Freeze one candidate SHA. Do not move or recreate a published tag.
-2. Back up D1 and inspect `PRAGMA table_info` before applying
-   `workers/crash-report/migrate-diagnostics-v2.sql`. If draft diagnostics-v2
-   columns already exist, stop and create an additive reconciliation migration.
-3. Verify `report_daily`, `report_installations`,
+1. Keep the Firebase project on Spark with no Cloud Billing account. Create
+   only a Realtime Database in `asia-southeast1`, deploy
+   `workers/crash-report/firebase/database.rules.json`, and confirm both client
+   reads and writes are denied. Do not enable Functions, Firestore, BigQuery,
+   Hosting, Storage, or Secret Manager.
+2. Configure the three repository secrets `FIREBASE_DATABASE_URL`,
+   `FIREBASE_CLIENT_EMAIL`, and `FIREBASE_PRIVATE_KEY`. The service account must
+   be dedicated to crash delivery and limited to Realtime Database. Never use
+   the Firebase Web configuration or ship Firebase SDK/configuration in a
+   Desktop artifact.
+3. Freeze one candidate SHA. Do not move or recreate a published tag.
+4. Back up D1 and run `npm run migrate:diagnostics-v2`. The command inspects the
+   complete schema and records a fresh Time Travel bookmark before writing. The
+   retired `metric_users` and `cli_metric_users` tables are intentionally not
+   required; any partial state among the active diagnostics tables fails closed.
+5. Run `npm run migrate:firebase-crash`. It records a D1 Time Travel bookmark,
+   applies phase 1 (`migrate-firebase-crash.sql`) and phase 2
+   (`migrate-firebase-crash-capacity.sql`) in order, and fails closed on a
+   partially applied phase. Verify the outbox, receipts, compatibility lease
+   table, `firebase_crash_group_state`, and all delivery/lifecycle indexes. The
+   old lease table remains only for rolling-deployment compatibility.
+6. Verify `report_daily`, `report_installations`,
    `report_event_dimensions`, `diagnostics_meta`, their fingerprint/date
    indexes, and the ping window index. Confirm `installation_linked_since`.
-4. Deploy the Worker first. Smoke-test old Report/Ping/Metrics payloads, a
+7. In **Actions > Deploy crash worker > Run workflow**, select `main-v2` and
+   choose `dry-run` for **Firebase crash history operation**. This uses the
+   existing repository secrets, runs behind the `canary` environment approval,
+   does not deploy the Worker, and must report at most 700 MiB reserved. After
+   reviewing the result, choose `apply` and enter the exact confirmation
+   `APPLY_FIREBASE_CRASH_DATA`; the job runs `--apply` followed immediately by
+   `--verify-only` on the same runner. Choose `verify-only` for later
+   independent audits. Authenticated operators may still run
+   `npm run migrate:firebase-data`, `npm run migrate:firebase-data -- --apply`,
+   and `npm run migrate:firebase-data -- --verify-only` locally. The default
+   checkpoint is `.firebase-crash-migration-state.json` (mode `0600`,
+   gitignored); use `--checkpoint=<path>` to relocate it and
+   `--reset-checkpoint` only to restart deliberately. Logs contain only counts,
+   fingerprint prefixes, and digests.
+8. Deploy the Worker in `dual` mode first. Smoke-test old Report/Ping/Metrics payloads, a
    legacy `webview2` payload, and Windows/Linux `webRuntime` payloads using
    `channel=test`.
-5. Build signed Windows and Linux artifacts from the frozen SHA. Complete the
+9. Compare D1 and Firebase for seven complete UTC days. Switch
+   `CRASH_STORAGE_MODE` from `dual` to `firebase` only after counts,
+   fingerprints, retained samples, and redaction match. In Firebase mode D1
+   keeps aggregates and the bounded outbox but no new raw `reports` rows.
+10. Build signed Windows and Linux artifacts from the frozen SHA. Complete the
    capability matrix and performance gates before a feature release.
-6. Use the admin UI for the audited historical cleanup: ignore the synthetic
+11. After seven more stable days, archive old D1 raw samples. Keep `d1`, `dual`,
+   and `firebase` as rollback modes; a Worker rollback does not require a client
+   update.
+12. Use the admin UI for the audited historical cleanup: ignore the synthetic
    `[go panic] safe` / `v9.9.9` group; resolve `72daba81` in
    `desktop-v1.19.3`; ignore the legacy `desktop.abnormal_exit` replay group.
+
+## Spark capacity, lifecycle, and rollback
+
+The Worker enforces a fixed 700 MiB reservation budget: active groups reserve
+640 KiB, compacted groups 128 KiB, archiving groups 32 KiB, and archived groups
+zero. At 80% the existing alert webhook and dashboard warn; a new group or
+expansion that would cross the budget returns `503` before creating an outbox
+row. Do not make the budget configurable.
+
+Only resolved/ignored groups are eligible. After 30 inactive days the latest
+five samples become fenced markers and the retained-cycle first sample remains.
+After 60 days all sample paths are tombstoned; 24 hours later the Firebase group
+is conditionally deleted. D1 counts, status, notes, aggregates, and audit remain.
+An archived fingerprint that reappears starts a new sample epoch without
+resetting lifetime count/first-seen. Admin deletion uses the same tombstone
+window while deleting its D1 group data atomically.
+
+Rollback is configuration-only: set `CRASH_STORAGE_MODE=d1` and redeploy. Do not
+delete the outbox, receipts, group state, or Firebase data during rollback. Fix
+the migration/capacity/ETag fault, rerun dry-run and `--verify-only`, then return
+to `dual`. No Desktop or CLI update is required.
 
 ## Privacy and compatibility smoke
 
@@ -41,12 +150,18 @@ engine/kind/reason/exit code must share one fingerprint. Then verify:
 - retention removes diagnostic facts, pings, and metric-user rows after 30
   days in bounded chunks;
 - `channel=test` remains in the development namespace.
+- duplicate `eventId` values return `202` without incrementing aggregates;
+- Firebase timeout, 401, 429, or 5xx leaves a projected outbox row for the
+  six-hour retry, while a full outbox returns `503` so clients retain pending;
+- automatic Desktop reports are sent once per version and dedup key, failed
+  sends do not enter the 512-entry/180-day ledger, and explicit Desktop/CLI
+  reports bypass local fingerprint suppression.
 
 ## Normal-experience gates
 
-The candidate must keep pre-Wails work to one local configuration read, one
+The candidate must keep pre-shell work to one local configuration read, one
 non-blocking ownership lock, and one small atomic lifecycle write. Runtime
-discovery and all report/metric persistence run after Wails startup or on the
+discovery and all report/metric persistence run after shell startup or on the
 bounded background consumers; COM and GTK callbacks only enqueue or increment
 an atomic drop counter. Diagnostic failure remains fail-open.
 

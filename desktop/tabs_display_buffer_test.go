@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"reasonix/internal/event"
+	"reasonix/internal/eventwire"
 	"reasonix/internal/provider"
+	"reasonix/internal/turnevent"
 )
 
 func TestDisplayTurnBufferPreservesStreamingReplacementAndTools(t *testing.T) {
@@ -49,6 +51,36 @@ func TestDisplayTurnBufferPreservesStreamingReplacementAndTools(t *testing.T) {
 	}
 }
 
+func TestDisplayTurnBufferMessageIdentityAndDiscardMatchRecovery(t *testing.T) {
+	events := []event.Event{
+		{Kind: event.StreamAttempt, MessageID: "failed", AttemptID: "failed", StreamAttempt: event.StreamAttemptInfo{ID: "failed", Action: event.StreamAttemptBegin}},
+		{Kind: event.Reasoning, MessageID: "failed", AttemptID: "failed", Text: "discard this"},
+		{Kind: event.Message, MessageID: "failed", AttemptID: "failed", Text: "rejected full response"},
+		{Kind: event.StreamAttempt, MessageID: "failed", AttemptID: "failed", StreamAttempt: event.StreamAttemptInfo{ID: "failed", Action: event.StreamAttemptDiscard}},
+		{Kind: event.Reasoning, MessageID: "a", AttemptID: "a", Text: "first thought"},
+		{Kind: event.ToolDispatch, MessageID: "a", Tool: event.Tool{ID: "call", Name: "read_file", Args: `{}`}},
+		{Kind: event.ToolResult, Tool: event.Tool{ID: "call", Name: "read_file", Output: "done"}},
+		{Kind: event.Reasoning, MessageID: "b", AttemptID: "b", Text: "second thought"},
+		{Kind: event.Message, MessageID: "a", AttemptID: "a", Reasoning: "first thought", Text: "first answer"},
+	}
+	var live, recovered displayTurnBuffer
+	for i, e := range events {
+		recordHistoryDisplayEvent(&live, e)
+		wire := eventwire.ToWire(e)
+		replay, ok := displayEventFromEnvelope(turnevent.Envelope{Kind: wire.Kind, Sequence: uint64(i + 1), Event: wire})
+		if !ok {
+			t.Fatalf("event %s is not replayable", wire.Kind)
+		}
+		recordHistoryDisplayEvent(&recovered, replay)
+	}
+	for name, buffer := range map[string]*displayTurnBuffer{"live": &live, "recovered": &recovered} {
+		rows := buffer.materialize()
+		if len(rows) != 3 || rows[0].MessageID != "a" || rows[0].Content != "first answer" || rows[0].Reasoning != "first thought" || len(rows[0].ToolCalls) != 1 || rows[2].MessageID != "b" || rows[2].Reasoning != "second thought" {
+			t.Fatalf("%s message ownership/discard mismatch: %+v", name, rows)
+		}
+	}
+}
+
 func TestDisplayTurnBufferStreamingAllocationsStayNearLinear(t *testing.T) {
 	const (
 		chunks    = 2_000
@@ -84,7 +116,9 @@ func TestDisplayTurnBufferStreamingAllocationsStayNearLinear(t *testing.T) {
 func TestPendingDisplayWriteRetriesWithoutDroppingTurn(t *testing.T) {
 	state := &tabDisplayState{}
 	var attempts atomic.Int32
+	var acknowledgements atomic.Int32
 	persisted := make(chan struct{})
+	acknowledged := make(chan struct{})
 	write := &pendingDisplayWrite{
 		dir:         "sessions",
 		sessionPath: "sessions/session.jsonl",
@@ -101,6 +135,10 @@ func TestPendingDisplayWriteRetriesWithoutDroppingTurn(t *testing.T) {
 			close(persisted)
 			return nil
 		},
+		onPersisted: func() {
+			acknowledgements.Add(1)
+			close(acknowledged)
+		},
 	}
 	persistOrEnqueueDisplayWrite(state, write)
 	select {
@@ -108,21 +146,54 @@ func TestPendingDisplayWriteRetriesWithoutDroppingTurn(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("pending display write was not retried")
 	}
-	deadline := time.Now().Add(time.Second)
-	for {
-		state.mu.Lock()
-		pending := len(state.pendingWrites)
-		running := state.persistRunning
-		state.mu.Unlock()
-		if pending == 0 && !running {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("retry worker did not drain: pending=%d running=%v", pending, running)
-		}
-		time.Sleep(5 * time.Millisecond)
+	select {
+	case <-acknowledged:
+	case <-time.After(time.Second):
+		t.Fatal("durable display write was not acknowledged")
+	}
+	state.mu.Lock()
+	pending := len(state.pendingWrites)
+	running := state.persistRunning
+	state.mu.Unlock()
+	if pending != 0 || running {
+		t.Fatalf("retry worker did not drain before acknowledgement: pending=%d running=%v", pending, running)
 	}
 	if got := attempts.Load(); got != 3 {
 		t.Fatalf("persist attempts = %d, want 3", got)
+	}
+	if got := acknowledgements.Load(); got != 1 {
+		t.Fatalf("projection acknowledgements = %d, want exactly one after persistence", got)
+	}
+}
+
+func TestDisplayMessagesFromInterruptedProjectionKeepsPartialOutput(t *testing.T) {
+	textEvent := event.Event{Kind: event.Text, Source: event.UsageSourceExecutor, Text: "partial answer"}
+	toolEvent := event.Event{Kind: event.ToolDispatch, Source: event.UsageSourceExecutor, Tool: event.Tool{ID: "call-1", Name: "read_file", Args: `{"path":"notes.txt"}`}}
+	projection := turnevent.PendingProjection{
+		TurnID: "turn-1", Status: event.TurnInterrupted,
+		Events: []turnevent.Envelope{
+			{TurnID: "turn-1", Sequence: 1, Kind: "text", Source: textEvent.Source, Event: eventwire.ToWire(textEvent)},
+			{TurnID: "turn-1", Sequence: 2, Kind: "tool_dispatch", Source: toolEvent.Source, Event: eventwire.ToWire(toolEvent)},
+			{TurnID: "turn-1", Sequence: 3, Kind: "turn_done", Status: event.TurnInterrupted, Event: eventwire.ToWire(event.Event{Kind: event.TurnDone})},
+		},
+	}
+
+	got := displayMessagesFromProjection(projection)
+	if len(got) != 3 {
+		t.Fatalf("recovered display messages = %d, want partial answer, tool card and notice: %+v", len(got), got)
+	}
+	if got[0].Role != "assistant" || got[0].Content != "partial answer" {
+		t.Fatalf("partial assistant output changed: %+v", got[0])
+	}
+	if got[1].Role != "assistant" || len(got[1].ToolCalls) != 1 || got[1].ToolCalls[0].ID != "call-1" {
+		t.Fatalf("tool dispatch projection changed: %+v", got[1])
+	}
+	if got[2].Role != "notice" || got[2].Code != event.NoticeCodeCancelledTurn {
+		t.Fatalf("interruption notice missing: %+v", got[2])
+	}
+	projection.Status = event.TurnRecoveryRequired
+	recovered := displayMessagesFromProjection(projection)
+	if len(recovered) != len(got) || recovered[0].Content != "partial answer" || recovered[2].Code != event.NoticeCodeCancelledTurn {
+		t.Fatalf("recovery-required projection lost partial display: %+v", recovered)
 	}
 }

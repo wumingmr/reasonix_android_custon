@@ -27,7 +27,8 @@ reasonix acp --model deepseek-pro
 ```
 
 客户端未覆盖模型时，`--model` 用于选择启动模型。普通请求一律进入 executor，
-没有自动任务模式；唯一的会话角色是质量底线（standard/delivery），验证义务由宿主根据真实工具动作建立。
+没有自动任务模式或可选质量底线；验证义务由真实工具动作、项目规则、任务风险和用户显式要求共同建立。
+ACP 不再发布 `quality_floor` 选择项；已知旧值仍可提交但只返回退役说明，未知值仍报错。
 
 标准输出专用于 ACP 消息，Reasonix 会把诊断写入标准错误，因此 host 不应合并这两个
 流。尚未配置 provider 时先运行 `reasonix setup`；initialize 响应也会声明一个启动
@@ -105,9 +106,9 @@ Reasonix 把互不相关的选择拆成独立控制轴，而不是混在一个 m
 | 协作模式 | `normal`、`plan`、`goal` | `modes` 和 `session/set_mode` |
 | 模型 | 已配置的 `provider/model` | id 为 `model` 的 `configOptions` |
 | 推理强度 | provider 支持的等级或 `auto` | id 为 `effort` 的 `configOptions` |
-| 工具审批 | `ask`、`auto`、`yolo` | id 为 `tool_approval` 的 `configOptions` |
+| 权限模式 | `read-only`、`workspace-write`、`danger-full-access` | id 为 `tool_approval` 的 `configOptions` |
 
-模型、推理强度和工具审批统一使用 `session/set_config_option`。它的参数是
+模型、推理强度和权限模式统一使用 `session/set_config_option`。它的参数是
 `sessionId`、`configId` 和 `value`，其中 `configId` 取 `configOptions` 中该选项的
 `id`：
 
@@ -119,7 +120,7 @@ Reasonix 把互不相关的选择拆成独立控制轴，而不是混在一个 m
   "params": {
     "sessionId": "session-id",
     "configId": "tool_approval",
-    "value": "yolo"
+    "value": "workspace-write"
   }
 }
 ```
@@ -128,16 +129,16 @@ Reasonix 把互不相关的选择拆成独立控制轴，而不是混在一个 m
 数组；id 未知时返回 `-32602 InvalidParams`。
 
 切换模型或推理强度时会重建会话 Controller，同时保留历史和其他控制轴；
-工具审批只更新 gate，不重建 Controller。
+权限模式只更新统一权限运行时，不重建 Controller。
 
 执行模式已移除。兼容期内，仍发送 `configId` 为 `agent_preset` 或 `work_mode`
 （含旧别名 `profile`、`runtime_profile`、`token_mode`）的
 `session/set_config_option` 请求会得到成功的空操作：不切换、不重建，返回值中的
 `deprecatedNotice` 会说明自适应标准执行。
 
-旧客户端仍可使用 `session/set_model`。`session/set_mode` 也继续接受 legacy 值
-`default` 和 `auto`，分别表示“常规 + 询问”和“常规 + Yolo”；新客户端应使用上面的
-独立 selector。
+旧客户端仍可使用 `session/set_model`。旧权限值只在协议兼容边界迁移：`ask` 映射为
+`read-only`，`auto` 与 `yolo` 映射为 `workspace-write`；未知值失败关闭。新客户端应
+使用上面的独立 selector，`danger-full-access` 只能由用户主动选择。
 
 ## Prompt、更新与审批
 
@@ -160,6 +161,11 @@ agent 会发送带 `[warning]` 的消息 chunk 并返回 `end_turn`；厂商状�
 的 runner 没有返回 error。显式模型轮数上限（`max_steps`）会发送 `[warning]`、返回
 `max_turn_requests`，并记录 paused 厂商状态；host 的任务时间、token 或成本预算也会发送
 `[warning]` 并记录 paused 状态，但因 ACP v1 没有任务预算专用停止原因而返回 `end_turn`。
+完成校验器已移除。模型正常结束且没有工具调用时返回 `end_turn`；包含工具调用时继续进入
+Agent 循环；真正的空响应会在 frozen request 边界重试。旧的
+`completion_validation`、`completion_evaluator_model` 和
+`REASONIX_COMPLETION_VALIDATION_MODE` 设置仍可读取，但会被忽略且不再由配置渲染器生成。
+主机侧的就绪检查、预算、工具安全边界和恢复边界仍然有效。
 其他 provider、工具或运行时失败会返回 JSON-RPC
 `-32603 InternalError`，消息携带长度受限且已脱敏的原因；不会再用协议外的
 `stopReason` 构造成功结果。
@@ -264,6 +270,30 @@ Reasonix 还在 `agentCapabilities._meta["reasonix.io"]` 中通告两个扩展�
 
 已安装插件声明的扩展 action 以 `/<plugin>:<action>` 出现在
 `available_commands_update` 中，可像普通斜杠命令一样调用。
+
+## 可选的 MCP 用户交互扩展
+
+支持 MCP elicitation 的宿主在 `initialize.clientCapabilities` 中显式声明：
+
+```json
+{"_meta":{"reasonix.io":{"mcpInteraction":{"supported":true,"schemaVersion":1}}}}
+```
+
+Reasonix 在 `agentCapabilities._meta.reasonix.io.mcpInteraction` 返回对应能力，
+方法为 `_reasonix.io/mcp/request_interaction`。协商成功的会话使用 interactive MCP
+host profile；未声明或版本不匹配的客户端继续使用 core profile，不接收新增反向请求。
+新建、加载与重建会话均遵循这一协商结果。
+
+反向请求包含 `sessionId`、`promptId`、`turnId`、`server`、`mode`、`message`，
+表单模式还包含 `requestedSchema`，URL 模式包含 `url` 和 `elicitationId`。
+响应为 `{"action":"accept","content":{}}`、`{"action":"decline"}` 或
+`{"action":"cancel"}`。宿主应按 schema 校验表单；URL 流程交给用户操作，
+不得把登录凭据作为表单内容返回。不支持的交互应取消。
+
+每次回答绑定原 controller 和 turn。取消、无效回答及被拒绝的 URL 均取消交互，
+只有 `accept` 才使用 content。controller 先持久化决定，再释放 MCP 等待者。
+这一扩展不替代 `session/request_permission`，也不改变工具权限策略。
+协商出的 host profile 会影响 MCP capability/cache identity，transcript schema 不变。
 
 ## 兼容性与缓存行为
 

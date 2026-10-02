@@ -2,13 +2,17 @@
 // decision receipts, and compaction cards.
 
 import { useState } from "react";
+import { ErrorMessage } from "./ErrorMessage";
 import { CheckCheck, ChevronRight, CirclePlay, ClipboardCheck, FileSearch, Info, TriangleAlert } from "lucide-react";
 import { useT } from "../lib/i18n";
-import type { CompactionItem, NoticeItem } from "../lib/transcriptRows";
+import type { Item } from "../lib/useController";
+import { sessionOperationStatus } from "../lib/sessionMaintenanceOperation";
+type CompactionItem = Extract<Item, { kind: "compaction" }>;
+type NoticeItem = Extract<Item, { kind: "notice" }>;
 import type { WireCompletionSummary } from "../lib/types";
+import { TurnResultSummary } from "./TurnResultSummary";
 import { STEER_NOTICE_PREFIX } from "../lib/useController";
 import { ProcessCompactIcon, ProcessPhaseIcon } from "./ProcessCard";
-import { useTranscriptUserResizeIntent } from "./TranscriptLayoutIntentContext";
 
 export function PhaseCard({ id, text }: { id: string; text: string }) {
   return <div className="phase" data-entrance={id}><ProcessPhaseIcon size={12} /><span>{text}</span></div>;
@@ -70,17 +74,18 @@ export function NoticeCard({ item, onAction, onAccept, onOpenVerification, actio
   const StatusIcon = item.level === "warn" ? TriangleAlert : Info;
   const ActionIcon = item.action === "open_changes" ? FileSearch : CirclePlay;
   const showVerification = item.variant === "completion" && Boolean(item.completionSummary && onOpenVerification);
+  const result = item.variant === "completion" ? item.completionSummary : undefined;
   const showActions = Boolean((item.action && onAction) || onAccept || showVerification);
   return (
-    <div className={`notice-line notice-line--${item.level}${item.variant ? ` notice-line--${item.variant}` : ""}`} data-entrance={item.id}>
-      <StatusIcon className="notice-line__icon" size={14} aria-hidden="true" />
+    <div className={`notice-line notice-line--${item.level}${item.variant ? ` notice-line--${item.variant}` : ""}`} data-entrance={item.id} role={item.code === "incomplete_read" ? "status" : undefined}>
+      {!result && <StatusIcon className="notice-line__icon" size={14} aria-hidden="true" />}
       <div className="notice-line__text">
-        {item.decisionReceipt ? (
+        {result ? <><div className="notice-line__title">{t("notice.completionChangesTitle")}</div><TurnResultSummary summary={result} /></> : item.decisionReceipt ? (
           <DecisionReceiptLine receipt={item.decisionReceipt} />
         ) : (
           <>
             {item.title ? <div className="notice-line__title">{item.title}</div> : null}
-            <div className="notice-line__body">{item.text}</div>
+            <div className="notice-line__body">{item.level === "warn" ? <ErrorMessage error={item.text} /> : item.text}</div>
           </>
         )}
         {showActions ? (
@@ -88,7 +93,7 @@ export function NoticeCard({ item, onAction, onAccept, onOpenVerification, actio
             {item.action && onAction ? (
               <button className="btn btn--small" type="button" onClick={onAction} disabled={actionDisabled}>
                 <ActionIcon size={13} aria-hidden="true" />
-                <span>{item.action === "open_changes" ? t("notice.completionViewChanges") : t("notice.deliveryIncompleteContinue")}</span>
+                <span>{item.action === "recover_context" ? t("notice.protocolRecoveryAction") : item.action === "open_changes" ? t("notice.completionViewChanges") : t("notice.deliveryIncompleteContinue")}</span>
               </button>
             ) : null}
             {showVerification ? (
@@ -105,7 +110,12 @@ export function NoticeCard({ item, onAction, onAccept, onOpenVerification, actio
             ) : null}
           </div>
         ) : null}
-        {item.detail ? (
+        {result ? (
+          <details className="notice-line__details">
+            <summary>{t("notice.details")}</summary>
+            <pre>{JSON.stringify(result, null, 2)}</pre>
+          </details>
+        ) : item.detail ? (
           <details className="notice-line__details">
             <summary>{t("notice.details")}</summary>
             <div>{item.detail}</div>
@@ -119,19 +129,36 @@ export function NoticeCard({ item, onAction, onAccept, onOpenVerification, actio
 export function CompactionCard({ item }: { item: CompactionItem }) {
   const t = useT();
   const [open, setOpen] = useState(false);
-  const beginUserResize = useTranscriptUserResizeIntent();
-  if (item.pending) {
-    return <div className="compaction compaction--pending" data-entrance={item.id} data-transcript-layout-variant="static"><ProcessCompactIcon size={12} /><span>{t("compaction.working")}</span></div>;
+  const status = item.operationId ? sessionOperationStatus(item.status, item.activity) : item.status;
+  const stateLabel = status === "cancelling" ? t("compaction.stopping")
+    : status === "finalizing" ? t("compaction.saving")
+    : status === "noop" ? t("compaction.noHistory")
+    : status === "cancelled" ? t("compaction.cancelled")
+    : status === "partially_completed" ? t("compaction.cancelledPartial")
+    : status === "failed" ? t("compaction.failed")
+    : status === "recovery_required" ? t("compaction.recoveryRequired")
+    : status === "interrupted" ? t("compaction.interrupted")
+    : status === "confirming" ? t("compaction.confirming")
+    : status === "loading" ? t("common.loading")
+    : status === "unavailable" ? t("compaction.unavailable")
+    : item.pending ? t("compaction.working") : t("compaction.title");
+  if (item.pending || status === "noop" || status === "cancelled" || status === "interrupted" || status === "unavailable") {
+    return <div className={`compaction${item.pending ? " compaction--pending" : ""}`} data-entrance={item.id} data-transcript-layout-variant="static" role="status">
+      <ProcessCompactIcon className={item.pending ? "compaction__spinner" : undefined} size={item.pending ? 14 : 12} />
+      <span>{stateLabel}{status === "running" || (!status && item.pending) ? <span className="compaction__hint">{t("compaction.workingHint")}</span> : null}</span>
+    </div>;
   }
+  const tokenMeta = item.inputTokens != null && item.resultTokens != null
+    ? t("compaction.tokens", { before: item.inputTokens, after: item.resultTokens }) : "";
   return (
     <div className="compaction" data-entrance={item.id} data-transcript-layout-variant={open ? "compaction-expanded" : "compaction-collapsed"}>
-      <button type="button" className="compaction__head" onClick={() => { beginUserResize(); setOpen((v) => !v); }} aria-expanded={open}>
+      <button type="button" className="compaction__head" onClick={() => {  setOpen((v) => !v); }} aria-expanded={open}>
         <ProcessCompactIcon size={12} />
-        <span>{t("compaction.title")}</span>
-        <span className="compaction__meta">{t("compaction.messages", { n: item.messages })}{item.trigger ? ` · ${item.trigger}` : ""}</span>
+        <span>{stateLabel}</span>
+        <span className="compaction__meta">{tokenMeta || t("compaction.messages", { n: item.messages })}</span>
         <ChevronRight className={open ? "compaction__chevron--open" : ""} size={12} />
       </button>
-      {open && <pre className="compaction__body">{item.summary}</pre>}
+      {open && <pre className="compaction__body">{item.detail || item.summary}</pre>}
     </div>
   );
 }

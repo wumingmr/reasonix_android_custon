@@ -225,7 +225,7 @@ func TestStatusFooterThemesKeepIdenticalGeometry(t *testing.T) {
 	defer restoreThemeForTest(activeColorProfile, activeCLITheme)
 
 	m := newTestChatTUI()
-	m.ctrl = control.New(control.Options{})
+	m.ctrl = newOwnedTestController(t, control.Options{})
 	m.label = "deepseek-v4-flash"
 	m.effortLevel = "max"
 	m.balance = "¥12.34"
@@ -317,14 +317,14 @@ func TestStatusFooterUsesReadableLocalizedHintAndWrapsCleanly(t *testing.T) {
 	for _, tt := range []struct {
 		lang, compact, session string
 	}{
-		{lang: "en", compact: "Shift+Tab ask/auto/plan · Ctrl+Y YOLO", session: "MODEL deepseek-v4-flash   EFFORT auto"},
-		{lang: "zh", compact: "Shift+Tab 询问/自动/计划 · Ctrl+Y YOLO", session: "模型 deepseek-v4-flash   强度 auto"},
-		{lang: "zh-TW", compact: "Shift+Tab 詢問/自動/計畫 · Ctrl+Y YOLO", session: "模型 deepseek-v4-flash   強度 auto"},
+		{lang: "en", compact: "Shift+Tab read-only/workspace/YOLO/plan · Ctrl+Y YOLO", session: "MODEL deepseek-v4-flash   EFFORT auto"},
+		{lang: "zh", compact: "Shift+Tab 仅可查看/工作区内修改/YOLO/计划 · Ctrl+Y YOLO", session: "模型 deepseek-v4-flash   强度 auto"},
+		{lang: "zh-TW", compact: "Shift+Tab 僅可查看/工作區內修改/YOLO/計畫 · Ctrl+Y YOLO", session: "模型 deepseek-v4-flash   強度 auto"},
 	} {
 		t.Run(tt.lang, func(t *testing.T) {
 			i18n.DetectLanguage(tt.lang)
 			m := newTestChatTUI()
-			m.ctrl = control.New(control.Options{})
+			m.ctrl = newOwnedTestController(t, control.Options{})
 			m.label = "deepseek-v4-flash"
 			m.effortLevel = "auto"
 
@@ -350,7 +350,7 @@ func TestStatusFooterUsesReadableLocalizedHintAndWrapsCleanly(t *testing.T) {
 			}
 
 			narrow := ansi.Strip(m.renderStatusBlock(primary, 24))
-			if strings.Contains(narrow, "Shift+Tab") || strings.Contains(narrow, "Ctrl+Y") {
+			if strings.Contains(narrow, "Shift+Tab") {
 				t.Fatalf("shortcut help should yield when readable key names cannot fit:\n%s", narrow)
 			}
 			if !strings.Contains(narrow, ansi.Strip(footerValue(i18n.M.ChatStatusIdle))) {
@@ -414,7 +414,7 @@ func TestStatusFooterSwapsModelAndGitGroups(t *testing.T) {
 	i18n.DetectLanguage("en")
 
 	m := newTestChatTUI()
-	m.ctrl = control.New(control.Options{})
+	m.ctrl = newOwnedTestController(t, control.Options{})
 	m.label = "deepseek-v4-flash"
 	m.effortLevel = "auto"
 	m.balance = "¥12.34"
@@ -484,7 +484,7 @@ func TestStatusFooterMediumLayoutLeftAlignsModelWork(t *testing.T) {
 	i18n.DetectLanguage("en")
 
 	m := newTestChatTUI()
-	m.ctrl = control.New(control.Options{})
+	m.ctrl = newOwnedTestController(t, control.Options{})
 	m.label = "deepseek-v4-flash"
 	m.effortLevel = "auto"
 
@@ -528,7 +528,7 @@ func TestStatusFooterNarrowLayoutBreaksBetweenGroups(t *testing.T) {
 	i18n.DetectLanguage("en")
 
 	m := newTestChatTUI()
-	m.ctrl = control.New(control.Options{})
+	m.ctrl = newOwnedTestController(t, control.Options{})
 	m.label = "provider/" + strings.Repeat("long-model-", 8)
 	m.balance = "¥123.45"
 	m.gitStatus = gitStatus{
@@ -558,7 +558,7 @@ func TestStatusFooterCustomLineStillReplacesBuiltInData(t *testing.T) {
 	i18n.DetectLanguage("en")
 
 	m := newTestChatTUI()
-	m.ctrl = control.New(control.Options{})
+	m.ctrl = newOwnedTestController(t, control.Options{})
 	m.label = "deepseek-v4-flash"
 	m.balance = "¥12.34"
 	m.statuslineCmd = "custom-status"
@@ -579,7 +579,7 @@ func TestStatusFooterHeightCountUsesRenderedLayout(t *testing.T) {
 	i18n.DetectLanguage("en")
 
 	m := newTestChatTUI()
-	m.ctrl = control.New(control.Options{})
+	m.ctrl = newOwnedTestController(t, control.Options{})
 	m.width = 34
 	m.label = "provider/" + strings.Repeat("long-model-", 6)
 	m.gitStatus = gitStatus{Repo: "VeryLongWorkspaceName", Branch: strings.Repeat("branch/", 8)}

@@ -1,0 +1,22 @@
+{
+  "id": "branch",
+  "parent_id": "complete",
+  "fork_turn": 1,
+  "created_at": "2026-09-22T04:50:17.612168Z",
+  "updated_at": "2026-09-22T04:50:17.612168Z",
+  "scope": "global",
+  "topic_id": "topic-branch",
+  "topic_title": "Historical branch",
+  "custom_title": "User title branch",
+  "model": "fixture/model",
+  "tool_approval_mode": "ask",
+  "goal": "Retained goal",
+  "revision": 1,
+  "content_digest": "37833ba420f462d8b39eb47ac18f1a5519b7a85d920986886e05d6ef2e03d8bf",
+  "writer_id": "historical-fixture-writer",
+  "schema_version": 2,
+  "turns": 2,
+  "preview": "中文历史问题 # %20",
+  "listing_revision": 1,
+  "listing_content_digest": "37833ba420f462d8b39eb47ac18f1a5519b7a85d920986886e05d6ef2e03d8bf"
+}

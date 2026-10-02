@@ -10,6 +10,34 @@ Reasonix 提供 CLI 与桌面端 **设置 → 诊断** 共用的只读能力诊�
 Commands、Hooks、插件包、MCP 服务器，以及指令文件（`AGENTS.md` /
 `REASONIX.md` / `CLAUDE.md`）。
 
+## 技能工具引用
+
+`doctor` 和 `doctor capabilities` 使用相同的自定义路径、排除路径、禁用名单和来源
+优先级，仅检查实际生效技能的 `allowed-tools`。工具清单包含编译期内置工具和宿主
+管理的工具身份。即使没有 MCP 服务器，`use_capability` 也是已知宿主工具，无需禁用
+或覆盖内置评审技能。
+
+识别出工具名称，不代表每个会话都已注册、授权或准备好执行该工具。通过代理可调用
+但未直接展示给模型的工具也包含在清单中。MCP 依赖配置仍单独检查。
+
+| 能力诊断代码 | 含义 |
+| --- | --- |
+| `skill.tool_reference_unknown` | 普通名称不在已知清单中，应检查拼写 |
+| `skill.tool_reference_invalid` | 通配符语法错误或 MCP 引用不完整 |
+| `skill.tool_reference_ambiguous` | 提供的 MCP 绑定将一个具体引用解析到多个工具 |
+| `skill.tool_reference_unverified` | 离线无法验证的动态引用或尚未匹配的通配符 |
+| `skill.mcp_dependency_missing` | 必须自动使用的技能依赖未配置的 MCP 服务器 |
+| `skill.mcp_dependency_failed` | 必需的服务器已有宿主确认的失败状态 |
+
+“未验证”在能力诊断中属于提示信息。普通 doctor 保留现有警告列表格式，并在文本中
+明确标记未验证。这些结果不授予工具权限，也不能证明服务器损坏。静态检查不会启动
+MCP 服务器或调用模型供应商。
+现有运行时宿主或显式 `--live` 探测提供 MCP 工具列表时，能力诊断会使用这些已观察到
+的工具解析可移植别名。
+别名解析沿用运行时的插件归属规则：插件技能可使用所属包的别名，普通本地技能则需
+引用具体的可调用工具名或 capability ID。诊断保留适配器的原始名称和可见名称，
+包括配置的前缀移除结果。
+
 **写入策略**
 
 | 模式 | 配置文件 | MCP stats / schema cache | 网络 / MCP 进程 |
@@ -111,6 +139,23 @@ reasonix doctor capabilities --json
 只有你明确允许启动外部 MCP 时才建议 `--live`。项目或全局同名
 `reasonix-guide` 会覆盖内置版；也可用
 `[skills].disabled_skills = ["reasonix-guide"]` 隐藏。
+
+指南首先加载简短入口，Skills、Commands、Hooks、MCP、Plugins 和指令解析
+分别位于二进制内置的引用页中。通过 `read_skill` 按需读取；
+工具未直接暴露时，使用能力代理：
+
+```json
+{"action":"call","capability_id":"tool:read_skill","arguments":{"name":"reasonix-guide","reference":"references/hooks.md"}}
+```
+
+省略 `reference` 保持原有的技能正文读取方式。引用只能来自所选内置技能包的
+`references/*.md`，不会读取任意宿主路径，也不会绕过项目覆盖或技能禁用
+回退到内置版。磁盘技能继续通过其源文件读取引用。没有用户数据格式或迁移变化。
+
+会话技能目录在固定字符预算内先缩短描述，尽量保留全部技能名称。名称本身也超出
+预算时，只显示完整条目，并提供遗漏数量和发现提示。遗漏项仍可通过
+`use_capability` 的 search/inspect/call 发现和调用；预览不是完整能力清单。
+技能选择依据实际任务相关性，不再因弱关键词匹配而强制调用。
 
 ## CLI 参考
 
@@ -225,5 +270,10 @@ MCP 仅列出 env/header 的 **key**。可能携带 HTTP 响应体或 MCP stderr
 
 ## 缓存影响
 
-内置 `reasonix-guide` 仅在 system prompt 的 Skill 索引中增加 **一行稳定索引**；
-正文按需加载。诊断本身不进入 provider 请求。
+内置 `reasonix-guide` 在下次变化的 `session-context` Skills 目录中增加一行；
+正文按需加载。诊断本身不属于 provider 提示词。
+
+修改静态调用策略或工具描述/schema，会改变新组装会话的缓存前缀，可能需要重新
+预热缓存。读取指南或引用页只增加工具结果，不改写当前系统前缀或工具 schema。
+相同目录的渲染是确定性的。提示词效果应在实际使用的 provider 上评估；
+确定性集成测试不能证明模型选择技能的质量。

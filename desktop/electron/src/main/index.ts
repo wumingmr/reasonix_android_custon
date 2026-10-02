@@ -1,0 +1,786 @@
+import { app, clipboard, dialog, ipcMain, nativeImage, net, protocol, screen, session, shell } from "electron";
+import { readdirSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { IPC, type BrowserTakeoverKind } from "../shared/ipc.js";
+import { ActionExecutor } from "./browser/actions.js";
+import { DocumentRegistry, randomToken } from "./browser/documents.js";
+import { DownloadTracker } from "./browser/downloads.js";
+import { ElectronGuestViewFactory } from "./browser/electronGuestViews.js";
+import { GrantRegistry } from "./browser/grants.js";
+import { buildBrowserHostCalls } from "./browser/hostCalls.js";
+import { browserLayoutInDIP } from "./browser/layout.js";
+import { BrowserSurfaceManager, SHARED_PARTITION, type BrowserTab } from "./browser/surfaceManager.js";
+import { BrowserDiagnosticExport } from "./browser/diagnosticExport.js";
+import { BrowserRecoveryStore } from "./browser/recoveryStore.js";
+import { BrowserRecorder } from "./browser/recorder.js";
+import { captureScreenshot } from "./browser/screenshot.js";
+import { CaptureQueue } from "./browser/captureQueue.js";
+import { scriptCall as browserScriptCall } from "./browser/pageScripts.js";
+import { ISOLATED_WORLD as BROWSER_WORLD, REGISTRY_KEY as BROWSER_REGISTRY } from "./browser/snapshot.js";
+import { BrowserControlStore, loadBrowserControlBootstrap, type BrowserSession } from "./browserControl.js";
+import { BrowserControlHost } from "./browserControlHost.js";
+import { applyAppUserModelId, registerTaskbarRelaunch } from "./appIdentity.js";
+import { loadBuildIdentity } from "./buildIdentity.js";
+import type { CookieSink } from "./chromeImport.js";
+import { emptyContract, loadContract, type LoadedContract } from "./contract.js";
+import { DialogHost } from "./dialogs.js";
+import { renderFailurePage, type ShellAction } from "./failurePage.js";
+import { buildHelloParams, describeHandshakeFailure, validateHelloResult, type HelloResult, type HandshakeFailure } from "./handshake.js";
+import { reasonixHome } from "./home.js";
+import { buildHostCallTable, dispatchHostCall, type ScreenInfo } from "./hostCalls.js";
+import { firstExisting, iconCandidates } from "./icons.js";
+import { registerRendererIpc } from "./ipc.js";
+import { ProcessDiagnostics } from "./processDiagnostics.js";
+import { createPerformanceHost } from "./performanceHost.js";
+import { QuitSequencer } from "./lifecycle.js";
+import { createLogger, errorText, RotatingFile } from "./log.js";
+import { installApplicationMenu } from "./menu.js";
+import { record } from "./params.js";
+import { APP_INDEX_URL, APP_SCHEME, registerAppProtocol, resolveDistRoot } from "./protocol.js";
+import { RemoteWindowHost } from "./remoteWindows.js";
+import { ServiceSupervisor } from "./service.js";
+import { ShellLifecycle } from "./shellLifecycle.js";
+import { resolveServiceBinary } from "./serviceBinary.js";
+import { stripPackageGrants, unpaintedWindowCause } from "./packageGrants.js";
+import { claimShellInstance } from "./singleInstance.js";
+import { TrayHost } from "./tray.js";
+import { DEFAULT_GEOMETRY, MainWindow } from "./window.js";
+import { AppZoomStore } from "./zoomStore.js";
+import { consumeGraphicsRecoveryArg, GraphicsSettingsStore, loadGraphicsBootstrap } from "./graphics.js";
+import { confirmRecoveryDraftLoss, installGraphicsRecovery } from "./graphicsRecoveryHost.js";
+import { initialShellStatus, listenShellStatus, QUIT_REQUEST } from "./shellStatus.js";
+import { supersededLauncher } from "./recovery.js";
+import { startupLifecycle, startupPresentation, type StartupPresentReason } from "./startupPresentation.js";
+import { StartupDelay, renderStartupPage } from "./startupDelay.js";
+
+const MAIN_WINDOW_PERMISSIONS = new Set(["clipboard-read", "clipboard-sanitized-write", "fullscreen", "notifications"]);
+const TAKEOVER_KINDS = new Set<string>(["mousedown", "keydown", "wheel", "touchstart", "pointerdown"]);
+
+function safeDirName(value: string): string {
+  const name = value.replace(/[^A-Za-z0-9._-]+/g, "_");
+  return name === "" ? "user" : name;
+}
+
+app.setName("Reasonix");
+// Must precede the first BrowserWindow: the taskbar reads the identity once.
+applyAppUserModelId(app, process.platform);
+registerTaskbarRelaunch(app, process.platform, process.execPath, app.isPackaged);
+const dev = (process.env.REASONIX_DEV ?? "").trim() !== "";
+const home = reasonixHome({ env: process.env, platform: process.platform, homedir, cwd: () => process.cwd(), });
+if (home === "") {
+  console.error("reasonix-desktop-shell: cannot resolve the Reasonix data home (set REASONIX_HOME)");
+  app.exit(1);
+} else if (!claimShellInstance(app, home, dev)) {
+  app.quit();
+} else if (process.argv.includes(QUIT_REQUEST)) {
+  app.quit();
+} else {
+  const graphics = loadGraphicsBootstrap(app.getPath("userData"), process.env, process.argv);
+  if (graphics.shouldDisable) app.disableHardwareAcceleration();
+  bootstrap(home);
+}
+
+function bootstrap(dataHome: string): void {
+  const graphicsBootstrap = loadGraphicsBootstrap(app.getPath("userData"), process.env, process.argv);
+  const graphicsTemporary = consumeGraphicsRecoveryArg(process.argv);
+  const graphics = new GraphicsSettingsStore(graphicsBootstrap.configPath, graphicsBootstrap);
+  const logsDir = join(app.getPath("userData"), "logs");
+  const log = createLogger(new RotatingFile(join(logsDir, "shell.log")), !app.isPackaged);
+  log.info(
+    `graphics acceleration: saved=${graphics.current.hardwareAcceleration} startup=${graphics.current.startupEnabled} override=${graphics.current.override} recovery=${graphicsTemporary} warning=${graphics.current.warning ?? "none"}`,
+  );
+  app.on("gpu-info-update", () => {
+    try {
+      log.info(`graphics feature status: ${JSON.stringify(app.getGPUFeatureStatus())}`);
+    } catch (error) {
+      log.warn(`graphics status unavailable: ${errorText(error)}`);
+    }
+  });
+  const serviceLog = new RotatingFile(join(logsDir, "service.log"));
+  let buildVersion = "unknown";
+  try {
+    buildVersion = loadBuildIdentity(app.isPackaged, process.resourcesPath, process.env).version;
+  } catch {
+    /* Handshake owns the visible metadata error. */
+  }
+  const status = initialShellStatus(app.getPath("userData"), buildVersion);
+  let firstHeartbeat = 0;
+  const startingPage = { code: null, name: "starting", title: "Reasonix is starting / 正在启动", detail: "Please wait. / 请稍候。" };
+  let lastFailure: HandshakeFailure = startingPage;
+  let startupTimer: ReturnType<typeof setTimeout> | undefined;
+  const startupDelay = new StartupDelay();
+  process.on("uncaughtException", (error) => log.error(`uncaught exception: ${errorText(error)}`));
+  process.on("unhandledRejection", (reason) => log.error(`unhandled rejection: ${errorText(reason)}`));
+
+  protocol.registerSchemesAsPrivileged([
+    { scheme: APP_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: false, stream: true } },
+  ]);
+
+  const contractPath = join(__dirname, "desktopContract.json");
+  let contract: LoadedContract;
+  try {
+    contract = loadContract(contractPath);
+  } catch (error) {
+    log.warn(`desktop contract unavailable (${errorText(error)}); every desktop/invoke will be rejected`);
+    contract = emptyContract();
+  }
+  const distRoot = resolveDistRoot({ env: process.env, appPath: app.getAppPath(), resourcesPath: process.resourcesPath, packaged: app.isPackaged });
+  const devURL = (process.env.REASONIX_ELECTRON_DEV_URL ?? "").trim();
+  const appURL = devURL !== "" ? devURL : APP_INDEX_URL;
+  const zoomStore = new AppZoomStore(join(dataHome, "electron-app-zoom.json"), join(dataHome, "desktop-zoom.json"));
+  const icons = iconCandidates({ platform: process.platform, appPath: app.getAppPath(), resourcesPath: process.resourcesPath, packaged: app.isPackaged });
+  const windowIcon = process.platform === "darwin" ? undefined : (firstExisting(icons.window) ?? undefined);
+  const serviceLookup = resolveServiceBinary({
+    env: process.env,
+    platform: process.platform,
+    execPath: process.execPath,
+    resourcesPath: process.resourcesPath,
+  });
+  const serviceBinary = serviceLookup.binary;
+  const packageGrants = stripPackageGrants(
+    serviceBinary,
+    { platform: process.platform, packaged: app.isPackaged, execPath: process.execPath },
+    (line) => log.warn(line),
+  );
+  if (packageGrants?.stripped.length) {
+    log.warn(`removed app-package grants that stop sandboxed processes loading: ${packageGrants.stripped.join(", ")}`);
+  }
+  let grantCauseShown = false;
+
+  let shellBuild = { version: buildVersion, channel: "", commit: "" };
+  try {
+    const identity = loadBuildIdentity(app.isPackaged, process.resourcesPath, process.env);
+    shellBuild = {
+      version: identity.version,
+      channel: identity.channel,
+      commit: identity.commit,
+    };
+  } catch {
+    /* Handshake reports invalid packaged identity. */
+  }
+  const shellLifecycle = new ShellLifecycle(dataHome, shellBuild);
+  log.info(
+    `startup ${status.generation}: shell pid=${process.pid} version=${shellBuild.version} channel=${shellBuild.channel || "unknown"} commit=${shellBuild.commit || "unknown"}`,
+  );
+
+  let domReadyGeneration = "";
+
+  let mainWindow: MainWindow;
+  let browser: BrowserSurfaceManager;
+  let lifecycle: QuitSequencer;
+  let graphicsRecovery: ReturnType<typeof installGraphicsRecovery>;
+  let guestViews: ElectronGuestViewFactory;
+  mainWindow = new MainWindow({
+    isQuitting: () => lifecycle.isQuitting,
+    preloadPath: join(__dirname, "preload.cjs"),
+    appURL,
+    platform: process.platform,
+    icon: windowIcon,
+    log,
+    onRendererFailure: (details, canReload) => {
+      const cause = mainWindow.browserWindow?.isVisible() || details.reason !== "crashed" || grantCauseShown ? null : unpaintedWindowCause(packageGrants, app.getLocale());
+      if (cause) {
+        grantCauseShown = true;
+        dialog.showErrorBox(cause.title, cause.detail);
+      }
+      return graphicsRecovery.recovery.fault({ role: "renderer", ...details }, canReload);
+    },
+    onUnresponsive: () => graphicsRecovery.recovery.unresponsive(),
+    onResponsive: () => graphicsRecovery.recovery.responsive(),
+    onRendererLost: (reason) => {
+      status.healthy = false;
+      status.rendererVersion = "";
+      firstHeartbeat = 0;
+      browser.pauseForRendererLoss(reason);
+      for (const tab of browser.all()) documents.invalidateTab(tab.id);
+    },
+    onAppDomReady: (rendererGeneration) => {
+      const generation = service.generation;
+      if (generation === "") return;
+      const attach = () =>
+        service.request("desktop/rendererAttached", { rendererGeneration }).catch((error: unknown) => {
+          log.warn(`rendererAttached failed: ${errorText(error)}`);
+        });
+      if (domReadyGeneration === generation) {
+        void attach();
+        return;
+      }
+      domReadyGeneration = generation;
+      void service
+        .request("desktop/domReady", {})
+        .catch((error: unknown) => log.warn(`domReady failed: ${errorText(error)}`))
+        .then(attach);
+    },
+    onCloseRequested: () => lifecycle.requestWindowClose(),
+    onShellAction: (action: ShellAction) => {
+      if (action === "open-logs") void shell.openPath(logsDir);
+      else if (action === "restart") {
+        if (lifecycle.isQuitting) return;
+        const launcher = process.platform === "win32" ? supersededLauncher(process.execPath, buildVersion) : undefined;
+        if (launcher) lifecycle.relaunch(process.argv.slice(1), launcher);
+        else void service.restart().catch(() => undefined);
+      } else lifecycle.approve();
+    },
+    zoomStore,
+  });
+
+  const browserControlBootstrap = loadBrowserControlBootstrap(app.getPath("userData"));
+  const browserControlStore = new BrowserControlStore(browserControlBootstrap.configPath, browserControlBootstrap);
+  const browserControl = new BrowserControlHost({
+    store: browserControlStore,
+    sharedSession: () => session.fromPartition(SHARED_PARTITION) as unknown as BrowserSession & { cookies: CookieSink },
+    log,
+    platform: process.platform,
+    home: homedir(),
+    env: process.env,
+    list: (path) => readdirSync(path),
+    onControlEnabled: (enabled) => {
+      // The Go host reads this when it builds a session's tool set, so the new
+      // value reaches new sessions without disturbing a running turn.
+      void service.request("desktop/browserControl", { enabled }).catch((error: unknown) => {
+        log.warn(`browser control push failed: ${errorText(error)}`);
+      });
+    },
+  });
+  log.info(
+    `browser control: enabled=${browserControlBootstrap.state.controlEnabled} ignoreCertificateErrors=${browserControlBootstrap.state.ignoreCertificateErrors} warning=${browserControlBootstrap.state.warning ?? "none"}`,
+  );
+
+  const downloads = new DownloadTracker({
+    tabForWebContents: (id) => {
+      const tab = browser.all().find((entry: BrowserTab) => entry.view.page.id === id);
+      return tab ? { id: tab.id, taskId: tab.taskId } : undefined;
+    },
+    defaultDirectory: (taskId) => join(app.getPath("userData"), "downloads", safeDirName(taskId)),
+    onUpdate: (download) => mainWindow.send(IPC.browserDownload, download),
+    log,
+  });
+  guestViews = new ElectronGuestViewFactory({
+    window: () => mainWindow.browserWindow,
+    preloadPath: join(__dirname, "guest-preload.cjs"),
+    log,
+    onSession: (partition, guestSession) => {
+      browserControl.trackSession(partition, guestSession);
+      guestSession.on("will-download", (_event, item, contents) => downloads.handleWillDownload(item, contents.id));
+    },
+  });
+  browser = new BrowserSurfaceManager({
+    views: guestViews,
+    contentSize: () => mainWindow.contentSize(),
+    onTakeover: (tab, reason) =>
+      void service.hostEvent("browser.takeover", {
+        tabId: tab.id,
+        epoch: tab.epoch,
+        reason,
+      }),
+    onCrash: (tab, reason) =>
+      void service.hostEvent("browser.crash", {
+        tabId: tab.id,
+        epoch: tab.epoch,
+        reason,
+      }),
+    log,
+  });
+  browser.subscribe((tabs) => mainWindow.send(IPC.browserTabs, tabs));
+  const browserRecovery = new BrowserRecoveryStore(join(app.getPath("userData"), "browser-tabs-v1.json"), message => log.warn(message));
+  browser.restore(browserRecovery.tabs);
+  const stopBrowserRecovery = browser.subscribe(() => browserRecovery.save(browser.recoveryTabs()));
+  const grants = new GrantRegistry({ generation: () => service.generation });
+  const browserDiagnosticExport = new BrowserDiagnosticExport(browser, grants, { build: shellBuild.commit, version: shellBuild.version, platform: process.platform });
+  const browserRecorder = new BrowserRecorder(browser, grants, __dirname);
+  const browserCaptureQueue = new CaptureQueue();
+  const documents = new DocumentRegistry();
+  const actions = new ActionExecutor({ surfaces: browser, documents });
+
+  const remote = new RemoteWindowHost({
+    platform: process.platform,
+    icon: windowIcon,
+    log,
+    onClosed: (hostKey) => void service.hostEvent("remoteWindow.closed", { hostKey }),
+  });
+  const tray = new TrayHost({
+    platform: process.platform,
+    iconPath: firstExisting(icons.tray),
+    onOpen: () => {
+      mainWindow.show("tray");
+      void service.hostEvent("tray.open", {});
+    },
+    onQuit: () => void service.hostEvent("tray.quit", {}),
+    log,
+  });
+  const dialogs = new DialogHost(dialog, () => mainWindow.browserWindow ?? undefined);
+
+  lifecycle = new QuitSequencer({
+    service: {
+      beforeClose: async (reason) => record(await service.request("desktop/beforeClose", { reason })).prevent === true,
+      shutdown: (reason, onProgress) => service.shutdown(reason, onProgress),
+      shutdownRequestIdentity: () => service.shutdownRequestIdentity,
+    },
+    app: {
+      quit: () => app.quit(),
+      exit: (code) => app.exit(code),
+      relaunch: (args: string[], execPath?: string) => {
+        if (execPath) delete process.env.REASONIX_DESKTOP_SERVICE;
+        app.relaunch({ args, ...(execPath ? { execPath } : {}) });
+      },
+    },
+    flushRenderer: () => mainWindow.flushSessionDraft(),
+    resumeRenderer: () => mainWindow.resumeSessionDraftEditing(),
+    confirmRecoveryDraftLoss,
+    onWindowClosePrevented: () => mainWindow.hide(),
+    onPrepareFailed: async (message) => {
+      const parent = mainWindow.browserWindow;
+      const options = {
+        type: "error" as const,
+        title: "Close paused / 关闭已暂停",
+        message: "Reasonix could not save the current draft. / Reasonix 无法保存当前草稿。",
+        detail: `${message}\n\nThe window will remain open so you can retry. / 窗口将保持打开，你可以重试。`,
+        buttons: ["OK / 确定"],
+        noLink: true,
+      };
+      if (parent) await dialog.showMessageBox(parent, options);
+      else await dialog.showMessageBox(options);
+    },
+    onShutdownFailed: async (message) => {
+      const options = {
+        type: "error" as const,
+        title: "Exit incomplete / 退出未完成",
+        message: "Reasonix could not safely finish saving and closing. / Reasonix 未能安全完成保存与收尾。",
+        detail: `${message}\n\nYou can retry the remaining steps or keep this window open. / 你可以重试未完成的步骤，或保留当前窗口。`,
+        buttons: ["Retry exit / 重试退出", "Keep open / 保留窗口"],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      };
+      const parent = mainWindow.browserWindow;
+      const result = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options);
+      return result.response === 0;
+    },
+    // Website views go first: a WebContents closing after its window is
+    // gone is the ordering that left orphaned renderers in the prototype.
+    onCloseAllowed: () => mainWindow.allowClose(),
+    cleanup: [
+      { name: "browser views", run: async () => { await browserRecorder.close(); stopBrowserRecovery(); browserRecovery.save(browser.recoveryTabs()); browser.destroyAll(); browserDiagnosticExport.dispose(); } },
+      { name: "remote windows", run: () => remote.closeAll() },
+      { name: "main window", run: () => mainWindow.close() },
+      { name: "tray", run: () => tray.destroy() },
+      { name: "startup deadline", run: () => clearTimeout(startupTimer) },
+      { name: "startup presentation", run: () => startupDelay.cancel() },
+      { name: "shell lifecycle", run: () => shellLifecycle.complete() },
+    ],
+    log,
+  });
+
+  const hostCalls = buildHostCallTable({
+    window: mainWindow,
+    dialogs,
+    tray,
+    remote,
+    lifecycle,
+    openExternal: (url) => {
+      new URL(url);
+      return shell.openExternal(url);
+    },
+    hideApp: () => {
+      if (process.platform === "darwin") app.hide();
+      else mainWindow.hide();
+    },
+    screens: (): ScreenInfo[] => {
+      const primary = screen.getPrimaryDisplay().id;
+      return screen.getAllDisplays().map((display) => ({
+        x: display.bounds.x,
+        y: display.bounds.y,
+        width: display.bounds.width,
+        height: display.bounds.height,
+        scale: display.scaleFactor,
+        primary: display.id === primary,
+      }));
+    },
+    browser: buildBrowserHostCalls({
+      surfaces: browser,
+      grants,
+      documents,
+      actions,
+      downloads,
+      recorder: browserRecorder,
+      captureQueue: browserCaptureQueue,
+      diagnosticExport: browserDiagnosticExport,
+      trace: event => log.info(`browser operation ${JSON.stringify({ ...event, build: shellBuild.commit, version: shellBuild.version, platform: process.platform })}`),
+      screenshotDeps: { decodePNG: (data) => nativeImage.createFromBuffer(data).getSize() },
+    }),
+  });
+
+  const service = new ServiceSupervisor(
+    {
+      binary: serviceBinary,
+      args: ["--host-rpc"],
+      env: process.env,
+      onStderr: (chunk) => {
+        serviceLog.write(chunk);
+        if (!app.isPackaged) process.stderr.write(chunk);
+      },
+      log,
+    },
+    {
+      hello: async (client) =>
+        validateHelloResult(
+          await client.request(
+            "desktop/hello",
+            buildHelloParams({
+              protocolVersion: contract.protocolVersion,
+              contractDigest: contract.digest,
+              ...loadBuildIdentity(app.isPackaged, process.resourcesPath, process.env),
+              hostVersion: process.versions.electron,
+              chromeVersion: process.versions.chrome,
+              platform: process.platform,
+              arch: process.arch,
+              home: dataHome,
+              dev,
+            }),
+            10_000,
+          ),
+          contract.protocolVersion,
+        ),
+      onRequest: (method, params) => {
+        if (lifecycle.isQuitting) return Promise.reject(new Error("Reasonix is shutting down"));
+        return dispatchHostCall(hostCalls, method, params);
+      },
+      onEvent: (frame) => {
+        if (frame.name === "topic:activation") {
+          const phase = (frame.args[0] as { phase?: unknown } | undefined)?.phase;
+          if (["starting", "ready", "failed", "cancelled"].includes(String(phase))) log.info(`session activation phase=${phase}`);
+        }
+        mainWindow.send(IPC.event, frame);
+      },
+      onState: (state) => {
+        shellLifecycle.mark(`service_${state.phase}`);
+        log.info(`startup ${status.generation}: service=${state.phase} generation=${state.generation}`);
+        status.service = state.phase;
+        status.healthy = false;
+        status.rendererVersion = "";
+        firstHeartbeat = 0;
+        if (state.phase === "starting" || state.phase === "restarting") {
+          status.lifecycle = "starting";
+          startupDelay.start(() => {
+            if (lifecycle.isQuitting || status.lifecycle !== "starting" || mainWindow.browserWindow) return;
+            mainWindow.create(DEFAULT_GEOMETRY);
+            void mainWindow.showStartup(renderStartupPage());
+          });
+          clearTimeout(startupTimer);
+          startupTimer = setTimeout(() => {
+            if (lifecycle.isQuitting || status.healthy || status.lifecycle === "failed") return;
+            lastFailure = {
+              code: null,
+              name: "startup_timeout",
+              title: "Startup incomplete / 启动未完成",
+              detail: "Reasonix did not become ready within 30 seconds. Open logs or retry. / 30 秒内未完成启动，请打开日志或重试。",
+            };
+            status.lifecycle = "failed";
+            startupDelay.cancel();
+            log.error(`startup ${status.generation}: readiness timeout`);
+            if (!mainWindow.browserWindow) mainWindow.create(DEFAULT_GEOMETRY);
+            void mainWindow.showFailure(renderFailurePage(lastFailure, logsDir));
+          }, 30_000);
+          startupTimer.unref();
+        }
+        mainWindow.send(IPC.serviceState, state);
+        grants.observeGeneration(state.generation);
+        if (state.phase !== "ready") {
+          browser.pauseForRendererLoss(`service ${state.phase}`);
+          documents.clear();
+        }
+      },
+      onReady: async (hello: HelloResult) => {
+        shellLifecycle.start(hello);
+        startupDelay.cancel();
+        if (lifecycle.isQuitting) return;
+        status.lifecycle = "ready";
+        status.servicePID = hello.service.pid;
+        const identityLog = hello.instance
+          ? `, path identity v${hello.instance.identityVersion} ${hello.instance.identityDigest}`
+          : ", legacy path identity";
+        log.info(
+          `desktop service ready: generation ${hello.runtimeGeneration}, pid ${hello.service.pid}, version=${hello.service.version} channel=${hello.service.channel || "unknown"} commit=${hello.service.commit || "unknown"}${identityLog}`,
+        );
+        try {
+          await zoomStore.load();
+        } catch (error) {
+          log.warn(`app zoom initialization failed: ${errorText(error)}`);
+        }
+        if (lifecycle.isQuitting || service.generation !== hello.runtimeGeneration) return;
+        mainWindow.prepareApp(hello.window);
+        // A restarted service starts with the capability on, so the persisted
+        // switch is replayed before any session can be built.
+        void service
+          .request("desktop/browserControl", {
+            enabled: browserControl.state().controlEnabled,
+          })
+          .catch((error: unknown) => log.warn(`browser control push failed: ${errorText(error)}`));
+        if (!mainWindow.browserWindow) {
+          try {
+            await zoomStore.load();
+            mainWindow.create(hello.window);
+          } catch (error) {
+            log.warn(`app zoom initialization failed: ${errorText(error)}`);
+            mainWindow.create(DEFAULT_GEOMETRY);
+          }
+        }
+        // Reattach the surviving renderer after a service restart. Reloading
+        // would destroy unsent composer drafts; desktop:resync repairs reads.
+        if (!mainWindow.reattachApp()) void mainWindow.loadApp();
+      },
+      onFailed: (error) => {
+        startupDelay.cancel();
+        if (lifecycle.isQuitting) return;
+        const failure = describeHandshakeFailure(error);
+        lastFailure = failure;
+        status.lifecycle = "failed";
+        log.error(`desktop service failed: ${failure.name}: ${failure.detail}`);
+        if (!mainWindow.browserWindow) mainWindow.create(DEFAULT_GEOMETRY);
+        void mainWindow.showFailure(renderFailurePage(failure, logsDir));
+      },
+    },
+  );
+
+  // Session end and scripted shutdowns deliver SIGTERM; quit through the same
+  // sequence as the menu so Go snapshots sessions before the process ends.
+  process.on("SIGTERM", () => lifecycle.requestQuit("system_signal"));
+  app.on("second-instance", (_event, argv) => {
+    if (argv.includes(QUIT_REQUEST)) {
+      lifecycle.requestQuit();
+      return;
+    }
+    presentInstance(argv, "second-instance");
+  });
+  function presentInstance(argv: string[] = [], reason: StartupPresentReason = "second-instance"): void {
+    if (lifecycle.isQuitting) return;
+    if (!app.isReady()) {
+      void app.whenReady().then(() => presentInstance(argv, reason));
+      return;
+    }
+    const action = startupPresentation({
+      serviceReady: service.ready,
+      hasWindow: Boolean(mainWindow.browserWindow),
+      lifecycle: startupLifecycle(status.lifecycle),
+    });
+    if (action === "diagnostic") {
+      if (!mainWindow.browserWindow) mainWindow.create(DEFAULT_GEOMETRY);
+      void mainWindow.showFailure(renderFailurePage(lastFailure, logsDir));
+    }
+    if (action !== "none") mainWindow.focusForSecondInstance();
+    if (service.ready) void service.hostEvent("secondInstance", { argv });
+  }
+  app.on("activate", () => presentInstance([], "activate"));
+  app.on("before-quit", (event) => {
+    startupDelay.cancel();
+    if (!lifecycle.onBeforeQuit()) event.preventDefault();
+  });
+  app.on("window-all-closed", () => {
+    if (!service.ready) lifecycle.requestQuit();
+  });
+  const statusServer =
+    process.platform === "win32"
+      ? listenShellStatus(
+          () => ({
+            ...status,
+            lifecycle: lifecycle.currentPhase === "completed" ? "done" : lifecycle.isQuitting ? "quitting" : status.lifecycle,
+            visible: mainWindow.browserWindow?.isVisible() ?? false,
+          }),
+          log,
+        )
+      : undefined;
+  app.on("will-quit", () => statusServer?.close());
+
+  graphicsRecovery = installGraphicsRecovery({ graphics, lifecycle, log, logsDir, build: buildVersion, temporary: graphicsTemporary });
+
+  void app.whenReady().then(() => {
+      if (lifecycle.isQuitting) return;
+      if (process.platform === "darwin") {
+        const dockIcon = firstExisting(icons.dock);
+        if (dockIcon && app.dock) app.dock.setIcon(dockIcon);
+      }
+      registerAppProtocol({
+        protocol,
+        fetch: (input, init) => net.fetch(input, init),
+        distRoot,
+        resources: () => service.helloResult?.resources ?? null,
+        log,
+      });
+      session.defaultSession.setPermissionRequestHandler((contents, permission, callback) => {
+        callback(mainWindow.isTrustedSender(contents, contents.mainFrame) && MAIN_WINDOW_PERMISSIONS.has(permission));
+      });
+      const diagnostics = new ProcessDiagnostics(
+        () => app.getAppMetrics(),
+        undefined,
+        () => Boolean(mainWindow.browserWindow?.isVisible() && mainWindow.browserWindow?.isFocused()),
+      );
+      const performanceHost = createPerformanceHost({
+        window: () => mainWindow.browserWindow,
+        dialog,
+        workerPath: join(__dirname, "profile-analysis.cjs"),
+        locale: () => app.getLocale(),
+      });
+      diagnostics.sample();
+      const diagnosticsTimer = setInterval(() => diagnostics.sample(), 30_000);
+      diagnosticsTimer.unref();
+      app.once("will-quit", () => {
+        clearInterval(diagnosticsTimer);
+        performanceHost.dispose();
+      });
+      registerRendererIpc({
+        processDiagnostics: () => diagnostics.snapshot(),
+        performance: performanceHost,
+        ipcMain,
+        contract,
+        window: mainWindow,
+        invoke: async (method, args) => {
+          const generation = service.generation;
+          const recovery = ["PrepareSession", "GetSessionPreparation", "StartTopicActivation"].includes(method);
+          if (recovery) log.info(`session recovery method=${method} stage=request`);
+          const result = await service.invoke(method, args);
+          if (generation !== service.generation || lifecycle.isQuitting) return result;
+          if (recovery) {
+            const state = result as { status?: unknown; meta?: { ready?: boolean } } | undefined;
+            const phase = ["queued", "preparing", "ready", "blocked", "failed", "cancelled"].includes(String(state?.status)) ? state?.status : "ticket";
+            log.info(`session recovery method=${method} stage=response phase=${phase} ready=${state?.meta?.ready === true}`);
+          }
+          // Keep recovery evidence content-free: distinguish an empty producer
+          // cut from rows lost later in renderer hydration. Poll replies have
+          // no snapshot and do not produce a log entry.
+          if (method === "TranscriptFollowForTab" && result && typeof result === "object") {
+            const cut = result as { snapshot?: { totalRecords?: number; coveredThroughSeq?: number }; history?: { status?: string; messages?: unknown[] } };
+            if (cut.snapshot) log.info(`transcript baseline records=${cut.snapshot.totalRecords ?? 0} sequence=${cut.snapshot.coveredThroughSeq ?? 0} history_status=${cut.history?.status ?? "missing"} history_messages=${cut.history?.messages?.length ?? 0}`);
+          }
+          if (method === "Version" && typeof result === "string") status.rendererVersion = result;
+          if (method === "ReportDesktopWebViewReady") {
+            if (!firstHeartbeat) firstHeartbeat = Date.now();
+            else if (Date.now() - firstHeartbeat >= 2000 && status.lifecycle === "ready") {
+              status.healthy = true;
+              graphicsRecovery.healthy();
+              clearTimeout(startupTimer);
+            }
+            if (status.rendererVersion === "")
+              void mainWindow.browserWindow?.webContents.executeJavaScript('window.reasonixDesktop.invoke("Version", [])').catch(() => undefined);
+          }
+          return result;
+        },
+        serviceState: () => service.current,
+        clipboard,
+        graphics,
+        browserControl,
+        openExternal: (url) => shell.openExternal(url),
+        browser: {
+          list: () => browser.list(),
+          open: async (url, options) => browser.view(await browser.open(url, options)),
+          close: (tabId) => browser.close(tabId),
+          activate: (tabId) => browser.activate(tabId),
+          navigate: async (tabId, target) => {
+            await browser.navigate(tabId, target);
+          },
+          setZoom: (tabId, factor) => browser.setZoom(tabId, factor),
+          setViewport: (tabId, viewport) => browser.setViewport(tabId, viewport),
+          record: async (tabId, action) => {
+            const tab = browser.require(tabId);
+            if (action === "start") { browser.takeover(tabId, "user recording"); await tab.view.ensureLoaded?.(); }
+            const directory = join(app.getPath("userData"), "browser-recordings");
+            await mkdir(directory, { recursive: true });
+            return browserRecorder.userRequest(tab, action, directory);
+          },
+          diagnostics: tabId => browser.require(tabId).view.diagnostics?.read() ?? { available: false },
+          restorePreview: async tabId => {
+            const tab = browser.require(tabId), generation = service.generation;
+            if (!tab.fileReference || !tab.view.isPlaceholder?.()) throw new Error("not a restored file preview");
+            const tasks = await service.invoke("ListTabs", []) as { id: string; sessionPath?: string; sessionGeneration?: number }[];
+            const task = tasks.find(task => task.id === tab.taskId && task.sessionPath === tab.sessionId);
+            if (!task?.sessionGeneration || service.generation !== generation) throw new Error("open the original task and session before restoring its preview");
+            const result = await service.invoke("OpenFileBrowserPreviewForTab", [tab.taskId, { ...tab.fileReference, expectedSessionGeneration: task.sessionGeneration, operationId: `restore-${randomToken()}`, userInitiated: true }]) as { tabId?: string; error?: string };
+            if (service.generation !== generation || browser.get(tabId) !== tab) throw new Error("preview recovery was interrupted");
+            if (!result.tabId || result.error) throw new Error(result.error || "preview recovery failed");
+            browser.close(tabId); browser.activate(result.tabId);
+          },
+          screenshot: async tabId => {
+            const tab = browser.require(tabId);
+            browser.takeover(tabId, "user screenshot");
+            await tab.view.ensureLoaded?.();
+            const epoch = tab.epoch, revision = tab.viewportRevision;
+            const controller = new AbortController();
+            const verify = () => { controller.signal.throwIfAborted(); if (browser.get(tabId) !== tab || tab.epoch !== epoch || tab.viewportRevision !== revision) throw new Error("page changed during screenshot"); };
+            const off = browser.subscribe(() => { try { verify(); } catch { controller.abort(); } });
+            const timer = setTimeout(() => controller.abort(), 9000);
+            let release: (() => void) | undefined;
+            try {
+              const directory = join(app.getPath("userData"), "browser-captures");
+              await mkdir(directory, { recursive: true });
+              return await browserCaptureQueue.run(controller.signal, async () => {
+                verify();
+                release = await tab.view.prepareCapture?.(controller.signal);
+                try {
+                  return await captureScreenshot(tab.view.page, null, tab.view.inputScale?.() ?? 1, { directory, ref: "", fullPage: false }, { viewport: tab.viewport, pixelRatio: tab.view.capturePixelRatio?.(), verify, decodePNG: data => nativeImage.createFromBuffer(data).getSize() });
+                } finally { release?.(); release = undefined; }
+              });
+            } finally { clearTimeout(timer); off(); release?.(); }
+          },
+          pickElement: async tabId => {
+            const tab = browser.require(tabId);
+            browser.takeover(tabId, "element picker");
+            await tab.view.ensureLoaded?.();
+            const identity = { taskId: tab.taskId, sessionId: tab.sessionId, tabId, epoch: tab.epoch, url: tab.view.page.getURL(), time: Date.now() };
+            const operation = randomToken(8);
+            if (!browser.view(tab).active) throw new Error("show the original page before selecting an element");
+            browser.setOperation(tab, { id: operation, phase: "picking" });
+            // This focus is only for the explicit user picker action. Without
+            // it Escape remains in the application renderer and cannot cancel.
+            tab.view.page.focus();
+            const offPicker = browser.subscribe(() => {
+              if ((browser.get(tabId) !== tab || !browser.view(tab).active) && !tab.view.page.isDestroyed()) {
+                void tab.view.page.executeJavaScriptInIsolatedWorld(BROWSER_WORLD, [{ code: browserScriptCall("pageCancelPicker", {}) }]).catch(() => {});
+              }
+            });
+            try {
+              const element = await tab.view.page.executeJavaScriptInIsolatedWorld(BROWSER_WORLD, [{ code: browserScriptCall("pagePickElement", { key: BROWSER_REGISTRY }) }]);
+              return element ? { ...identity, element } : null;
+            } finally { offPicker(); if (tab.operation?.id === operation) browser.setOperation(tab, { id: operation, phase: "completed" }); }
+          },
+          toggleDevTools: (tabId) => browser.toggleDevTools(tabId),
+          resume: (tabId) => browser.resume(tabId),
+          takeover: (tabId) => browser.takeover(tabId, "user takeover"),
+          setLayout: (rect) => browser.setLayout(browserLayoutInDIP(rect, mainWindow.browserWindow?.webContents.getZoomFactor() ?? 1)),
+          setOverlay: (active) => browser.setOverlay(active),
+        },
+        log,
+      });
+      // Reports from the guest preload: the sender must be one of our website
+      // views, which takeoverFromSender checks by WebContents id.
+      ipcMain.on(IPC.browserTakeover, (event, payload: unknown) => {
+        const kind = typeof payload === "object" && payload !== null ? (payload as { kind?: unknown }).kind : undefined;
+        if (typeof kind !== "string" || !TAKEOVER_KINDS.has(kind)) return;
+        browser.takeoverFromSender(event.sender.id, kind as BrowserTakeoverKind);
+      });
+      installApplicationMenu({
+        platform: process.platform,
+        openSettings: () => mainWindow.sendShellEvent("app:open-settings", service.generation),
+        toggleDevTools: () => mainWindow.toggleDevTools(),
+        showWindow: () => mainWindow.show("menu"),
+        stopBrowserRecording: () => { void browserRecorder.stopCurrent().catch(error => log.warn(`Stop browser recording failed: ${String(error)}`)); },
+        quit: () => lifecycle.requestQuit(),
+        zoomIn: () => {
+          void mainWindow.stepAppZoom(1);
+        },
+        zoomOut: () => {
+          void mainWindow.stepAppZoom(-1);
+        },
+        resetZoom: () => {
+          void mainWindow.resetAppZoom();
+        },
+      });
+      const probed = serviceLookup.probed.length > 0 ? ` (probed ${serviceLookup.probed.join(", ")})` : "";
+      log.info(`shell starting: service ${serviceBinary}${probed}, ui ${appURL}, dist ${distRoot}, home ${dataHome}`);
+      return service.start().catch(() => undefined);
+    })
+    .catch((error: unknown) => {
+      log.error(`shell bootstrap failed: ${errorText(error)}`);
+      app.exit(1);
+    });
+}

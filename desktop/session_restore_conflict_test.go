@@ -114,7 +114,7 @@ func TestRestoreTrashedSessionFilePreservesStubOnSubagentConflict(t *testing.T) 
 	}
 }
 
-func TestRestoreSessionFinishesCommittedPartialTrashMove(t *testing.T) {
+func TestLegacyRestoreSessionFinishesCommittedPartialTrashMove(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
 	dir := config.SessionDir()
@@ -141,7 +141,7 @@ func TestRestoreSessionFinishesCommittedPartialTrashMove(t *testing.T) {
 
 	app := NewApp()
 	t.Cleanup(func() { app.stopSessionCatalog(time.Second) })
-	if err := app.RestoreSession(trashPath); err != nil {
+	if err := app.restoreSession(trashPath); err != nil {
 		t.Fatalf("restore partial trash move: %v", err)
 	}
 	if got, err := os.ReadFile(sessionPath); err != nil || string(got) != transcript {

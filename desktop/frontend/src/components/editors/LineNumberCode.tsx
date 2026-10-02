@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { EditorProps } from "../CodeViewer";
 import { highlightToHtml, shouldHighlightSource } from "../../lib/highlight";
+import { splitHighlightedCodeLines } from "../../lib/highlightLines";
+export { splitHighlightedCodeLines } from "../../lib/highlightLines";
 import { useT } from "../../lib/i18n";
 import { CopyButton } from "../CopyButton";
 import {
@@ -110,47 +112,6 @@ export function highlightLineMatches(
   return result;
 }
 
-// A multiline highlight.js span may cross a newline. Each virtual row needs
-// valid standalone HTML, so close active tags at the boundary and reopen the
-// same stack on the next line.
-export function splitHighlightedCodeLines(html: string): string[] {
-  const lines: string[] = [];
-  const openTags: string[] = [];
-  let current = "";
-  let offset = 0;
-
-  while (offset < html.length) {
-    if (html[offset] === "\n") {
-      current += closeTags(openTags);
-      lines.push(current);
-      current = openTags.join("");
-      offset += 1;
-      continue;
-    }
-    if (html[offset] === "<") {
-      const tagEnd = html.indexOf(">", offset);
-      if (tagEnd !== -1) {
-        const tag = html.slice(offset, tagEnd + 1);
-        current += tag;
-        if (/^<(span|mark)\b/.test(tag)) {
-          openTags.push(tag);
-        } else if (/^<\/(span|mark)>$/.test(tag)) {
-          openTags.pop();
-        }
-        offset = tagEnd + 1;
-        continue;
-      }
-    }
-    const codePoint = html.codePointAt(offset) ?? 0;
-    const length = codePoint > 0xffff ? 2 : 1;
-    current += html.slice(offset, offset + length);
-    offset += length;
-  }
-
-  current += closeTags(openTags);
-  lines.push(current);
-  return lines;
-}
 
 export default function LineNumberCode({
   value,
@@ -678,11 +639,4 @@ function decodedEntityLength(entity: string): number {
   return Number.isFinite(numeric) && numeric >= 0 && numeric <= 0x10ffff
     ? String.fromCodePoint(numeric).length
     : entity.length;
-}
-
-function closeTags(openTags: string[]): string {
-  return [...openTags]
-    .reverse()
-    .map((tag) => tag.startsWith("<mark") ? "</mark>" : "</span>")
-    .join("");
 }

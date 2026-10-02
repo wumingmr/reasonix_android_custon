@@ -1,0 +1,35 @@
+import assert from "node:assert/strict";
+import path from "node:path";
+import os from "node:os";
+import { fileURLToPath } from "node:url";
+import { createServer } from "vite";
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+process.env.PLAYWRIGHT_BROWSERS_PATH = path.join(root, ".pw-browsers");
+const { chromium } = await import("playwright");
+const server = await createServer({ root, logLevel: "error", server: { host: "127.0.0.1", port: 0 } });
+await server.listen();
+const browser = await chromium.launch({ headless: true });
+const page = await browser.newPage({ viewport: { width: 1000, height: 720 } });
+const errors = [];
+page.on("pageerror", error => errors.push(error.message));
+try {
+  await page.goto(server.resolvedUrls.local[0] + "bench/model-application.html");
+  await page.getByRole("alert").waitFor();
+  assert.equal(await page.getByRole("textbox").inputValue(), "Keep my unsent message and attachment");
+  await page.getByRole("button", { name: /current settings/i }).click();
+  const choice = await page.evaluate(() => window.modelApplicationFixture.calls[0][0]);
+  assert.equal(choice.mode, "applied_once");
+  assert.equal(choice.expectedRuntimeIdentity, "runtime");
+  await page.getByRole("button", { name: /blocking jobs/i }).click();
+  await page.getByRole("checkbox").first().check();
+  await page.screenshot({ path: path.join(os.tmpdir(), "reasonix-model-application.png") });
+  await page.getByRole("button", { name: /stop selected/i }).click();
+  await page.getByRole("alert").waitFor({ state: "detached" });
+  const result = await page.evaluate(() => window.modelApplicationFixture);
+  assert.deepEqual(result.calls[1][2], ["task-1"]);
+  assert.equal(result.sends, 1, "applying settings must not resend the draft");
+  assert.equal(await page.getByRole("textbox").inputValue(), "Keep my unsent message and attachment");
+  assert.equal(await page.getByTestId("attachment").textContent(), "fixture.txt");
+  assert.deepEqual(errors, []);
+  console.log("PASS browser: one-submit choice, selected cancellation, preserved draft/attachment, no automatic resend");
+} finally { await browser.close(); await server.close(); }

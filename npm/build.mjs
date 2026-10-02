@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { publishPackages } from "./publish.mjs";
+import { publishPackages, stableDistTagFromEnv } from "./publish.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
@@ -100,6 +100,24 @@ mainPkg.reasonixCandidateSha = candidateSha;
 for (const key of Object.keys(mainPkg.optionalDependencies)) {
   mainPkg.optionalDependencies[key] = version;
 }
+// Guard against drift between the platform packages we build and the
+// optionalDependencies the main package declares: a typo would otherwise ship
+// a main package referencing a binary package that was never built.
+const expectedNames = TARGETS.map((t) => `@reasonix/cli-${t.node}`);
+const writtenNames = Object.keys(mainPkg.optionalDependencies);
+const missing = expectedNames.filter((name) => !writtenNames.includes(name));
+const unexpected = writtenNames.filter(
+  (key) => !/^@reasonix\/cli-/.test(key) || !expectedNames.includes(key),
+);
+if (missing.length > 0 || unexpected.length > 0) {
+  throw new Error(
+    [
+      "main package optionalDependencies do not match build targets:",
+      ...(missing.length > 0 ? [`missing: ${missing.join(", ")}`] : []),
+      ...(unexpected.length > 0 ? [`unexpected: ${unexpected.join(", ")}`] : []),
+    ].join("\n"),
+  );
+}
 writeFileSync(
   join(mainDir, "package.json"),
   `${JSON.stringify(mainPkg, null, 2)}\n`,
@@ -117,4 +135,5 @@ publishPackages({
   packages: [...subPackages, { name: "reasonix", dir: mainDir }],
   version,
   candidateSha,
+  stableDistTag: stableDistTagFromEnv(),
 });

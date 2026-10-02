@@ -57,7 +57,7 @@ func TestArgvNormalizesNullRedirects(t *testing.T) {
 		t.Errorf("bash argv command = %q, want nul rewritten to /dev/null", last)
 	}
 	psArgv := Shell{Kind: ShellPowerShell, Path: "powershell"}.argv("echo hi 2>/dev/null")
-	if last := psArgv[len(psArgv)-1]; last != psUTF8Prologue+"echo hi 2>$null" {
+	if last := psArgv[len(psArgv)-1]; last != powerShellToolScript("echo hi 2>$null") {
 		t.Errorf("powershell argv command = %q, want /dev/null rewritten to $null", last)
 	}
 }

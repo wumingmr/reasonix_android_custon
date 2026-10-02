@@ -1,0 +1,46 @@
+import type { CanonicalProjectNodeFields } from "./sessionLifecycleBindings";
+import type { RemoteProjectNodeFields } from "./remoteTypes";
+import type { ProjectTopicStatus } from "./types";
+export interface ProjectNode extends RemoteProjectNodeFields, CanonicalProjectNodeFields {
+  key: string;
+  kind: "project" | "topic" | "session" | "global_folder" | "global_topic" | "global_session";
+  label: string;
+  root?: string;
+  topicId?: string;
+  parentSession?: import("./sessionRef").SessionRef;
+  sessionOrigin?: string;
+  recoveryPath?: string;
+  sessionPath?: string;
+  source?: import("../generated/desktopContract.generated").SessionSourceRef;
+  historical?: boolean;
+  historicalBranch?: boolean;
+  preparationStatus?: string;
+  identityAliases?: string[];
+  lifecycleGeneration?: number;
+  tabId?: string;
+  preview?: string;
+  projectColor?: string;
+  turns?: number;
+  turnsState?: "unknown" | "valid" | "corrupt" | string;
+  health?: "ok" | "missing" | "corrupt" | "degraded" | string;
+  createdAt?: number;
+  lastActivityAt?: number;
+  resultSequence?: number;
+  open?: boolean;
+  running?: boolean;
+  status?: ProjectTopicStatus;
+  pinned?: boolean;
+  sortOrder?: number;
+  recovered?: boolean;
+  recoveryReason?: string;
+  recoveryDigest?: string;
+  recoveryParentId?: string;
+  recoveryState?: "normal" | "repairing" | "adopted" | "preferred" | "diverged" | "recovery_only" | string;
+  recoveryBranchCount?: number;
+  recoveryUnresolvedCount?: number;
+  recoveryCleanupEligibleCount?: number;
+  recoveryCopyCount?: number; // Deprecated: ordinary trees hide physical copies.
+  isolatedWorktree?: boolean;
+  runtimeOnly?: boolean;
+  children?: ProjectNode[];
+}

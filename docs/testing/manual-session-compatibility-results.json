@@ -1,0 +1,330 @@
+{
+  "date": "2026-09-22",
+  "baseline": "0d7a103fdd6fbeff3b8d69e31f0d395eef6b6666",
+  "overlayMainV2": "f26283afb2f58c974e84f009dabd00718c188e22",
+  "independentGroupsOverlap": true,
+  "goJSONGates": [
+    {
+      "gate": "existing-migration",
+      "status": "passed",
+      "topLevelTests": 81,
+      "testAndSubtestResults": 146,
+      "packages": [
+        {
+          "package": "reasonix/desktop",
+          "seconds": 353.185
+        }
+      ],
+      "logSHA256": "6a5a351e644111eb4ca1438353156f672eab658be7b20a077e48ced706f4f8a7"
+    },
+    {
+      "gate": "root-race",
+      "status": "passed",
+      "topLevelTests": 131,
+      "testAndSubtestResults": 165,
+      "packages": [
+        {
+          "package": "reasonix/internal/topicstate",
+          "seconds": 2.418
+        },
+        {
+          "package": "reasonix/internal/sessioninbox",
+          "seconds": 3.301
+        },
+        {
+          "package": "reasonix/internal/transcript",
+          "seconds": 14.129
+        },
+        {
+          "package": "reasonix/internal/sessioncatalog",
+          "seconds": 38.288
+        },
+        {
+          "package": "reasonix/internal/session",
+          "seconds": 287.73
+        }
+      ],
+      "logSHA256": "037a33c39093058e9340d571926ce852365b40e8f6d596ecc95ac41a1354d137"
+    },
+    {
+      "gate": "tagged-history-3-5",
+      "status": "passed",
+      "topLevelTests": 1,
+      "testAndSubtestResults": 7,
+      "packages": [
+        {
+          "package": "reasonix/desktop",
+          "seconds": 203.337
+        }
+      ],
+      "logSHA256": "da9580a213eb4c3e15647766051a2a9819957038716b8329385afddc01873540"
+    },
+    {
+      "gate": "tagged-history-6-7",
+      "status": "passed",
+      "topLevelTests": 1,
+      "testAndSubtestResults": 5,
+      "packages": [
+        {
+          "package": "reasonix/desktop",
+          "seconds": 133.952
+        }
+      ],
+      "logSHA256": "4ad8d1e650d19f7a5b49fd430ff0cbd1bd5fb26dba6284c9a51f568c9e18075b"
+    },
+    {
+      "gate": "tagged-history-8-race",
+      "status": "passed",
+      "topLevelTests": 1,
+      "testAndSubtestResults": 3,
+      "packages": [
+        {
+          "package": "reasonix/desktop",
+          "seconds": 174.357
+        }
+      ],
+      "logSHA256": "40123d9639970ddadc2f7c9c3f80469d1290d7232b0abdc413d1b8dcf2cbce1d"
+    },
+    {
+      "gate": "tagged-history-10-11",
+      "status": "passed",
+      "topLevelTests": 1,
+      "testAndSubtestResults": 5,
+      "packages": [
+        {
+          "package": "reasonix/desktop",
+          "seconds": 204.632
+        }
+      ],
+      "logSHA256": "5e6d2f1ead4f63908b1cdf36f759501c6c7303ae017d0d5abc61fd097889eafe"
+    },
+    {
+      "gate": "tagged-drafts",
+      "status": "passed",
+      "topLevelTests": 5,
+      "testAndSubtestResults": 15,
+      "packages": [
+        {
+          "package": "reasonix/desktop",
+          "seconds": 1.69
+        }
+      ],
+      "logSHA256": "1134ca793cbdbddac9cb8988a04413cd0d6e2b357f7fa6f3e4a96cc36888f55e"
+    },
+    {
+      "gate": "old-writer-roundtrip",
+      "status": "passed",
+      "topLevelTests": 1,
+      "testAndSubtestResults": 3,
+      "packages": [
+        {
+          "package": "reasonix/desktop",
+          "seconds": 5.736
+        }
+      ],
+      "logSHA256": "7b899fb8251934b072f9bd8a57a487b5898a03df8c3fbe17706e38eff1966935"
+    },
+    {
+      "gate": "damaged-history",
+      "status": "passed",
+      "topLevelTests": 1,
+      "testAndSubtestResults": 9,
+      "packages": [
+        {
+          "package": "reasonix/desktop",
+          "seconds": 39.216
+        }
+      ],
+      "logSHA256": "ecf3d59586585f0243c9fba32216ac01bb49569585d9fcf23f381efb4a7b818b"
+    },
+    {
+      "gate": "main-v2-root",
+      "status": "passed",
+      "topLevelTests": 283,
+      "testAndSubtestResults": 333,
+      "packages": [
+        {
+          "package": "reasonix/internal/transcript",
+          "seconds": 0.44
+        },
+        {
+          "package": "reasonix/internal/agent",
+          "seconds": 13.988
+        },
+        {
+          "package": "reasonix/internal/control",
+          "seconds": 163.982
+        }
+      ],
+      "logSHA256": "fb0a24f6834c3ce2044880e3aa6d3bfa3263d1ae9f1a778711bac60b2d0e84ea"
+    },
+    {
+      "gate": "main-v2-desktop-race",
+      "status": "passed",
+      "topLevelTests": 13,
+      "testAndSubtestResults": 26,
+      "packages": [
+        {
+          "package": "reasonix/desktop",
+          "seconds": 14.108
+        }
+      ],
+      "logSHA256": "cc2d1c4fa40c6157227248b914923f21c5824b9406a405771dd1f386afaa6a5d"
+    }
+  ],
+  "native": {
+    "platform": "darwin-arm64",
+    "version": "v1.38.12-preview.1",
+    "artifactsSHA256": {
+      "MacOS/Reasonix": "fe5611f724912bfb042b96b1004b4fd58ca8709fa47359b1c95b204adac279d5",
+      "Resources/service/reasonix-desktop": "fb7cdcab394fe5bcc519df8d5a4536ea71b9b809d312dc716818fa093a54971d",
+      "Resources/app.asar": "33e1dcca8c4fb4128110c5fcb28a585c7edbfc8f33c68538df2881f63654709f"
+    },
+    "historicalVersions": [
+      {
+        "version": "1.38.3",
+        "commit": "fa018e4109268c912063c8cc619302fccdb57d74",
+        "sessions": 3,
+        "status": "passed"
+      },
+      {
+        "version": "1.38.4",
+        "commit": "680e00e5baaf6a7e125d19fba685f0c5605ee100",
+        "sessions": 3,
+        "status": "passed"
+      },
+      {
+        "version": "1.38.5",
+        "commit": "95d02e52bd99471e29da0c3b0cf6306fcfc3d43d",
+        "sessions": 3,
+        "status": "passed"
+      },
+      {
+        "version": "1.38.6",
+        "commit": "e2145b031deef603d9ec1acc9d30f9a1e1ac9325",
+        "sessions": 3,
+        "status": "passed"
+      },
+      {
+        "version": "1.38.7",
+        "commit": "036c7c50c5c154f747419aee6b75667f9044c8fa",
+        "sessions": 3,
+        "status": "passed"
+      },
+      {
+        "version": "1.38.8",
+        "commit": "7278072720a2dc7a31cce0eec18c1eacc149c0e0",
+        "sessions": 6,
+        "status": "passed"
+      },
+      {
+        "version": "1.38.9",
+        "commit": "dc915ab97bfdeb5d0e414916c0f58708dca80051",
+        "sessions": 6,
+        "status": "passed"
+      },
+      {
+        "version": "1.38.10",
+        "commit": "366e0eb6b86bbf4278547995eda0f42b4404242d",
+        "sessions": 6,
+        "status": "passed"
+      },
+      {
+        "version": "1.38.11",
+        "commit": "11f9705f083819f1dc9ad764d8352013a86ebd44",
+        "sessions": 6,
+        "status": "passed"
+      }
+    ],
+    "manualScenarios": [
+      "matched shell/service handshake",
+      "three independent sessions and retry identities",
+      "normal exit and SQLite reopen",
+      "acknowledged input survives shell crash",
+      "image reference and preview survive restart",
+      "input survives archive and restart",
+      "last archive creates no replacement"
+    ]
+  },
+  "limits": [
+    "Windows and Linux packaged execution not performed",
+    "Previous complete desktop clients not installed; actual tagged storage implementations used",
+    "No official release or remote CI run",
+    "No real provider execution"
+  ],
+  "additionalGates": [
+    {
+      "gate": "CI history-8-9 race partition",
+      "status": "passed",
+      "command": "node ../scripts/desktop-windows-go-tests.mjs history-8-9 --race",
+      "desktopPackageSeconds": 176.148,
+      "logSHA256": "04d9efcde0fc082d58946337da69c3e535a0c4e53df679e85abff87922a69ea5"
+    },
+    {
+      "gate": "CI partition and workflow contracts",
+      "status": "passed",
+      "tests": 27
+    },
+    {
+      "gate": "main-v2 import identity race regression",
+      "status": "passed",
+      "packageSeconds": 9.038
+    },
+    {
+      "gate": "repository inventory, lint and whitespace",
+      "status": "passed",
+      "lintBaselineIncreased": false,
+      "bundleBudgetIncreased": false
+    }
+  ],
+  "submissionRaceReview": {
+    "status": "passed",
+    "date": "2026-09-22",
+    "regressionScenarios": 6,
+    "originalPersistenceRegression": "passed",
+    "sourceAndTestTypechecks": "passed",
+    "appLifecycleRegression": "passed",
+    "mainV2OverlayTestsAndProductionBuild": "passed",
+    "repositoryLint": "passed",
+    "nativePlatform": "darwin-arm64",
+    "artifactsSHA256": {
+      "MacOS/Reasonix": "0ac2b2779e5ae8e29b42f3b4ff4f8417c5e2b9e4d4f398d6cd9d714e9e166a35",
+      "Resources/service/reasonix-desktop": "498e49aecf3c9566773bfcdf7d573276600a3ab65591aa28c7926abe870d414c",
+      "Resources/app.asar": "33e1dcca8c4fb4128110c5fcb28a585c7edbfc8f33c68538df2881f63654709f"
+    },
+    "nativeScenarios": [
+      "matched shell/service handshake",
+      "three independent sessions and retry identities",
+      "normal exit and SQLite reopen",
+      "acknowledged input survives shell crash",
+      "image reference and preview survive restart",
+      "input survives archive and restart",
+      "last archive creates no replacement"
+    ],
+    "storageFormatsChanged": false,
+    "historicalNineVersionMatrixRerun": false
+  },
+  "rollbackWiringAudit": {
+    "date": "2026-09-22",
+    "desktopAvailableTopLevelTests": 2929,
+    "desktopPartitions": "11 disjoint inventory-verified groups passed",
+    "monolithicDesktopRun": "10-minute process timeout during historical matrix; no assertion failure; completed with existing partitions",
+    "historicalFixturesRerun": "1.38.3 through 1.38.11",
+    "mainV2Overlay": "prior pinned f26283afb2f5 evidence retained, not rerun against a newer head",
+    "targetedRace": "passed",
+    "sourceAndTestTypechecks": "passed, including new JSX regressions through the test type-contract entry point",
+    "finalSharedComposerHarnessSuites": 12,
+    "repositoryLint": "passed",
+    "appLifecycle": "passed",
+    "nativePlatform": "darwin-arm64",
+    "nativeRendererPasteRestart": "passed, original image source restored, decoded preview and fresh runtime credential verified",
+    "nativeLifecycle": "passed, normal exit, shell crash, archive and empty welcome",
+    "packageZipSHA256": "a637ecb0674953be4baf8e798906e1e317af11e02efb0aa5385b49c72cd11379",
+    "strictCodeSignature": "passed",
+    "userPreviewUpdated": true,
+    "canonicalStorageFormatsChanged": false,
+    "independentInputChange": "optional attachment recoveryPath; transient credential omitted when durable source is present",
+    "budgetOrLintBaselinesIncreased": false,
+    "unverifiedNativePlatforms": ["windows", "linux"]
+  }
+}

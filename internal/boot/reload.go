@@ -10,6 +10,7 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/extension"
 	"reasonix/internal/provider"
+	"reasonix/internal/session"
 )
 
 // RebuildFrom is Rebuild using previous BuildResult for incremental sidecars
@@ -64,10 +65,11 @@ func RebuildFrom(ctx context.Context, previous *BuildResult, opts Options) (*Bui
 //     InheritLifecycleFrom.
 //
 // Left to the frontend (Rebuild deliberately does not do these):
-//   - swapping its controller pointer and closing old AFTER a successful
-//     swap — old's controller and the old BuildResult.Runtime set stay the
-//     caller's to release (CloseIfGeneration guards against closing a newer
-//     runtime's resources);
+//   - atomically activating the replacement with
+//     control.ActivateControllerReplacement while swapping its controller
+//     pointer, then closing old AFTER the successful swap — old's controller
+//     and the old BuildResult.Runtime set stay the caller's to release
+//     (CloseIfGeneration guards against closing a newer runtime's resources);
 //   - re-installing the interactive approval gate (EnableInteractiveApproval)
 //     and re-binding approval/ask channels to the new controller;
 //   - persisting the migrated transcript (Controller.Snapshot) when the swap
@@ -82,9 +84,16 @@ func rebuildWithPrevious(ctx context.Context, old *control.Controller, previous 
 	if old == nil {
 		return nil, fmt.Errorf("boot: Rebuild requires the controller being replaced")
 	}
+	scope, finishBackground, abortBackground, err := control.ReserveBackgroundReplacement(old)
+	if err != nil {
+		return nil, err
+	}
+	opts.BackgroundScope = scope
+	defer abortBackground()
 	if opts.Owner == nil {
 		opts.Owner = old.RuntimeOwner()
 	}
+	opts.inheritSessionBinding(old)
 	// Capture migratable state before building: every accessor returns a
 	// copy, so a slow build cannot observe a half-appended turn.
 	m := runtimeMigration{
@@ -100,6 +109,12 @@ func rebuildWithPrevious(ctx context.Context, old *control.Controller, previous 
 	// model/settings hot rebuilds do not wipe temporary files mid-session.
 	if opts.SessionTemp == nil {
 		opts.SessionTemp = old.SessionTemp()
+	}
+	if opts.PersistentShell == nil {
+		opts.PersistentShell = old.PersistentShell()
+	}
+	if opts.WorkspaceRepo.Dir == "" {
+		opts.WorkspaceRepo = old.WorkspaceRepo()
 	}
 
 	home := config.ReasonixHomeDir()
@@ -120,6 +135,20 @@ func rebuildWithPrevious(ctx context.Context, old *control.Controller, previous 
 		}
 	}
 
+	// Freeze the old path-derived event producer before a full replacement can
+	// import it. Failure restores the old producer; successful publication
+	// transfers ownership to the replacement for every host frontend.
+	restoreLegacyEvents, err := old.SuspendLegacyEventStoreForImport(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("boot: suspend legacy session events: %w", err)
+	}
+	replacementPublished := false
+	defer func() {
+		if !replacementPublished {
+			restoreLegacyEvents()
+		}
+	}()
+
 	extension.DefaultLifecycleMetrics.FullRebuilds.Add(1)
 	opts.deferPublish = true
 	res, err := BuildRuntime(ctx, opts)
@@ -138,7 +167,7 @@ func rebuildWithPrevious(ctx context.Context, old *control.Controller, previous 
 	}
 	attachPlanAndStatus(res, fromGraph, toGraph, opts.Generation, previousSnapshot)
 
-	if err := migrateRuntimeState(res.Controller, old, m); err != nil {
+	if err := migrateRuntimeState(res.Controller, old, m, opts.SessionCreateOptions); err != nil {
 		// Fail-atomic: release the replacement; old keeps serving.
 		// Activation never reached Active publish.
 		if res.Snapshot != nil {
@@ -157,13 +186,17 @@ func rebuildWithPrevious(ctx context.Context, old *control.Controller, previous 
 			res.Owner.Gate.RegisterDrainCancel(prevGen, func() { h.CancelInFlightMCP() })
 		}
 	}
-	// Publish new generation only after Active + state migration. Then drain
-	// Removed/Reloaded clients still held by the previous Manager.
-	publishBuildResult(res)
-	if opts.Extensions != nil && res.Plan != nil {
-		opts.Extensions.DrainPlan(res.Plan)
-	}
 	// SessionEnd is not fired on ordinary rebuild.
+	if err := finishBackground(res.Controller); err != nil {
+		res.Controller.ReleaseResources()
+		restoreLegacyEvents()
+		return nil, err
+	}
+	// A host can still reject the prepared candidate. Its extension generation
+	// must not retire the outgoing runtime before the final ownership transfer.
+	stageModelRuntimePublication(res, opts)
+	replacementPublished = true // candidate now owns commit/rollback responsibility
+	res.Controller.StageReplacementRollback(restoreLegacyEvents)
 	return res, nil
 }
 
@@ -182,12 +215,41 @@ type runtimeMigration struct {
 // migrateRuntimeState applies the captured state to the freshly built
 // controller. Every step today is an infallible public control call; the
 // error return is the fail-atomic seam for steps that gain failure modes.
-func migrateRuntimeState(ctrl, old *control.Controller, m runtimeMigration) error {
+func migrateRuntimeState(ctrl, old *control.Controller, m runtimeMigration, createOptions session.CreateOptions) error {
 	carried := spliceFreshSystemPrompt(m.carried, ctrl.History())
-	path := agent.ContinueSessionPath(m.prevPath, ctrl.SessionDir(), ctrl.Label())
-	ctrl.AdoptHistory(carried, path)
+	if ctrl.UsesExclusiveSession() {
+		if _, _, ok := ctrl.SessionBinding(); ok {
+			if err := ctrl.AdoptRebuiltModelContext(carried); err != nil {
+				return err
+			}
+		} else if m.prevPath != "" {
+			path := agent.ContinueSessionPath(m.prevPath, ctrl.SessionDir(), ctrl.Label())
+			loaded, err := agent.LoadSession(path)
+			if err != nil {
+				return err
+			}
+			if err := ctrl.ResumeNativeSession(loaded.CloneWithMessages(carried), path); err != nil {
+				return err
+			}
+		} else {
+			// A compatibility rebuild can start from an in-memory controller
+			// with no persistent identity. Preserve that state without minting
+			// a new logical session (which would rotate session-private temp).
+			ctrl.AdoptHistory(carried, "")
+		}
+	} else {
+		path := agent.ContinueSessionPath(m.prevPath, ctrl.SessionDir(), ctrl.Label())
+		if ctrl.NativeLegacySession() {
+			if err := ctrl.AdoptNativeRebuiltContext(old, carried, path); err != nil {
+				return err
+			}
+		} else {
+			ctrl.AdoptHistory(carried, path)
+		}
+	}
 
-	// Re-apply session axes a rebuild must not reset.
+	// Rebuilds preserve the live frontend mode, including a transient TUI
+	// downgrade inside a session that once stored a remote Serve preset.
 	ctrl.SetToolApprovalMode(m.toolApprovalMode)
 	ctrl.SetPlanMode(m.planMode)
 	if m.goalRunning && strings.TrimSpace(m.goal) != "" && strings.TrimSpace(ctrl.Goal()) == "" {
@@ -198,7 +260,9 @@ func migrateRuntimeState(ctrl, old *control.Controller, m runtimeMigration) erro
 		ctrl.CarryRecoveryFrom(old)
 	}
 
-	ctrl.InheritLifecycleFrom(old)
+	if err := ctrl.InheritLifecycleFrom(old); err != nil {
+		return fmt.Errorf("inherit controller lifecycle: %w", err)
+	}
 	ctrl.RestoreSessionAuthorizations(m.authorizations)
 	return nil
 }

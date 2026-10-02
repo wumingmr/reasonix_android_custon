@@ -5,11 +5,10 @@ everything you need to get started.
 
 ## Prerequisites
 
-- **Go 1.25+** — the project targets the latest stable Go release
+- **Go 1.26+** — use the toolchain pinned in `go.mod` (`GOTOOLCHAIN=auto`)
 - **Git** — for version control
-- **Node.js** (optional) — only if you work on the desktop app (`desktop/`)
-- **Wails CLI** (desktop only) — run `make wails-install` so the CLI matches
-  `desktop/go.mod`
+- **Node.js 24+ and pnpm 10** (optional) — only if you work on the desktop app
+  (`desktop/`)
 
 ## Getting started
 
@@ -40,7 +39,7 @@ go test ./...              # runs the full test suite
 | `internal/sandbox` | OS-level sandboxing |
 | `internal/serve` | HTTP/SSE server frontend |
 | `internal/checkpoint` | Snapshot-based rewind |
-| `desktop/` | Wails-based desktop app (separate Go module) |
+| `desktop/` | Electron desktop app + Go service (separate Go module) |
 | `docs/` | Engineering spec, migration guide |
 
 ### Dependency direction
@@ -83,8 +82,7 @@ REASONIX_HOME=/tmp/reasonix-dev go run ./cmd/reasonix
 **Desktop**
 
 ```bash
-cd desktop && wails build
-REASONIX_HOME=/tmp/reasonix-dev-isolated build/bin/reasonix-desktop
+scripts/desktop-build.sh darwin/arm64 v0.0.0-dev   # one platform per run
 ```
 
 On Windows, use `$env:REASONIX_HOME` in PowerShell or `set REASONIX_HOME=` in
@@ -126,9 +124,31 @@ go test ./internal/agent/ -v            # verbose, one package
 go test ./internal/tool/builtin/ -run TestGrep  # one test
 ```
 
-Desktop transcript scroll changes follow the discipline in
-`desktop/AGENTS.md` (single scroll writer, deterministic race tests via
-`pnpm test:transcript` in `desktop/frontend/`).
+Choose checks by the changed contract. Documentation-only changes need content
+and link checks; Go changes need owning-package tests and applicable vet/lint
+checks. Broaden to `go test ./...` for shared behavior. Desktop Go is a separate
+module: run its affected packages or `cd desktop && go test ./...`.
+
+For Go changes, format the changed files and use `make lint` (golangci-lint at
+`.golangci-version` plus repolint). `go vet` does not cover all lint rules.
+Install the pinned linter with `make lint-install` if needed. Repeat successful
+checks only when new changes or unresolved risks justify it.
+
+When adding an internal import, check the target package's test imports for a
+reverse dependency and run the target package tests to catch setup cycles.
+
+Desktop transcript scroll and history changes follow the
+[scroll and history contract](docs/TRANSCRIPT_SCROLL_CONTRACT.md), including the
+single writer, the bounded reading window, and deterministic regression cases via
+`pnpm test:transcript` in `desktop/frontend/`.
+
+Keep correctness gates deterministic. Prove concurrency and lifecycle ordering
+with channels, injected clocks, state transitions, or emitted events instead of
+asserting that an operation finishes within a small wall-clock interval on a
+shared CI runner. Use a generous timeout only as a liveness watchdog. Performance
+limits belong in an explicit benchmark that records evidence and uses the
+benchmark's documented sampling rule; host integration probes may report an
+advisory result when the runner cannot provide a controlled environment.
 
 ### Code style
 
@@ -136,7 +156,18 @@ Desktop transcript scroll changes follow the discipline in
 - Follow existing patterns: wrap errors with `fmt.Errorf("...: %w", err)`
 - Library code never calls `os.Exit` or prints to stdout/stderr
 - Only `cli/` and `main/` decide exit codes and user-facing messages
-- Exported identifiers must have doc comments
+- Exported identifiers need useful doc comments; explain non-obvious constraints
+  rather than restating code. Mechanical limits live in
+  `tools/repolint/comments.go` and `tools/repolint/main.go`.
+- `TODO(#nnn):` and `HACK(#nnn):` need an issue anchor; `FIXME` is rejected.
+- Keep one responsibility per file. Repolint ratchets existing debt: an edit
+  cannot silently increase a file's recorded debt. Prefer removing redundancy
+  or extracting a coherent owner.
+- A narrow baseline adjustment may carry existing debt through a rename or
+  extraction, or cover a small measured capacity increase whose design is clearer.
+  Explain the before/after values and rationale. Longer comments are justified
+  for non-obvious protocol, concurrency, compatibility, or recovery invariants.
+  Do not add broad slack, disable checks, or weaken correctness/security tests.
 
 ### Commit messages
 
@@ -148,6 +179,41 @@ fix: replace silent error discards with structured logging
 test(event): add comprehensive unit tests for event package
 docs: add CONTRIBUTING.md
 ci: add golangci-lint and govulncheck
+```
+
+### Review updates and PR metadata
+
+Use ordinary follow-up commits and fast-forward pushes. Amend or force-push only
+when explicitly authorized, after verifying the remote head. Keep unrelated
+changes out of the PR.
+
+Two CI guards read the PR body. The scripts are the source of truth and both
+run locally: `scripts/check-cache-impact.sh`, `scripts/check-docs-impact.sh`.
+Separators must be an ASCII `-` or `:` — an em dash fails the docs guard.
+
+Cache-sensitive diffs (`internal/tool/`, `internal/provider/`,
+`internal/boot/`, `internal/agent/agent.go`, and the rest of the list in the
+script) require:
+
+```
+Cache-impact: <none|low|medium|high> - <reason>
+Cache-guard: <focused guard test/command or existing guard rationale>
+```
+
+`none` is a legitimate impact when the provider-visible prefix stays
+byte-identical; only an empty value, `todo`, or `tbd` is rejected. If the diff
+also touches `internal/config/`, `internal/memory/`, `internal/outputstyle/`,
+`internal/skill/`, or `internal/boot/`, add `System-prompt-review: <note>` —
+that field additionally rejects `none` and `n/a`, so it must name the explicit
+prompt reviewer or approval.
+
+User-visible diffs (`cmd/reasonix/`, `desktop/`, `npm/`, and most of
+`internal/`; tests and lockfiles are exempt) require one of these, chosen by
+whether the same PR edited `docs/*.md`:
+
+```
+Documentation-impact: updated - <what changed>            # docs/*.md edited
+Documentation-impact: none - <why the docs stay correct>  # not edited
 ```
 
 ## Adding a new built-in tool
@@ -177,9 +243,9 @@ ci: add golangci-lint and govulncheck
 
 1. Fork the repository
 2. Create a feature branch from `main-v2`
-3. Make your changes with tests
-4. Ensure `go test ./...` passes
-5. Ensure `gofmt -l .` shows no changes
+3. Make the change and add regression coverage for affected behavior
+4. Run the relevant checks above and satisfy required CI checks
+5. Ensure changed Go files are formatted
 6. Submit a pull request to `main-v2`
 
 ## Reporting issues

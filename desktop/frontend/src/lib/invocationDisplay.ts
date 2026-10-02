@@ -25,9 +25,19 @@ export type InvocationRequest = {
 };
 
 export type StructuredInvocationSubmit = {
+	modelApplicationChoice?: import("./modelApplication").ModelApplicationChoice;
   display: string;
   input: string;
   invocations: InvocationRequest[];
+  attachmentTarget?: string;
+	attachmentSubmissionId?: string;
+  attachments?: SubmissionAttachment[];
+};
+
+export type SubmissionAttachment = {
+  clientAttachmentId: string;
+  draftId?: string;
+  path?: string;
 };
 
 export function invocationRequests(invocations: ComposerInvocation[]): InvocationRequest[] {

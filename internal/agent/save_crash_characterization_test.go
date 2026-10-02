@@ -19,11 +19,20 @@ import (
 // about to touch path. The returned restore must be deferred; the returned
 // channel receives the op-path pair when the crash fires.
 func crashAt(t *testing.T, op, path string) (fired <-chan struct{}, restore func()) {
+	return crashAtOccurrence(t, op, path, 1)
+}
+
+func crashAtOccurrence(t *testing.T, op, path string, occurrence int) (fired <-chan struct{}, restore func()) {
 	t.Helper()
 	firedCh := make(chan struct{}, 1)
 	prev := fileutil.CrashPoint
+	seen := 0
 	fileutil.CrashPoint = func(firedOp, firedPath string) {
 		if firedOp != op || firedPath != path {
+			return
+		}
+		seen++
+		if seen != occurrence {
 			return
 		}
 		select {
@@ -70,7 +79,7 @@ func messageCount(t *testing.T, s *Session) int {
 // save replays the append without duplicating or losing messages.
 // (Message counts include the leading system message.)
 func TestCrashAtWALAppendKeepsPreviousCheckpointUsable(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	s := NewSession("system")
 	s.Add(userMessage("first"))
 	if err := s.SaveSnapshot(path); err != nil {
@@ -116,7 +125,7 @@ func TestCrashAtWALAppendKeepsPreviousCheckpointUsable(t *testing.T) {
 // rename still exposes the full transcript on reload, because the event log
 // is authoritative. The compatibility checkpoint never comes to exist.
 func TestCrashAtCheckpointWriteLeavesEventLogAuthoritative(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	s := NewSession("system")
 	s.Add(userMessage("first"))
 	s.Add(userMessage("second"))
@@ -159,7 +168,7 @@ func TestCrashAtCheckpointWriteLeavesEventLogAuthoritative(t *testing.T) {
 // the new digest leaves a stale ledger. The next same-content save must heal
 // the ledger via the ledgerStale path instead of appending new events.
 func TestCrashAtRevisionLedgerHealsOnNextSave(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	s := NewSession("system")
 	s.Add(userMessage("first"))
 	if err := s.SaveSnapshot(path); err != nil {
@@ -168,7 +177,9 @@ func TestCrashAtRevisionLedgerHealsOnNextSave(t *testing.T) {
 	recordsBefore := countEventLogRecords(t, path)
 
 	s.Add(userMessage("second"))
-	_, restore := crashAt(t, "branch-meta", BranchMetaPath(path))
+	// The first branch-meta write invalidates the listing projection; the
+	// second is the revision-ledger commit we want to interrupt.
+	_, restore := crashAtOccurrence(t, "branch-meta", BranchMetaPath(path), 2)
 	crash := saveCrashing(func() { _ = s.SaveSnapshot(path) })
 	restore()
 	if crash == nil {
@@ -183,6 +194,9 @@ func TestCrashAtRevisionLedgerHealsOnNextSave(t *testing.T) {
 	}
 	if got := messageCount(t, reloaded); got != 3 {
 		t.Fatalf("reload = %d messages, want 3", got)
+	}
+	if preview, turns, ok := SessionPreviewCached(path); ok {
+		t.Fatalf("stale projection survived interrupted ledger commit: preview=%q turns=%d", preview, turns)
 	}
 
 	// A same-content save must heal the ledger without new WAL records.
@@ -206,6 +220,9 @@ func TestCrashAtRevisionLedgerHealsOnNextSave(t *testing.T) {
 	if meta.ContentDigest == "" {
 		t.Fatal("healed ledger must stamp the current content digest")
 	}
+	if preview, turns, ok := SessionPreviewCached(path); !ok || preview != "first" || turns != 2 {
+		t.Fatalf("healed listing projection = (%q,%d,%v), want (%q,2,true)", preview, turns, ok, "first")
+	}
 }
 
 // TestCrashAtEventIndexKeepsSaveDurable pins the derived-index ordering: the
@@ -213,7 +230,7 @@ func TestCrashAtRevisionLedgerHealsOnNextSave(t *testing.T) {
 // authoritative. A reload observes the new transcript and the next save
 // succeeds without event-log duplication.
 func TestCrashAtEventIndexKeepsSaveDurable(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	s := NewSession("system")
 	s.Add(userMessage("first"))
 	if err := s.SaveSnapshot(path); err != nil {

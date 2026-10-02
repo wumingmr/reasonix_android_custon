@@ -48,18 +48,22 @@ func TestWebBrowserURLUsesReachableLoopbackAndAuthEntry(t *testing.T) {
 		addr string
 		want string
 	}{
-		{name: "no auth wildcard IPv4", addr: "0.0.0.0:8787", want: "http://127.0.0.1:8787/"},
-		{name: "no auth wildcard IPv6", addr: "[::]:8788", want: "http://127.0.0.1:8788/"},
+		{name: "no auth wildcard IPv4", cfg: config.ServeConfig{AuthMode: "none"}, addr: "0.0.0.0:8787", want: "http://127.0.0.1:8787/#token="},
+		{name: "no auth wildcard IPv6", cfg: config.ServeConfig{AuthMode: "none"}, addr: "[::]:8788", want: "http://127.0.0.1:8788/#token="},
 		{name: "password", cfg: config.ServeConfig{AuthMode: "password", PasswordHash: "$2a$12$test"}, addr: "127.0.0.1:8789", want: "http://127.0.0.1:8789/login"},
 		{name: "token escaped", cfg: config.ServeConfig{AuthMode: "token", Token: "a token/+"}, addr: "127.0.0.1:8790", want: "http://127.0.0.1:8790/#token=a+token%2F%2B"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctrl := control.New(control.Options{SessionDir: t.TempDir()})
+			ctrl := newOwnedTestController(t, control.Options{SessionDir: t.TempDir()})
 			t.Cleanup(ctrl.Close)
 			srv := serve.New(ctrl, serve.NewBroadcaster(), tt.cfg)
-			if got := webBrowserURL(srv, tt.addr, ""); got != tt.want {
-				t.Fatalf("webBrowserURL() = %q, want %q", got, tt.want)
+			want := tt.want
+			if tt.cfg.AuthMode == "none" {
+				want += srv.AuthToken()
+			}
+			if got := webBrowserURL(srv, tt.addr, ""); got != want {
+				t.Fatalf("webBrowserURL() = %q, want %q", got, want)
 			}
 		})
 	}
@@ -82,7 +86,7 @@ func (l *acceptGateListener) Accept() (net.Conn, error) {
 }
 
 func TestRunServeListenerOpensOnlyAfterHTTPResponse(t *testing.T) {
-	ctrl := control.New(control.Options{SessionDir: t.TempDir()})
+	ctrl := newOwnedTestController(t, control.Options{SessionDir: t.TempDir()})
 	t.Cleanup(ctrl.Close)
 	srv := serve.New(ctrl, serve.NewBroadcaster(), config.ServeConfig{})
 	raw, err := net.Listen("tcp", "127.0.0.1:0")
@@ -146,14 +150,14 @@ func TestLaunchWebBrowserInvokesOpenerWithResolvedURL(t *testing.T) {
 		opened = raw
 		return nil
 	}
-	ctrl := control.New(control.Options{SessionDir: t.TempDir()})
+	ctrl := newOwnedTestController(t, control.Options{SessionDir: t.TempDir()})
 	t.Cleanup(ctrl.Close)
 	srv := serve.New(ctrl, serve.NewBroadcaster(), config.ServeConfig{})
 	got, err := launchWebBrowser(srv, "0.0.0.0:8787", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "http://127.0.0.1:8787/" || opened != got {
+	if got != "http://127.0.0.1:8787/#token="+srv.AuthToken() || opened != got {
 		t.Fatalf("launchWebBrowser() = %q, opened %q", got, opened)
 	}
 }
@@ -167,7 +171,7 @@ func TestWebHandoffArgsResumeSameSessionOnDeterministicPort(t *testing.T) {
 }
 
 func TestWebBrowserURLUsesSessionDeepLinkBeforeTokenFragment(t *testing.T) {
-	ctrl := control.New(control.Options{SessionDir: t.TempDir()})
+	ctrl := newOwnedTestController(t, control.Options{SessionDir: t.TempDir()})
 	t.Cleanup(ctrl.Close)
 	srv := serve.New(ctrl, serve.NewBroadcaster(), config.ServeConfig{AuthMode: "token", Token: "secret"})
 	got := webBrowserURL(srv, "127.0.0.1:8787", "session with space")

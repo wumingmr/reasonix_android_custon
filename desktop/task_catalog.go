@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"reasonix/internal/agent"
 	"reasonix/internal/control"
 	"reasonix/internal/taskcatalog"
 	"reasonix/internal/taskmonitor"
@@ -67,6 +66,9 @@ func (a *App) taskProjectKeys(req TaskPageRequest) ([]string, string, error) {
 		target, err := a.taskMonitorTargetForTab(req.TabID)
 		if err != nil {
 			return nil, "", err
+		}
+		if target.sessionID == "" {
+			return nil, "", fmt.Errorf("session is not ready")
 		}
 		key := taskcatalog.RegisterSharedProject(target.projectDir, workspaceName(target.projectDir))
 		return []string{key}, target.sessionID, nil
@@ -182,7 +184,7 @@ func (a *App) overlayTaskCatalogRuntime(items []TaskCatalogItem) {
 	}
 	a.mu.RUnlock()
 	for i := range controllers {
-		controllers[i].sessionID = agent.BranchID(controllers[i].ctrl.SessionPath())
+		controllers[i].sessionID = controllerTaskSessionID(controllers[i].ctrl)
 	}
 
 	type runtimeValue struct{ status string }

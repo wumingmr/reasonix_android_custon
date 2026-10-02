@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"unicode/utf8"
 
 	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/sandbox"
@@ -250,8 +249,8 @@ func resolveWindowsHookBash(preferredPath string) (string, error) {
 }
 
 func discoverWindowsHookBash(preferredPath string) (string, error) {
-	shell := sandbox.ResolveShell("bash", preferredPath, nil)
-	if shell.Kind != sandbox.ShellBash {
+	shell, ok := sandbox.ResolveExplicitBash(preferredPath)
+	if !ok {
 		return "", missingWindowsHookBashError()
 	}
 	path, err := resolvedHookShellPath(shell)
@@ -300,30 +299,6 @@ func missingWindowsHookBashError() error {
 // it reaches the desktop renderer. Hook stdout/stderr are text contracts, so a
 // final valid-UTF-8 guard is safer than surfacing raw invalid bytes.
 func decodeHookOutput(raw []byte, truncated bool) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	decoded := raw
-	if !utf8.Valid(raw) {
-		if prefix, ok := truncatedUTF8Prefix(raw, truncated); ok {
-			decoded = prefix
-		} else {
-			decoded = fileencoding.DecodeToUTF8(raw)
-		}
-	}
+	decoded := fileencoding.DecodeOutput(raw, fileencoding.Cut{Tail: truncated})
 	return strings.TrimSpace(strings.ToValidUTF8(string(decoded), "\uFFFD"))
-}
-
-func truncatedUTF8Prefix(raw []byte, truncated bool) ([]byte, bool) {
-	if !truncated {
-		return nil, false
-	}
-	for suffixLen := 1; suffixLen < utf8.UTFMax && suffixLen <= len(raw); suffixLen++ {
-		prefix := raw[:len(raw)-suffixLen]
-		suffix := raw[len(raw)-suffixLen:]
-		if utf8.Valid(prefix) && !utf8.FullRune(suffix) {
-			return prefix, true
-		}
-	}
-	return nil, false
 }

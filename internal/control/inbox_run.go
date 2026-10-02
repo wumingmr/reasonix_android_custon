@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"reasonix/internal/attachment"
 	"reasonix/internal/sessioninbox"
 )
 
@@ -23,21 +24,22 @@ func (c *Controller) RunInboxTurn(ctx context.Context, id string) error {
 	if meta.State != sessioninbox.StateQueued {
 		return sessioninbox.ErrInvalidState
 	}
-	run, block, err := c.prepareInboxRun(env)
+	run, block, err := c.prepareInboxRunContext(ctx, env)
 	if err != nil {
 		return err
 	}
 	if block != "" {
-		_ = st.SetState(id, sessioninbox.StateBlocked, block)
-		_ = st.SetPaused(true)
+		if err := st.TransitionPrepared(id, sessioninbox.ContentVersion(meta), sessioninbox.StateBlocked, block, true); err != nil {
+			return err
+		}
 		return fmt.Errorf("%w: %s", sessioninbox.ErrInvalidState, block)
 	}
-	return c.runSynchronousTurn(ctx, func() error {
+	err = c.runSynchronousTurn(ctx, func() error {
 		c.inbox.admissionMu.Lock()
 		defer c.inbox.admissionMu.Unlock()
 		c.inbox.trackAdmission(id)
 		defer c.inbox.untrackAdmission(id)
-		if err := st.ClaimItem(id); err != nil {
+		if err := st.TransitionPrepared(id, sessioninbox.ContentVersion(meta), sessioninbox.StateRunning, "", true); err != nil {
 			return err
 		}
 		c.inbox.mu.Lock()
@@ -45,9 +47,26 @@ func (c *Controller) RunInboxTurn(ctx context.Context, id string) error {
 		c.inbox.mu.Unlock()
 		return nil
 	}, run)
+	if err != nil {
+		return err
+	}
+	return c.waitForGoalTerminal(ctx)
 }
 
 func (c *Controller) prepareInboxRun(env sessioninbox.PromptEnvelope) (func(context.Context) error, string, error) {
+	return c.prepareInboxRunContext(c.attachmentContext(), env)
+}
+
+func (c *Controller) prepareInboxRunContext(ctx context.Context, env sessioninbox.PromptEnvelope) (func(context.Context) error, string, error) {
+	var sources []attachment.Source
+	for _, input := range env.ImageInputs {
+		if input.Attachment != nil {
+			sources = append(sources, attachment.Source{Existing: input.Attachment, DisplayName: input.Attachment.DisplayName})
+		}
+	}
+	if _, err := c.attachmentService().PrepareBatch(ctx, sources); err != nil {
+		return nil, ImageReferenceFailures(imageFailuresFromAttachment(err)).Error(), nil
+	}
 	submit, frozenImages, block, err := applyInboxReferences(env)
 	if err != nil || block != "" {
 		return nil, block, err
@@ -57,6 +76,7 @@ func (c *Controller) prepareInboxRun(env sessioninbox.PromptEnvelope) (func(cont
 	requests := controlInvocationsFromInbox(env)
 	if len(requests) == 0 {
 		return func(ctx context.Context) error {
+			ctx = contextWithPreparedImageReferences(ctx, preparedImageReferences{inputs: env.ImageInputs})
 			return c.runGoalLoopWithFrozenImagesRawDisplay(c.withTurnFormat(ctx, strings.TrimSpace(env.Format)), submit, raw, display, frozenImages)
 		}, "", nil
 	}
@@ -65,6 +85,7 @@ func (c *Controller) prepareInboxRun(env sessioninbox.PromptEnvelope) (func(cont
 		return nil, err.Error(), nil
 	}
 	return func(ctx context.Context) error {
+		ctx = contextWithPreparedImageReferences(ctx, preparedImageReferences{inputs: env.ImageInputs})
 		return c.runPreparedInvocationTurn(c.withTurnFormat(ctx, strings.TrimSpace(env.Format)), prepared, submit, raw, display, frozenImages)
 	}, "", nil
 }

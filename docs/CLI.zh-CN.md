@@ -18,8 +18,8 @@ reasonix --effort high
 reasonix --dir /path/to/project
 ```
 
-不带子命令运行 `reasonix` 会进入交互式终端界面。尚未配置 provider 时，先运行
-`reasonix setup`。
+不带子命令运行 `reasonix` 会进入交互式终端界面。所选连接缺少凭据时，CLI 会打开
+本地连接选择器，不会发送模型请求；认证未就绪期间仍可查看历史并使用本地命令。
 
 | 参数 | 用途 |
 | --- | --- |
@@ -33,7 +33,7 @@ reasonix --dir /path/to/project
 | `--copy` | 复制要恢复的会话，并在可写副本中继续。 |
 | `--allowed-tools RULES` | 增加仅当前会话生效的权限 allow 规则；可重复传入，`--allowedTools` 是别名。 |
 | `--permission-mode MODE` | 以指定的权限姿态启动。 |
-| `--yolo` | 以 YOLO 模式启动；是 `--dangerously-skip-permissions` 的别名。 |
+| `--dangerously-skip-permissions` | 已弃用的兼容参数；会保守迁移为 `workspace-write`。进入 YOLO 请用 `--permission-mode danger-full-access`。 |
 
 适用时，参数可以放在 prompt 前面或后面。
 
@@ -72,10 +72,25 @@ provider，并支持：
 不会直接覆盖。
 
 Provider 定义只保存 `api_key_env` 变量名。即使使用 `--local`，Key 的真实值也始终保存
-在 CLI 与桌面端共用的 Reasonix 全局 `.env` 中。如果变量名已被其他 provider 使用，
-setup 会询问是否共享该凭据；两个 provider 使用不同 Key 时，应改用不同变量名。通过
-setup 添加或删除 provider 时，也会同步维护桌面端 provider access，因此相同模型可以
-直接在桌面端使用。
+在 CLI 与桌面端共用的 Reasonix 全局 `.env` 中。新增、替换或明确清空 Key 时，Reasonix
+会分配新的独立凭据槽位，并原子切换所选连接的引用；已有固定变量继续可读，只在用户编辑
+对应连接时迁移。
+
+TUI 内可用 `/setup` 打开同一连接流程，`/auth` 是别名。Key 输入会遮罩显示；按
+`Ctrl+T` 测试当前草稿连接，Enter 保存，Escape 取消。`/?` 是 `/help` 的别名。
+认证未就绪时，普通输入不会触发 provider 请求。
+
+```sh
+reasonix doctor credentials
+reasonix doctor credentials --json
+reasonix doctor credentials --probe
+reasonix doctor credentials --repair --dry-run
+reasonix doctor credentials --repair
+```
+
+默认诊断只读。`--probe` 只测试临时创建和原子重命名，不替换 `.env`。修复仅限
+Reasonix home 内归当前用户所有的普通文件；不会接管所有权、删除 deny 规则、向
+`Everyone` 授权、跟随链接/reparse point，也不会终止占用文件的进程。
 
 ### 配置费用展示币种
 
@@ -106,8 +121,8 @@ reasonix config compact-ratio 75           # 设置用户全局默认值
 reasonix config compact-ratio --local 75   # 写入 ./reasonix.toml 项目覆盖
 ```
 
-可设置范围为 65–85%，内置默认值为 80%。数值越低越早压缩，可能降低 prompt prefix
-缓存复用率；数值越高则会在压缩前保留更多上下文。阈值以下完整工具结果可能增加普通请求成本；
+可设置范围为 30–85%，内置默认值为 80%。数值越低越早压缩，可能增加摘要调用和成本，
+也可能降低 prompt prefix 缓存复用率；数值越高则会在压缩前保留更多上下文。阈值以下完整工具结果可能增加普通请求成本；
 达到压力后会先持久剪枝，再运行 cache-aligned 摘要。项目 `reasonix.toml` 的优先级高于
 用户全局配置。修改会应用于新启动的 CLI 会话；已经运行的会话继续使用启动时加载的阈值。
 
@@ -126,7 +141,7 @@ echo "解释这段代码" | reasonix run
 未使用 `-p` 或结构化输出格式时，`reasonix run` 保持正常的终端流式展示。它也接受
 `--model`、`--max-steps`、`--effort`、`--dir`、
 `--add-dir`、`--continue`、`--resume QUERY`、`--copy`、`--allowed-tools` 和
-`--permission-mode`，以及作为 `--permission-mode auto` 别名的 `--auto` / `-y`。
+`--permission-mode`，以及作为 `--permission-mode workspace-write` 兼容别名的 `--auto` / `-y`。
 
 ### 基准对照组
 
@@ -155,6 +170,30 @@ JSONL 记录，便于离线回放并归因时间去向（工具执行 vs. 两次
 reasonix run --metrics run.json --trajectory run.trajectory.jsonl "修复失败的测试"
 ```
 
+### 回合阶段
+
+回合运行期间，宿主会发布一个不含内容的阶段标记，供前端显示当前回合正在做
+什么。CLI 显示在加载行上，桌面端显示在输入框区域。
+
+这些阶段描述执行计时，不代表验证证据。桌面端检查结果卡由实际运行中的验证工具
+驱动，不根据阶段名称生成。
+
+| 阶段 | 触发时机 | `capability_phases` 桶 |
+| --- | --- | --- |
+| `working` | 回合开始时、每批工具执行返回后，以及最终就绪检查之后 | `ProviderWaitMs` |
+| `checking` | 即将执行一批工具时 | `ToolExecMs` |
+| `verifying` | 给出最终回答前运行最终就绪检查时 | `ToolExecMs` |
+
+某个阶段在下一个阶段开始时才计入对应的桶，因此 `--metrics` 中的耗时可以区分
+模型等待与工具执行，而无需重放整次运行。不足 1 毫秒的区间会被丢弃；以错误或
+暂停（而非给出回答）结束的回合不会计入最后一个区间，因此这些桶应视为下界，
+而不是对整个回合的完整划分。
+
+工具批次内弹出的审批提示会计入 `ToolExecMs`：该批次从 `checking` 一直开到下一次
+`working`，而当前没有用户等待阶段的发射点。`ReviewMs`、`SubagentWaitMs`、
+`UserWaitMs` 与 `CompactMs` 保持为 0，因为回合内没有任何地方开启这些阶段——
+`reviewing` 只在运行退出时发布，那时回合的相位时钟已经关闭。
+
 ### 输出格式
 
 | 格式 | 行为 |
@@ -179,6 +218,7 @@ reasonix run "运行测试" --output-format stream-json
   "duration_ms": 123,
   "num_turns": 1,
   "result": "...",
+  "result_from_reasoning": false,
   "session_id": "...",
   "total_cost": 0,
   "currency": "CNY",
@@ -191,6 +231,11 @@ reasonix run "运行测试" --output-format stream-json
   }
 }
 ```
+
+`result_from_reasoning` 仅在本轮以空的可见消息结束、因而 `result` 改为承载本轮
+推理文本时出现且为 `true`。思考型模型可能把答案完全写在推理通道里；没有这个字段，
+调用方无法把那段文本与真正的可见回答区分开，而没有这个回退时 `result` 会是 `""`、
+`-p` 会什么都不打印。模型给出可见文本时（即通常情况）该字段被省略。
 
 `total_cost` 仅在形成单一 `selected` 展示金额时存在（ISO 代码见 `currency`）。有
 `cost_quote` 时优先读它：含原币费用、`original_totals`、发生时的官方双区域
@@ -208,7 +253,17 @@ reasonix run "运行测试" --output-format stream-json
 决定，切换展示币种不会改写价表。可用 `reasonix doctor billing` 排查。
 
 执行失败时使用 `subtype: "error_during_execution"` 和 `is_error: true`。
-结构化模式会把运行时错误保留在 JSON 中，不再额外重复输出一份人类可读错误。
+结构化模式会把运行时错误保留在 JSON 中，不再额外重复输出一份人类可读错误。认证失败还会
+按需返回 `error_code`、`authentication_status` 和 `recovery_actions`；
+`--events-jsonl` 的最终 `run_done` 记录使用相同字段。例如缺少 Key 时会返回
+`missing_credential`，并列出 `configure_credentials`、`select_model`、
+`diagnose_credentials` 等恢复动作，且不会发送模型请求。
+
+完成校验器已移除。模型正常结束且没有工具调用时，当前轮次直接结束；包含工具调用时，
+继续进入工具循环；真正的空响应会在 frozen request 边界重试。旧的
+`completion_validation`、`completion_evaluator_model` 和
+`REASONIX_COMPLETION_VALIDATION_MODE` 设置仍可读取，但会被忽略，配置渲染器也不再生成；
+显式预算、工具安全边界和协议恢复边界仍然有效。Goal 完成是模型声明，不再执行宿主质量门禁或独立 evaluator。详见[迁移说明](EXECUTION_MODEL_SIMPLIFICATION.md)。
 
 ### 脱敏机器接口
 
@@ -290,38 +345,27 @@ machine session ID。Session lease 会阻止桌面端和 CLI 同时写入同一�
 ## 权限
 
 ```sh
-reasonix --permission-mode plan
-reasonix --permission-mode acceptEdits
+reasonix --permission-mode read-only
+reasonix --permission-mode workspace-write
+reasonix --permission-mode danger-full-access
 reasonix -p "运行指定测试" --allowed-tools "Bash(go test ./...)"
-reasonix --allowed-tools "Bash(git *) Edit"
-reasonix --allowed-tools "Bash(go test ./...)" --allowed-tools read_file
 ```
 
-| 模式 | 行为 |
+| 权限模式 | 行为 |
 | --- | --- |
-| `manual`、`ask` | 普通权限决策会弹出审批。 |
-| `auto` | 自动批准普通 fallback 操作，包括交互式 `remember`/`forget`，同时保留显式 ask 和 deny 规则。 |
-| `acceptEdits` | 允许文件编辑工具；不等同于完整 Auto 模式。 |
-| `dontAsk` | 未预先允许的请求直接拒绝，不弹出审批。 |
-| `plan` | 以只读 Plan 模式启动交互式会话。 |
-| `bypassPermissions` | 跳过审批；等同于 YOLO。 |
+| `read-only` | 可读取工作区；写入和外部副作用需要范围明确的授权。 |
+| `workspace-write` | 可写工作区和会话私有临时目录；这是默认模式。 |
+| `danger-full-access` | 以当前系统账户运行，不使用 Reasonix 文件和网络沙箱；宿主仍在启动前执行显式 deny。 |
 
-无人值守执行需要放行普通 writer fallback 时，使用 `reasonix run --auto ...`
-（或 `-y`）。这个别名不能和显式 `--permission-mode` 同时使用。
+内联脚本、管道、命令替换和 shell `-c` 与普通命令使用同一权限及沙箱边界，不能仅因
+语法形式产生审批。
 
 `--allowed-tools` 是会话权限覆盖，不是 provider tool schema 过滤器。规则可以用逗号
 或空格分隔，也可重复传入参数。配置中的 deny 规则始终优先于命令行 allow 规则。
 
-在非交互运行（`reasonix run` / `-p`）下没有可应答的审批，各模式都以非阻塞方式解析。
-默认 `ask` / `manual` 对显式 Ask 决策和普通 writer fallback 失败关闭，只读调用仍会执行；
-`acceptEdits` 放行其列出的文件编辑工具，其他 Ask 决策失败关闭；`auto` 放行普通 writer
-fallback，但仍拒绝显式 ask 规则；`dontAsk` 拒绝未批准的 writer；`bypassPermissions`
-可越过普通 ask 与 writer fallback，但配置的 deny、Sandbox，以及始终需要人工新鲜批准的
-工具（plan、沙箱逃逸、受管配置写入）仍然生效。交互式 Auto 会放行
-`remember`/`forget` 的默认 fallback，但保留显式 ask 和 deny；交互式 YOLO 会绕过记忆 ask
-审批，但仍遵守 deny。
-在所有无头模式下，拥有当前项目 store 的顶层 controller 仍可创建有界、非敏感、
-create-only 的 project/reference 记忆；其他记忆变更在无人确认时仍会被拒绝。
+非交互运行（`reasonix run` / `-p`）没有可应答的审批界面。`read-only` 对未获得窄范围
+授权的写入和副作用失败关闭；`workspace-write` 在操作系统沙箱内直接运行日常构建、测试、
+管道与内联脚本；`danger-full-access` 必须显式选择，并且仍不能绕过 deny 规则。
 
 ## 附加目录
 
@@ -349,8 +393,8 @@ reasonix -p "同时更新两个项目" \
 | `Enter` | 选择当前高亮项。 |
 | `Esc` | 取消当前选择器或审批。 |
 | `y` / `a` / `p` / `n`、数字键 | 执行对应的审批动作。 |
-| `Shift+Tab` | 按 `Ask → Auto → Plan → Ask` 循环。 |
-| `Ctrl+Y` | 独立切换 YOLO，不进入安全模式循环。 |
+| `Shift+Tab` | 按“仅可查看 → 工作区内修改 → YOLO → Plan”循环。 |
+| `Ctrl+Y` | 切换 YOLO；实际设置的运行时权限为 `danger-full-access`。 |
 
 响应式底栏左侧显示当前交互状态；空间足够时，右侧显示模型和推理强度。第二行按
 可用性显示仓库与会话遥测，例如缓存命中率、上下文占用、压缩余量、后台任务和余额。
@@ -382,11 +426,12 @@ SSH 下远端进程无法读取本机剪贴板，请使用终端粘贴快捷键�
 | `/model` | 搜索已配置模型并切换当前模型。 |
 | `/provider` | 选择 provider，再选择该 provider 下的模型。 |
 | `/resume` | 搜索最近会话并切换。 |
+| `/takeover` | 从本机常驻 serve 接管上一次被拒绝的会话（或列表项）：本 CLI 成为写入方，远端观看者变为只读旁观者直至取回。桌面端取回后可直接再次接管原会话；若已无任何运行时持有该会话，则直接恢复它。 |
 | `/status` | 显示模型、effort、cache、Git、后台任务和余额信息。 |
 | `/theme [auto\|light\|dark\|style]` | 查看或切换 CLI 背景模式和强调色。 |
 | `/currency [auto\|CNY\|USD]` | 查看或切换用户全局费用展示币种，并刷新当前运行时。 |
 | `/paste-image` | 读取剪贴板图片并插入可编辑的附件标记。 |
-| `/mouse` | 切换应用内鼠标选区、滚动条和滚轮处理。 |
+| `/mouse` | 切换应用内鼠标选区、滚动条和滚轮处理；SSH 会话默认关闭接管，保证终端原生选区可用。 |
 | `/effort` | 查看或切换 reasoning effort。 |
 | `/output-style` | 选择回答风格。 |
 | `/verbose` | 切换详细 reasoning 显示。 |
@@ -403,8 +448,11 @@ SSH 下远端进程无法读取本机剪贴板，请使用终端粘贴快捷键�
 
 切换模型或 effort 会重建运行时，同时保留当前对话、会话级权限覆盖、附加目录
 访问权限和 session ownership。`/reload` 使用同一套失败原子重建语义。
-普通请求一律进入 executor，没有自动任务模式。唯一的会话角色是质量底线：standard（默认）或 delivery；事实仍可能高于它。
+普通请求一律进入 executor，没有自动任务模式或可选质量底线，统一采用标准执行行为。
 独立 Planner 只响应显式 Plan、批准边界和 Goal 启动。
+
+`/preset`、`/work-mode` 与 `/profile` 仅作为隐藏兼容命令保留。已知旧值会被接受，
+提示该设置已退役，并保持标准执行；未知值仍会报错。
 
 用量统计使用独立的可丢弃 rollup 投影：
 reasonix catalogs reindex usage [--json]

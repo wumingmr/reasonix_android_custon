@@ -18,7 +18,7 @@ func TestAdmitGuardedTurnRejectsDrainingGeneration(t *testing.T) {
 
 	var notices atomic.Int32
 	var c *Controller
-	c = New(Options{
+	c = newOwnedTestController(t, Options{
 		Sink: event.FuncSink(func(ev event.Event) {
 			if ev.Kind == event.Notice {
 				_ = c.RuntimeGeneration() // must not re-enter while Controller.mu is held
@@ -60,7 +60,7 @@ func TestAdmitGuardedTurnRejectsDrainingGeneration(t *testing.T) {
 func TestAdmitGuardedTurnAllowsPublishedGeneration(t *testing.T) {
 	owner := extension.NewRuntimeOwner()
 	owner.Gate.Publish(9)
-	c := New(Options{RuntimeGeneration: 9, RuntimeOwner: owner, Sink: event.Discard})
+	c := newOwnedTestController(t, Options{RuntimeGeneration: 9, RuntimeOwner: owner, Sink: event.Discard})
 	t.Cleanup(func() { c.Close() })
 	done := make(chan struct{})
 	got := c.runGuarded(func(context.Context) error {
@@ -90,7 +90,7 @@ func TestRunTurnBindsRuntimeOwnerToRunnerContext(t *testing.T) {
 	owner := extension.NewRuntimeOwner()
 	owner.Gate.Publish(4)
 	runner := &runtimeOwnerRunner{}
-	c := New(Options{Runner: runner, RuntimeGeneration: 4, RuntimeOwner: owner, Sink: event.Discard})
+	c := newOwnedTestController(t, Options{Runner: runner, RuntimeGeneration: 4, RuntimeOwner: owner, Sink: event.Discard})
 	t.Cleanup(c.Close)
 
 	if err := c.RunTurn(context.Background(), "hello"); err != nil {

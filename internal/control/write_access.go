@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -34,8 +35,12 @@ func newControllerWriteAccess(opts Options) controllerWriteAccess {
 }
 
 func (c *Controller) CheckWriteAccess(ctx context.Context, req agent.WriteAccessCheck) (agent.WriteAccessDecision, error) {
+	requestedPreset := strings.TrimSpace(req.Declaration.RequestedPreset)
+	if requestedPreset == "danger-full-access" && c.approval.mode() != ToolApprovalDangerFullAccess {
+		return c.checkDangerFullAccessRetry(ctx, req)
+	}
 	if strings.EqualFold(req.Tool, "bash") && len(req.Declaration.Directories) == 0 {
-		return agent.WriteAccessDecision{Allow: true}, nil
+		return agent.WriteAccessDecision{Allow: true, PermissionPreset: requestedPreset}, nil
 	}
 	if strings.EqualFold(req.Tool, "bash") && !c.bashEnforcesSandbox() {
 		return agent.WriteAccessDecision{Allow: true}, nil
@@ -47,6 +52,12 @@ func (c *Controller) CheckWriteAccess(ctx context.Context, req agent.WriteAccess
 	if err != nil {
 		return agent.WriteAccessDecision{Allow: false, Reason: err.Error()}, nil
 	}
+	if c.approval.mode() == ToolApprovalDangerFullAccess {
+		if c.ordinaryWriteDecision(req.Tool, req.Args, req.ReadOnly) == permission.Deny {
+			return agent.WriteAccessDecision{Allow: false, Reason: "denied by permission policy — this tool/command is on the deny list. Do not retry it; choose another approach or stop and explain."}, nil
+		}
+		return agent.WriteAccessDecision{Allow: true, PerCallRoots: abs, SkipOrdinaryGate: true, PermissionPreset: requestedPreset}, nil
+	}
 	if c.writeAccess.roots == nil {
 		if len(abs) == 0 {
 			return agent.WriteAccessDecision{Allow: true}, nil
@@ -54,8 +65,26 @@ func (c *Controller) CheckWriteAccess(ctx context.Context, req agent.WriteAccess
 		return agent.WriteAccessDecision{Allow: false, Reason: agentHeadlessWriteHint(display)}, nil
 	}
 	missing := c.writeAccess.roots.Missing(abs)
+	// The current session's private temp generation is owned by this controller.
+	// Grant it for this call only, so rotation cannot leave the old directory writable.
+	var sessionTempDirs []string
+	if c.sessionTemp != nil {
+		if root := c.sessionTemp.Dir(); root != "" {
+			if resolved, resolveErr := sandbox.ResolveAbsPath(root); resolveErr == nil {
+				remaining := missing[:0]
+				for _, dir := range missing {
+					if sandbox.PathWithin(resolved, dir) {
+						sessionTempDirs = append(sessionTempDirs, dir)
+					} else {
+						remaining = append(remaining, dir)
+					}
+				}
+				missing = remaining
+			}
+		}
+	}
 	if len(missing) == 0 {
-		return agent.WriteAccessDecision{Allow: true}, nil
+		return agent.WriteAccessDecision{Allow: true, PerCallRoots: sessionTempDirs, PermissionPreset: requestedPreset}, nil
 	}
 	missingDisplay := displayForAbs(abs, display, missing)
 	decision := c.ordinaryWriteDecision(req.Tool, req.Args, req.ReadOnly)
@@ -85,9 +114,52 @@ func (c *Controller) CheckWriteAccess(ctx context.Context, req agent.WriteAccess
 	}
 	return agent.WriteAccessDecision{
 		Allow:            true,
-		PerCallRoots:     grant.PerCall,
+		PerCallRoots:     append(sessionTempDirs, grant.PerCall...),
 		SkipOrdinaryGate: mergeAsk || decision == permission.Allow,
+		PermissionPreset: requestedPreset,
 	}, nil
+}
+
+func (c *Controller) checkDangerFullAccessRetry(ctx context.Context, req agent.WriteAccessCheck) (agent.WriteAccessDecision, error) {
+	command := bashCommandForPermissionRetry(req.Args)
+	subject := command
+	if subject == "" {
+		subject = strings.TrimSpace(req.Subject)
+	}
+	if c.ordinaryWriteDecision(req.Tool, req.Args, req.ReadOnly) == permission.Deny {
+		return agent.WriteAccessDecision{Allow: false, Reason: "denied by permission policy — this tool/command is on the deny list. Do not retry it."}, nil
+	}
+	// A full-access retry is never covered by the workspace preset itself. Only
+	// an exact session authorization for this command (or an already active
+	// full-access preset, handled by the caller) may skip the prompt.
+	if c.approval.preApprovedForExactSession(req.Tool, subject) {
+		return agent.WriteAccessDecision{Allow: true, SkipOrdinaryGate: true, PermissionPreset: "danger-full-access"}, nil
+	}
+	if !sandbox.ConsumeDenial(req.Declaration.DenialID, command) {
+		return agent.WriteAccessDecision{Allow: false, Reason: "danger-full-access retry requires a current host-issued denial_id for this exact command"}, nil
+	}
+	if !req.Expandable || !c.writeAccess.interactive || c.approval.mode() == ToolApprovalDontAsk {
+		return agent.WriteAccessDecision{Allow: false, Reason: "danger-full-access retry requires an interactive explicit authorization"}, nil
+	}
+	req.Subject = subject
+	grant, err := c.requestWriteAccess(ctx, req, nil, nil, strings.TrimSpace(req.Declaration.Justification), false, true)
+	if err != nil {
+		return agent.WriteAccessDecision{}, err
+	}
+	if !grant.Allow {
+		return agent.WriteAccessDecision{Allow: false, Reason: "the user declined the full-access retry"}, nil
+	}
+	return agent.WriteAccessDecision{Allow: true, SkipOrdinaryGate: true, PermissionPreset: "danger-full-access"}, nil
+}
+
+func bashCommandForPermissionRetry(args []byte) string {
+	var payload struct {
+		Command string `json:"command"`
+	}
+	if json.Unmarshal(args, &payload) != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.Command)
 }
 
 func agentHeadlessWriteHint(display []string) string {
@@ -120,7 +192,7 @@ func (c *Controller) ordinaryWriteDecision(toolName string, args []byte, readOnl
 	policy := c.policy
 	mode := c.approval.mode()
 	switch mode {
-	case ToolApprovalAuto, ToolApprovalYolo:
+	case ToolApprovalWorkspaceWrite, ToolApprovalDangerFullAccess:
 		policy.Mode = permission.Allow
 	case ToolApprovalDontAsk:
 		policy.Mode = permission.Deny
@@ -130,8 +202,7 @@ func (c *Controller) ordinaryWriteDecision(toolName string, args []byte, readOnl
 		return dec
 	}
 	subject := permission.Subject(args)
-	requireHuman := strings.EqualFold(toolName, "bash") && permission.BashSubjectRequiresExplicitApproval(subject)
-	if c.approval.preApprovedForDecisionOptions(toolName, subject, args, false, requireHuman) {
+	if c.approval.preApprovedForDecisionOptions(toolName, subject, args, false, false) {
 		return permission.Allow
 	}
 	return permission.Ask
@@ -165,7 +236,7 @@ func (c *Controller) requestWriteAccess(ctx context.Context, req agent.WriteAcce
 		Justification:            justification,
 		BroadHomeAccess:          broadHome,
 		OrdinaryPermissionNeeded: mergeAsk,
-		PersistAllowed:           c.writeAccess.persist != nil,
+		PersistAllowed:           false,
 	})
 	reply, err := c.requestWriteAccessDecision(ctx, req.Tool, subject, req.Args, reason, payload)
 	if err != nil {
@@ -181,11 +252,9 @@ func (c *Controller) requestWriteAccess(ctx context.Context, req agent.WriteAcce
 }
 
 func (c *Controller) requestWriteAccessDecision(ctx context.Context, toolName, subject string, args []byte, reason string, payload *event.WriteAccessApproval) (approvalReply, error) {
-	c.approval.promptMu.Lock()
-	defer c.approval.promptMu.Unlock()
-
 	c.approval.promptEmitMu.Lock()
 	id, reply := c.approval.registerWriteAccess(toolName, subject, reason, args, payload)
+	c.registerOwnedPrompt(id, PromptApproval)
 	approval := event.Approval{
 		ID:          id,
 		Tool:        toolName,
@@ -196,7 +265,11 @@ func (c *Controller) requestWriteAccessDecision(ctx context.Context, toolName, s
 		Kind:        writeAccessKind,
 		WriteAccess: payload,
 	}
-	c.sink.Emit(c.approvalRequestEvent(approval))
+	if err := event.EmitChecked(c.sink, c.approvalRequestEvent(approval)); err != nil {
+		c.approval.promptEmitMu.Unlock()
+		c.cancelOwnedPrompt(id)
+		return approvalReply{}, fmt.Errorf("persist write access request: %w", err)
+	}
 	c.approval.promptEmitMu.Unlock()
 	go c.hooks.Notification(ctx, approvalNotificationText(toolName, subject), "permission_prompt")
 
@@ -206,13 +279,37 @@ func (c *Controller) requestWriteAccessDecision(ctx context.Context, toolName, s
 	case r := <-reply:
 		return r, nil
 	case <-waitCtx.Done():
-		c.approval.cancel(id)
+		c.cancelOwnedPrompt(id)
 		return approvalReply{}, waitCtx.Err()
 	}
 }
 
 // ResolveApproval answers a pending approval with an explicit scope.
 func (c *Controller) ResolveApproval(id string, allow bool, scope sandbox.ApprovalScope) error {
+	defer c.refreshRuntimeState(event.Event{})
+	return c.resolveApprovalLocked(id, allow, scope)
+}
+
+// ResolveApprovalAt resolves an approval only while the permission runtime is
+// still the one that emitted it. This prevents a delayed browser or remote
+// response from authorizing work after a session restart or preset change.
+func (c *Controller) ResolveApprovalAt(id string, allow bool, scope sandbox.ApprovalScope, generation, permissionRevision uint64) error {
+	defer c.refreshRuntimeState(event.Event{})
+	if c == nil {
+		return ErrPromptNotPending
+	}
+	c.promptResolveMu.Lock()
+	defer c.promptResolveMu.Unlock()
+	if generation != 0 && generation != c.runtimeGeneration {
+		return ErrPromptStaleRuntime
+	}
+	if permissionRevision != 0 && permissionRevision != c.permissionRevision.Load() {
+		return ErrPromptStaleRuntime
+	}
+	return c.resolveApprovalLocked(id, allow, scope)
+}
+
+func (c *Controller) resolveApprovalLocked(id string, allow bool, scope sandbox.ApprovalScope) error {
 	if c == nil {
 		return fmt.Errorf("controller is nil")
 	}
@@ -220,28 +317,38 @@ func (c *Controller) ResolveApproval(id string, allow bool, scope sandbox.Approv
 	if id == "" {
 		return fmt.Errorf("empty approval id")
 	}
-	c.mu.Lock()
-	gate := c.recoveryGate
-	c.mu.Unlock()
-	if gate != nil && gate.HasApproval(id) {
-		action := agent.RecoveryActionRevise
-		if allow {
-			action = agent.RecoveryActionContinue
-		}
-		return c.ResolveRecovery(id, action, "")
+	if allow && scope == sandbox.ApprovalScopeProject {
+		return fmt.Errorf("permanent approval is no longer supported; allow once or for this session")
 	}
 	pending := c.approval.peek(id)
 	if pending.reply == nil {
-		return fmt.Errorf("approval %q is no longer pending", id)
+		return nil
 	}
 	if pending.kind == writeAccessKind {
-		pending = c.approval.resolve(id)
+		var ok bool
+		var err error
+		pending, ok, err = c.approval.resolveAfter(id, func(p pendingApproval) error {
+			state := PromptRejected
+			if allow {
+				state = PromptAnswered
+			}
+			return c.emitTurnEventChecked(event.Event{Kind: event.PromptAnswered, ItemID: id, InteractionState: string(state), Status: event.TurnInProgress})
+		})
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("approval %q is no longer pending", id)
+		}
+		terminal := PromptRejected
+		if allow {
+			terminal = PromptAnswered
+		}
+		c.promptOwner.MarkIDTerminal(id, terminal)
 		return c.resolveWriteAccess(pending, allow, scope)
 	}
-	session := allow && (scope == sandbox.ApprovalScopeSession || scope == sandbox.ApprovalScopeProject)
-	persist := allow && scope == sandbox.ApprovalScopeProject
-	c.Approve(id, allow, session, persist)
-	return nil
+	session := allow && scope == sandbox.ApprovalScopeSession
+	return c.approveChecked(id, allow, session, false)
 }
 
 func (c *Controller) resolveWriteAccess(pending pendingApproval, allow bool, scope sandbox.ApprovalScope) error {
@@ -275,54 +382,35 @@ func (c *Controller) resolveWriteAccess(pending pendingApproval, allow bool, sco
 		}
 		verifiedDirs = append(verifiedDirs, verified)
 	}
-	if scope == sandbox.ApprovalScopeProject {
-		if err := c.persistWriteAccess(pending.tool, pending.subject, verifiedDirs, merge); err != nil {
-			c.recordDecisionReceipt(pending, "deny")
-			pending.reply <- approvalReply{persistErr: err}
-			c.sink.Emit(event.Event{
-				Kind:  event.Notice,
-				Level: event.LevelWarn,
-				Text:  fmt.Sprintf("could not save write access to the project reasonix.toml: %v", err),
-			})
-			return err
-		}
-	}
 	outcome := "allow_once"
 	reply := approvalReply{allow: true, onceDirs: verifiedDirs}
-	if scope == sandbox.ApprovalScopeSession || scope == sandbox.ApprovalScopeProject {
+	if scope == sandbox.ApprovalScopeSession {
+		c.permissionStateMu.Lock()
 		if c.writeAccess.roots != nil {
-			if scope == sandbox.ApprovalScopeProject {
-				c.writeAccess.roots.GrantVerifiedBaseline(verifiedDirs)
-			} else {
-				c.writeAccess.roots.GrantVerifiedSession(verifiedDirs)
-			}
+			c.writeAccess.roots.GrantVerifiedSession(verifiedDirs)
 		}
 		if merge {
-			c.approval.grantSession(pending.tool, pending.subject)
+			if approvalRequestsFullAccess(pending.rawInput) {
+				c.approval.grantExactSession(pending.tool, pending.subject)
+			} else {
+				c.approval.grantSession(pending.tool, pending.subject)
+			}
 		}
+		c.permissionStateMu.Unlock()
 		reply.session = true
 		reply.onceDirs = nil
-		if scope == sandbox.ApprovalScopeProject {
-			reply.persist = true
-			outcome = "allow_project"
-		} else {
-			outcome = "allow_session"
-		}
+		outcome = "allow_session"
 	}
 	c.recordDecisionReceipt(pending, outcome)
 	pending.reply <- reply
 	return nil
 }
 
-func (c *Controller) persistWriteAccess(toolName, subject string, dirs []string, mergePerm bool) error {
-	if c.writeAccess.persist == nil {
-		return fmt.Errorf("project persistence is not available")
+func approvalRequestsFullAccess(raw json.RawMessage) bool {
+	var payload struct {
+		SandboxPermissions string `json:"sandbox_permissions"`
 	}
-	rule := ""
-	if mergePerm {
-		rule = permission.RememberRuleForScope(toolName, subject)
-	}
-	return c.writeAccess.persist(dirs, rule)
+	return json.Unmarshal(raw, &payload) == nil && strings.TrimSpace(payload.SandboxPermissions) == "danger-full-access"
 }
 
 func (c *Controller) clearSessionWriteAccess() {

@@ -13,7 +13,7 @@ func TestUnleasedWriteProbe(t *testing.T) {
 
 	unleased := filepath.Join(dir, "unleased.jsonl")
 	observeUnleasedSessionWrite(unleased, sessionSaveSnapshot)
-	if _, ok := unleasedWriteObserved.Load(canonicalSessionSavePath(unleased)); !ok {
+	if _, ok := unleasedWriteObserved.Load(CanonicalSessionPath(unleased)); !ok {
 		t.Fatal("unleased save should be recorded by the probe")
 	}
 
@@ -24,7 +24,7 @@ func TestUnleasedWriteProbe(t *testing.T) {
 	}
 	defer lease.Release()
 	observeUnleasedSessionWrite(leased, sessionSaveSnapshot)
-	if _, ok := unleasedWriteObserved.Load(canonicalSessionSavePath(leased)); ok {
+	if _, ok := unleasedWriteObserved.Load(CanonicalSessionPath(leased)); ok {
 		t.Fatal("lease-holder save must not be recorded by the probe")
 	}
 }

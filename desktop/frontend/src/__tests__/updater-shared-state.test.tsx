@@ -4,8 +4,10 @@ import { JSDOM } from "jsdom";
 import React from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { subscribeToUpdateRefresh } from "../components/UpdateBanner";
 import { __emitMockUpdater, type AppBindings } from "../lib/bridge";
 import { classifyUpdateError, UpdaterProvider, useUpdater } from "../lib/useUpdater";
+import { installDesktopHostStub } from "./desktopHostStub";
 
 let passed = 0;
 let failed = 0;
@@ -52,6 +54,9 @@ function Consumer({ id, checking = false }: { id: string; checking?: boolean }) 
       <button id={`${id}-force-check`} type="button" onClick={() => void updater.check()}>
         ForceCheck
       </button>
+      <button id={`${id}-refresh`} type="button" onClick={() => void updater.refresh()}>
+        Refresh
+      </button>
       <button id={`${id}-reset`} type="button" onClick={() => updater.reset()}>Reset</button>
       <button
         id={`${id}-abandon`}
@@ -91,6 +96,17 @@ globalThis.HTMLElement = dom.window.HTMLElement;
 globalThis.Event = dom.window.Event;
 globalThis.MouseEvent = dom.window.MouseEvent;
 
+let scheduledRefreshes = 0;
+const unsubscribeRefresh = subscribeToUpdateRefresh(() => {
+  scheduledRefreshes += 1;
+}, 60_000);
+window.dispatchEvent(new Event("focus"));
+document.dispatchEvent(new Event("visibilitychange"));
+ok(scheduledRefreshes === 2, "visible focus and visibility changes schedule update refreshes");
+unsubscribeRefresh();
+window.dispatchEvent(new Event("focus"));
+ok(scheduledRefreshes === 2, "update refresh listeners are removed on cleanup");
+
 const root = createRoot(document.getElementById("root")!);
 await act(async () => {
   root.render(
@@ -107,6 +123,7 @@ ok(classifyUpdateError("prepare update: a pending update already exists") === "r
 ok(classifyUpdateError("prepare update: recover existing handoff backup: operation not permitted") === "recovery", "macOS backup permission errors require recovery fallback");
 ok(classifyUpdateError("update recovery: the previous update is still completing its startup health check; wait briefly and try again, or discard the previous update") === "recovery", "awaiting-health errors require recovery fallback");
 ok(classifyUpdateError("update: manual update required") === "manual", "manual-only errors prefer the official download");
+ok(classifyUpdateError('update: fetch manifest: https://dl.reasonix.io/latest/latest.json: platforms darwin-arm64 asset: unsupported install_layout "electron-v1" (keeping current version)') === "manual", "install layout boundaries prefer the official download");
 ok(classifyUpdateError("connection reset by peer") === "retryable", "transient errors remain retryable");
 
 await act(async () => {
@@ -139,7 +156,7 @@ const applyAttempts: Array<{
   reject: (err: Error) => void;
 }> = [];
 const checkedChannels: string[] = [];
-window.go = {
+const appStubTable = ({
   main: {
     App: {
       async CheckUpdate(channel: string) {
@@ -157,7 +174,8 @@ window.go = {
       },
     } as AppBindings,
   },
-};
+}).main.App;
+const desktopStub = installDesktopHostStub(appStubTable);
 
 await act(async () => {
   (document.getElementById("settings-check-update") as HTMLButtonElement).click();
@@ -172,6 +190,13 @@ await act(async () => {
 });
 ok(document.getElementById("banner-status")?.textContent === "authorizing", "deb apply starts authorizing");
 ok(document.getElementById("settings-status")?.textContent === "authorizing", "authorizing state is shared");
+
+const checksBeforeBusyRefresh = checkedChannels.length;
+await act(async () => {
+  (document.getElementById("banner-refresh") as HTMLButtonElement).click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
+ok(checkedChannels.length === checksBeforeBusyRefresh, "background refresh cannot supersede an active update");
 
 await act(async () => {
   __emitMockUpdater({
@@ -241,7 +266,7 @@ ok(document.getElementById("banner-status")?.textContent === "relaunching", "rel
 let resolveFirstCheck!: (value: typeof debInfo) => void;
 let resolveSecondCheck!: (value: typeof debInfo) => void;
 let checkCalls = 0;
-window.go.main.App.CheckUpdate = () =>
+appStubTable.CheckUpdate = () =>
   new Promise<typeof debInfo>((resolve) => {
     checkCalls += 1;
     if (checkCalls === 1) resolveFirstCheck = resolve;
@@ -267,7 +292,7 @@ ok(document.getElementById("banner-status")?.textContent === "available", "stale
 let oldApplyRequestId = "";
 let oldApplyVersion = "";
 let resolveOldApply!: () => void;
-window.go.main.App.ApplyUpdateRequest = (_channel: string, expectedVersion: string, requestId: string) =>
+appStubTable.ApplyUpdateRequest = (_channel: string, expectedVersion: string, requestId: string) =>
   new Promise<void>((resolve) => {
     oldApplyRequestId = requestId;
     oldApplyVersion = expectedVersion;
@@ -318,12 +343,12 @@ await act(async () => {
 });
 ok(document.getElementById("banner-status")?.textContent === "idle", "same-channel superseded progress and Promise completion stay ignored");
 
-window.go.main.App.CheckUpdate = async () => ({
+appStubTable.CheckUpdate = async () => ({
   ...debInfo,
   channel: "stable",
   latest: "v1.2.0",
 });
-window.go.main.App.ApplyUpdateRequest = async () => {
+appStubTable.ApplyUpdateRequest = async () => {
   throw new Error("should not reach when version mismatches from progress only");
 };
 
@@ -333,7 +358,7 @@ await act(async () => {
 });
 ok(document.getElementById("banner-status")?.textContent === "available", "official update is available again");
 
-window.go.main.App.ApplyUpdateRequest = async (_channel: string, _expectedVersion: string, requestId: string) => {
+appStubTable.ApplyUpdateRequest = async (_channel: string, _expectedVersion: string, requestId: string) => {
   // Hang until cancelled by reset so we can prove supersession.
   return new Promise<void>((_resolve, reject) => {
     applyAttempts.push({
@@ -366,14 +391,14 @@ await act(async () => {
 });
 ok(document.getElementById("banner-status")?.textContent === "idle", "superseded apply progress and rejection stay ignored");
 
-window.go.main.App.CheckUpdate = async () => ({ ...debInfo, channel: "preview" });
+appStubTable.CheckUpdate = async () => ({ ...debInfo, channel: "preview" });
 await act(async () => {
   (document.getElementById("settings-check-update") as HTMLButtonElement).click();
   await new Promise((resolve) => setTimeout(resolve, 0));
 });
 ok(document.getElementById("banner-status")?.textContent === "error", "wrong-channel check response leaves the checking state");
 
-window.go.main.App.CheckUpdate = async () => ({ ...debInfo, channel: "stable", latest: "v1.3.0" });
+appStubTable.CheckUpdate = async () => ({ ...debInfo, channel: "stable", latest: "v1.3.0" });
 await act(async () => {
   (document.getElementById("settings-check-update") as HTMLButtonElement).click();
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -389,19 +414,19 @@ let resolveAbandon!: () => void;
 let rejectAbandon!: (err: Error) => void;
 let abandonCalls = 0;
 let checkCallsDuringAbandon = 0;
-window.go.main.App.AbandonPendingUpdate = () =>
+appStubTable.AbandonPendingUpdate = () =>
   new Promise<void>((resolve, reject) => {
     abandonCalls += 1;
     resolveAbandon = resolve;
     rejectAbandon = reject;
   });
-window.go.main.App.CheckUpdate = async () => {
+appStubTable.CheckUpdate = async () => {
   checkCallsDuringAbandon += 1;
   return { ...debInfo, available: false, channel: "stable", latest: "v1.0.0" };
 };
 // Seed recovery error without going through apply (info may be absent).
 await act(async () => {
-  window.go.main.App.CheckUpdate = async () => {
+  appStubTable.CheckUpdate = async () => {
     throw new Error("update recovery: the previous update is still completing its startup health check; wait briefly and try again, or discard the previous update");
   };
   (document.getElementById("settings-check-update") as HTMLButtonElement).click();
@@ -410,7 +435,7 @@ await act(async () => {
 ok(document.getElementById("banner-status")?.textContent === "error", "recovery error surfaces before discard");
 ok(document.getElementById("banner-manual")?.textContent === "recovery", "awaiting-health is recovery disposition");
 
-window.go.main.App.CheckUpdate = async () => {
+appStubTable.CheckUpdate = async () => {
   checkCallsDuringAbandon += 1;
   return { ...debInfo, available: false, channel: "stable", latest: "v1.0.0" };
 };
@@ -455,7 +480,7 @@ ok(
   "discard failure keeps the recovery disposition when the message matches",
 );
 
-delete window.go;
+desktopStub.uninstall();
 
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

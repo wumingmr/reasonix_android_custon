@@ -10,7 +10,6 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
-	"reasonix/internal/tool"
 )
 
 // workingGoalTool is a writer, so every round counts as acting on the
@@ -40,6 +39,9 @@ func (p *steadyWorkProvider) Stream(context.Context, provider.Request) (<-chan p
 	round := p.calls.Add(1)
 	ch := make(chan provider.Chunk, 4)
 	if round > p.max {
+		if round == p.max+1 {
+			ch <- provider.Chunk{Type: provider.ChunkToolCall, ToolCall: &provider.ToolCall{ID: "finished", Name: "update_goal", Arguments: `{"status":"complete","reason":"All edits applied"}`}}
+		}
 		ch <- provider.Chunk{Type: provider.ChunkText, Text: "All done."}
 		ch <- provider.Chunk{Type: provider.ChunkDone}
 		close(ch)
@@ -62,14 +64,14 @@ func (p *steadyWorkProvider) Stream(context.Context, provider.Request) (<-chan p
 // structural no-progress loop — none of which is a round count.
 func TestGoalTurnRunsPastTheOldRoundCeiling(t *testing.T) {
 	prov := &steadyWorkProvider{max: 24}
-	reg := tool.NewRegistry()
+	reg := goalRegistry()
 	reg.Add(workingGoalTool{name: "apply_edit"})
 	exec := agent.New(prov, reg, agent.NewSession("sys"), agent.Options{}, event.Discard)
 	c, done := newChatBudgetController(t, exec)
 
 	c.SetGoal("apply every pending edit")
 	c.Submit("start")
-	waitForDone(t, done)
+	<-done
 
 	if got := prov.calls.Load(); got <= 16 {
 		t.Fatalf("provider rounds = %d, want productive work to run past the retired 16-round ceiling", got)

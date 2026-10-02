@@ -25,26 +25,37 @@ type sessionRuntime struct {
 
 	missingReasoning missingReasoningWatch
 
+	// reasoningReplayStrongProjection records the provider-visible history cutoff
+	// after thinking-400 repair; later messages use normal replay. Its anchor
+	// resolves the cutoff after old tool-result messages are removed.
+	reasoningReplayStrongProjection       int
+	reasoningReplayStrongProjectionAnchor string
+
 	// compactionMu guards projection snapshots/install and the in-memory sidecar
 	// generation. Network summarization never runs while this lock is held.
 	compactionMu sync.Mutex
 	// compactionRunMu singleflights the expensive summary transaction without
 	// holding the session lock during network I/O.
-	compactionRunMu sync.Mutex
+	compactionRunMu compactionGate
 	compaction      compactionProgress
 	compactionState CompactionState
 	cacheState      string // legacy resume telemetry; never provider-visible
 
-	// path and checkpointState are rebound by preflight when a transcript is
-	// bound, so reset leaves them to their owner rather than blanking them.
+	// path is rebound by preflight when a transcript is bound. Checkpoint state
+	// and any unconfirmed commit belong to the current conversation and reset.
 	path            string // bound transcript path for projection sidecars
-	checkpointState string // none|restored|applied; runtime-only
+	checkpointState string // none|restored|pending|applied; runtime-only
+	// pendingModelContextCommit is an event-log commit that was accepted but
+	// whose durability barrier did not complete. The exact payload is retained
+	// so the next model boundary can retry idempotently before any provider work.
+	pendingModelContextCommit *SessionModelContextCommit
 
-	// todoState is the host's canonical task list. It never rides in the prompt,
-	// so it survives compaction, and SetSession rebuilds it from the incoming
-	// snapshot rather than letting reset blank it.
-	todoMu    sync.Mutex
-	todoState []evidence.TodoItem
+	// todoState is an executor-local mirror populated only after the semantic
+	// ToolResult commit succeeds. It never rebuilds from transcript text and is
+	// never used as frontend or authorization state.
+	todoMu      sync.Mutex
+	todoState   []evidence.TodoItem
+	todoWritten bool
 
 	// lastPrefixShape records the previous provider request's cacheable prefix
 	// so usage events can explain prefix churn on the next request. Carried
@@ -65,15 +76,34 @@ func (r *sessionRuntime) reset(s *Session) {
 	r.cacheMiss.Store(0)
 	r.output.reset()
 	r.missingReasoning = missingReasoningWatch{}
+	r.reasoningReplayStrongProjection = 0
+	r.reasoningReplayStrongProjectionAnchor = ""
 	r.compactionMu.Lock()
 	r.compactionState = CompactionState{} // lineage change; disk reloaded on Resume
 	r.cacheState = CacheStateUnknown
+	r.checkpointState = "none"
+	r.pendingModelContextCommit = nil
 	r.compactionMu.Unlock()
 	r.compaction.stuck = false
 	r.compaction.stuckInputHash = ""
 	r.compaction.consecutive = 0
 	r.compaction.failedTurn.Store(0)
 	r.compaction.lastTurn.Store(0)
+	r.todoMu.Lock()
+	r.todoState = nil
+	r.todoWritten = false
+	r.todoMu.Unlock()
+}
+
+// clearReasoningReplayStrongProjection drops the process-local repair overlay.
+// The overlay is tied to one canonical history shape; any rewind, branch, or
+// other lineage rewrite must not let an old cutoff/anchor govern the new view.
+func (r *sessionRuntime) clearReasoningReplayStrongProjection() {
+	if r == nil {
+		return
+	}
+	r.reasoningReplayStrongProjection = 0
+	r.reasoningReplayStrongProjectionAnchor = ""
 }
 
 // session returns the bound conversation under the lock that guards the

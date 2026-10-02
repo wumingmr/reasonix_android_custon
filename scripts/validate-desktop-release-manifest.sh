@@ -9,7 +9,7 @@ notes_version="${5:-$version}"
 
 stable_version_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 preview_version_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-preview\.(0|[1-9][0-9]*)$'
-release_version_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+)(\.[0-9A-Za-z-]+)*)?)?$'
+release_version_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+)(\.[0-9A-Za-z-]+)*)?$'
 
 case "$channel" in
 	stable)
@@ -104,11 +104,22 @@ jq -e \
 	(if $legacy and (.downloads == null)
 		then true
 		else
-			(.downloads | exact_keys([
+			((.downloads | exact_keys([
+				"Reasonix-darwin-arm64.dmg",
+				"Reasonix-darwin-amd64.dmg",
 				"Reasonix-darwin-universal.dmg",
 				"Reasonix-windows-amd64.zip"
-			])) and
+			])) or ($legacy and (.downloads | exact_keys([
+				"Reasonix-darwin-universal.dmg",
+				"Reasonix-windows-amd64.zip"
+			])))) and
 			(.downloads["Reasonix-darwin-universal.dmg"] | valid_asset("Reasonix-darwin-universal.dmg")) and
-			(.downloads["Reasonix-windows-amd64.zip"] | valid_asset("Reasonix-windows-amd64.zip"))
+			(.downloads["Reasonix-windows-amd64.zip"] | valid_asset("Reasonix-windows-amd64.zip")) and
+			(if .downloads["Reasonix-darwin-arm64.dmg"] == null
+				then $legacy
+				else
+					(.downloads["Reasonix-darwin-arm64.dmg"] | valid_asset("Reasonix-darwin-arm64.dmg")) and
+					(.downloads["Reasonix-darwin-amd64.dmg"] | valid_asset("Reasonix-darwin-amd64.dmg"))
+			end)
 	end)
 ' "$manifest" >/dev/null

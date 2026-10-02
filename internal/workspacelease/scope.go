@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"reasonix/internal/filelock"
+	"reasonix/internal/pathidentity"
 )
 
 // All workspaces share a fixed set of hashed path-lock files. Hash collisions
@@ -28,6 +29,9 @@ type pathSpec struct {
 	compatibility string
 	display       string
 	slot          string
+	access        string
+	info          os.FileInfo
+	exists        bool
 }
 
 // AcquireWriteForPath takes a legacy file-scoped hold released by ReleaseWrite
@@ -105,6 +109,12 @@ func (o *Owner) HoldWriteForPaths(ctx context.Context, paths []string) (func(), 
 
 		notified := false
 		release, err := o.acquirePathSystem(ctx, compatibilityRoots, treeSlots, slots, &notified)
+		if err == nil {
+			err = revalidatePathSpecs(specs)
+			if err != nil {
+				release()
+			}
+		}
 		o.mu.Lock()
 		var id uint64
 		if err == nil {
@@ -138,10 +148,23 @@ func (o *Owner) pathSpecs(paths []string) ([]pathSpec, error) {
 		if seen[key] {
 			continue
 		}
+		access := strings.TrimSpace(path)
+		if !filepath.IsAbs(access) {
+			access, err = filepath.Abs(access)
+			if err != nil {
+				return nil, err
+			}
+		}
+		access = filepath.Clean(access)
+		info, statErr := os.Stat(access)
+		exists := statErr == nil
+		if statErr != nil && !os.IsNotExist(statErr) {
+			return nil, statErr
+		}
 		seen[key] = true
 		specs = append(specs, pathSpec{
 			key: key, compatibility: compatibility,
-			display: display, slot: o.pathLockPath(key),
+			display: display, slot: o.pathLockPath(key), access: access, info: info, exists: exists,
 		})
 	}
 	sort.Slice(specs, func(i, j int) bool {
@@ -151,6 +174,24 @@ func (o *Owner) pathSpecs(paths []string) ([]pathSpec, error) {
 		return specs[i].slot < specs[j].slot
 	})
 	return specs, nil
+}
+
+func revalidatePathSpecs(specs []pathSpec) error {
+	for _, spec := range specs {
+		key, _, err := canonicalFileKey(spec.access)
+		if err != nil {
+			return fmt.Errorf("revalidate workspace path: %w", err)
+		}
+		currentInfo, statErr := os.Stat(spec.access)
+		currentExists := statErr == nil
+		if statErr != nil && !os.IsNotExist(statErr) {
+			return fmt.Errorf("revalidate workspace path: %w", statErr)
+		}
+		if key != spec.key || currentExists != spec.exists || (currentExists && !os.SameFile(spec.info, currentInfo)) {
+			return errors.New("workspace path identity changed while waiting")
+		}
+	}
+	return nil
 }
 
 func specKeys(specs []pathSpec) []string {
@@ -344,26 +385,19 @@ func canonicalFilePath(abs string) (canonical, display string, err error) {
 	if abs == "" {
 		return "", "", errors.New("path is empty")
 	}
-	abs, err = filepath.Abs(abs)
+	baseDir := ""
+	if !filepath.IsAbs(abs) {
+		baseDir, err = os.Getwd()
+		if err != nil {
+			return "", "", err
+		}
+	}
+	identity, err := pathidentity.Resolve(abs, pathidentity.Options{BaseDir: baseDir, FollowLeaf: true})
 	if err != nil {
 		return "", "", err
 	}
-	abs = filepath.Clean(abs)
-	cur, tail := abs, ""
-	for {
-		if resolved, resolveErr := filepath.EvalSymlinks(cur); resolveErr == nil {
-			abs = filepath.Join(resolved, tail)
-			break
-		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			break
-		}
-		tail = filepath.Join(filepath.Base(cur), tail)
-		cur = parent
-	}
-	display = filepath.Base(abs)
-	return compatibilityIdentityPath(abs), display, nil
+	display = filepath.Base(identity.AccessPath)
+	return compatibilityIdentityPath(identity.PhysicalPath), display, nil
 }
 
 func canonicalContains(root, path string) bool {

@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/wailsapp/wails/v2/pkg/runtime"
-
 	"reasonix/internal/boot"
 	"reasonix/internal/config"
 	"reasonix/internal/mcpdiag"
@@ -60,7 +58,7 @@ var (
 		if a == nil || a.ctx == nil {
 			return fmt.Errorf("desktop runtime is not ready to open the authorization page")
 		}
-		runtime.BrowserOpenURL(a.ctx, rawURL)
+		a.nativeHost().OpenExternal(a.ctx, rawURL)
 		return nil
 	}
 )
@@ -133,7 +131,10 @@ func (a *App) ClearMCPServerAuthentication(name string) error {
 			return err
 		}
 	}
-	if _, _, _, err := config.ClearPluginAuthenticationInSourceForRoot(root, name); err != nil {
+	if err := config.KeepMCPDecisionAcross(root, name, func() (config.PluginEntry, error) {
+		updated, _, _, err := config.ClearPluginAuthenticationInSourceForRoot(root, name)
+		return updated, err
+	}); err != nil {
 		return err
 	}
 	disconnectMCPServerControllers(name, ctrl, controllers)

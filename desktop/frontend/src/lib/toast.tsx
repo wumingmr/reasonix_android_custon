@@ -1,4 +1,6 @@
-import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { ErrorMessage } from "../components/ErrorMessage";
+import { useT } from "./i18n";
 
 export interface Toast {
   id: number;
@@ -28,8 +30,13 @@ export function useToast() {
 let nextId = 1;
 
 export function ToastProvider({ children }: { children: ReactNode }) {
+  const translate = useT();
   const [toasts, setToasts] = useState<Toast[]>([]);
   const timers = useRef(new Map<number, ReturnType<typeof setTimeout>>());
+  useEffect(() => {
+    const activeTimers = timers.current;
+    return () => { for (const timer of activeTimers.values()) clearTimeout(timer); activeTimers.clear(); };
+  }, []);
 
   const showToast = useCallback((text: string, level: Toast["level"] = "info", options: ToastOptions = {}) => {
     const id = nextId++;
@@ -37,7 +44,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     const timer = setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
       timers.current.delete(id);
-    }, options.durationMs ?? (options.actionLabel ? 8000 : 2500));
+    }, options.durationMs ?? (options.actionLabel || level !== "info" ? 8000 : 2500));
     timers.current.set(id, timer);
   }, []);
 
@@ -56,7 +63,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           <div key={t.id} className={`toast toast--${t.level}`} onClick={() => dismissToast(t.id)}>
             {t.level === "warn" && <span className="toast__icon">⚠️</span>}
             {t.level === "error" && <span className="toast__icon">❌</span>}
-            <span className="toast__text">{t.text}</span>
+            <span className="toast__text">{t.level === "info" ? t.text : <ErrorMessage error={t.text} onInspect={() => {
+              clearTimeout(timers.current.get(t.id));
+              timers.current.delete(t.id);
+            }} />}</span>
             {t.actionLabel && t.onAction && (
               <button
                 type="button"
@@ -70,6 +80,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                 {t.actionLabel}
               </button>
             )}
+            <button type="button" className="toast__action" aria-label={translate("error.dismiss")}
+              onClick={(event) => { event.stopPropagation(); dismissToast(t.id); }}>×</button>
           </div>
         ))}
       </div>

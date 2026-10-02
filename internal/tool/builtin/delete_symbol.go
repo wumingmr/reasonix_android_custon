@@ -87,10 +87,15 @@ func (d deleteSymbol) Execute(ctx context.Context, args json.RawMessage) (string
 	if ext != ".go" {
 		return "", fmt.Errorf("delete_symbol only supports Go files — use delete_range for %s files", ext)
 	}
+	unlock := lockMutationPath(p.Path)
+	defer unlock()
 
 	src, err := readEditSource(ctx, d.overlay, p.Path)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", p.Path, err)
+	}
+	if err := src.requireObserved(ctx, d.overlay, p.Path); err != nil {
+		return "", err
 	}
 	original := src.content
 

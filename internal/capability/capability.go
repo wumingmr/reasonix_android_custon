@@ -59,6 +59,7 @@ type Entry struct {
 	Profiles         []string // deprecated frontmatter labels; diagnostics only
 	AutoStart        bool     // MCP: configured auto_start
 	FailureReason    string   // host-proven failure detail
+	SkillRunAs       string   // skill candidate invocation mode; body-independent
 }
 
 type RouteCandidate struct {
@@ -80,6 +81,11 @@ type RouteDecision struct {
 func SkillEntries(skills []skill.Skill, tools []tool.ContractEntry) []Entry {
 	toolNames := map[string]bool{}
 	for _, t := range tools {
+		// Retired calls remain dispatchable for older clients, but must not be
+		// reintroduced through capability discovery.
+		if t.Name == "complete_step" {
+			continue
+		}
 		toolNames[t.Name] = true
 	}
 	skillToolReady := toolNames["run_skill"] || toolNames["read_skill"] || toolNames["read_only_skill"]
@@ -114,6 +120,7 @@ func SkillEntries(skills []skill.Skill, tools []tool.ContractEntry) []Entry {
 			ConnectSource:    connectSource,
 			Requires:         cleanList(sk.Requires),
 			Profiles:         cleanList(sk.Profiles),
+			SkillRunAs:       string(sk.RunAs),
 		})
 	}
 	return out
@@ -233,9 +240,12 @@ func RenderTransientBlock(d RouteDecision) string {
 	b.WriteString("Relevant capabilities for this turn:\n")
 	for _, c := range d.Candidates {
 		e := c.Entry
-		proxyMCP := d.CapabilityProxy && (e.Kind == KindMCPTool || e.Kind == KindMCPServer)
+		// proxy means use_capability is the only connector: connect_tool_source
+		// is unregistered for closed-loop routes and every boot that exposes the
+		// stable proxy. Never rewrite to an unusable source target.
+		proxy := d.ClosedLoop || d.CapabilityProxy
 		target := e.ID
-		if !d.ClosedLoop && !proxyMCP && e.Status != StatusReady && e.ConnectSource != "" {
+		if !proxy && e.Status != StatusReady && e.ConnectSource != "" {
 			target = fmt.Sprintf("source:%s", e.ConnectSource)
 			if e.ConnectName != "" {
 				target += "/" + e.ConnectName
@@ -247,9 +257,9 @@ func RenderTransientBlock(d RouteDecision) string {
 			fmt.Fprintf(&line, " (status=%s)", e.Status)
 		}
 		switch {
-		case d.ClosedLoop || proxyMCP:
+		case proxy:
 			// Closed-loop routes and dual-model Planner have no
-			// connect_tool_source for MCP; the stable proxy both connects and
+			// connect_tool_source; the stable proxy both connects and
 			// calls on demand, keeping the concrete capability id.
 			if e.Status != StatusReady {
 				switch e.Kind {
@@ -257,6 +267,8 @@ func RenderTransientBlock(d RouteDecision) string {
 					fmt.Fprintf(&line, "; call use_capability(action=\"call\", capability_id=%q, arguments={...}) — it connects the server on demand after approval", e.ID)
 				case KindMCPServer:
 					fmt.Fprintf(&line, "; call use_capability(action=\"call\", capability_id=%q) to connect it (after approval) and list its tools, then call a listed mcp-tool id", e.ID)
+				case KindSkill:
+					fmt.Fprintf(&line, "; call use_capability(action=\"call\", capability_id=%q, arguments={...}) — it runs the skill on demand", e.ID)
 				}
 			}
 		case e.ConnectSource != "":
@@ -281,9 +293,6 @@ func RenderTransientBlock(d RouteDecision) string {
 
 func routeEntry(text string, e Entry) (AutoUse, string, bool) {
 	if e.Kind == KindSkill {
-		if explicitSkill(text, e.Name) {
-			return AutoUseRequire, "the user explicitly referenced this skill", true
-		}
 		if e.AutoUse == AutoUseOff {
 			return "", "", false
 		}
@@ -294,45 +303,24 @@ func routeEntry(text string, e Entry) (AutoUse, string, bool) {
 			return AutoUsePrefer, "the user is asking for review or issue inspection", true
 		}
 	}
-	if e.Kind == KindMCPTool {
-		if explicitMCP(text, e.Source) || (looksLikeGitHub(text) && strings.Contains(e.Source, "github")) {
-			return AutoUsePrefer, "the task asks for external GitHub/MCP data", true
-		}
-		if looksFreshData(text) && (strings.Contains(e.Name, "search") || strings.Contains(e.Name, "fetch") || strings.Contains(e.Name, "read")) {
-			return AutoUsePrefer, "the task appears to need fresh external data", true
-		}
+	if e.Kind == KindMCPTool && namesMCPTool(text, e) {
+		return AutoUsePrefer, "the user named this MCP tool", true
 	}
 	return "", "", false
 }
 
-func explicitSkill(text, name string) bool {
-	n := normalize(name)
-	return strings.Contains(text, "/"+n) ||
-		strings.Contains(text, "use "+n+" skill") ||
-		strings.Contains(text, "using "+n+" skill") ||
-		strings.Contains(text, "使用 "+n+" skill") ||
-		strings.Contains(text, "用 "+n+" skill") ||
-		strings.Contains(text, "使用"+n+"技能") ||
-		strings.Contains(text, "用"+n+"技能")
-}
-
-func explicitMCP(text, server string) bool {
-	s := normalize(server)
-	return strings.Contains(text, s+" mcp") || strings.Contains(text, "mcp "+s) || strings.Contains(text, "使用 "+s+" mcp") || strings.Contains(text, "用 "+s+" mcp")
+// namesMCPTool matches the identifier the host mints for the tool. A server
+// name or a topic word selects every tool the server exposes, so it is left to
+// the semantic router, which reads the whole request.
+func namesMCPTool(text string, e Entry) bool {
+	tool := normalize(e.ToolName)
+	return tool != "" && strings.Contains(text, tool)
 }
 
 func looksLikeReview(text string) bool {
 	return containsAny(text, []string{
 		"review", "code review", "security review", "帮我看看", "有没有问题", "审查", "评审", "检查这段代码", "看看这段代码",
 	})
-}
-
-func looksLikeGitHub(text string) bool {
-	return containsAny(text, []string{"github", "issue", "issues", "pull request", " pr ", "讨论区", "仓库 issue", "github 上"})
-}
-
-func looksFreshData(text string) bool {
-	return containsAny(text, []string{"latest", "recent", "today", "现在", "最新", "最近", "查一下", "搜索", "github"})
 }
 
 func triggerMatch(text string, triggers []string) bool {

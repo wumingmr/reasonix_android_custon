@@ -68,7 +68,7 @@ func (g *goalMachine) migrateRemovedGoalPause() bool {
 		return false
 	}
 	switch g.stopCause {
-	case stopCauseBudgetTurns, stopCauseBudgetTokens, stopCauseGoalRunBudget, stopCauseGoalStuck, stopCauseNoProgress:
+	case stopCauseBudgetTurns, stopCauseBudgetTokens, stopCauseGoalRunBudget, stopCauseGoalStuck, stopCauseNoProgress, stopCauseEvaluator, "final_readiness", "quality_readiness":
 	default:
 		return false
 	}

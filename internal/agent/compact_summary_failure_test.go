@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
@@ -67,7 +68,7 @@ func prepareContext(ctx context.Context, a *Agent, trigger string) error {
 func foldRegionOf(a *Agent) []provider.Message {
 	canonical, version := a.sess.conversation.snapshotMessagesVersion()
 	msgs, _ := a.visibleInputForFold(a.sess.compactionState, canonical, version)
-	head, start, ok := a.planFoldRegion(msgs, false)
+	head, start, ok := a.planFoldRegion(msgs, false, false)
 	if !ok {
 		return nil
 	}
@@ -107,24 +108,87 @@ func TestSummarizerCancellationAtOverflowPropagatesWithoutFallback(t *testing.T)
 	}
 }
 
-// Overflow is the trigger that reports ErrCompactionRequired, so it is where a
-// failed summary turns into "context exceeds provider limit and compaction
-// failed" without installing fabricated fallback content.
-func TestOverflowSummarizerFailureRequiresCompaction(t *testing.T) {
+// Thinking-mode providers (DeepSeek vision SKUs) may answer the summary
+// request with reasoning_content only and an empty content block. The
+// summarizer must surface the reasoning instead of failing with "summarizer
+// returned empty output" and retrying forever (observed on a 2M-token session:
+// chunked fallback reached fragment 2/14 and died on the same empty-output
+// check).
+func TestSummarizerReasoningOnlyIsSurfacedNotEmptied(t *testing.T) {
+	sess := foldableSessionOverForce(6)
+	a := agentOverForce(t, &fakeProvider{reasoningReply: "- kept: alpha constraint\n- kept: beta file path"}, sess)
+	before := estimateMessagesTokens(provider.ModelMessages(sess.Messages))
+
+	if err := prepareContext(context.Background(), a, CompactionTriggerOverflow); err != nil {
+		t.Fatalf("prepare with reasoning-only summary = %v, want applied fold", err)
+	}
+	if after := projectionTokens(a); after == 0 || after >= before {
+		t.Fatalf("reasoning-only summary installed projection tokens=%d (source=%d)", after, before)
+	}
+}
+
+// A reasoning-only reply that also opened a tool call is not a briefing: the
+// empty-output rejection must survive, and an opened call counts even when
+// the stream never completed it. At the ceiling that rejection blocks the turn.
+func TestSummarizerReasoningWithToolCallStaysEmpty(t *testing.T) {
+	sess := foldableSessionOverForce(6)
+	a := agentOverForce(t, &fakeProvider{reasoningReply: "let me call a tool first", reasoningTool: true}, sess)
+	var rejected string
+	a.svc.sink = event.FuncSink(func(e event.Event) {
+		if e.Kind == event.ContextMaintenanceEvent && e.Maintenance != nil && e.Maintenance.Status == "failed" {
+			rejected = e.Maintenance.Reason
+		}
+	})
+
+	if err := prepareContext(context.Background(), a, CompactionTriggerOverflow); !errors.Is(err, ErrCompactionRequired) {
+		t.Fatalf("prepare = %v, want a recoverable context failure", err)
+	}
+	if !strings.Contains(rejected, "summarizer returned empty output") {
+		t.Fatalf("failed receipt reason = %q, want the empty-output rejection for reasoning with a tool call", rejected)
+	}
+	assertNoFailedSummaryRewrite(t, a)
+}
+
+// The reasoning clamp cuts on rune boundaries so a CJK briefing stays valid
+// UTF-8 for the provider request that replays the digest.
+func TestSummarizerReasoningClampKeepsValidUTF8(t *testing.T) {
+	sess := foldableSessionOverForce(6)
+	a := agentOverForce(t, &fakeProvider{reasoningReply: strings.Repeat("上下文摘要要点。", 3000)}, sess)
+
+	summary, _, err := a.summarize(context.Background(), sess.Messages[1:], "")
+	if err != nil {
+		t.Fatalf("summarize = %v", err)
+	}
+	if len(summary) > summaryReasoningMaxBytes || !utf8.ValidString(summary) {
+		t.Fatalf("clamped reasoning is %d bytes valid=%v, want <= %d bytes of valid UTF-8", len(summary), utf8.ValidString(summary), summaryReasoningMaxBytes)
+	}
+}
+
+// truncatedRescue reports whether the last maintenance installed the lossy
+// truncation projection instead of any digest.
+func truncatedRescue(a *Agent) bool {
+	r := a.sess.compactionState.LastReceipt
+	return r != nil && r.Status == "applied" && r.Action == "truncate" &&
+		latestDigest(a.sess.compactionState.Projection.Messages) == ""
+}
+
+// Overflow recovery failure preserves the view and blocks the current attempt.
+func TestOverflowSummarizerFailurePreservesContext(t *testing.T) {
 	sess := foldableSessionOverForce(6)
 	a := agentOverForce(t, &fakeProvider{streamErr: errors.New("provider down")}, sess)
 	before := estimateMessagesTokens(provider.ModelMessages(sess.Messages))
 
 	if err := prepareContext(context.Background(), a, CompactionTriggerOverflow); !errors.Is(err, ErrCompactionRequired) {
-		t.Fatalf("prepare = %v, want ErrCompactionRequired", err)
+		t.Fatalf("prepare = %v, want a recoverable context failure", err)
 	}
-	if after := projectionTokens(a); after != 0 {
-		t.Fatalf("failed summary installed projection: %d (source=%d)", after, before)
+	assertNoFailedSummaryRewrite(t, a)
+	if after := estimateMessagesTokens(provider.ModelMessages(a.ModelHistorySnapshot())); after != before {
+		t.Fatalf("model history changed: %d -> %d", before, after)
 	}
 }
 
 // An oversized complete-prefix request fails admission and must not fabricate
-// a summary or privately shorten its input.
+// a summary or privately shorten its input. The failed attempt preserves the view.
 func TestSummarizerFailureOnOversizedFoldDoesNotFabricateDigest(t *testing.T) {
 	sess := foldableSessionOverForce(120)
 	a := agentOverForceWindow(t, &fakeProvider{streamErr: errors.New("provider exploded")}, sess, 60000)
@@ -133,11 +197,12 @@ func TestSummarizerFailureOnOversizedFoldDoesNotFabricateDigest(t *testing.T) {
 	}
 
 	if err := prepareContext(context.Background(), a, CompactionTriggerOverflow); !errors.Is(err, ErrCompactionRequired) {
-		t.Fatalf("prepare = %v, want ErrCompactionRequired", err)
+		t.Fatalf("prepare = %v, want a recoverable context failure", err)
 	}
 	if degradedFold(a) || latestDigest(a.sess.compactionState.Projection.Messages) != "" {
 		t.Errorf("failed summary fabricated a digest: receipt=%+v", a.sess.compactionState.LastReceipt)
 	}
+	assertNoFailedSummaryRewrite(t, a)
 }
 
 // Below the hard ceiling the turn still goes out, so a failed summary must stay
@@ -163,7 +228,7 @@ func TestPressureBelowHardCeilingKeepsTheFailure(t *testing.T) {
 // The receipt recorded below the ceiling must not outlive the ceiling itself:
 // once growing usage crosses the hard ceiling the fold is the only way out, so
 // recovery has to run even with a standing failed receipt. If the summarizer is
-// still down, hard pressure returns ErrCompactionRequired without a fake digest.
+// still down, hard pressure stops without installing a fallback projection.
 func TestFailedSummaryReceiptRetriesAtHardCeilingWithoutFallback(t *testing.T) {
 	sess := foldableSessionOverForce(6)
 	a := agentOverForce(t, &fakeProvider{streamErr: errors.New("provider down")}, sess)
@@ -191,10 +256,18 @@ func TestFailedSummaryReceiptRetriesAtHardCeilingWithoutFallback(t *testing.T) {
 	}
 
 	if err := prepareContext(context.Background(), a, CompactionTriggerPressure); !errors.Is(err, ErrCompactionRequired) {
-		t.Fatalf("over-ceiling prepare = %v, want ErrCompactionRequired", err)
+		t.Fatalf("over-ceiling prepare = %v, want a recoverable context failure", err)
 	}
 	if degradedFold(a) {
 		t.Fatal("hard-ceiling failure installed a mechanical digest")
+	}
+	assertNoFailedSummaryRewrite(t, a)
+}
+
+func assertNoFailedSummaryRewrite(t *testing.T, a *Agent) {
+	t.Helper()
+	if a.currentProjectionVersion() != 0 || truncatedRescue(a) || latestDigest(a.sess.compactionState.Projection.Messages) != "" {
+		t.Fatal("failed summary changed the model projection")
 	}
 }
 

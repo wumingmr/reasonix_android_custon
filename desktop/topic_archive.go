@@ -28,7 +28,21 @@ type topicArchiveTrace struct {
 }
 
 func (a *App) TrashTopic(topicID string) error {
-	return friendlySessionFileError(a.trashTopic(topicID))
+	if key, historical := strings.CutPrefix(topicID, "historical-"); historical {
+		if _, err := a.ListHistoricalSessions(); err != nil {
+			return err
+		}
+		c := &a.historicalImports
+		c.mu.Lock()
+		source, found := c.sources[key]
+		c.mu.Unlock()
+		if !found {
+			return newSessionOperationError(sessionOperationTargetNotFound, "The historical source is unavailable.")
+		}
+		_, err := a.ArchiveSessionTarget(SessionSelector{Source: &SessionSourceRef{Path: source.path, SourceKey: key, HeadID: source.head}})
+		return err
+	}
+	return friendlySessionFileError(a.archiveCompatibleTopic(topicID))
 }
 
 func (a *App) topicHasActiveRuntimeWork(topicID string) bool {
@@ -68,20 +82,9 @@ func (a *App) trashTopic(topicID string) (retErr error) {
 	} else if fallback.needs {
 		changedDirs = append(changedDirs, desktopSessionDir(globalWorkspaceRoot()))
 	}
-	// Remove abandoned transient blanks before fallback construction registers
-	// the project; otherwise reconciliation can promote a default-titled blank
-	// into the topic registry and make it ineligible for cleanup.
-	trace.phase = "discard_existing_blanks"
-	a.discardUnusedTransientBlankSessions(changedDirs, "")
-	if fallback.needs {
-		trace.phase = "open_fallback"
-		fallback.topicID = ""
-		if err := a.openFallbackRuntime(fallback); err != nil {
-			// Runtime construction errors can include provider configuration
-			// details, so keep this recovery diagnostic value-free.
-			slog.Warn("desktop: open fallback after topic archive failed")
-		}
-	}
+	// The last visible topic leaves no replacement runtime (the frontend lands
+	// on the workspace draft). Abandoned transient blanks still go, or
+	// reconciliation could promote a default-titled blank into the registry.
 	keepPath := ""
 	a.mu.RLock()
 	if tab := a.tabs[a.activeTabID]; tab != nil {
@@ -467,14 +470,5 @@ func cleanupTransientBlankTopicRegistration(meta agent.BranchMeta) {
 		return changed, nil
 	})
 	titleRoot := topicTitleRoot(scope, root)
-	if titles, err := loadTopicTitlesForUpdate(titleRoot); err == nil {
-		delete(titles, topicID)
-		_ = saveTopicTitles(titleRoot, titles)
-	}
-	if sources, err := loadTopicTitleSourcesForUpdate(titleRoot); err == nil {
-		delete(sources, topicID)
-		_ = saveTopicTitleSources(titleRoot, sources)
-	}
-	_ = deleteTopicCreatedAt(titleRoot, topicID)
-	_ = deleteTopicAutoTitleMeta(titleRoot, topicID)
+	_ = deleteTopicState(titleRoot, topicID)
 }

@@ -9,49 +9,55 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"reasonix/internal/provider"
 )
 
-// rstAfter writes a 200 SSE head plus the given prelude, then forces a TCP RST
-// (SetLinger(0) + Close) so the client read fails like a proxy that idle-drops
-// the long-lived connection (wsarecv: forcibly closed), not a clean EOF.
-func rstAfter(t *testing.T, w http.ResponseWriter, prelude string) {
-	t.Helper()
-	hj, ok := w.(http.Hijacker)
-	if !ok {
-		t.Fatal("ResponseWriter is not a Hijacker")
-	}
-	conn, buf, err := hj.Hijack()
-	if err != nil {
-		t.Fatalf("hijack: %v", err)
-	}
-	_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n")
-	_, _ = buf.WriteString(prelude)
-	_ = buf.Flush()
-	if tcp, ok := conn.(*net.TCPConn); ok {
-		_ = tcp.SetLinger(0)
-	}
-	_ = conn.Close()
+// resetAfter answers every request with a 200 SSE head whose body yields the
+// prelude and then fails the way a peer reset does. A real socket RST cannot
+// pin the phase: whether net/http sees it before or after the headers is up to
+// the OS scheduler, and a header-phase reset is retried by design (#8327).
+func resetAfter(p provider.Provider, prelude string) *atomic.Int32 {
+	var reqs atomic.Int32
+	p.(*client).http = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		reqs.Add(1)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"text/event-stream"}},
+			Body:       &cutBody{r: strings.NewReader(prelude)},
+			Request:    r,
+		}, nil
+	})}
+	return &reqs
 }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type cutBody struct{ r io.Reader }
+
+func (b *cutBody) Read(p []byte) (int, error) {
+	if n, _ := b.r.Read(p); n > 0 {
+		return n, nil
+	}
+	return 0, &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}
+}
+
+func (b *cutBody) Close() error { return nil }
 
 // TestStreamSurfacesEarlyConnResetAsInterrupt moves body-phase replay to the
 // Agent: a pre-output connection reset is StreamInterruptedError, not an
 // in-provider transparent reconnect (avoids stacked retry budgets).
 func TestStreamSurfacesEarlyConnResetAsInterrupt(t *testing.T) {
-	var reqs int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reqs++
-		rstAfter(t, w, ": keep-alive\n\n") // a comment line, zero model output
-	}))
-	defer srv.Close()
-
-	p, err := New(provider.Config{Name: "deepseek", BaseURL: srv.URL, Model: "deepseek-v4", APIKey: "k"})
+	p, err := New(provider.Config{Name: "deepseek", BaseURL: "http://gateway.invalid", Model: "deepseek-v4", APIKey: "k"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	reqs := resetAfter(p, ": keep-alive\n\n") // a comment line, zero model output
 	ch, err := p.Stream(context.Background(), provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -67,8 +73,8 @@ func TestStreamSurfacesEarlyConnResetAsInterrupt(t *testing.T) {
 	if !gotInterrupted {
 		t.Error("early conn reset must surface as StreamInterruptedError for Agent replay")
 	}
-	if reqs != 1 {
-		t.Errorf("server saw %d requests, want 1 (no provider body replay)", reqs)
+	if n := reqs.Load(); n != 1 {
+		t.Errorf("server saw %d requests, want 1 (no provider body replay)", n)
 	}
 }
 
@@ -231,17 +237,11 @@ func TestStreamAcceptsFinishReasonWithoutDone(t *testing.T) {
 // token has streamed, a mid-stream reset must surface as an error rather than
 // replaying the request (which would re-emit the already-shown text).
 func TestStreamDoesNotReplayAfterOutput(t *testing.T) {
-	var reqs int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reqs++
-		rstAfter(t, w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
-	}))
-	defer srv.Close()
-
-	p, err := New(provider.Config{Name: "deepseek", BaseURL: srv.URL, Model: "deepseek-v4", APIKey: "k"})
+	p, err := New(provider.Config{Name: "deepseek", BaseURL: "http://gateway.invalid", Model: "deepseek-v4", APIKey: "k"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	reqs := resetAfter(p, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
 	ch, err := p.Stream(context.Background(), provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -269,7 +269,7 @@ func TestStreamDoesNotReplayAfterOutput(t *testing.T) {
 	if !gotInterrupted {
 		t.Error("a reset after output should be marked as a stream interruption")
 	}
-	if reqs != 1 {
-		t.Errorf("server saw %d requests, want 1 (no replay after output)", reqs)
+	if n := reqs.Load(); n != 1 {
+		t.Errorf("server saw %d requests, want 1 (no replay after output)", n)
 	}
 }

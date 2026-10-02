@@ -5,6 +5,7 @@ import { CopyButton } from "./CopyButton";
 import { createMermaidPanZoom, type MermaidPanZoomInstance, type MermaidPanZoomOptions } from "./mermaidPanZoom";
 import { openExternal } from "../lib/bridge";
 import { markdownImageSource } from "../lib/markdownImage";
+import { useT } from "../lib/i18n";
 
 interface MermaidDiagramProps {
   definition: string;
@@ -493,7 +494,7 @@ const MermaidDiagram = memo(function MermaidDiagram({ definition }: MermaidDiagr
   );
 
   const content = (
-    <div className={[
+    <div data-app-overlay={fullscreen ? "" : undefined} className={[
       "mermaid-diagram",
       state.status === "error" ? "mermaid-diagram--error" : "",
       fullscreen ? "mermaid-diagram--fullscreen" : "",
@@ -618,6 +619,7 @@ function MermaidBody({
   tab: DiagramTab;
   previewRef: RefObject<HTMLDivElement | null>;
 }) {
+  const t = useT();
   if (tab === "code") {
     return (
       <pre className="code hljs mermaid-diagram__code" data-lang="mermaid">
@@ -630,7 +632,7 @@ function MermaidBody({
     return (
       <div className="mermaid-diagram__loading">
         <span className="mermaid-diagram__spinner" />
-        <span>Rendering diagram...</span>
+        <span>{t("common.loading")}</span>
       </div>
     );
   }
@@ -640,13 +642,13 @@ function MermaidBody({
       <div className="mermaid-diagram__error">
         <div className="mermaid-diagram__error-bar">
           <AlertCircle size={14} className="mermaid-diagram__error-icon" />
-          <span>Diagram syntax error</span>
+          <span>{t("error.diagram")}</span>
         </div>
         <pre className="code hljs mermaid-diagram__error-source" data-lang="mermaid">
           <code>{source}</code>
         </pre>
         <details className="mermaid-diagram__error-details">
-          <summary>Error details</summary>
+          <summary>{t("error.details")}</summary>
           <pre className="mermaid-diagram__error-detail-text">{state.message}</pre>
         </details>
       </div>

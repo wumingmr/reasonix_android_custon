@@ -88,10 +88,15 @@ func (m multiEdit) Execute(ctx context.Context, args json.RawMessage) (string, e
 	if err := confineWrite(ctx, effectiveWriteRoots(ctx, m.rootSet, m.roots), m.guard, m.managed, p.Path); err != nil {
 		return "", err
 	}
+	unlock := lockMutationPath(p.Path)
+	defer unlock()
 
 	src, err := readEditSource(ctx, m.overlay, p.Path)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", p.Path, err)
+	}
+	if err := src.requireObserved(ctx, m.overlay, p.Path); err != nil {
+		return "", err
 	}
 	content := src.content
 

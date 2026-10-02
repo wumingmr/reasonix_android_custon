@@ -27,17 +27,17 @@ func (s *Store) v3BeforePath(turn, index int) string {
 	return filepath.Join(s.turnDir(turn), "files", fmt.Sprintf("%04d.before", index))
 }
 
-func v3PayloadBytes(f FileSnap) []byte {
+func v3PayloadBytes(f FileSnap) ([]byte, error) {
 	if f.rawContent != nil {
-		return f.rawContent
+		return f.rawContent, nil
 	}
 	if f.Content == nil {
-		return nil
+		return nil, nil
 	}
 	if f.Encoding != nil {
 		return fileenc.Encode(*f.Content, *f.Encoding)
 	}
-	return []byte(*f.Content)
+	return []byte(*f.Content), nil
 }
 
 func (s *Store) persistV3(c *Checkpoint) error {
@@ -45,6 +45,7 @@ func (s *Store) persistV3(c *Checkpoint) error {
 	// so their NextTurn remains monotonic across a downgrade; write it first so
 	// a crash can leave reduced rewind visibility, never an invisible turn.
 	marker := *c
+	marker.Result = nil
 	marker.SchemaVersion = SchemaV2
 	marker.Files = []FileSnap{}
 	marker.Coverage = CoverageNone
@@ -75,7 +76,11 @@ func (s *Store) persistV3(c *Checkpoint) error {
 		snap.BlobRef = ""
 		payloadPath := s.v3BeforePath(c.Turn, i)
 		if f.Content != nil && !f.PayloadExpired {
-			if err := fileutil.AtomicWriteFile(payloadPath, v3PayloadBytes(f), 0o644); err != nil {
+			payload, err := v3PayloadBytes(f)
+			if err != nil {
+				return err
+			}
+			if err := fileutil.AtomicWriteFile(payloadPath, payload, 0o644); err != nil {
 				return err
 			}
 			snap.Content = nil
@@ -168,7 +173,8 @@ func (s *Store) loadV3Turns() []*Checkpoint {
 }
 
 func (s *Store) v3PayloadSize(turn int) (int64, error) {
-	root := filepath.Join(s.turnDir(turn), "files")
+	// Metadata also holds the bounded frozen result patches.
+	root := s.turnDir(turn)
 	var total int64
 	err := filepath.WalkDir(root, func(_ string, d os.DirEntry, err error) error {
 		if err != nil {

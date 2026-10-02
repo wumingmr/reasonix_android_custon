@@ -64,11 +64,11 @@ func stripWorkspaceLine(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-// TestEffectDeliveryFloorSetsSessionFloor asserts the role input reaches the
-// controller's floor, and light folds to standard.
-func TestEffectDeliveryFloorSetsSessionFloor(t *testing.T) {
-	if got := effectFloorController(t, "delivery").QualityFloor(); got != "delivery" {
-		t.Fatalf("QualityFloor = %q, want delivery", got)
+// TestEffectDeliveryFloorFoldsToStandard asserts legacy role input remains
+// readable without changing the controller's runtime posture.
+func TestEffectDeliveryFloorFoldsToStandard(t *testing.T) {
+	if got := effectFloorController(t, "delivery").QualityFloor(); got != "standard" {
+		t.Fatalf("QualityFloor = %q, want standard", got)
 	}
 	if got := effectFloorController(t, "light").QualityFloor(); got != "standard" {
 		t.Fatalf("light must fold to standard, got %q", got)
@@ -100,6 +100,7 @@ name = "floor-model"
 kind = "`+kind+`"
 model = "x"
 `)
+	approveWorkspace(t, dir)
 	ctrl, err := Build(context.Background(), Options{Sink: event.Discard, TokenMode: tokenMode})
 	if err != nil {
 		t.Fatalf("Build(%q): %v", tokenMode, err)

@@ -6,8 +6,7 @@ import (
 	"strings"
 )
 
-// WriteScope is where a write lands relative to the project, not how risky
-// the path name looks. PathClass still owns auth/schema/docs risk.
+// WriteScope locates actual writes relative to workspace and scratch roots.
 type WriteScope uint8
 
 const (

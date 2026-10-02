@@ -33,7 +33,7 @@ type workspaceChangeAccumulator struct {
 const (
 	workspaceGitBranchCacheTTL = 2 * time.Second
 	// Bound both decoded file contents and rendered patches before they cross
-	// the Wails bridge; generated files must not turn a preview click into OOM.
+	// the desktop bridge; generated files must not turn a preview click into OOM.
 	workspaceChangeDetailLimit = 2 * 1024 * 1024
 )
 
@@ -41,6 +41,7 @@ type workspaceGitBranchCacheEntry struct {
 	branch     string
 	expires    time.Time
 	refreshing bool
+	request    *int
 }
 
 var workspaceGitBranchCache = struct {
@@ -51,6 +52,12 @@ var workspaceGitBranchCache = struct {
 var workspaceGitBranchForMetaProbe = workspaceGitBranch
 
 func (a *App) WorkspaceChanges(tabID string) WorkspaceChangesView {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return a.workspaceChanges(ctx, tabID)
+}
+
+func (a *App) workspaceChanges(ctx context.Context, tabID string) WorkspaceChangesView {
 	out := WorkspaceChangesView{Files: []WorkspaceChangeView{}, GitAvailable: true}
 	tabID = strings.TrimSpace(tabID)
 
@@ -61,14 +68,15 @@ func (a *App) WorkspaceChanges(tabID string) WorkspaceChangesView {
 		return out
 	}
 
-	base, err := workspaceBaseFromRoot(workspaceRoot)
+	repo, err := workspaceRepo(workspaceRoot, ctrl)
 	if err != nil {
 		out.GitAvailable = false
 		out.GitErr = err.Error()
 		return out
 	}
+	base := repo.Dir
 
-	out.GitBranch = workspaceGitBranch(base)
+	out.GitBranch, _ = workspaceGitBranchContext(ctx, repo)
 
 	changes := map[string]*workspaceChangeAccumulator{}
 	add := func(path string) *workspaceChangeAccumulator {
@@ -101,11 +109,13 @@ func (a *App) WorkspaceChanges(tabID string) WorkspaceChangesView {
 		}
 	}
 
-	gitEntries, gitErr := workspaceGitStatus(base)
+	gitEntries, gitErr := workspaceGitStatusContext(ctx, repo)
 	if gitErr != nil {
 		out.GitAvailable = false
 		out.GitErr = gitErr.Error()
+		out.Incomplete = true
 	}
+	var untracked []string
 	for _, entry := range gitEntries {
 		acc := add(entry.Path)
 		if acc == nil {
@@ -114,6 +124,9 @@ func (a *App) WorkspaceChanges(tabID string) WorkspaceChangesView {
 		acc.hasGit = true
 		acc.view.GitStatus = entry.Status
 		acc.view.OldPath = normalizeWorkspaceRelPath(base, entry.OldPath)
+		if entry.Status == "??" {
+			untracked = append(untracked, entry.Path)
+		}
 	}
 
 	out.Files = make([]WorkspaceChangeView, 0, len(changes))
@@ -140,6 +153,9 @@ func (a *App) WorkspaceChanges(tabID string) WorkspaceChangesView {
 		}
 		return strings.ToLower(a.Path) < strings.ToLower(b.Path)
 	})
+	if out.GitAvailable {
+		out.Added, out.Removed, out.Incomplete = workspaceGitDiffTally(ctx, repo, untracked)
+	}
 	return out
 }
 
@@ -158,13 +174,13 @@ func (a *App) workspaceChangesTarget(tabID string) (string, control.SessionAPI, 
 	return tab.WorkspaceRoot, tab.Ctrl, true
 }
 
-func (a *App) workspaceBaseForTab(tabID string) (string, error) {
+func (a *App) workspaceRepoForTab(tabID string) (gitcmd.Repo, error) {
 	tabID = strings.TrimSpace(tabID)
-	workspaceRoot, _, ok := a.workspaceChangesTarget(tabID)
+	workspaceRoot, ctrl, ok := a.workspaceChangesTarget(tabID)
 	if !ok {
-		return "", fmt.Errorf("tab %q not found", tabID)
+		return gitcmd.Repo{}, fmt.Errorf("tab %q not found", tabID)
 	}
-	return workspaceBaseFromRoot(workspaceRoot)
+	return workspaceRepo(workspaceRoot, ctrl)
 }
 
 // WorkspaceChangeDetail returns the current patch for one file in the
@@ -176,10 +192,11 @@ func (a *App) WorkspaceChangeDetail(tabID, path string) (WorkspaceChangeDetailVi
 	if !ok {
 		return WorkspaceChangeDetailView{}, fmt.Errorf("tab %q not found", tabID)
 	}
-	base, err := workspaceBaseFromRoot(workspaceRoot)
+	repo, err := workspaceRepo(workspaceRoot, ctrl)
 	if err != nil {
 		return WorkspaceChangeDetailView{}, err
 	}
+	base := repo.Dir
 	rel := normalizeWorkspaceRelPath(base, path)
 	if rel == "" {
 		return WorkspaceChangeDetailView{}, os.ErrInvalid
@@ -191,7 +208,7 @@ func (a *App) WorkspaceChangeDetail(tabID, path string) (WorkspaceChangeDetailVi
 		return WorkspaceChangeDetailView{}, os.ErrInvalid
 	}
 
-	if detail, found := workspaceGitChangeDetail(base, rel); found {
+	if detail, found := workspaceGitChangeDetail(repo, rel); found {
 		return detail, nil
 	}
 	if ctrl != nil {
@@ -202,8 +219,9 @@ func (a *App) WorkspaceChangeDetail(tabID, path string) (WorkspaceChangeDetailVi
 	return WorkspaceChangeDetailView{}, nil
 }
 
-func workspaceGitChangeDetail(base, rel string) (WorkspaceChangeDetailView, bool) {
-	entries, err := workspaceGitStatus(base)
+func workspaceGitChangeDetail(repo gitcmd.Repo, rel string) (WorkspaceChangeDetailView, bool) {
+	base := repo.Dir
+	entries, err := workspaceGitStatus(repo)
 	if err != nil {
 		return WorkspaceChangeDetailView{}, false
 	}
@@ -220,7 +238,7 @@ func workspaceGitChangeDetail(base, rel string) (WorkspaceChangeDetailView, bool
 
 	// Untracked files are omitted by git diff. In an unborn repository HEAD is
 	// absent as well, so synthesize the same create/delete patch from disk.
-	if entry.Status == "??" || !workspaceGitHasHead(base) {
+	if entry.Status == "??" || !workspaceGitHasHead(repo) {
 		detail, err := workspaceCheckpointChangeDetail(base, rel, nil)
 		if err != nil {
 			return WorkspaceChangeDetailView{}, false
@@ -233,7 +251,7 @@ func workspaceGitChangeDetail(base, rel string) (WorkspaceChangeDetailView, bool
 	if entry.OldPath != "" && entry.OldPath != rel {
 		args = append(args, filepath.FromSlash(entry.OldPath))
 	}
-	raw, truncated, err := workspaceGitDiffOutput(args...)
+	raw, truncated, err := workspaceGitDiffOutput(repo, args...)
 	if err != nil {
 		return WorkspaceChangeDetailView{}, false
 	}
@@ -249,12 +267,12 @@ func workspaceGitChangeDetail(base, rel string) (WorkspaceChangeDetailView, bool
 	return WorkspaceChangeDetailView{Diff: &patch, Source: "git", Added: added, Removed: removed, Binary: binary}, true
 }
 
-func workspaceGitHasHead(base string) bool {
-	return workspaceGit("-C", base, "rev-parse", "--verify", "HEAD").Run() == nil
+func workspaceGitHasHead(repo gitcmd.Repo) bool {
+	return workspaceGit(repo, "-C", repo.Dir, "rev-parse", "--verify", "HEAD").Run() == nil
 }
 
-func workspaceGitDiffOutput(args ...string) ([]byte, bool, error) {
-	cmd := workspaceGit(args...)
+func workspaceGitDiffOutput(repo gitcmd.Repo, args ...string) ([]byte, bool, error) {
+	cmd := workspaceGit(repo, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, false, err
@@ -366,37 +384,44 @@ func tallyUnifiedPatch(patch string) (added, removed int) {
 	return added, removed
 }
 
-// workspaceGit builds a console-hidden git probe. gitcmd supplies the shared
-// invocation baseline: CREATE_NO_WINDOW so git's own children inherit the
-// invisible console, and the config overrides that keep a probe from spawning a
-// background daemon that opens a console of its own (#3906).
-func workspaceGit(args ...string) *exec.Cmd {
-	return workspaceGitCommand(context.Background(), args...)
+// workspaceGit builds a console-hidden git probe against repo's pinned
+// identity. gitcmd supplies the shared invocation baseline: CREATE_NO_WINDOW so
+// git's own children inherit the invisible console, and the config overrides
+// that keep a probe from spawning a background daemon (#3906).
+func workspaceGit(repo gitcmd.Repo, args ...string) *exec.Cmd {
+	return workspaceGitCommand(context.Background(), repo, args...)
 }
 
-func workspaceGitCommand(ctx context.Context, args ...string) *exec.Cmd {
-	return gitcmd.Command(ctx, "", args...)
+func workspaceGitCommand(ctx context.Context, repo gitcmd.Repo, args ...string) *exec.Cmd {
+	return repo.Command(ctx, args...)
 }
 
-func workspaceGitOutputWithTimeout(timeout time.Duration, args ...string) ([]byte, error) {
+func workspaceGitOutputWithTimeout(timeout time.Duration, repo gitcmd.Repo, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	return workspaceGitCommand(ctx, args...).Output()
+	return workspaceGitCommand(ctx, repo, args...).Output()
 }
 
-func workspaceGitStatus(base string) ([]gitStatusEntry, error) {
+func workspaceGitStatus(repo gitcmd.Repo) ([]gitStatusEntry, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return workspaceGitStatusContext(ctx, repo)
+}
+
+func workspaceGitStatusContext(ctx context.Context, repo gitcmd.Repo) ([]gitStatusEntry, error) {
+	base := repo.Dir
 	// Git's porcelain paths are repository-relative even when -C points at a
 	// subdirectory. Derive the textual repository prefix from Git itself instead
 	// of comparing absolute paths: Windows may spell the same directory once as
 	// an 8.3 path and once as a long path, which makes filepath.Rel reject every
 	// otherwise valid status entry.
-	prefixCmd := workspaceGit("-C", base, "rev-parse", "--show-prefix")
+	prefixCmd := workspaceGitCommand(ctx, repo, "-C", base, "rev-parse", "--show-prefix")
 	prefixRaw, err := prefixCmd.Output()
 	if err != nil {
 		return nil, err
 	}
 	prefix := strings.TrimSpace(string(prefixRaw))
-	cmd := workspaceGit("-C", base, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ".")
+	cmd := workspaceGitCommand(ctx, repo, "-C", base, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ".")
 	raw, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -471,7 +496,7 @@ func workspaceRelPathFromGitPrefix(base, prefix, path string) string {
 // metadata is less harmful than blocking tab activation or hydration. Workflows
 // that need an immediate git read, such as WorkspaceChanges, should call
 // workspaceGitBranch directly.
-func workspaceGitBranchForMeta(base string) string {
+func workspaceGitBranchForMeta(base string, repo gitcmd.Repo) string {
 	key := filepath.Clean(base)
 	now := time.Now()
 
@@ -483,23 +508,28 @@ func workspaceGitBranchForMeta(base string) string {
 			return branch
 		}
 		cached.refreshing = true
+		cached.request = new(int)
 		workspaceGitBranchCache.entries[key] = cached
 		workspaceGitBranchCache.Unlock()
-		go refreshWorkspaceGitBranchForMeta(key, base)
+		go refreshWorkspaceGitBranchForMeta(key, base, repo, cached.request)
 		return branch
 	}
 
+	request := new(int)
 	workspaceGitBranchCache.entries[key] = workspaceGitBranchCacheEntry{
 		expires:    now.Add(workspaceGitBranchCacheTTL),
 		refreshing: true,
+		request:    request,
 	}
 	workspaceGitBranchCache.Unlock()
 
-	go refreshWorkspaceGitBranchForMeta(key, base)
+	go refreshWorkspaceGitBranchForMeta(key, base, repo, request)
 	return ""
 }
 
-func refreshWorkspaceGitBranchForMeta(key, base string) {
+// refreshWorkspaceGitBranchForMeta reads through repo, the tab session's
+// identity; a tab with no session yet resolves base as opening it would.
+func refreshWorkspaceGitBranchForMeta(key, base string, repo gitcmd.Repo, request *int) {
 	branch := ""
 	// Store via defer so the refreshing flag is always cleared, even when the
 	// probe panics or exits the goroutine early; otherwise the entry would stay
@@ -507,6 +537,10 @@ func refreshWorkspaceGitBranchForMeta(key, base string) {
 	defer func() {
 		storeNow := time.Now()
 		workspaceGitBranchCache.Lock()
+		defer workspaceGitBranchCache.Unlock()
+		if cached, ok := workspaceGitBranchCache.entries[key]; !ok || cached.request != request {
+			return
+		}
 		if len(workspaceGitBranchCache.entries) > 256 {
 			for k, cached := range workspaceGitBranchCache.entries {
 				if storeNow.After(cached.expires) {
@@ -515,66 +549,78 @@ func refreshWorkspaceGitBranchForMeta(key, base string) {
 			}
 		}
 		workspaceGitBranchCache.entries[key] = workspaceGitBranchCacheEntry{branch: branch, expires: storeNow.Add(workspaceGitBranchCacheTTL)}
-		workspaceGitBranchCache.Unlock()
 	}()
 
-	branch = workspaceGitBranchForMetaProbe(base)
+	if repo.Dir == "" {
+		repo = openWorkspaceRepo(base)
+	}
+	branch = workspaceGitBranchForMetaProbe(repo)
 }
 
-// workspaceGitBranch returns the current git branch name for the repo rooted
-// at base, or an empty string when base is not inside a git repository or when
-// git is unavailable.
-func workspaceGitBranch(base string) string {
-	raw, err := workspaceGitOutputWithTimeout(2*time.Second, "-C", base, "branch", "--show-current")
+// workspaceGitBranch returns the current git branch name of repo, or an empty
+// string when it names no git repository or git is unavailable.
+func workspaceGitBranch(repo gitcmd.Repo) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	branch, _ := workspaceGitBranchContext(ctx, repo)
+	return branch
+}
+
+func workspaceGitBranchContext(ctx context.Context, repo gitcmd.Repo) (string, error) {
+	base := repo.Dir
+	raw, err := workspaceGitCommand(ctx, repo, "-C", base, "branch", "--show-current").Output()
 	if err != nil {
-		return ""
+		return "", err
 	}
 	if branch := strings.TrimSpace(string(raw)); branch != "" {
-		return branch
+		return branch, nil
 	}
 
-	raw, err = workspaceGitOutputWithTimeout(2*time.Second, "-C", base, "rev-parse", "--short", "HEAD")
+	raw, err = workspaceGitCommand(ctx, repo, "-C", base, "rev-parse", "--short", "HEAD").Output()
 	if err != nil {
-		return ""
+		return "", err
 	}
 	short := strings.TrimSpace(string(raw))
 	if short == "" {
-		return ""
+		return "", nil
 	}
-	return "@" + short
+	return "@" + short, nil
 }
 
 // GitBranches returns all local git branches for the active workspace's repo.
 func (a *App) GitBranches() ([]string, error) {
-	base, err := a.activeWorkspaceBase()
+	repo, err := a.workspaceRepoForTab("")
 	if err != nil {
 		return nil, err
 	}
-	cmd := workspaceGit("-C", base, "branch", "--format=%(refname:short)")
-	raw, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-	branches := append([]string{}, strings.FieldsFunc(strings.TrimSpace(string(raw)), func(r rune) bool { return r == '\n' })...)
-	return branches, nil
+	return workspaceLocalBranches(repo)
 }
 
-// GitCheckout switches the active workspace's git branch and returns the
-// current branch name, or an error when git is unavailable.
 func (a *App) GitCheckout(branch string) error {
-	base, err := a.activeWorkspaceBase()
+	repo, err := a.workspaceRepoForTab("")
 	if err != nil {
 		return err
 	}
-	cmd := workspaceGit("-C", base, "checkout", branch)
-	out, err := cmd.CombinedOutput()
+	return workspaceCheckoutBranch(repo, branch, false)
+}
+
+const gitRefInvalidChars = " ~^:?*[\\" + "\t\n"
+
+func validGitBranchName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.HasPrefix(name, "-") || strings.Contains(name, "..") ||
+		strings.HasSuffix(name, "/") || strings.HasSuffix(name, ".") || strings.Contains(name, "@{") {
+		return false
+	}
+	return !strings.ContainsAny(name, gitRefInvalidChars)
+}
+
+func (a *App) GitCreateBranch(name string) error {
+	repo, err := a.workspaceRepoForTab("")
 	if err != nil {
-		if len(out) > 0 {
-			return fmt.Errorf("git checkout: %s", strings.TrimSpace(string(out)))
-		}
 		return err
 	}
-	return nil
+	return workspaceCheckoutBranch(repo, name, true)
 }
 
 type GitCommitView struct {
@@ -590,17 +636,18 @@ type GitCommitDetailView struct {
 }
 
 func (a *App) WorkspaceGitHistory(tabID string, path string) ([]GitCommitView, error) {
-	base, err := a.workspaceBaseForTab(tabID)
+	repo, err := a.workspaceRepoForTab(tabID)
 	if err != nil {
 		return nil, err
 	}
+	base := repo.Dir
 
 	args := []string{"-C", base, "log", "--pretty=format:%H%x00%an%x00%ad%x00%s", "-z", "-n", "100"}
 	if path != "" {
 		args = append(args, "--", path)
 	}
 
-	cmd := workspaceGit(args...)
+	cmd := workspaceGit(repo, args...)
 	raw, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -621,35 +668,46 @@ func (a *App) WorkspaceGitHistory(tabID string, path string) ([]GitCommitView, e
 }
 
 func (a *App) WorkspaceGitCommitDetail(tabID string, hash string, path string) (GitCommitDetailView, error) {
-	base, err := a.workspaceBaseForTab(tabID)
+	repo, err := a.workspaceRepoForTab(tabID)
 	if err != nil {
 		return GitCommitDetailView{}, err
 	}
+	base := repo.Dir
 
 	if path != "" {
 		// Single file diff
-		cmd := workspaceGit("-C", base, "show", "--relative", "--pretty=format:", "--patch", hash, "--", path)
+		cmd := workspaceGit(repo, "-C", base, "show", "--relative", "--pretty=format:", "--patch", hash, "--", path)
 		raw, err := cmd.Output()
 		if err != nil {
-			return GitCommitDetailView{}, err
+			return GitCommitDetailView{}, notLocalOr(repo, hash, err)
 		}
 		diffStr := strings.TrimSpace(string(raw))
 		return GitCommitDetailView{Diff: &diffStr}, nil
 	}
 
 	// Project level: list of files changed
-	cmd := workspaceGit("-C", base, "diff-tree", "--relative", "--no-commit-id", "--name-only", "-r", hash)
+	cmd := workspaceGit(repo, "-C", base, "diff-tree", "--relative", "--no-commit-id", "--name-only", "-z", "-r", hash)
 	raw, err := cmd.Output()
 	if err != nil {
-		return GitCommitDetailView{}, err
+		return GitCommitDetailView{}, notLocalOr(repo, hash, err)
 	}
 
-	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
 	var files []string
-	for _, line := range lines {
-		if line != "" {
-			files = append(files, line)
+	for path := range bytes.SplitSeq(raw, []byte{0}) {
+		if len(path) > 0 {
+			files = append(files, string(path))
 		}
 	}
 	return GitCommitDetailView{Files: files}, nil
+}
+
+// notLocalOr names a failure caused by objects a partial clone never fetched —
+// host git does not fetch them — and passes any other failure through.
+func notLocalOr(repo gitcmd.Repo, hash string, err error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if repo.ObjectsMissing(ctx, hash, hash+"^") {
+		return fmt.Errorf("commit %s: %w", hash, gitcmd.ErrObjectNotLocal)
+	}
+	return err
 }

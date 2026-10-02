@@ -25,6 +25,8 @@ export type UpdateErrorDisposition = "retryable" | "recovery" | "manual";
 export interface Updater {
   status: UpdateStatus;
   check: () => Promise<void>;
+  /** Refresh an idle updater without superseding an active operation. */
+  refresh: () => Promise<void>;
   /** Single-action update: download + verify + install + relaunch. */
   apply: (info: UpdateInfo) => void;
   openDownload: () => void;
@@ -42,7 +44,9 @@ export function classifyUpdateError(message: string): UpdateErrorDisposition {
   if (/pending update already exists|could not safely finish the previous update|handoff backup|awaiting startup health|discard the previous update|previous update is still completing/.test(low)) {
     return "recovery";
   }
-  if (/authorization failed|manual update required|pkexec|sudo apt install/.test(low)) {
+  // An unknown install_layout is a deliberate migration boundary: retrying
+  // never helps, only the full package from the download page does.
+  if (/authorization failed|manual update required|pkexec|sudo apt install|unsupported install_layout/.test(low)) {
     return "manual";
   }
   return "retryable";
@@ -66,6 +70,65 @@ interface UpdaterOperation {
 
 let updaterRequestSequence = 0;
 const updaterRequestPrefix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+export const UPDATE_CHECK_STORAGE_KEY = "reasonix-updater-last-check-v1";
+let processLastUpdateCheckAttemptMs: number | null = null;
+
+function updateCheckStorage(): Storage | null {
+  try {
+    return typeof window === "undefined" ? null : window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function validUpdateCheckTimestamp(value: unknown, now: number): number | null {
+  const timestamp = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(timestamp) && timestamp >= 0 && timestamp <= now ? timestamp : null;
+}
+
+function lastUpdateCheckAttempt(now: number): number | null {
+  const memoryTimestamp = validUpdateCheckTimestamp(processLastUpdateCheckAttemptMs, now);
+  if (memoryTimestamp === null) processLastUpdateCheckAttemptMs = null;
+
+  const storage = updateCheckStorage();
+  if (!storage) return memoryTimestamp;
+  try {
+    const raw = storage.getItem(UPDATE_CHECK_STORAGE_KEY);
+    if (raw === null) return memoryTimestamp;
+    const storedTimestamp = validUpdateCheckTimestamp(raw, now);
+    if (storedTimestamp === null) {
+      storage.removeItem(UPDATE_CHECK_STORAGE_KEY);
+      return memoryTimestamp;
+    }
+    return memoryTimestamp === null ? storedTimestamp : Math.max(memoryTimestamp, storedTimestamp);
+  } catch {
+    return memoryTimestamp;
+  }
+}
+
+function recordUpdateCheckAttempt(now = Date.now()): void {
+  processLastUpdateCheckAttemptMs = now;
+  try {
+    updateCheckStorage()?.setItem(UPDATE_CHECK_STORAGE_KEY, String(now));
+  } catch {
+    // The process-local timestamp still prevents duplicate checks this run.
+  }
+}
+
+function automaticUpdateCheckDue(now = Date.now()): boolean {
+  const lastAttempt = lastUpdateCheckAttempt(now);
+  return lastAttempt === null || now - lastAttempt >= UPDATE_CHECK_INTERVAL_MS;
+}
+
+export function __resetUpdaterCheckScheduleForTests(): void {
+  processLastUpdateCheckAttemptMs = null;
+  try {
+    updateCheckStorage()?.removeItem(UPDATE_CHECK_STORAGE_KEY);
+  } catch {
+    // Tests also exercise storage-denied environments.
+  }
+}
 
 function nextUpdaterRequestId(epoch: number): string {
   updaterRequestSequence += 1;
@@ -188,6 +251,7 @@ function useUpdaterInternal(): Updater {
     // interrupt apply). Discard owns exclusive recovery work and must not be
     // epoch-stolen by Check/Retry while AbandonPendingUpdate is outstanding.
     if (operationRef.current.kind === "abandoning") return;
+    recordUpdateCheckAttempt();
     const operation = beginOperation("stable", "checking");
     setStatus({ kind: "checking" });
     try {
@@ -222,6 +286,12 @@ function useUpdaterInternal(): Updater {
       setStatus(updateError(errMsg(e)));
     }
   }, [beginOperation, completeOperation, isCurrentOperation]);
+
+  const refresh = useCallback(async () => {
+    if (isBusyOperation(operationRef.current.kind)) return;
+    if (!automaticUpdateCheckDue()) return;
+    await check();
+  }, [check]);
 
   const apply = useCallback((info: UpdateInfo) => {
     const selectedChannel = normalizedChannel(info.channel);
@@ -287,7 +357,7 @@ function useUpdaterInternal(): Updater {
     setStatus({ kind: "idle" });
   }, []);
 
-  return { status, check, apply, openDownload, abandonPending, reset };
+  return { status, check, refresh, apply, openDownload, abandonPending, reset };
 }
 
 export function UpdaterProvider({ children }: { children: ReactNode }) {

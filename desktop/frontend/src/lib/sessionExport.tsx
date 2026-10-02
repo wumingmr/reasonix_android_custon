@@ -1,3 +1,4 @@
+import { splitExportMarkdown } from "./sessionExportBlocks";
 import { createRoot, type Root } from "react-dom/client";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import type { Components } from "react-markdown";
@@ -118,6 +119,7 @@ ${katexCss}
 .session-export-page .md table {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
   margin: 0 0 14px;
   font-size: var(--font-content);
   display: table;
@@ -152,6 +154,7 @@ ${katexCss}
   line-height: 1.58;
   overflow: visible;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   color: var(--fg);
 }
 .session-export-page .hljs-comment,
@@ -193,6 +196,7 @@ ${katexCss}
 .session-export-page .hljs-attr {
   color: #be123c;
 }
+.session-export-page img { max-width: 100%; height: auto; }
 .session-export-page .export-media-placeholder {
   display: inline-block;
   max-width: 100%;
@@ -416,7 +420,15 @@ function naturalPageBreaks(surface: HTMLElement): number[] {
   const surfaceTop = surface.getBoundingClientRect().top;
   const markdown = surface.querySelector<HTMLElement>(".md");
   if (!markdown) return [];
-  return Array.from(markdown.children).map((node) => Math.ceil(node.getBoundingClientRect().bottom - surfaceTop));
+  const breaks = Array.from(markdown.children).map(node => Math.ceil(node.getBoundingClientRect().bottom - surfaceTop));
+  // Range rectangles supply actual wrapped line boundaries inside a long
+  // paragraph/code block, so pagination never bisects a rendered text line.
+  const walker = document.createTreeWalker(markdown, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const range = document.createRange(); range.selectNodeContents(node);
+    for (const rect of Array.from(range.getClientRects())) if (rect.height > 0) breaks.push(Math.ceil(rect.bottom - surfaceTop));
+  }
+  return Array.from(new Set(breaks)).sort((a, b) => a - b);
 }
 
 function planSurfaceSlices(surface: HTMLElement, maxSliceHeight: number): RasterSlice[] {
@@ -525,4 +537,41 @@ export async function renderSessionPdfBlob(markdown: string, title: string): Pro
   } finally {
     disposeExport(rendered);
   }
+}
+
+// Consume semantic blocks with backpressure. At most one bounded surface and
+// one encoded page are retained; callers must persist a page before advancing.
+export async function* renderSessionExportPages(
+  blocks: AsyncIterable<{ kind: string; text: string; label?: string }>,
+  format: "pdf" | "image",
+): AsyncGenerator<{ blob: Blob; width: number; height: number }> {
+  async function* render(markdown: string) {
+    const rendered = await renderExportSurface(markdown);
+    try {
+      const scale = exportScale();
+      const width = Math.max(1, Math.ceil(rendered.surface.scrollWidth || EXPORT_WIDTH));
+      const height = format === "pdf" ? Math.floor(width * PDF_CONTENT_ASPECT) : Math.floor(MAX_CANVAS_SIDE / scale);
+      for (const slice of planSurfaceSlices(rendered.surface, height)) {
+        const canvas = await renderSurfaceSliceToCanvas(rendered.surface, slice, scale);
+        try {
+          yield { blob: await canvasToBlob(canvas, format === "pdf" ? "image/jpeg" : "image/png", 0.9), width: canvas.width, height: canvas.height };
+        } finally { canvas.width = 1; canvas.height = 1; }
+      }
+    } finally { disposeExport(rendered); }
+  }
+  let pending = "";
+  for await (const block of blocks) {
+    const parts = block.kind === "code" ? [exportCodeBlock(block.text, block.label)] : splitExportMarkdown(block.text);
+    for (const part of parts) {
+      if (pending && pending.length + part.length > 32 << 10) { yield* render(pending); pending = ""; }
+      pending += part + "\n\n";
+    }
+  }
+  if (pending) yield* render(pending);
+}
+
+function exportCodeBlock(text: string, label = ""): string {
+  const max = Math.max(2, ...Array.from(text.matchAll(/`+/g), match => match[0].length));
+  const fence = "`".repeat(max + 1);
+  return `${label}\n\n${fence}\n${text}\n${fence}`;
 }

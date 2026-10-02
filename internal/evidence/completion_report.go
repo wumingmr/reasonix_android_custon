@@ -7,8 +7,7 @@ import (
 	"strings"
 )
 
-// CompletionStatus is a sub-agent's claim about its own run. The host may lower
-// it to what receipts support; nothing may raise it.
+// CompletionStatus is the model's assessment, distinct from execution facts.
 type CompletionStatus string
 
 const (
@@ -26,8 +25,7 @@ const (
 	CriterionUnsatisfied CriterionStatus = "unsatisfied"
 )
 
-// Completion evidence kinds mirror complete_step so a sub-agent and the root
-// agent prove work in the same vocabulary.
+// Completion evidence kinds describe the model's supporting information.
 const (
 	CompletionEvidenceVerification = "verification"
 	CompletionEvidenceReview       = "review"
@@ -128,60 +126,4 @@ func (l *Ledger) LatestCompletionReport() (CompletionReport, bool) {
 		return report, true
 	}
 	return CompletionReport{}, false
-}
-
-// AdjudicateCompletion lowers a report to what the host's own receipts support.
-// A criterion claimed satisfied whose evidence no receipt backs is downgraded,
-// and a report holding any downgraded criterion cannot stay "complete". The
-// returned reasons name every downgrade so the parent sees why.
-func (l *Ledger) AdjudicateCompletion(r CompletionReport) (CompletionReport, []string) {
-	if l == nil {
-		return r, nil
-	}
-	var reasons []string
-	downgraded := false
-	for i := range r.Criteria {
-		c := &r.Criteria[i]
-		if c.Status != CriterionSatisfied {
-			continue
-		}
-		if backed, why := l.criterionIsBacked(*c); !backed {
-			c.Status = CriterionUnsatisfied
-			downgraded = true
-			reasons = append(reasons, c.ID+": "+why)
-		}
-	}
-	if downgraded && r.Status == CompletionComplete {
-		r.Status = CompletionPartial
-	}
-	return r, reasons
-}
-
-// criterionIsBacked reports whether at least one attached proof is one the host
-// itself observed. A manual claim is never host-backed on its own.
-func (l *Ledger) criterionIsBacked(c AcceptanceCriterion) (bool, string) {
-	if len(c.Evidence) == 0 {
-		return false, "claimed satisfied with no evidence"
-	}
-	for _, e := range c.Evidence {
-		switch e.Kind {
-		case CompletionEvidenceVerification:
-			if l.HasSuccessfulCommand(e.Command) {
-				return true, ""
-			}
-		case CompletionEvidenceDiff:
-			if l.HasSuccessfulWrite(e.Paths) {
-				return true, ""
-			}
-		case CompletionEvidenceFiles:
-			if l.HasSuccessfulReadOrWrite(e.Paths) {
-				return true, ""
-			}
-		case CompletionEvidenceReview:
-			if l.HasCompletedReview() {
-				return true, ""
-			}
-		}
-	}
-	return false, "no host receipt backs the cited evidence"
 }

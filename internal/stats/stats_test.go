@@ -545,3 +545,51 @@ func usageEvent(model string, prompt, completion, reasoning, hit, miss, total in
 }
 
 func turnEvent() event.Event { return event.Event{Kind: event.TurnDone} }
+
+// TestCloseRecordDispatchersStopsAndRecreates pins the dispatcher shutdown
+// path: the goroutine exits, the byDir cache releases the entry, and a later
+// recorder for the same directory gets a fresh dispatcher that still writes.
+func TestCloseRecordDispatchersStopsAndRecreates(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	dirs := []string{t.TempDir(), t.TempDir(), t.TempDir()}
+	dispatchers := make([]*recordDispatcher, 0, len(dirs))
+	for _, dir := range dirs {
+		r := NewRecorder(&spySink{}, dir, "test")
+		r.Emit(usageEvent("deepseek/deepseek-v4-flash", 10, 5, 0, 0, 0, 15))
+		flushRecorder(t, r)
+		dispatchers = append(dispatchers, r.dispatcher)
+	}
+
+	if err := CloseRecordDispatchers(ctx); err != nil {
+		t.Fatalf("close record dispatchers: %v", err)
+	}
+	for i, dispatcher := range dispatchers {
+		select {
+		case <-dispatcher.stopped:
+		case <-ctx.Done():
+			t.Fatalf("dispatcher %d goroutine outlived CloseRecordDispatchers", i)
+		}
+	}
+	recorderDispatchers.Lock()
+	cached := len(recorderDispatchers.byDir)
+	recorderDispatchers.Unlock()
+	if cached != 0 {
+		t.Fatalf("want 0 cached dispatchers after close, got %d", cached)
+	}
+
+	// A recorder built after the close must get a fresh, working dispatcher.
+	r := NewRecorder(&spySink{}, dirs[0], "test")
+	if r.dispatcher == nil || r.dispatcher == dispatchers[0] {
+		t.Fatal("expected a fresh dispatcher for the same directory after close")
+	}
+	r.Emit(turnEvent())
+	flushRecorder(t, r)
+	if files := dailyJSONLFiles(t, dirs[0]); len(files) != 1 {
+		t.Fatalf("want 1 daily file after dispatcher restart, got %d", len(files))
+	}
+	if err := CloseRecordDispatchers(ctx); err != nil {
+		t.Fatalf("second close: %v", err)
+	}
+}

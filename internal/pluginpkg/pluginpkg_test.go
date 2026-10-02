@@ -51,7 +51,7 @@ func TestParseDirDecodesGB18030Manifest(t *testing.T) {
 	root := t.TempDir()
 	manifest := `{"apiVersion":"reasonix.io/plugin/v2","name":"cn-plugin","version":"1.0.0","description":"中文插件"}`
 	path := filepath.Join(root, NativeManifest)
-	if err := os.WriteFile(path, fileencoding.Encode(manifest, fileencoding.GB18030), 0o644); err != nil {
+	if err := os.WriteFile(path, fileencoding.MustEncode(manifest, fileencoding.GB18030), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

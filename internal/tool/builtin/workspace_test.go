@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"reasonix/internal/sandbox"
 	"reasonix/internal/tool"
 )
 
@@ -97,13 +98,20 @@ func TestWorkspaceMoveFileBindsAndConfines(t *testing.T) {
 	}
 }
 
-// TestWorkspaceBashDir checks bash runs in the workspace directory.
+// TestWorkspaceBashDir checks the platform's primary shell runs in the workspace directory.
 func TestWorkspaceBashDir(t *testing.T) {
 	dir := t.TempDir()
-	b := byName(Workspace{Dir: dir}.Tools())["bash"]
-	out, err := b.Execute(context.Background(), argsJSON(t, map[string]any{"command": "pwd"}))
+	shell := requireWorkspaceShell(t, Workspace{Dir: dir}.Tools())
+	command := "pwd"
+	if shell.Name() == "pwsh" {
+		command = "Get-Location"
+	}
+	out, err := shell.Execute(fullAccessBashTestContext(t.Context()), argsJSON(t, map[string]any{
+		"command":     command,
+		"description": "Print workspace directory",
+	}))
 	if err != nil {
-		t.Fatalf("bash: %v", err)
+		t.Fatalf("%s: %v", shell.Name(), err)
 	}
 	// macOS /tmp is a symlink to /private/tmp; compare on the resolved base name.
 	if !strings.Contains(out, filepath.Base(dir)) {
@@ -131,17 +139,18 @@ func TestWorkspacePreviewBinds(t *testing.T) {
 
 // TestWorkspaceEnabledFilter checks the enabled whitelist.
 func TestWorkspaceEnabledFilter(t *testing.T) {
-	got := byName(Workspace{Dir: t.TempDir()}.Tools("read_file", "bash", "todo_write", "wait"))
-	if len(got) != 4 || got["read_file"] == nil || got["bash"] == nil || got["todo_write"] == nil || got["wait"] == nil {
+	tools := Workspace{Dir: t.TempDir()}.Tools("read_file", "bash", "todo_write", "wait")
+	got := byName(tools)
+	if len(got) != 4 || got["read_file"] == nil || got["todo_write"] == nil || got["wait"] == nil {
 		t.Fatalf("enabled filter returned %d tools: %v", len(got), keys(got))
 	}
+	requireWorkspaceShell(t, tools)
 }
 
 func TestWorkspacePreservesSessionLevelBuiltins(t *testing.T) {
 	got := byName(Workspace{Dir: t.TempDir()}.Tools())
 	for _, name := range []string{
 		"todo_write",
-		"complete_step",
 		"bash_output",
 		"kill_shell",
 		"wait",
@@ -151,6 +160,9 @@ func TestWorkspacePreservesSessionLevelBuiltins(t *testing.T) {
 		if got[name] == nil {
 			t.Fatalf("workspace tools missing %q; got %v", name, keys(got))
 		}
+	}
+	if got["complete_step"] != nil || got["session_read_strategy_receipt"] != nil {
+		t.Fatal("retired proof/read-policy tools remain discoverable")
 	}
 }
 
@@ -254,6 +266,27 @@ func keys(m map[string]tool.Tool) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+func requireWorkspaceShell(t *testing.T, tools []tool.Tool) tool.Tool {
+	t.Helper()
+	var shells []tool.Tool
+	for _, candidate := range tools {
+		if tool.IsShellToolName(candidate.Name()) {
+			shells = append(shells, candidate)
+		}
+	}
+	if len(shells) != 1 {
+		t.Fatalf("workspace shell tools = %v, want exactly one primary shell", toolNames(shells))
+	}
+	wantName := "bash"
+	if sandbox.ResolveShell("", "", nil).Kind == sandbox.ShellPowerShell {
+		wantName = "pwsh"
+	}
+	if shells[0].Name() != wantName {
+		t.Fatalf("workspace shell name = %q, want %q", shells[0].Name(), wantName)
+	}
+	return shells[0]
 }
 
 func workspaceSchemasJSON(t *testing.T, dir string) string {

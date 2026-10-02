@@ -5,6 +5,7 @@ import React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { ApprovalModal } from "../components/ApprovalModal";
+import { AskCard } from "../components/AskCard";
 import { LocaleProvider } from "../lib/i18n";
 
 let passed = 0;
@@ -73,7 +74,7 @@ function mockNativeAnimate(
   });
 }
 
-async function renderToolApproval(onAnswer: (...answer: SubmittedAnswer) => void) {
+async function renderToolApproval(onAnswer: (...answer: SubmittedAnswer) => void | Promise<void>, onStop: () => void | Promise<void> = () => undefined) {
   const root = createRoot(document.getElementById("root")!);
   await act(async () => {
     root.render(
@@ -81,7 +82,7 @@ async function renderToolApproval(onAnswer: (...answer: SubmittedAnswer) => void
         <ApprovalModal
           approval={{ id: "approval-animation", tool: "bash", subject: "echo safe" }}
           onAnswer={onAnswer}
-          onStop={() => undefined}
+          onStop={onStop}
         />
       </LocaleProvider>,
     );
@@ -108,8 +109,8 @@ async function cleanup(root: Root, dom: JSDOM) {
 
 console.log("\napproval shelf animation");
 
-// A real Web Animations implementation validates easing synchronously. Keep
-// the business action pending until the visual transition finishes.
+// A real Web Animations implementation validates easing synchronously. The
+// decision starts immediately; the transition has no business ownership.
 {
   const dom = installDom();
   const answers: SubmittedAnswer[] = [];
@@ -129,7 +130,7 @@ console.log("\napproval shelf animation");
   await confirmSelectedAction();
 
   eq(easing, "cubic-bezier(0.8, 0, 0.8, 0.28)", "shelf exit passes a valid CSS easing to Element.animate");
-  eq(answers.length, 0, "approval waits for the shelf exit animation");
+  eq(answers.length, 1, "approval submits before the shelf exit animation finishes");
   eq(animations.length, 1, "approval starts one shelf exit animation");
 
   await act(async () => {
@@ -137,7 +138,7 @@ console.log("\napproval shelf animation");
     animations[0].oncancel?.();
     await flushTimers();
   });
-  eq(answers.length, 1, "finish and late cancel submit the approval only once");
+  eq(answers.length, 1, "finish and late cancel do not resubmit the approval");
   eq(JSON.stringify(answers[0]), JSON.stringify([true, false, false]), "finished animation preserves the selected approval");
 
   await cleanup(root, dom);
@@ -181,6 +182,122 @@ console.log("\napproval shelf animation");
   eq(answers.length, 1, "a rejected animation falls back to one approval submission");
   eq(JSON.stringify(answers[0]), JSON.stringify([true, false, false]), "animation fallback preserves the selected approval");
 
+  await cleanup(root, dom);
+}
+
+// A pending decision must never trap the user in the approval shelf.
+for (const viaKeyboard of [false, true]) {
+  const dom = installDom();
+  let stops = 0;
+  let reject!: (error: Error) => void;
+  const pending = new Promise<void>((_resolve, fail) => { reject = fail; });
+  const root = await renderToolApproval(() => pending, () => { stops++; });
+  await confirmSelectedAction();
+  const stop = document.querySelector('[aria-label="Stop task"]') as HTMLButtonElement;
+  ok(!stop.disabled, "stop stays enabled while a decision is in flight");
+  await act(async () => {
+    if (viaKeyboard) document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    else stop.click();
+  });
+  eq(stops, 1, `${viaKeyboard ? "Escape" : "stop button"} cancels without switching sessions`);
+  await act(async () => { reject(new Error("cancelled decision")); await flushTimers(); });
+  await cleanup(root, dom);
+}
+
+// Replay and replacement preserve the right request's lock, even when a
+// previous transport fails after the next same-id request has mounted.
+{
+  const dom = installDom();
+  const root = createRoot(document.getElementById("root")!);
+  const requests: Array<{ reject: (error: Error) => void }> = [];
+  const onAnswer = () => new Promise<void>((_resolve, reject) => requests.push({ reject }));
+  const paint = async (epoch: string) => act(async () => {
+    root.render(<LocaleProvider><ApprovalModal
+      approval={{ id: "1", tool: "write_file", subject: "animation.html", kind: "write_access",
+        turnId: "turn", runtimeEpoch: epoch, write_access: { directories: ["/tmp/render-tools"] } }}
+      onAnswer={onAnswer} onStop={() => undefined} /></LocaleProvider>);
+  });
+  const confirm = () => document.querySelector(".decision-confirm-bar__confirm") as HTMLButtonElement;
+  await paint("old");
+  await confirmSelectedAction();
+  await paint("old");
+  ok(confirm().disabled, "replaying the same write request cannot duplicate an in-flight answer");
+  await act(async () => { requests[0].reject(new Error("transport failed")); await flushTimers(); });
+  ok(!confirm().disabled, "failed answer releases the replayed card without navigating away");
+  ok(Boolean(document.querySelector('[role="alert"]')), "failed answer is visible on the card");
+  await confirmSelectedAction();
+  eq(requests.length, 2, "the second confirmation retries the same request");
+  await paint("new");
+  ok(!confirm().disabled, "a reused prompt id in a new runtime has fresh submission state");
+  await confirmSelectedAction();
+  await act(async () => { requests[1].reject(new Error("old request failed late")); await flushTimers(); });
+  ok(confirm().disabled, "late failure from the previous runtime cannot unlock the new decision");
+  await act(async () => { requests[2].reject(new Error("new request failed")); await flushTimers(); });
+  ok(!confirm().disabled, "the current request's failure unlocks only its own card");
+  await cleanup(root, dom);
+}
+
+// Stop must capture its source during the click, before a committed-command
+// callback can observe navigation in a later microtask.
+{
+  const dom = installDom();
+  let active = "A";
+  const calls: string[] = [];
+  let reject!: (error: Error) => void;
+  const root = await renderToolApproval(() => {}, () => {
+    calls.push(active);
+    return new Promise<void>((_resolve, fail) => { reject = fail; });
+  });
+  const stop = () => document.querySelector('[aria-label="Stop task"]') as HTMLButtonElement;
+  await act(async () => { stop().click(); active = "B"; });
+  eq(calls[0], "A", "stop captures the clicked session before navigation");
+  await act(async () => {
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  });
+  eq(calls.length, 1, "pending stop deduplicates keyboard cancellation");
+  await act(async () => { reject(new Error("stop failed")); });
+  ok(!stop().disabled, "failed stop releases the stop lock");
+  ok(Boolean(document.querySelector('[role="alert"]')), "failed stop is visible");
+  await cleanup(root, dom);
+}
+
+// Ask uses the same shelf and must retain the independent cancellation path.
+{
+  const dom = installDom();
+  let stops = 0;
+  const root = createRoot(document.getElementById("root")!);
+  await act(async () => root.render(<LocaleProvider><AskCard
+    ask={{ id: "ask", questions: [{ id: "q", prompt: "Choose", options: [{ label: "A" }] }] }}
+    draftScope="ask-stop" onAnswer={() => new Promise<void>(() => {})} onStop={() => { stops++; }}
+  /></LocaleProvider>));
+  await act(async () => (document.querySelector('.prompt-action') as HTMLButtonElement).click());
+  await confirmSelectedAction();
+  const stop = document.querySelector('[aria-label="Stop task"]') as HTMLButtonElement;
+  ok(!stop.disabled, "question stop stays enabled during answer submission");
+  await act(async () => stop.click());
+  eq(stops, 1, "question cancellation does not wait for its answer RPC");
+  await cleanup(root, dom);
+}
+
+// Stop during an Ask submission owns a separate lock: repeated clicks and
+// Escape must not dispatch duplicate cancellation requests.
+{
+  const dom = installDom();
+  let stops = 0;
+  const root = createRoot(document.getElementById("root")!);
+  await act(async () => root.render(<LocaleProvider><AskCard
+    ask={{ id: "ask", questions: [{ id: "q", prompt: "Choose", options: [{ label: "A" }] }] }}
+    draftScope="ask-stop-dedup" onAnswer={() => new Promise<void>(() => {})}
+    onStop={() => { stops++; return new Promise<void>(() => {}); }}
+  /></LocaleProvider>));
+  await confirmSelectedAction();
+  await act(async () => {
+    const stop = document.querySelector('[aria-label="Stop task"]') as HTMLButtonElement;
+    stop.click();
+    stop.click();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  });
+  eq(stops, 1, "question stop deduplicates clicks and Escape while pending");
   await cleanup(root, dom);
 }
 

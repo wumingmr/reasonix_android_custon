@@ -36,7 +36,7 @@ func holdFinishingWindow(release <-chan struct{}, entered chan<- struct{}, event
 func TestParkedTurnsRunFIFO(t *testing.T) {
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
-	c := New(Options{Sink: holdFinishingWindow(release, entered, nil)})
+	c := newOwnedTestController(t, Options{Sink: holdFinishingWindow(release, entered, nil)})
 
 	c.runGuarded(func(context.Context) error { return nil })
 	<-entered
@@ -74,7 +74,7 @@ func TestParkedTurnsRunFIFO(t *testing.T) {
 // dropped (the caller should resend against the session they can now see).
 func TestSubmitDuringRotationEmitsNotice(t *testing.T) {
 	events := make(chan event.Event, 8)
-	c := New(Options{Sink: event.FuncSink(func(e event.Event) {
+	c := newOwnedTestController(t, Options{Sink: event.FuncSink(func(e event.Event) {
 		select {
 		case events <- e:
 		default:
@@ -118,7 +118,7 @@ func TestSubmitDuringRotationEmitsNotice(t *testing.T) {
 func TestSubmitWhileRunningStaysSilentNoOp(t *testing.T) {
 	block := make(chan struct{})
 	var notices atomic.Int32
-	c := New(Options{Sink: event.FuncSink(func(e event.Event) {
+	c := newOwnedTestController(t, Options{Sink: event.FuncSink(func(e event.Event) {
 		if e.Kind == event.Notice {
 			notices.Add(1)
 		}
@@ -147,7 +147,7 @@ func TestSubmitWhileRunningStaysSilentNoOp(t *testing.T) {
 func TestCloseDiscardsParkedTurns(t *testing.T) {
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
-	c := New(Options{Sink: holdFinishingWindow(release, entered, nil)})
+	c := newOwnedTestController(t, Options{Sink: holdFinishingWindow(release, entered, nil)})
 
 	c.runGuarded(func(context.Context) error { return nil })
 	<-entered
@@ -178,7 +178,7 @@ func TestCloseDiscardsParkedTurns(t *testing.T) {
 func TestCloseSealsAdmissionDuringFinishingWindow(t *testing.T) {
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
-	c := New(Options{Sink: holdFinishingWindow(release, entered, nil)})
+	c := newOwnedTestController(t, Options{Sink: holdFinishingWindow(release, entered, nil)})
 
 	c.runGuarded(func(context.Context) error { return nil })
 	<-entered // finishing window is now held open
@@ -207,7 +207,7 @@ func TestCloseSealsAdmissionDuringFinishingWindow(t *testing.T) {
 func TestRunTurnRefusedDuringFinishingWindow(t *testing.T) {
 	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
-	c := New(Options{Sink: holdFinishingWindow(release, entered, nil)})
+	c := newOwnedTestController(t, Options{Sink: holdFinishingWindow(release, entered, nil)})
 
 	c.runGuarded(func(context.Context) error { return nil })
 	<-entered // finishing window is now held open
@@ -229,23 +229,16 @@ func TestRunTurnRefusedDuringFinishingWindow(t *testing.T) {
 // TestRunTurnRefusedAfterClose pins the terminal state for the synchronous
 // entry point too.
 func TestRunTurnRefusedAfterClose(t *testing.T) {
-	c := New(Options{})
+	c := newOwnedTestController(t, Options{})
 	c.Close()
 	if err := c.RunTurn(context.Background(), "late"); !errors.Is(err, ErrTurnRunning) {
 		t.Fatalf("RunTurn after Close = %v, want ErrTurnRunning", err)
 	}
 }
 
-// waitIdleAdmission polls the running||finishing admission gate; a test that
-// submits or asserts idle right after TurnDone must wait the finishing window
-// out (TurnDone is emitted inside it).
+// waitIdleAdmission waits for the same lifecycle boundary as production turn
+// admission, including synchronous TurnDone fan-out.
 func waitIdleAdmission(t *testing.T, c *Controller) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for c.Running() {
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for the controller to return to idle")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	waitIdle(t, c)
 }

@@ -18,6 +18,7 @@ reasonix_fsevents_subscription *reasonix_fsevents_start(
 	int *error_code
 );
 void reasonix_fsevents_stop(reasonix_fsevents_subscription *subscription);
+void reasonix_fsevents_catch_up(reasonix_fsevents_subscription *subscription);
 */
 import "C"
 
@@ -89,6 +90,21 @@ func newWorkspaceWatcher() (workspaceWatcher, error) {
 func (w *darwinWorkspaceWatcher) Events() <-chan fsnotify.Event { return w.events }
 func (w *darwinWorkspaceWatcher) Errors() <-chan error          { return w.errors }
 func (w *darwinWorkspaceWatcher) SupportsRecursive() bool       { return true }
+
+// CatchUp delivers the daemon's pending notifications before the catalog opens
+// its initial iterator. Callbacks only try-send into bounded channels, so this
+// barrier never waits on the catalog or its database writer. Registration and
+// close share mu to keep each native subscription alive across the barrier.
+func (w *darwinWorkspaceWatcher) CatchUp() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.isClosed {
+		return
+	}
+	for _, sub := range w.watches {
+		C.reasonix_fsevents_catch_up(sub.native)
+	}
+}
 
 func (w *darwinWorkspaceWatcher) Add(path string, recursive bool) error {
 	path = canonicalWorkspaceRoot(path)

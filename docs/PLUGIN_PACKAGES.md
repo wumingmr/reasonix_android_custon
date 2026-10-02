@@ -458,8 +458,8 @@ declarations and do not apply these fallbacks:
   omits `TaskOutput`'s optional `timeout` for an unbounded wait rather than
   claiming a `0`ms budget.
   `AskUserQuestion` supplies omitted `multiSelect:false` and empty option
-  descriptions, while `TodoWrite` derives an omitted `activeForm` from the
-  task content. `NotebookEdit` also supplies `new_source` from Reasonix's
+  descriptions. `TodoWrite` accepts only flat `content` and `status` items; legacy `activeForm` is rejected by strict
+  validation. `NotebookEdit` also supplies `new_source` from Reasonix's
   accepted aliases, or an empty string for delete/empty-cell operations.
   Relative `file_path`/`notebook_path` values are resolved
   absolute against the payload `cwd`, matching Claude's file-tool contract,
@@ -523,7 +523,7 @@ Plugin hooks receive these environment variables:
 
 ## Desktop Backend Methods
 
-Desktop exposes plugin package operations through Wails methods:
+Desktop exposes plugin package operations through host commands:
 
 - `Plugins`
 - `PlanPluginInstall`

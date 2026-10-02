@@ -69,54 +69,46 @@ func decorateExecutionReceipt(rec *evidence.Receipt, result string, ex *tool.She
 		rec.ExitCode = &code
 	}
 	rec.Verification = ex.Verification
+	rec.Interrupted = ex.State == tool.ShellStateCancelled
 }
 
 // composeSubagentAnswer assembles everything the parent is shown for one child
-// run: the host-adjudicated completion claim when the child submitted one, the
+// run: the model's completion report when the child submitted one, the
 // child's own prose, then the host's receipts.
 func composeSubagentAnswer(ctx context.Context, answer string, sub *Agent, claims WritePathSet, delegationText string) string {
 	summary := sub.EvidenceSummary()
-	report, reasons, hasReport := sub.CompletionReport()
+	report, hasReport := sub.CompletionReport()
 	if hasReport {
-		answer = strings.TrimSpace(formatCompletionReport(report, reasons) + "\n\n" + answer)
+		answer = strings.TrimSpace(formatCompletionReport(report) + "\n\n" + answer)
 	}
-	recordDelegationAudit(ctx, summary, claims, report, reasons, hasReport, delegationText)
+	recordDelegationAudit(ctx, summary, claims, hasReport, delegationText)
 	return appendHostReceipts(answer, summary, claims)
 }
 
 // recordDelegationAudit emits one structured receipt per child run. It reports
-// what the host observed and what it refused to back, so an orchestration
+// what the host observed, so an orchestration
 // benchmark can separate real gains from extra tokens spent. delegationText is
 // the parent-authored task before host framing, which is what makes the
 // evidence-origin split a host record rather than a claim.
-func recordDelegationAudit(ctx context.Context, summary evidence.ChildEvidenceSummary, claims WritePathSet, report evidence.CompletionReport, reasons []string, hasReport bool, delegationText string) {
+func recordDelegationAudit(ctx context.Context, summary evidence.ChildEvidenceSummary, claims WritePathSet, hasReport bool, delegationText string) {
 	audit := evidence.DelegationAudit{
 		Depth:           SubagentDepth(ctx),
 		ToolCalls:       len(summary.Receipts),
 		MutationPaths:   summary.MutationPaths(),
 		ClaimViolations: len(claimViolations(summary, claims)),
 		HasReport:       hasReport,
-		Downgrades:      len(reasons),
 	}
 	audit.Mutations = len(audit.MutationPaths)
 	audit.ClassifyEvidenceOrigin(delegationText, summary.EvidencePaths())
-	if hasReport {
-		audit.AdjudicatedStatus = string(report.Status)
-	}
 	_, sink, _, _ := CallContext(ctx)
 	event.RecordDelegationAudit(sink, audit)
 }
 
-// formatCompletionReport renders the child's claim after the host has lowered
-// whatever its receipts could not back. Downgrades are shown, never silently
-// applied: a parent that cannot see the adjudication cannot trust the status.
-func formatCompletionReport(report evidence.CompletionReport, reasons []string) string {
+// formatCompletionReport labels model claims separately from execution facts.
+func formatCompletionReport(report evidence.CompletionReport) string {
 	var b strings.Builder
-	b.WriteString("status: ")
+	b.WriteString("Model-reported status: ")
 	b.WriteString(string(report.Status))
-	if len(reasons) > 0 {
-		b.WriteString(" (lowered by the host: unbacked criterion claims)")
-	}
 	b.WriteString("\nsummary: ")
 	b.WriteString(report.Summary)
 	for _, c := range report.Criteria {
@@ -124,9 +116,6 @@ func formatCompletionReport(report evidence.CompletionReport, reasons []string) 
 		if proof := criterionProof(c); proof != "" {
 			b.WriteString(" — " + proof)
 		}
-	}
-	for _, reason := range reasons {
-		b.WriteString("\n  host lowered " + reason)
 	}
 	for _, u := range report.Unresolved {
 		b.WriteString("\nunresolved: " + u)
@@ -186,9 +175,9 @@ func claimViolations(summary evidence.ChildEvidenceSummary, claims WritePathSet)
 // Ordinary reads and greps are excluded on purpose — they are not claims a
 // parent has to adjudicate, and every rendered line costs parent context.
 func formatHostReceipts(summary evidence.ChildEvidenceSummary, claims WritePathSet) string {
-	changed := summary.MutationPaths()
+	changed := receiptDisplayPaths(summary.MutationPaths())
 	commands := hostReceiptCommands(summary)
-	violations := claimViolations(summary, claims)
+	violations := receiptDisplayPaths(claimViolations(summary, claims))
 	if len(changed) == 0 && len(commands) == 0 {
 		return ""
 	}
@@ -207,6 +196,14 @@ func formatHostReceipts(summary evidence.ChildEvidenceSummary, claims WritePathS
 		b.WriteString(joinBoundedReceipts(violations))
 	}
 	return b.String()
+}
+
+func receiptDisplayPaths(paths []string) []string {
+	out := make([]string, len(paths))
+	for i, value := range paths {
+		out[i] = strings.ReplaceAll(value, `\`, "/")
+	}
+	return out
 }
 
 // hostReceiptCommands keeps only shell receipts carrying an outcome worth

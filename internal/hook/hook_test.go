@@ -90,25 +90,10 @@ func hookSettingsWithCommand(t *testing.T, event Event, command string) string {
 	return string(body)
 }
 
-func TestLoadProjectHooksByDefault(t *testing.T) {
-	home := t.TempDir()
-	proj := t.TempDir()
-	writeSettings(t, proj, sampleSettings)
-	writeSettings(t, home, `{"hooks":{"PostToolUse":[{"command":"echo g"}]}}`)
-
-	got := Load(LoadOptions{ProjectRoot: proj, HomeDir: home})
-	if len(got) != 3 {
-		t.Fatalf("default load should include project + global, got %d", len(got))
-	}
-	if got[0].Scope != ScopeProject {
-		t.Errorf("project hooks should sort first, got %s", got[0].Scope)
-	}
-}
-
 func TestLoadDecodesGB18030GlobalSettings(t *testing.T) {
 	home := t.TempDir()
 	body := `{"hooks":{"Stop":[{"command":"echo 中文","description":"全局"}]}}`
-	writeHookTestBytes(t, GlobalSettingsPath(home), fileencoding.Encode(body, fileencoding.GB18030))
+	writeHookTestBytes(t, GlobalSettingsPath(home), fileencoding.MustEncode(body, fileencoding.GB18030))
 
 	got := Load(LoadOptions{HomeDir: home})
 	if len(got) != 1 {
@@ -123,9 +108,10 @@ func TestLoadDecodesUTF8BOMProjectSettings(t *testing.T) {
 	home := t.TempDir()
 	proj := t.TempDir()
 	body := `{"hooks":{"PreToolUse":[{"match":"bash","command":"echo pre"}]}}`
-	writeHookTestBytes(t, ProjectSettingsPath(proj), fileencoding.Encode(body, fileencoding.UTF8BOM))
+	writeHookTestBytes(t, ProjectSettingsPath(proj), fileencoding.MustEncode(body, fileencoding.UTF8BOM))
 
-	got := Load(LoadOptions{HomeDir: home, ProjectRoot: proj, Trusted: true})
+	approveProjectHooks(t, LoadOptions{HomeDir: home, ProjectRoot: proj})
+	got := Load(LoadOptions{HomeDir: home, ProjectRoot: proj})
 	if len(got) != 1 {
 		t.Fatalf("Load hooks = %+v, want one decoded project hook", got)
 	}
@@ -150,7 +136,8 @@ func TestLoadNormalizesQuotedNodeEvalHooksPerProject(t *testing.T) {
 	writeSettings(t, projB, hookSettingsWithCommand(t, PreToolUse, bad))
 
 	for _, project := range []string{projA, projB, projB} {
-		hooks := Load(LoadOptions{HomeDir: home, ProjectRoot: project, Trusted: true})
+		approveProjectHooks(t, LoadOptions{HomeDir: home, ProjectRoot: project})
+		hooks := Load(LoadOptions{HomeDir: home, ProjectRoot: project})
 		if len(hooks) != 1 {
 			t.Fatalf("Load(%q) hooks = %+v, want one", project, hooks)
 		}
@@ -984,7 +971,7 @@ func TestDefaultSpawnerUsesGitBashForExplicitShOnWindows(t *testing.T) {
 
 func TestDecodeHookOutputRecoversGB18030WindowsErrors(t *testing.T) {
 	want := `'sh' 不是内部或外部命令，也不是可运行的程序`
-	raw := fileencoding.Encode(want, fileencoding.GB18030)
+	raw := fileencoding.MustEncode(want, fileencoding.GB18030)
 	if got := decodeHookOutput(raw, false); got != want {
 		t.Fatalf("decoded hook stderr = %q, want %q", got, want)
 	}
@@ -1216,7 +1203,7 @@ func TestClaudeFacingToolInputAdaptsMappedTools(t *testing.T) {
 		{"task-output-wait-many", "wait", `{"job_ids":["task-1","task-2"]}`, `{"job_ids":["task-1","task-2"],"block":true}`},
 		{"task-stop", "kill_shell", `{"job_id":"bash-1"}`, `{"task_id":"bash-1"}`},
 		{"ask-defaults", "ask", `{"questions":[{"question":"Which?","header":"Choice","options":[{"label":"A"},{"label":"B","description":"Keep B"}]}]}`, `{"questions":[{"question":"Which?","header":"Choice","multiSelect":false,"options":[{"label":"A","description":""},{"label":"B","description":"Keep B"}]}]}`},
-		{"todo-default-active-form", "todo_write", `{"todos":[{"content":"Run tests","status":"pending"},{"content":"Ship it","status":"completed","activeForm":"Shipping it"}]}`, `{"todos":[{"content":"Run tests","status":"pending","activeForm":"Run tests"},{"content":"Ship it","status":"completed","activeForm":"Shipping it"}]}`},
+		{"todo-input-unchanged", "todo_write", `{"todos":[{"content":"Run tests","status":"pending"},{"content":"Ship it","status":"completed","activeForm":"Shipping it"}]}`, `{"todos":[{"content":"Run tests","status":"pending"},{"content":"Ship it","status":"completed","activeForm":"Shipping it"}]}`},
 		{"task-default-description", "task", `{"prompt":"do it"}`, `{"prompt":"do it","description":"Run delegated subagent task"}`},
 		{"task-explicit-description", "task", `{"prompt":"do it","description":"Inspect the auth flow"}`, `{"prompt":"do it","description":"Inspect the auth flow"}`},
 		{"read-only-task-default-description", "read_only_task", `{"prompt":"inspect it"}`, `{"prompt":"inspect it","description":"Run read-only research task"}`},

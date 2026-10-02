@@ -38,7 +38,7 @@ func (s *toolReceiptSignalSink) kinds(kind event.Kind) []event.Event {
 	return out
 }
 
-func TestTodoResultPreviewPreservesSingleProviderOrderedTerminalResult(t *testing.T) {
+func TestTodoResultCommitsBeforeFollowingToolWithoutPreviewState(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	reg := tool.NewRegistry()
@@ -62,14 +62,11 @@ func TestTodoResultPreviewPreservesSingleProviderOrderedTerminalResult(t *testin
 	}
 	select {
 	case preview := <-sink.previews:
-		if preview.Tool.ID != "todo-1" || preview.Tool.Name != "todo_write" || preview.Tool.Err != "" {
-			t.Fatalf("todo preview = %+v", preview.Tool)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("todo result preview did not arrive while the later tool was running")
+		t.Fatalf("todo state leaked through a transient preview: %+v", preview.Tool)
+	default:
 	}
-	if results := sink.kinds(event.ToolResult); len(results) != 0 {
-		t.Fatalf("terminal ToolResult published before the batch completed: %+v", results)
+	if results := sink.kinds(event.ToolResult); len(results) != 1 || results[0].Tool.Name != "todo_write" {
+		t.Fatalf("completed todo result must be checkpointed before the next tool: %+v", results)
 	}
 
 	close(release)
@@ -78,8 +75,8 @@ func TestTodoResultPreviewPreservesSingleProviderOrderedTerminalResult(t *testin
 	case <-time.After(2 * time.Second):
 		t.Fatal("batch did not finish after releasing the later tool")
 	}
-	if previews := sink.kinds(event.ToolResultPreview); len(previews) != 1 {
-		t.Fatalf("ToolResultPreview events = %d, want 1", len(previews))
+	if previews := sink.kinds(event.ToolResultPreview); len(previews) != 0 {
+		t.Fatalf("ToolResultPreview events = %d, want 0", len(previews))
 	}
 	results := sink.kinds(event.ToolResult)
 	if len(results) != 2 || results[0].Tool.ID != "todo-1" || results[1].Tool.ID != "read-1" {

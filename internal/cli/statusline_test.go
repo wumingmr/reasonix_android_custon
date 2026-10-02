@@ -79,10 +79,14 @@ func TestRunStatuslineDisabled(t *testing.T) {
 }
 
 func TestModelSwitchRefreshesCustomStatusline(t *testing.T) {
-	oldCtrl := control.New(control.Options{Label: "old-model"})
-	newCtrl := control.New(control.Options{Label: "new-model"})
+	oldCtrl := newOwnedTestController(t, control.Options{Label: "old-model"})
+	newCtrl := newOwnedTestController(t, control.Options{Label: "new-model"})
 	m := newChatTUI(oldCtrl, "", make(chan event.Event, 1), 80)
-	m.statuslineCmd = "cat"
+	statuslineCmd := "cat"
+	if runtime.GOOS == "windows" {
+		statuslineCmd = "more"
+	}
+	m.statuslineCmd = statuslineCmd
 	m.statuslineOut = `{"model":"old-model"}`
 
 	_, cmd := m.Update(modelSwitchMsg{
@@ -123,10 +127,10 @@ func TestIdleStatuslineIsCompact(t *testing.T) {
 
 	content := renderStatuslineView(t, false)
 	plain := bottomStatusPlain(content)
-	if !strings.Contains(plain, "Auto") || !strings.Contains(plain, "ready") {
+	if !strings.Contains(plain, "Workspace") || !strings.Contains(plain, "ready") {
 		t.Fatalf("idle status line missing mode status:\n%s", plain)
 	}
-	if !strings.Contains(plain, "Shift+Tab ask/auto/plan · Ctrl+Y YOLO") {
+	if !strings.Contains(plain, "Shift+Tab read-only/workspace/YOLO/plan") || !strings.Contains(plain, "Ctrl+Y YOLO") {
 		t.Fatalf("idle status line missing plan-toggle hint:\n%s", plain)
 	}
 	for _, old := range []string{"Shift-Tab", "Ctrl-O", "Ctrl-D", "Enter sends", "Esc clears/exits state", "PgUp/PgDn"} {
@@ -134,11 +138,11 @@ func TestIdleStatuslineIsCompact(t *testing.T) {
 			t.Fatalf("idle status line should not contain %q:\n%s", old, plain)
 		}
 	}
-	if strings.Contains(plain, "[auto]") {
+	if strings.Contains(plain, "[Workspace]") {
 		t.Fatalf("idle status line should use pill label, not bracketed tag:\n%s", plain)
 	}
 	if !strings.Contains(content, "\x1b[48;2;245;158;11m") {
-		t.Fatalf("Auto status line should use amber pill background, got:\n%q", content)
+		t.Fatalf("Workspace status line should use amber pill background, got:\n%q", content)
 	}
 }
 
@@ -149,14 +153,17 @@ func TestYoloStatuslineUsesDangerPill(t *testing.T) {
 
 	content := renderStatuslineView(t, true)
 	plain := bottomStatusPlain(content)
-	if !strings.Contains(plain, "YOLO") || !strings.Contains(plain, "approvals skipped") || !strings.Contains(plain, "Shift+Tab ask/auto/plan · Ctrl+Y YOLO") {
-		t.Fatalf("YOLO status line missing warning text:\n%s", plain)
+	if !strings.Contains(plain, "YOLO") || !strings.Contains(plain, "Shift+Tab read-only/workspace/YOLO/plan") || !strings.Contains(plain, "Ctrl+Y YOLO") {
+		t.Fatalf("YOLO status line missing mode or shortcut text:\n%s", plain)
+	}
+	if strings.Contains(plain, "full access") {
+		t.Fatalf("YOLO status line should display only the YOLO mode label:\n%s", plain)
 	}
 	if strings.Contains(plain, "[YOLO]") {
 		t.Fatalf("YOLO status line should use a pill label, not bracketed tag:\n%s", plain)
 	}
 	if !strings.Contains(content, "\x1b[48;2;229;72;77m") {
-		t.Fatalf("YOLO status line should use danger pill background, got:\n%q", content)
+		t.Fatalf("full-access status line should use danger pill background, got:\n%q", content)
 	}
 }
 
@@ -167,7 +174,7 @@ func TestPlanStatuslineUsesBluePill(t *testing.T) {
 
 	content := renderPlanStatuslineView(t)
 	plain := bottomStatusPlain(content)
-	if !strings.Contains(plain, "Plan") || !strings.Contains(plain, "ready") || !strings.Contains(plain, "Shift+Tab ask/auto/plan · Ctrl+Y YOLO") {
+	if !strings.Contains(plain, "Plan") || !strings.Contains(plain, "ready") || !strings.Contains(plain, "Shift+Tab read-only/workspace/YOLO/plan") || !strings.Contains(plain, "Ctrl+Y YOLO") {
 		t.Fatalf("plan status line missing mode status:\n%s", plain)
 	}
 	if !strings.Contains(content, "\x1b[48;2;37;99;235m") {
@@ -181,10 +188,10 @@ func TestStatuslineCycleHintFollowsLanguage(t *testing.T) {
 
 	content := renderStatuslineView(t, false)
 	plain := bottomStatusPlain(content)
-	if !strings.Contains(plain, "Auto") || !strings.Contains(plain, "就绪") || !strings.Contains(plain, "Shift+Tab 询问/自动/计划 · Ctrl+Y YOLO") {
+	if !strings.Contains(plain, "Workspace") || !strings.Contains(plain, "就绪") || !strings.Contains(plain, "Shift+Tab 仅可查看/工作区内修改/YOLO/计划") || !strings.Contains(plain, "Ctrl+Y YOLO") {
 		t.Fatalf("localized plan-toggle hint missing:\n%s", plain)
 	}
-	if strings.Contains(plain, "ready") || strings.Contains(plain, "Shift+Tab ask/auto/plan · Ctrl+Y YOLO") {
+	if strings.Contains(plain, "ready") || strings.Contains(plain, "Shift+Tab read-only/workspace/YOLO/plan") {
 		t.Fatalf("localized status line should not fall back to English:\n%s", plain)
 	}
 }
@@ -194,7 +201,7 @@ func TestDesktopShortcutStatuslineUsesPlanToggleHint(t *testing.T) {
 
 	content := renderStatuslineViewWithShortcutLayout(t, "desktop")
 	plain := bottomStatusPlain(content)
-	if !strings.Contains(plain, "Ask") || !strings.Contains(plain, "Shift+Tab ask/auto/plan · Ctrl+Y YOLO") {
+	if !strings.Contains(plain, "Read only") || !strings.Contains(plain, "Shift+Tab read-only/workspace/YOLO/plan") || !strings.Contains(plain, "Ctrl+Y YOLO") {
 		t.Fatalf("desktop shortcut status line missing unified plan-toggle hint:\n%s", plain)
 	}
 }
@@ -245,7 +252,7 @@ func TestStatuslineShowsGitAndEffortInPersistentFooter(t *testing.T) {
 func TestStatuslineShowsModelAndBalanceInPersistentFooter(t *testing.T) {
 	i18n.DetectLanguage("en")
 
-	ctrl := control.New(control.Options{})
+	ctrl := newOwnedTestController(t, control.Options{})
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 120)
 	m.label = "deepseek-v4-flash"
 	m.balance = "¥12.34"
@@ -294,7 +301,7 @@ func TestEffortTagExplicitValueUsesThemeInfo(t *testing.T) {
 func TestRefreshEffortStatusUsesCurrentModel(t *testing.T) {
 	isolateUserConfig(t)
 
-	ctrl := control.New(control.Options{})
+	ctrl := newOwnedTestController(t, control.Options{})
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
 	m.modelRef = "deepseek-flash/deepseek-v4-flash"
 	m.refreshEffortStatus()
@@ -306,8 +313,12 @@ func TestRefreshEffortStatusUsesCurrentModel(t *testing.T) {
 func renderStatuslineView(t *testing.T, yolo bool) string {
 	t.Helper()
 
-	ctrl := control.New(control.Options{})
-	ctrl.SetAutoApproveTools(yolo)
+	ctrl := newOwnedTestController(t, control.Options{})
+	if yolo {
+		ctrl.SetToolApprovalMode(control.ToolApprovalDangerFullAccess)
+	} else {
+		ctrl.SetToolApprovalMode(control.ToolApprovalWorkspaceWrite)
+	}
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	return next.(chatTUI).View().Content
@@ -316,7 +327,7 @@ func renderStatuslineView(t *testing.T, yolo bool) string {
 func renderStatuslineViewWithShortcutLayout(t *testing.T, layout string) string {
 	t.Helper()
 
-	ctrl := control.New(control.Options{})
+	ctrl := newOwnedTestController(t, control.Options{})
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
 	m.cfg = config.Default()
 	if err := m.cfg.SetUIShortcutLayout(layout); err != nil {
@@ -329,7 +340,7 @@ func renderStatuslineViewWithShortcutLayout(t *testing.T, layout string) string 
 func renderStatuslineViewWithEffort(t *testing.T, effort string) string {
 	t.Helper()
 
-	ctrl := control.New(control.Options{})
+	ctrl := newOwnedTestController(t, control.Options{})
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 120)
 	m.label = "deepseek-v4-flash"
 	m.effortLevel = effort
@@ -340,7 +351,7 @@ func renderStatuslineViewWithEffort(t *testing.T, effort string) string {
 func renderStatuslineViewWithGitAndEffort(t *testing.T) string {
 	t.Helper()
 
-	ctrl := control.New(control.Options{})
+	ctrl := newOwnedTestController(t, control.Options{})
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 120)
 	m.label = "deepseek-v4-flash"
 	m.effortLevel = "auto"
@@ -372,7 +383,7 @@ func renderStatuslineViewWithCache(t *testing.T) string {
 	if err := exec.Run(context.Background(), "hello"); err != nil {
 		t.Fatalf("seed agent usage: %v", err)
 	}
-	ctrl := control.New(control.Options{Executor: exec})
+	ctrl := newOwnedTestController(t, control.Options{Executor: exec})
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 160)
 	m.label = "deepseek-v4-flash"
 	m.effortLevel = "auto"
@@ -383,7 +394,7 @@ func renderStatuslineViewWithCache(t *testing.T) string {
 func renderPlanStatuslineView(t *testing.T) string {
 	t.Helper()
 
-	ctrl := control.New(control.Options{})
+	ctrl := newOwnedTestController(t, control.Options{})
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
 	m.planMode = true
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})

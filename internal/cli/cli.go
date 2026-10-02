@@ -35,12 +35,17 @@ import (
 	"reasonix/internal/extension/providerext"
 	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/i18n"
+	"reasonix/internal/jobs"
+	"reasonix/internal/netclient"
 	"reasonix/internal/notify"
+	"reasonix/internal/persistentshell"
+	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/provider/openai"
 	"reasonix/internal/serve"
 	"reasonix/internal/sessiontemp"
 	"reasonix/internal/telemetry"
+	"reasonix/internal/winaclresidue"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/pflag"
@@ -63,6 +68,9 @@ func Run(args []string, version string) int {
 // RunWithBuildInfo is the full CLI entry with optional build metadata for
 // `reasonix version --verbose` / `--json`.
 func RunWithBuildInfo(args []string, info BuildInfo) int {
+	// Older Windows builds could leave sandbox ACL residue behind after a
+	// crash; sweep it in the background so no tool output waits on icacls.
+	go winaclresidue.SweepStaleMarkers()
 	info = info.withDefaults()
 	version := info.Version
 	// Usage recording is asynchronous so provider/UI paths never wait on disk.
@@ -165,6 +173,8 @@ func RunWithBuildInfo(args []string, info BuildInfo) int {
 	case "hook", "hooks":
 		configureCLIThemeFromConfig()
 		return hookCommand(rest)
+	case "trust":
+		return trustCommand(rest)
 	case "task":
 		configureCLIThemeFromConfig()
 		return taskCommand(rest)
@@ -221,15 +231,6 @@ func shouldMigrateLegacyConfigForCLI(cmd string) bool {
 	}
 }
 
-func migrateLegacyConfigForCLI() {
-	if _, err := config.MigrateLegacyIfNeeded(); err != nil {
-		fmt.Fprintln(os.Stderr, "warning: config migration failed:", err)
-	}
-	if _, err := config.ApplyUserConfigUpgradesOnStartup(config.UserConfigPath()); err != nil {
-		fmt.Fprintln(os.Stderr, "warning: config upgrade failed:", err)
-	}
-}
-
 func migrateMCPConfigForCLIWorkspace() {
 	if wd, err := os.Getwd(); err == nil {
 		if _, err := config.MigrateMCPToUserConfigOnUpgrade([]string{wd}); err != nil {
@@ -260,11 +261,7 @@ func configureCLIThemeFromConfigForTTYOutput() {
 // The assembly (model resolution, tool registry, permission gate, two-model
 // Coordinator) lives in internal/boot, shared with the desktop frontend.
 // requireKey forces the executor's API key to be present (used by run); chat
-// passes false so the session UI is reachable before a key is set. sink receives
-// the agent's typed event stream — runAgent passes a TextSink that renders to
-// stdout, the TUI passes an event-channel sink so events become tea.Msgs.
-// workspaceRoot pins the project root explicitly (from --dir); empty falls back
-// to git-root detection.
+// passes false so the session UI is reachable before a key is set.
 func setupProfile(ctx context.Context, modelName string, maxStepsOverride int, requireKey bool, sink event.Sink, workspaceRoot string) (*control.Controller, error) {
 	return setupProfileWithOverrides(ctx, modelName, maxStepsOverride, requireKey, sink, cliBuildOverrides{WorkspaceRoot: workspaceRoot})
 }
@@ -272,6 +269,7 @@ func setupProfile(ctx context.Context, modelName string, maxStepsOverride int, r
 type cliBuildOverrides struct {
 	Preset               string
 	Effort               *string
+	EffortModel          string
 	PermissionAllow      []string
 	AdditionalDirs       []string
 	WorkspaceRoot        string
@@ -279,9 +277,17 @@ type cliBuildOverrides struct {
 	Stderr               io.Writer
 	OnSessionRecovered   func(control.SessionRecoveryInfo) error
 	Ablation             ablation.Set
+	// InteractiveHost marks human-in-the-loop entries (chat TUI); print mode
+	// and bots stay on core-v1.
+	InteractiveHost bool
+	// NativeLegacySession is selected only for an existing path-addressed
+	// transcript. New CLI sessions remain on the canonical session service.
+	NativeLegacySession bool
 	// SessionTemp carries the previous Controller's private temporary directory
 	// manager across model/profile rebuilds so temporary files survive.
-	SessionTemp *sessiontemp.Manager
+	SessionTemp     *sessiontemp.Manager
+	BackgroundScope *jobs.SessionBackgroundScope
+	PersistentShell *persistentshell.Manager
 }
 
 // sessionTempFromCLIController returns the logical-session private temporary
@@ -301,16 +307,21 @@ func setupProfileWithOverrides(ctx context.Context, modelName string, maxStepsOv
 }
 
 func cliProfileBuildOptions(modelName string, maxStepsOverride int, requireKey bool, sink event.Sink, overrides cliBuildOverrides) boot.Options {
-	return boot.Options{
+	sessionDir := resolveCLISessionDir()
+	opts := boot.Options{
 		Model:                modelName,
 		MaxSteps:             maxStepsOverride,
 		MaxStepsKey:          "--max-steps",
 		RequireKey:           requireKey,
 		Sink:                 sink,
-		SessionDir:           resolveCLISessionDir(),
+		SessionDir:           sessionDir,
+		SessionService:       cliSessionService(sessionDir),
+		NativeLegacySession:  overrides.NativeLegacySession,
+		SessionHostID:        "local",
 		AgentPreset:          overrides.Preset,
 		WorkspaceRoot:        overrides.WorkspaceRoot,
 		EffortOverride:       overrides.Effort,
+		EffortModel:          overrides.EffortModel,
 		PermissionAllow:      overrides.PermissionAllow,
 		AdditionalDirs:       overrides.AdditionalDirs,
 		HeadlessApprovalMode: overrides.HeadlessApprovalMode,
@@ -319,7 +330,11 @@ func cliProfileBuildOptions(modelName string, maxStepsOverride int, requireKey b
 		OnSessionRecovered:   overrides.OnSessionRecovered,
 		Ablation:             overrides.Ablation,
 		SessionTemp:          overrides.SessionTemp,
+		BackgroundScope:      overrides.BackgroundScope,
+		PersistentShell:      overrides.PersistentShell,
 	}
+	opts.MCPHostProfile = plugin.HostProfileForInteractive(overrides.InteractiveHost)
+	return opts
 }
 
 type cliPermissionMode struct {
@@ -330,24 +345,24 @@ type cliPermissionMode struct {
 
 func parsePermissionMode(value string) (cliPermissionMode, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "default", "ask":
-		return cliPermissionMode{approval: control.ToolApprovalAsk}, nil
-	case "auto":
-		return cliPermissionMode{approval: control.ToolApprovalAuto}, nil
+	case "", "default", "workspace-write":
+		return cliPermissionMode{approval: control.ToolApprovalWorkspaceWrite}, nil
+	case "read-only":
+		return cliPermissionMode{approval: control.ToolApprovalReadOnly}, nil
+	case "danger-full-access":
+		return cliPermissionMode{approval: control.ToolApprovalDangerFullAccess}, nil
+	case "ask", "manual":
+		return cliPermissionMode{approval: control.ToolApprovalReadOnly}, nil
+	case "auto", "bypasspermissions", "bypass-permissions", "yolo":
+		return cliPermissionMode{approval: control.ToolApprovalWorkspaceWrite}, nil
 	case "acceptedits", "accept-edits":
-		return cliPermissionMode{approval: control.ToolApprovalAsk, allow: []string{
-			"write_file", "edit_file", "multi_edit", "move_file", "notebook_edit", "delete_range", "delete_symbol",
-		}}, nil
-	case "manual":
-		return cliPermissionMode{approval: control.ToolApprovalAsk}, nil
+		return cliPermissionMode{approval: control.ToolApprovalWorkspaceWrite}, nil
 	case "dontask", "dont-ask":
-		return cliPermissionMode{approval: control.ToolApprovalDontAsk}, nil
+		return cliPermissionMode{approval: control.ToolApprovalReadOnly}, nil
 	case "plan":
 		return cliPermissionMode{approval: control.ToolApprovalAsk, plan: true}, nil
-	case "bypasspermissions", "bypass-permissions", "yolo":
-		return cliPermissionMode{approval: control.ToolApprovalYolo}, nil
 	default:
-		return cliPermissionMode{}, fmt.Errorf("unknown permission mode %q (want manual, ask, auto, acceptEdits, dontAsk, plan, or bypassPermissions)", value)
+		return cliPermissionMode{}, fmt.Errorf("unknown permission mode %q (want read-only, workspace-write, danger-full-access, or plan)", value)
 	}
 }
 
@@ -358,7 +373,7 @@ func resolveRunPermissionMode(value string, auto, modeExplicit bool) (string, er
 	if modeExplicit {
 		return "", errors.New("--auto/-y cannot be combined with --permission-mode")
 	}
-	return "auto", nil
+	return "workspace-write", nil
 }
 
 func applyPermissionMode(ctrl *control.Controller, mode cliPermissionMode) {
@@ -393,9 +408,8 @@ func setupQuietProfile(ctx context.Context, modelName string, maxStepsOverride i
 	return boot.Build(ctx, cliProfileBuildOptions(modelName, maxStepsOverride, requireKey, sink, overrides))
 }
 
-// parseRuntimeProfile validates a role-flag value and maps it onto the
-// session quality floor: light folds to standard silently, delivery sets the
-// delivery floor.
+// parseRuntimeProfile validates a retired role flag. Recognized legacy values
+// all fold to the standard runtime behavior.
 func parseRuntimeProfile(value string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", "balanced", "standard", boot.TokenModeFull:
@@ -403,9 +417,9 @@ func parseRuntimeProfile(value string) (string, error) {
 	case "economy", "light", "lite", "eco":
 		return "standard", nil
 	case boot.TokenModeDelivery, "deliver", "quality":
-		return "delivery", nil
+		return "standard", nil
 	default:
-		return "", fmt.Errorf("unknown execution setting %q (accepted: standard, delivery; legacy light folds to standard)", value)
+		return "", fmt.Errorf("unknown retired execution setting %q", value)
 	}
 }
 
@@ -438,23 +452,6 @@ func workspaceRootForDir(dir string) (string, error) {
 		return "", fmt.Errorf("resolve --dir workspace root: %w", err)
 	}
 	return wd, nil
-}
-
-func modelForResumePath(modelName, resumePath string, cfg *config.Config) string {
-	if strings.TrimSpace(modelName) != "" || strings.TrimSpace(resumePath) == "" {
-		return modelName
-	}
-	sessionModel, ok := agent.LoadSessionModel(resumePath)
-	if !ok {
-		return modelName
-	}
-	if cfg == nil {
-		return sessionModel
-	}
-	if _, ok := cfg.ResolveModel(sessionModel); !ok {
-		return modelName
-	}
-	return sessionModel
 }
 
 func loadResumableSession(path string) (*agent.Session, error) {
@@ -501,9 +498,11 @@ func runAgent(args []string, version string) int {
 	cont := registerContinueFlag(fs)
 	resume := fs.String("resume", "", "resume by session file path, session ID, or machine session ID (takes precedence over --continue)")
 	copySession := fs.Bool("copy", false, "with --resume/--continue: duplicate the session and continue in the copy (escape hatch when the original is held by another Reasonix process)")
+	takeover := fs.Bool("takeover", false, "with --resume/--continue: when a resident serve on this machine holds the session, take it over instead of refusing")
 	effort := fs.String("effort", "", "session reasoning effort override")
-	permissionMode := fs.String("permission-mode", "ask", "permission mode: manual | ask | auto | acceptEdits | dontAsk | plan | bypassPermissions")
-	autoApprove := fs.BoolP("auto", "y", false, "explicitly auto-approve ordinary writer fallbacks (alias for --permission-mode auto)")
+	permissionMode := fs.String("permission-mode", "workspace-write", "permission mode: read-only | workspace-write | danger-full-access")
+	autoApprove := fs.BoolP("auto", "y", false, "deprecated compatibility flag; uses workspace-write")
+	_ = fs.MarkHidden("auto")
 	printOnly := fs.BoolP("print", "p", false, "print only the final response")
 	eventsJSONL := fs.Bool("events-jsonl", false, "emit a redacted structured event stream as JSONL")
 	outputFormat := fs.String("output-format", "text", "output format: text | json | stream-json")
@@ -585,35 +584,13 @@ func runAgent(args []string, version string) int {
 		}
 	}
 
-	// Resolve the resume target up front so --copy and the session lease can be
-	// handled before any heavy assembly. --resume takes precedence over
-	// --continue, matching the Resume call below. Accept file paths, branch
-	// IDs, preview text, and opaque machine session IDs (#7429).
-	resumePath := strings.TrimSpace(*resume)
-	if resumePath != "" {
-		resolved, err := resolveSessionQuery(resolveCLISessionDir(), resumePath)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
-			return 1
-		}
-		resumePath = resolved
+	resumeTarget, rc := headlessResumeTarget(*resume, *cont, *copySession)
+	if rc != 0 {
+		return rc
 	}
-	if resumePath == "" && *cont {
-		sessionDir := resolveCLISessionDir()
-		reclaimCLIRecoveryBranches(sessionDir)
-		session, ok := mostRecentSession(sessionDir)
-		if !ok {
-			fmt.Fprintln(os.Stderr, i18n.M.NoSessionToResume)
-			return 1
-		}
-		resumePath = session.Path
-	}
-	if *copySession && resumePath == "" {
-		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "--copy requires --resume or --continue")
-		return 2
-	}
+	resumePath := resumeTarget.path
 	if *copySession {
-		copied, err := copySessionForWriting(resumePath)
+		copied, err := copyResumableSession(*model, resumePath, cfg)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 			return 1
@@ -639,20 +616,36 @@ func runAgent(args []string, version string) int {
 	// silently double-writing. Released after the controller closes.
 	leases := control.NewSessionLeaseKeeper()
 	defer leases.Release()
+	takeoverManager := newCLITakeoverManager(nil, leases)
+	defer func() {
+		if err := takeoverManager.Close(); err != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		}
+	}()
 	var resumeSession *agent.Session
+	var takeoverBinding *cliTakeoverBinding
 	if resumePath != "" {
-		if err := leases.Rebind(resumePath); err != nil {
+		var err error
+		resumeSession, err = bindAndLoadCLIResume(leases, resumePath, loadResumableSession)
+		if errors.Is(err, agent.ErrSessionLeaseHeld) && *takeover {
+			takeoverBinding, err = cliTakeoverHeldSession(resumePath, err, leases, takeoverManager)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+				return 1
+			}
+			resumeSession, err = cliPrepareTakeoverCandidate(takeoverBinding, leases)
+			if err != nil {
+				_ = cliReturnFailedTakeover(takeoverBinding, leases, takeoverManager)
+				fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+				return 1
+			}
+		}
+		if err != nil {
 			if errors.Is(err, agent.ErrSessionLeaseHeld) {
 				fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, sessionLeaseResumeRefusal(err))
 			} else {
 				fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 			}
-			return 1
-		}
-		var err error
-		resumeSession, err = loadResumableSession(resumePath)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 			return 1
 		}
 	}
@@ -663,12 +656,15 @@ func runAgent(args []string, version string) int {
 
 	chain, err := buildRunSink(format, *printOnly, *showThinking, *metricsPath, *trajectoryPath, cfg, reporter)
 	if err != nil {
+		_ = cliReturnFailedTakeover(takeoverBinding, leases, takeoverManager)
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 1
 	}
+	takeoverManager.SetInner(chain.sink)
+	chain.sink = takeoverManager
 	sink, resultOutput, metrics := chain.sink, chain.resultOutput, chain.metrics
-	if resumePath != "" {
-		*model = modelForResumePath(*model, resumePath, cfg)
+	if err := applyResumeModel(model, resumePath, cfg); err != nil {
+		return cliTakeoverFailure(takeoverBinding, leases, takeoverManager, err)
 	}
 	var effortOverride *string
 	if strings.TrimSpace(*effort) != "" {
@@ -683,7 +679,7 @@ func runAgent(args []string, version string) int {
 	// skill sub-agents, the planner runner) gets the same contract as the parent
 	// executor, not just the top-level one. Default/ask fails closed because no
 	// UI can answer; unattended writes require explicit --auto/-y,
-	// --permission-mode auto, or yolo.
+	// legacy permission aliases.
 	overrides := cliBuildOverrides{
 		Preset:               deprecatedMode,
 		Effort:               effortOverride,
@@ -693,9 +689,11 @@ func runAgent(args []string, version string) int {
 		HeadlessApprovalMode: permissions.approval,
 		OnSessionRecovered:   cliSessionRecoveredHandler(leases),
 		Ablation:             ablated,
+		NativeLegacySession:  resumePath != "",
 	}
 	ctrl, err := setupProfileWithOverrides(ctx, *model, *maxSteps, true, sink, overrides)
 	if err != nil {
+		_ = cliReturnFailedTakeover(takeoverBinding, leases, takeoverManager)
 		if resultOutput != nil && format != runOutputText {
 			if encodeErr := resultOutput.Finalize("", started, err); encodeErr != nil {
 				fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, encodeErr)
@@ -706,6 +704,7 @@ func runAgent(args []string, version string) int {
 		return 1
 	}
 	defer ctrl.Close()
+	takeoverManager.AttachController(ctrl)
 	SetTaskJobKiller(ctrlKillerAdapter{ctrl})
 	ctrl.ApplyHeadlessApprovalMode(permissions.approval)
 
@@ -713,17 +712,20 @@ func runAgent(args []string, version string) int {
 	// MCP/API callers that manage their own per-project session). Takes
 	// precedence over --continue.
 	// --continue: resume the most recent saved session.
-	if resumePath != "" {
-		ctrl.Resume(resumeSession, resumePath)
+	if err := commitStartupResume(takeoverBinding, takeoverManager, ctrl, resumeSession, resumeTarget,
+		flagTakeoverApproval(*takeover)); err != nil {
+		return cliTakeoverFailure(takeoverBinding, leases, takeoverManager, err)
 	}
-	if ctrl.SessionPath() == "" && ctrl.SessionDir() != "" {
-		ctrl.SetFreshSessionPath(agent.NewSessionPath(ctrl.SessionDir(), ctrl.Label()))
-	}
+	ctrl.EnsureHeadlessRunSessionPath()
 	// Fresh sessions take the lease too (defensive: the path is brand new); a
 	// resumed path is already held, making this a no-op.
 	if err := rebindCLIControllerAuthority(leases, ctrl); err != nil {
+		_ = cliReturnFailedTakeover(takeoverBinding, leases, takeoverManager)
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, control.SessionInUseMessage(err)+"; "+control.SessionLeaseCloseHint)
 		return 1
+	}
+	if takeoverBinding != nil {
+		takeoverManager.Activate(takeoverBinding)
 	}
 	reclaimCLIRecoveryBranches(ctrl.SessionDir())
 
@@ -747,16 +749,7 @@ func runAgent(args []string, version string) int {
 		if exec := ctrl.Executor(); exec != nil {
 			if audit := exec.CapabilityAudit(); audit != nil {
 				snap := audit.Snapshot()
-				final.MergeCapabilityAuditCounters(
-					snap.Routes, snap.RoutedCandidates, snap.RoutedRequire, snap.RoutedPrefer, snap.RoutedSuggest, snap.Declines,
-					snap.SemanticRoutes, snap.SemanticFallbacks,
-					snap.RequireMissing, snap.RequireRecovered, snap.PreferMissing, snap.PreferRecovered,
-					snap.SkillInvocations, snap.SkillFailures, snap.SkillUnavailable,
-					snap.MCPInspect, snap.MCPCall, snap.MCPCallFailures,
-					snap.ReviewBlocks, snap.SecurityReviewBlocks,
-					snap.RouterPromptTokens, snap.RouterCompletionTokens,
-					snap.RouterCost, snap.RouterLatencyMs,
-				)
+				final.MergeCapabilityAudit(&snap)
 			}
 		}
 		if err := writeMetrics(*metricsPath, final); err != nil {
@@ -801,7 +794,7 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 	if opts.command == "web" {
 		sessionID = fs.String("session-id", "", "bind a fresh Web session identity (used by /web handoff)")
 	}
-	authHelp := "auth mode: none, token, or password (default: config/none)"
+	authHelp := "auth mode: none, token, or password (default: config/none; none still requires the launch token for changes)"
 	if opts.command == "web" {
 		authHelp = "auth mode: none, token, or password (default: generated token)"
 	}
@@ -813,6 +806,7 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 	portFile := fs.String("port-file", "", "write the actual bound listen address (host:port) to this file after binding")
 	tokenFile := fs.String("token-file", "", "read the auth=token pre-shared token from this file (overrides --token; keeps the secret out of argv)")
 	pidFile := fs.String("pid-file", "", "write the server process id to this file")
+	registerServeCapabilityFlags(fs)
 	openBrowser := fs.Bool("open", opts.openBrowser, "open the Web UI in the default browser")
 	noOpen := fs.Bool("no-open", false, "do not open the Web UI in the default browser")
 	if code, ok := parseCommandFlags(fs, args); !ok {
@@ -855,8 +849,7 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 	}
 
 	ctx := context.Background()
-	bc := serve.NewBroadcaster()
-	cfg, _ := config.Load()
+	bc, sessionTag, cfg := newServeBootstrap()
 
 	// Build serve config, merging CLI flags over config file.
 	serveCfg := serveConfigWithCommandDefaults(opts.command, authExplicit, cfg.Serve)
@@ -876,6 +869,7 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 			return 1
 		}
 		serveCfg.Token = tok
+		config.RegisterHostSecretPath(*tokenFile)
 	}
 	if *behindProxy {
 		serveCfg.BehindProxy = true
@@ -923,7 +917,9 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 			return 1
 		}
 	}
-	*model = modelForResumePath(*model, *resume, cfg)
+	if err := applyResumeModel(model, *resume, cfg); err != nil {
+		return cliFailure(err)
+	}
 	// Serve always resolves an implicit model from the user-global config,
 	// ignoring project-level default_model overrides. Explicit flags and
 	// resumable session models remain strict and are preserved verbatim.
@@ -931,10 +927,7 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 	// Keep the browser reachable when the selected provider has no saved key.
 	// The loopback-only provider setup surface stores the missing credential and
 	// rebuilds this controller in place before the normal web UI is exposed.
-	ctrl, err := setupProfileWithOverrides(ctx, *model, *maxSteps, false, bc, cliBuildOverrides{
-		Preset:             deprecatedMode,
-		OnSessionRecovered: cliSessionRecoveredHandler(leases),
-	})
+	ctrl, serveBuildOpts, err := setupCLIMultiSessionProfile(ctx, *model, *maxSteps, deprecatedMode, sessionTag, leases)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 1
@@ -943,15 +936,8 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 	SetTaskJobKiller(ctrlKillerAdapter{ctrl})
 
 	// Auto-save target: reuse the resumed file, else a fresh one — same as chat.
-	if *resume != "" {
-		ctrl.Resume(resumeSession, *resume)
-	} else if *sessionID != "" {
-		freshPath, err := freshWebSessionPath(ctrl.SessionDir(), *sessionID)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
-			return 1
-		}
-		ctrl.SetFreshSessionPath(freshPath)
+	if err := prepareServeSessionPath(ctrl, resumeSession, *resume, *sessionID); err != nil {
+		return cliFailure(err)
 	}
 	ctrl.EnsureSessionPath()
 	// Fresh sessions take the lease too (defensive: the path is brand new); a
@@ -961,8 +947,8 @@ func runServeWithOptions(args []string, opts serveRunOptions) int {
 		return 1
 	}
 
-	srv := serve.New(ctrl, bc, serveCfg)
-	_ = srv.SetSessionLeases(leases) // same live keeper was bound above
+	srv := newCLIMultiSessionServer(ctrl, bc, sessionTag, serveCfg, leases, serveBuildOpts)
+	defer srv.Close()
 	return runServeFrontend(ctrl, srv, serveCfg, serveFrontendOptions{
 		command: opts.command, address: *addr,
 		portFile: *portFile, tokenFile: *tokenFile, pidFile: *pidFile,
@@ -988,11 +974,13 @@ func chatREPL(args []string, version string) int {
 	resume := fs.StringP("resume", "r", "", "resume by session ID/query, or open the picker when no value is given")
 	fs.Lookup("resume").NoOptDefVal = resumePickerSentinel
 	copySession := fs.Bool("copy", false, "with --resume/--continue: duplicate the selected session and continue in the copy (escape hatch when the original is held by another Reasonix process)")
-	yolo := fs.Bool("dangerously-skip-permissions", false, "YOLO: auto-approve approval-gated tool calls this session; same runtime mode as Ctrl+Y")
-	fs.BoolVar(yolo, "yolo", false, "alias for --dangerously-skip-permissions")
+	legacyYolo := fs.Bool("dangerously-skip-permissions", false, "deprecated: use --permission-mode danger-full-access")
+	fs.BoolVar(legacyYolo, "yolo", false, "deprecated alias; migrates to workspace-write")
+	_ = fs.MarkHidden("dangerously-skip-permissions")
+	_ = fs.MarkHidden("yolo")
 	dir := fs.String("dir", "", "change to this directory first (project root); config, sandbox and file tools resolve from here")
 	effort := fs.String("effort", "", "session reasoning effort override")
-	permissionMode := fs.String("permission-mode", "ask", "permission mode: manual | ask | auto | acceptEdits | dontAsk | plan | bypassPermissions")
+	permissionMode := fs.String("permission-mode", "workspace-write", "permission mode: read-only | workspace-write | danger-full-access | plan")
 	var additionalDirs []string
 	fs.StringArrayVar(&additionalDirs, "add-dir", nil, "allow tool access to an additional directory (repeatable)")
 	var allowedToolValues []string
@@ -1039,44 +1027,14 @@ func chatREPL(args []string, version string) int {
 
 	// Decide whether we're starting fresh or resuming. --resume opens an
 	// interactive picker; --continue / -c jumps straight into the newest.
-	var resumePath string
-	resumeValue := strings.TrimSpace(*resume)
-	switch strings.ToLower(resumeValue) {
-	case "true":
-		resumeValue = resumePickerSentinel
-	case "false":
-		resumeValue = ""
+	resumeValue := normalizedResumeFlag(*resume)
+	resumeTarget, rc := interactiveResumeTarget(resumeValue, *cont, *copySession)
+	if rc != 0 {
+		return rc
 	}
-	switch {
-	case resumeValue == resumePickerSentinel:
-		path, rc := pickSessionToResume()
-		if rc != 0 {
-			return rc
-		}
-		resumePath = path
-	case resumeValue != "":
-		path, err := resolveSessionQuery(resolveCLISessionDir(), resumeValue)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
-			return 1
-		}
-		resumePath = path
-	case *cont:
-		sessionDir := resolveCLISessionDir()
-		reclaimCLIRecoveryBranches(sessionDir)
-		session, ok := mostRecentSession(sessionDir)
-		if !ok {
-			fmt.Fprintln(os.Stderr, i18n.M.NoSessionToResume)
-			return 1
-		}
-		resumePath = session.Path
-	}
-	if *copySession && resumePath == "" {
-		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "--copy requires --resume or --continue")
-		return 2
-	}
+	resumePath := resumeTarget.path
 	if *copySession {
-		copied, err := copySessionForWriting(resumePath)
+		copied, err := copyResumableSession(*model, resumePath, cfg)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 			return 1
@@ -1096,8 +1054,30 @@ func chatREPL(args []string, version string) int {
 	// and this chat from silently double-writing one transcript.
 	leases := control.NewSessionLeaseKeeper()
 	defer leases.Release()
+	takeoverManager := newCLITakeoverManager(nil, leases)
+	defer func() {
+		if err := takeoverManager.Close(); err != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		}
+	}()
+	var takeoverBinding *cliTakeoverBinding
+	var startupResumeSession *agent.Session
 	if resumePath != "" {
-		if err := leases.Rebind(resumePath); err != nil {
+		startupResumeSession, err = bindAndLoadCLIResume(leases, resumePath, loadResumableSession)
+		if errors.Is(err, agent.ErrSessionLeaseHeld) && cliSessionTakeoverCandidate(err) && promptSessionTakeover(err) {
+			takeoverBinding, err = cliTakeoverHeldSession(resumePath, err, leases, takeoverManager)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+				return 1
+			}
+			startupResumeSession, err = cliPrepareTakeoverCandidate(takeoverBinding, leases)
+			if err != nil {
+				_ = cliReturnFailedTakeover(takeoverBinding, leases, takeoverManager)
+				fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+				return 1
+			}
+		}
+		if err != nil {
 			if errors.Is(err, agent.ErrSessionLeaseHeld) {
 				fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, sessionLeaseResumeRefusal(err))
 			} else {
@@ -1108,7 +1088,9 @@ func chatREPL(args []string, version string) int {
 	}
 
 	ctx := context.Background()
-	*model = modelForResumePath(*model, resumePath, cfg)
+	if err := applyResumeModel(model, resumePath, cfg); err != nil {
+		return cliTakeoverFailure(takeoverBinding, leases, takeoverManager, err)
+	}
 
 	// Plumb the controller's typed event stream through a channel so each event
 	// can become a tea.Msg inside the TUI's update loop. Buffered generously:
@@ -1119,18 +1101,22 @@ func chatREPL(args []string, version string) int {
 	var sink event.Sink = &eventSink{ch: eventCh}
 	sink = withNotifications(sink, cfg)
 	sink = reporter.Wrap(sink)
+	takeoverManager.SetInner(sink)
+	sink = takeoverManager
 	var effortOverride *string
 	if strings.TrimSpace(*effort) != "" {
 		effortOverride = effort
 	}
 	overrides := cliBuildOverrides{
-		Preset:             deprecatedMode,
-		Effort:             effortOverride,
-		PermissionAllow:    allowedTools,
-		AdditionalDirs:     additionalDirs,
-		WorkspaceRoot:      workspaceRoot,
-		Stderr:             diagnostics.Writer(),
-		OnSessionRecovered: cliSessionRecoveredHandler(leases),
+		Preset:              deprecatedMode,
+		Effort:              effortOverride,
+		PermissionAllow:     allowedTools,
+		AdditionalDirs:      additionalDirs,
+		WorkspaceRoot:       workspaceRoot,
+		InteractiveHost:     true,
+		Stderr:              diagnostics.Writer(),
+		OnSessionRecovered:  cliSessionRecoveredHandler(leases),
+		NativeLegacySession: resumePath != "",
 	}
 	diagnostics.Milestone("controller_build_begin")
 	ctrl, err := setupProfileWithOverrides(ctx, *model, *maxSteps, false, sink, overrides)
@@ -1140,11 +1126,13 @@ func chatREPL(args []string, version string) int {
 		// the wizard would overwrite the user's config (#2856).
 		fmt.Fprintln(os.Stderr, i18n.M.ReconfigureOnUnknownModel)
 		if rc := interactiveSetup(defaultConfigTarget(), defaultEnvTarget()); rc != 0 {
+			_ = cliReturnFailedTakeover(takeoverBinding, leases, takeoverManager)
 			return rc
 		}
 		ctrl, err = setupProfileWithOverrides(ctx, *model, *maxSteps, false, sink, overrides)
 	}
 	if err != nil {
+		_ = cliReturnFailedTakeover(takeoverBinding, leases, takeoverManager)
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
 		return 1
 	}
@@ -1153,25 +1141,22 @@ func chatREPL(args []string, version string) int {
 	// Decide where this conversation's auto-save lands. A resume reuses the
 	// file so closing/reopening keeps appending to the same history; a fresh
 	// session lands in a new file stamped with the model name.
-	if resumePath != "" {
-		loaded, err := agent.LoadSession(resumePath)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
-			return 1
-		}
-		ctrl.Resume(loaded, resumePath)
+	if err := commitStartupResume(takeoverBinding, takeoverManager, ctrl, startupResumeSession, resumeTarget,
+		promptTakeoverApproval); err != nil {
+		return cliTakeoverFailure(takeoverBinding, leases, takeoverManager, err)
 	}
 	ctrl.EnsureSessionPath()
 	// Fresh sessions take the lease too (defensive: the path is brand new); a
 	// resumed path is already held, making this a no-op.
 	if err := rebindCLIControllerAuthority(leases, ctrl); err != nil {
+		_ = cliReturnFailedTakeover(takeoverBinding, leases, takeoverManager)
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, control.SessionInUseMessage(err)+"; "+control.SessionLeaseCloseHint)
 		return 1
 	}
 	reclaimCLIRecoveryBranches(ctrl.SessionDir())
 
-	// Surface a missing-key warning inside the TUI banner so the first message
-	// failing is at least pre-announced; the user can still enter chat.
+	// Keep local recovery available when authentication is incomplete. The
+	// controller gate ensures input cannot become a model turn until configured.
 	// resolveModelForCLI transparently falls through a keyless default to the
 	// next configured provider (issue #6996). Validating the final ref is a
 	// no-op for that configured fallback and preserves the warning when every
@@ -1204,10 +1189,10 @@ func chatREPL(args []string, version string) int {
 	// task tool) keep their headless gate from setup — no UI to prompt through.
 	ctrl.EnableInteractiveApproval()
 	applyPermissionMode(ctrl, permissions)
-	// YOLO: skip ordinary tool approval requests for the session (deny rules and
-	// fresh reviews still apply; ask questions and plan approvals still wait).
-	if *yolo {
-		ctrl.SetAutoApproveTools(true)
+	// Legacy bypass flags migrate conservatively to the workspace preset. Full
+	// access is only reachable through an explicit canonical preset selection.
+	if *legacyYolo {
+		ctrl.SetToolApprovalMode(control.ToolApprovalWorkspaceWrite)
 	}
 
 	m := newChatTUI(ctrl, missing, eventCh, termW)
@@ -1215,6 +1200,11 @@ func chatREPL(args []string, version string) int {
 	m.updateWatchdogStatusProvider()
 	m.planMode = permissions.plan
 	m.leases = leases
+	m.takeover = takeoverManager
+	takeoverManager.AttachController(ctrl)
+	if takeoverBinding != nil {
+		takeoverManager.Activate(takeoverBinding)
+	}
 	if cfg != nil {
 		m.outputStyle = cfg.Agent.OutputStyle    // shown as the active entry in /output-style
 		m.statuslineCmd = cfg.Statusline.Command // custom status-line command, "" = built-in row
@@ -1228,9 +1218,15 @@ func chatREPL(args []string, version string) int {
 	// runModelSubcommand performs the swap on the live copy. The same stable sink
 	// feeds the new controller, so events keep flowing to this TUI.
 	m.buildController = func(spec controllerBuildSpec, carry []provider.Message, resumePath string, oldCtrl control.SessionAPI) (*control.Controller, error) {
-		effectiveOverrides := overrides
-		if spec.EffortOverride != nil {
-			effectiveOverrides.Effort = spec.EffortOverride
+		effectiveOverrides := overrides.forSelection(m.cfg, spec)
+		scope, finish, abort, err := control.ReserveBackgroundReplacement(oldCtrl)
+		if err != nil {
+			return nil, err
+		}
+		defer abort()
+		effectiveOverrides.BackgroundScope = scope
+		if old, ok := oldCtrl.(*control.Controller); ok {
+			effectiveOverrides.PersistentShell = old.PersistentShell()
 		}
 		// Keep the logical-session private temporary directory across model /
 		// profile switches (Issue #7575).
@@ -1239,9 +1235,6 @@ func chatREPL(args []string, version string) int {
 		if err != nil {
 			return nil, err
 		}
-		if spec.EffortOverride != nil {
-			overrides.Effort = spec.EffortOverride
-		}
 		// Keep the carried conversation in its existing file so the switch doesn't
 		// orphan a duplicate (#2807).
 		path := agent.ContinueSessionPath(resumePath, c.SessionDir(), c.Label())
@@ -1249,10 +1242,16 @@ func chatREPL(args []string, version string) int {
 			c.Close()
 			return nil, err
 		}
+		overrides.Effort = effectiveOverrides.Effort
+		overrides.EffortModel = spec.ModelRef
 		c.EnableInteractiveApproval()
 		c.SetPlanMode(spec.PlanMode)
 		if spec.ToolApprovalMode != "" {
 			c.SetToolApprovalMode(spec.ToolApprovalMode)
+		}
+		if err := finish(c); err != nil {
+			c.ReleaseResources()
+			return nil, err
 		}
 		return c, nil
 	}
@@ -1262,12 +1261,18 @@ func chatREPL(args []string, version string) int {
 	// goal/recovery state, lifecycle). Same construction inputs as
 	// buildController so the replacement matches this session's launch wiring;
 	// the CLI holds no SharedHost, so each rebuild owns its plugin host.
-	m.bindRuntimeRebuilder(*maxSteps, sink, *yolo, overrides, cliProfileBuildOptions)
+	overrides.EffortModel = ctrl.ModelRef()
+	m.bindRuntimeRebuilder(*maxSteps, sink, false, &overrides, cliProfileBuildOptions)
 	if effortOverride != nil {
 		m.effortLevel = *effortOverride
 	}
 	if effortOverride == nil {
 		m.refreshEffortStatus()
+	}
+	if authentication, ok := m.ctrl.(interface {
+		AuthenticationState() control.AuthenticationState
+	}); ok && !authentication.AuthenticationState().Ready() {
+		m.openConnectionSetup()
 	}
 
 	if m.nativeScrollback {
@@ -1279,6 +1284,7 @@ func chatREPL(args []string, version string) int {
 	// keep working; finalized transcript lines are emitted via tea.Println.
 	diagnostics.Milestone("terminal_takeover_begin")
 	p := tea.NewProgram(m)
+	takeoverManager.SetYieldCallback(func() { p.Send(tuiSessionReclaimedMsg{}) })
 	diagnostics.StartWatchdog(p)
 	// SSH drop (SIGHUP) or service stop (SIGTERM): persist the conversation
 	// before the terminal goes away, then unwind through the normal close path
@@ -1293,16 +1299,21 @@ func chatREPL(args []string, version string) int {
 	final, runErr := p.Run()
 	signal.Stop(hangup)
 	diagnostics.Milestone("terminal_released")
+	if err := takeoverManager.Close(); err != nil {
+		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+		if runErr == nil {
+			runErr = err
+		}
+	}
 	// Close the active controller plus any retired ones from /model switches.
 	// Retired controllers were stashed rather than closed at switch time
 	// because Controller.Close() runs SessionEnd hooks and kills plugin
 	// subprocesses — operations that corrupt bubbletea's terminal raw mode
 	// when executed while the TUI is alive.
-	launchWeb := false
-	launchWebPath := ""
-	launchWebSessionID := ""
-	launchWebModelRef := ""
+	var launchWeb bool
+	var launchWebPath, launchWebSessionID, launchWebModelRef string
 	if fm, ok := final.(chatTUI); ok {
+		reportShutdownFailure(fm.shutdownErr)
 		launchWeb = fm.launchWebOnExit
 		for _, oc := range fm.oldControllers {
 			if c, ok := oc.(*control.Controller); ok {
@@ -1413,6 +1424,14 @@ func defaultEnvTarget() string {
 	return config.CredentialsTargetDescription()
 }
 
+func setupUsage(w io.Writer) {
+	fmt.Fprintln(w, "usage: reasonix setup [--local|-l] [path]")
+	fmt.Fprintln(w, "Interactive configuration wizard. Writes a reasonix config and stores the")
+	fmt.Fprintln(w, "provider API key in Reasonix's credential file, never in the config itself.")
+	fmt.Fprintln(w, "  --local, -l   write ./reasonix.toml instead of the user-global config")
+	fmt.Fprintln(w, "  path          write the config to this path instead of the default")
+}
+
 // resolveSetupTargets picks where `reasonix setup` writes. Keys always go to the
 // global env. The config goes to the user-global dir by default, to ./reasonix.toml
 // under --local, or to an explicit path argument when given.
@@ -1443,6 +1462,23 @@ func displayPath(p string) string {
 // Project memory is a separate concern — the in-session `/init` skill generates
 // AGENTS.md (see initHint).
 func setupConfig(args []string) int {
+	if commandHelpRequested(args, len(args)) {
+		setupUsage(os.Stdout)
+		return 0
+	}
+	// resolveSetupTargets treats every unrecognized argument as the config path,
+	// so a mistyped flag — or --help — silently becomes the file it writes.
+	// Reject dashed arguments here instead.
+	for _, a := range args {
+		if a == "--local" || a == "-l" {
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			fmt.Fprintf(os.Stderr, "unknown setup flag %q\n\n", a)
+			setupUsage(os.Stderr)
+			return 2
+		}
+	}
 	t := resolveSetupTargets(args)
 	path := t.config
 	if _, err := os.Stat(path); err == nil {
@@ -1540,35 +1576,24 @@ func interactiveSetup(configPath, envPath string) int {
 	return runProviderSetupManager(session, configPath, envPath)
 }
 
-// pickSessionToResume scans the session dir, takes the 10 most recent, and
-// shows a single-choice menu with timestamp + turn count + first user
-// message so the user can pick one. Returns the chosen path and a process
-// exit code (non-zero when there's nothing to pick or the user cancelled).
-func pickSessionToResume() (string, int) {
+// pickSessionToResume scans the workspace's conversations — legacy transcripts
+// and final-format catalog rows alike — takes the 10 most recent, and shows a
+// single-choice menu with timestamp + turn count + first user message so the
+// user can pick one. Returns the chosen target and a process exit code
+// (non-zero when there's nothing to pick or the user cancelled).
+func pickSessionToResume() (cliResumeTarget, int) {
 	sessionDir := resolveCLISessionDir()
 	reclaimCLIRecoveryBranches(sessionDir)
-	sessions := recentSessions(sessionDir)
-	if len(sessions) == 0 {
+	entries := mergedResumeEntries(sessionDir, resumeListCap)
+	if len(entries) == 0 {
 		fmt.Fprintln(os.Stderr, i18n.M.NoSessionToResume)
-		return "", 1
+		return cliResumeTarget{}, 1
 	}
 	if !isInteractive() {
 		fmt.Fprintln(os.Stderr, i18n.M.ResumeRequiresTTY)
-		return "", 1
+		return cliResumeTarget{}, 1
 	}
-	items := make([]menuItem, len(sessions))
-	for i, s := range sessions {
-		when := s.ModTime.Local().Format("01-02 15:04")
-		items[i] = menuItem{
-			name: when,
-			desc: sessionSummary(s),
-		}
-	}
-	idx, err := selectOne(i18n.M.PickSessionLabel, items)
-	if err != nil {
-		return "", 1
-	}
-	return sessions[idx].Path, 0
+	return chooseResumeEntry(entries)
 }
 
 // selectLanguage is the wizard's first prompt: it shows the two UI languages
@@ -1614,14 +1639,14 @@ func familyStaticModels(providers []config.ProviderEntry, idxs []int) []string {
 // later wizard step), network/auth error, or a vendor without /models — it
 // silently returns the preset's static model list so the wizard can always
 // present something. The fetch has a 10s timeout and is best-effort.
-func fetchOrFallback(probe *config.ProviderEntry, famName string) []string {
+func fetchOrFallback(probe *config.ProviderEntry, famName string, proxy netclient.ProxySpec) []string {
 	static := probe.ModelList()
 	if probe.BaseURL == "" {
 		return static
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	models, err := probe.FetchModels(ctx)
+	models, err := probe.FetchModelsWithProxy(ctx, proxy)
 	if err != nil || len(models) == 0 {
 		if len(static) > 0 {
 			fmt.Fprintf(os.Stderr, "  %s\n", dim(fmt.Sprintf(i18n.M.FetchModelsUsingPresetsFmt, famName)))
@@ -1643,7 +1668,7 @@ func fetchOrFallback(probe *config.ProviderEntry, famName string) []string {
 // wizard's idea of "what models exist" diverged from the chat client's actual
 // endpoint. Returning the empty slice (not an error) on full miss lets the
 // wizard fall through to a manual text input without an error message.
-func fetchModelListCompat(ctx context.Context, baseURL, apiKey string) ([]string, error) {
+func fetchModelListCompat(ctx context.Context, baseURL, apiKey string, proxy netclient.ProxySpec) ([]string, error) {
 	candidates, err := config.BuildModelFetchURLs(baseURL, "")
 	if err != nil {
 		return nil, err
@@ -1651,7 +1676,7 @@ func fetchModelListCompat(ctx context.Context, baseURL, apiKey string) ([]string
 	var lastErr error
 	var firstHardErr error
 	for _, u := range candidates {
-		models, err := openai.FetchModels(ctx, u, apiKey, nil)
+		models, err := openai.FetchModelsWithOptions(ctx, u, apiKey, openai.FetchModelsOptions{Proxy: proxy})
 		if err == nil {
 			return models, nil
 		}
@@ -1829,11 +1854,16 @@ func repairInvalidProviderKeyEnvs(providers []config.ProviderEntry) ([]config.Pr
 	return providers, repairs
 }
 
-func promptAPIKeyEnvName(in *bufio.Scanner, w io.Writer, label, def string) string {
+// promptAPIKeyEnvName reports explicit=false when the user pressed Enter: def
+// is then only a draft name, and a saved key goes to a private slot instead.
+func promptAPIKeyEnvName(in *bufio.Scanner, w io.Writer, label, def string) (keyEnv string, explicit bool) {
 	for {
-		keyEnv := ask(in, w, label, def)
+		keyEnv = ask(in, w, label, "")
+		if keyEnv == "" {
+			return def, false
+		}
 		if config.IsValidCredentialKey(keyEnv) {
-			return keyEnv
+			return keyEnv, true
 		}
 		fmt.Fprintf(w, i18n.M.InvalidAPIKeyEnvFmt+"\n", keyEnv)
 	}
@@ -1869,10 +1899,13 @@ func familyOf(name string) providerFamily {
 type providerPromptResult struct {
 	entries     []config.ProviderEntry
 	credentials map[string]string
+	// keyEnvTyped: the user typed the entries' api_key_env rather than accepting keyEnvDraft.
+	keyEnvTyped bool
+	keyEnvDraft string
 }
 
-func newProviderPromptResult(entries []config.ProviderEntry, key, value string) providerPromptResult {
-	result := providerPromptResult{entries: entries}
+func newProviderPromptResult(entries []config.ProviderEntry, key, value string, typed bool, draft string) providerPromptResult {
+	result := providerPromptResult{entries: entries, keyEnvTyped: typed, keyEnvDraft: draft}
 	if key != "" && value != "" {
 		result.credentials = map[string]string{key: value}
 	}
@@ -1880,7 +1913,7 @@ func newProviderPromptResult(entries []config.ProviderEntry, key, value string) 
 }
 
 // promptCustomProvider handles the custom provider entry flow.
-func promptCustomProvider() (providerPromptResult, error) {
+func promptCustomProvider(proxy netclient.ProxySpec) (providerPromptResult, error) {
 	methodIdx, err := selectOne(i18n.M.CustomAddMethodLabel, []menuItem{
 		{name: i18n.M.CustomMethodManual},
 		{name: i18n.M.CustomMethodURL},
@@ -1891,12 +1924,12 @@ func promptCustomProvider() (providerPromptResult, error) {
 	if methodIdx == 0 {
 		return promptCustomProviderManual()
 	}
-	return promptCustomProviderFromURL()
+	return promptCustomProviderFromURL(proxy)
 }
 
 // promptCustomProviderManual handles manual model entry.
 func promptCustomProviderManual() (providerPromptResult, error) {
-	return promptCustomProviderManualWith(bufio.NewScanner(os.Stdin), "", "", "")
+	return promptCustomProviderManualWith(bufio.NewScanner(os.Stdin), "", "", false, "")
 }
 
 // promptCustomProviderManualWith is the shared backend for manual entry.
@@ -1904,7 +1937,7 @@ func promptCustomProviderManual() (providerPromptResult, error) {
 // so the URL-fetch flow can fall through to manual entry without re-asking
 // the user for information they've already typed. An empty apiKey is allowed
 // — the key step happens later in the wizard and Reasonix's global .env is updated then.
-func promptCustomProviderManualWith(in *bufio.Scanner, baseURL, keyEnv, apiKey string) (providerPromptResult, error) {
+func promptCustomProviderManualWith(in *bufio.Scanner, baseURL, keyEnv string, keyEnvTyped bool, apiKey string) (providerPromptResult, error) {
 	fmt.Println()
 	if baseURL == "" {
 		baseURL = ask(in, os.Stdout, i18n.M.CustomPromptBaseURL, "")
@@ -1917,27 +1950,28 @@ func promptCustomProviderManualWith(in *bufio.Scanner, baseURL, keyEnv, apiKey s
 	if modelName == "" {
 		return providerPromptResult{}, fmt.Errorf("model name is required")
 	}
+	draft := apiKeyEnvFromProviderName(providerName)
 	if keyEnv == "" {
-		keyEnv = promptAPIKeyEnvName(in, os.Stdout, i18n.M.CustomPromptKeyEnv, apiKeyEnvFromProviderName(providerName))
+		keyEnv, keyEnvTyped = promptAPIKeyEnvName(in, os.Stdout, i18n.M.CustomPromptKeyEnv, draft)
 	} else if !config.IsValidCredentialKey(keyEnv) {
 		return providerPromptResult{}, fmt.Errorf("invalid API key variable name %q", keyEnv)
 	}
 	if apiKey == "" {
-		apiKey = ask(in, os.Stdout, i18n.M.CustomPromptAPIKey, "")
+		apiKey = askSecret(in, os.Stdout, i18n.M.CustomPromptAPIKey)
 	}
 	entry := config.ProviderEntry{
 		Name: providerName, Kind: "openai", BaseURL: baseURL,
 		Model: modelName, APIKeyEnv: keyEnv, ContextWindow: askContextWindow(in, os.Stdout),
 	}
 	fmt.Printf("  %s\n", green(fmt.Sprintf(i18n.M.CustomAddedFmt, entry.Name+"/"+modelName)))
-	return newProviderPromptResult([]config.ProviderEntry{entry}, keyEnv, apiKey), nil
+	return newProviderPromptResult([]config.ProviderEntry{entry}, keyEnv, apiKey, keyEnvTyped, draft), nil
 }
 
 // promptCustomProviderFromURL tries the OpenAI-compatible GET /models
 // endpoint and shows a checkbox of the returned models. If the call fails
 // (network error, auth failure, or a vendor without /models) it falls
 // through to manual entry, reusing the URL and key the user already typed.
-func promptCustomProviderFromURL() (providerPromptResult, error) {
+func promptCustomProviderFromURL(proxy netclient.ProxySpec) (providerPromptResult, error) {
 	in := bufio.NewScanner(os.Stdin)
 	fmt.Println()
 
@@ -1946,20 +1980,21 @@ func promptCustomProviderFromURL() (providerPromptResult, error) {
 		return providerPromptResult{}, fmt.Errorf("base URL is required")
 	}
 	providerName := providerSlug("custom", baseURL)
-	keyEnv := promptAPIKeyEnvName(in, os.Stdout, i18n.M.CustomPromptKeyEnv, apiKeyEnvFromProviderName(providerName))
-	apiKey := ask(in, os.Stdout, i18n.M.CustomPromptAPIKey, "")
+	draft := apiKeyEnvFromProviderName(providerName)
+	keyEnv, keyEnvTyped := promptAPIKeyEnvName(in, os.Stdout, i18n.M.CustomPromptKeyEnv, draft)
+	apiKey := askSecret(in, os.Stdout, i18n.M.CustomPromptAPIKey)
 
 	fmt.Printf("  %s\n", dim(fmt.Sprintf(i18n.M.FetchingModelsFmt, "custom")))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	models, err := fetchModelListCompat(ctx, baseURL, apiKey)
+	models, err := fetchModelListCompat(ctx, baseURL, apiKey, proxy)
 	if err != nil || len(models) == 0 {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  %s\n", dim(fmt.Sprintf(i18n.M.FetchModelsFailedFmt, "custom", err)))
 		} else {
 			fmt.Fprintf(os.Stderr, "  %s\n", dim(i18n.M.CustomFetchEmpty))
 		}
-		return promptCustomProviderManualWith(in, baseURL, keyEnv, apiKey)
+		return promptCustomProviderManualWith(in, baseURL, keyEnv, keyEnvTyped, apiKey)
 	}
 	fmt.Printf("  %s\n", green(fmt.Sprintf(i18n.M.FetchModelsSuccessFmt, len(models), "custom")))
 
@@ -1980,11 +2015,11 @@ func promptCustomProviderFromURL() (providerPromptResult, error) {
 		Models: selected, Model: selected[0], APIKeyEnv: keyEnv, ContextWindow: askContextWindow(in, os.Stdout),
 	}
 	fmt.Printf("  %s\n", green(fmt.Sprintf(i18n.M.CustomAddedFmt, entry.Name+"/"+selected[0])))
-	return newProviderPromptResult([]config.ProviderEntry{entry}, keyEnv, apiKey), nil
+	return newProviderPromptResult([]config.ProviderEntry{entry}, keyEnv, apiKey, keyEnvTyped, draft), nil
 }
 
 // promptAnthropicProvider handles the Anthropic compatible provider entry flow.
-func promptAnthropicProvider() (providerPromptResult, error) {
+func promptAnthropicProvider(proxy netclient.ProxySpec) (providerPromptResult, error) {
 	methodIdx, err := selectOne(i18n.M.AnthropicAddMethodLabel, []menuItem{
 		{name: i18n.M.AnthropicMethodManual},
 		{name: i18n.M.AnthropicMethodURL},
@@ -1995,19 +2030,19 @@ func promptAnthropicProvider() (providerPromptResult, error) {
 	if methodIdx == 0 {
 		return promptAnthropicProviderManual()
 	}
-	return promptAnthropicProviderFromURL()
+	return promptAnthropicProviderFromURL(proxy)
 }
 
 // promptAnthropicProviderManual handles manual model entry.
 func promptAnthropicProviderManual() (providerPromptResult, error) {
-	return promptAnthropicProviderManualWith(bufio.NewScanner(os.Stdin), "", "", "")
+	return promptAnthropicProviderManualWith(bufio.NewScanner(os.Stdin), "", "", false, "")
 }
 
 // promptAnthropicProviderManualWith is the shared backend for manual entry
 // of an Anthropic-compatible custom provider. Pre-filled values (baseURL,
 // keyEnv, apiKey) are reused as-is when non-empty so the URL-fetch flow
 // can fall through to manual entry without re-asking the user.
-func promptAnthropicProviderManualWith(in *bufio.Scanner, baseURL, keyEnv, apiKey string) (providerPromptResult, error) {
+func promptAnthropicProviderManualWith(in *bufio.Scanner, baseURL, keyEnv string, keyEnvTyped bool, apiKey string) (providerPromptResult, error) {
 	fmt.Println()
 	if baseURL == "" {
 		baseURL = ask(in, os.Stdout, i18n.M.AnthropicPromptBaseURL, "")
@@ -2020,19 +2055,19 @@ func promptAnthropicProviderManualWith(in *bufio.Scanner, baseURL, keyEnv, apiKe
 		return providerPromptResult{}, fmt.Errorf("model name is required")
 	}
 	if keyEnv == "" {
-		keyEnv = promptAPIKeyEnvName(in, os.Stdout, i18n.M.AnthropicPromptKeyEnv, "ANTHROPIC_API_KEY")
+		keyEnv, keyEnvTyped = promptAPIKeyEnvName(in, os.Stdout, i18n.M.AnthropicPromptKeyEnv, "ANTHROPIC_API_KEY")
 	} else if !config.IsValidCredentialKey(keyEnv) {
 		return providerPromptResult{}, fmt.Errorf("invalid API key variable name %q", keyEnv)
 	}
 	if apiKey == "" {
-		apiKey = ask(in, os.Stdout, i18n.M.AnthropicPromptAPIKey, "")
+		apiKey = askSecret(in, os.Stdout, i18n.M.AnthropicPromptAPIKey)
 	}
 	entry := config.ProviderEntry{
 		Name: providerSlug("anthropic", baseURL), Kind: "anthropic", BaseURL: baseURL,
 		Model: modelName, APIKeyEnv: keyEnv, ContextWindow: askContextWindow(in, os.Stdout),
 	}
 	fmt.Printf("  %s\n", green(fmt.Sprintf(i18n.M.AnthropicAddedFmt, entry.Name+"/"+modelName)))
-	return newProviderPromptResult([]config.ProviderEntry{entry}, keyEnv, apiKey), nil
+	return newProviderPromptResult([]config.ProviderEntry{entry}, keyEnv, apiKey, keyEnvTyped, "ANTHROPIC_API_KEY"), nil
 }
 
 // promptAnthropicProviderFromURL tries the OpenAI-compatible GET /models
@@ -2040,7 +2075,7 @@ func promptAnthropicProviderManualWith(in *bufio.Scanner, baseURL, keyEnv, apiKe
 // — Anthropic's own API has no public model list — so on any failure the
 // flow falls through to manual entry with the URL/key already filled in,
 // rather than aborting the wizard.
-func promptAnthropicProviderFromURL() (providerPromptResult, error) {
+func promptAnthropicProviderFromURL(proxy netclient.ProxySpec) (providerPromptResult, error) {
 	in := bufio.NewScanner(os.Stdin)
 	fmt.Println()
 
@@ -2048,20 +2083,20 @@ func promptAnthropicProviderFromURL() (providerPromptResult, error) {
 	if baseURL == "" {
 		return providerPromptResult{}, fmt.Errorf("base URL is required")
 	}
-	keyEnv := promptAPIKeyEnvName(in, os.Stdout, i18n.M.AnthropicPromptKeyEnv, "ANTHROPIC_API_KEY")
-	apiKey := ask(in, os.Stdout, i18n.M.AnthropicPromptAPIKey, "")
+	keyEnv, keyEnvTyped := promptAPIKeyEnvName(in, os.Stdout, i18n.M.AnthropicPromptKeyEnv, "ANTHROPIC_API_KEY")
+	apiKey := askSecret(in, os.Stdout, i18n.M.AnthropicPromptAPIKey)
 
 	fmt.Printf("  %s\n", dim(fmt.Sprintf(i18n.M.AnthropicFetchingModelsFmt, "anthropic")))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	models, err := fetchModelListCompat(ctx, baseURL, apiKey)
+	models, err := fetchModelListCompat(ctx, baseURL, apiKey, proxy)
 	if err != nil || len(models) == 0 {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  %s\n", dim(fmt.Sprintf(i18n.M.AnthropicFetchModelsFailedFmt, "anthropic", err)))
 		} else {
 			fmt.Fprintf(os.Stderr, "  %s\n", dim(i18n.M.AnthropicFetchEmpty))
 		}
-		return promptAnthropicProviderManualWith(in, baseURL, keyEnv, apiKey)
+		return promptAnthropicProviderManualWith(in, baseURL, keyEnv, keyEnvTyped, apiKey)
 	}
 	fmt.Printf("  %s\n", green(fmt.Sprintf(i18n.M.AnthropicFetchModelsSuccessFmt, len(models), "anthropic")))
 
@@ -2082,7 +2117,7 @@ func promptAnthropicProviderFromURL() (providerPromptResult, error) {
 		Models: selected, Model: selected[0], APIKeyEnv: keyEnv, ContextWindow: askContextWindow(in, os.Stdout),
 	}
 	fmt.Printf("  %s\n", green(fmt.Sprintf(i18n.M.AnthropicAddedFmt, entry.Name+"/"+selected[0])))
-	return newProviderPromptResult([]config.ProviderEntry{entry}, keyEnv, apiKey), nil
+	return newProviderPromptResult([]config.ProviderEntry{entry}, keyEnv, apiKey, keyEnvTyped, "ANTHROPIC_API_KEY"), nil
 }
 
 func groupByFamily(providers []config.ProviderEntry) ([]string, map[string][]int, map[string]providerFamily) {
@@ -2190,7 +2225,7 @@ func configureKeys(selected []config.ProviderEntry, r io.Reader, w io.Writer) []
 		if cur := os.Getenv(p.APIKeyEnv); cur != "" {
 			reset := ask(in, w, "  "+fmt.Sprintf(i18n.M.APIKeyResetPromptFmt, p.APIKeyEnv), "y/N")
 			if reset == "y" || reset == "Y" {
-				if key := ask(in, w, "  "+p.APIKeyEnv, ""); key != "" {
+				if key := askSecret(in, w, "  "+p.APIKeyEnv); key != "" {
 					envLines = append(envLines, p.APIKeyEnv+"="+key)
 					continue
 				}
@@ -2200,7 +2235,7 @@ func configureKeys(selected []config.ProviderEntry, r io.Reader, w io.Writer) []
 			continue
 		}
 
-		if key := ask(in, w, "  "+p.APIKeyEnv, ""); key != "" {
+		if key := askSecret(in, w, "  "+p.APIKeyEnv); key != "" {
 			envLines = append(envLines, p.APIKeyEnv+"="+key)
 		}
 	}
@@ -2570,8 +2605,10 @@ func configCompactRatioCommand(args []string) int {
 		return 0
 	}
 	percent, err := strconv.ParseFloat(strings.TrimSpace(rest[0]), 64)
-	if err != nil || math.IsNaN(percent) || math.IsInf(percent, 0) || percent < 65 || percent > 85 {
-		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, "compact ratio must be a percentage between 65 and 85")
+	minPercent := config.CompactRatioMin * 100
+	maxPercent := config.CompactRatioMax * 100
+	if err != nil || math.IsNaN(percent) || math.IsInf(percent, 0) || percent < minPercent || percent > maxPercent {
+		fmt.Fprintf(os.Stderr, "%s compact ratio must be a percentage between %.0f and %.0f\n", i18n.M.ErrorPrefix, minPercent, maxPercent)
 		return 2
 	}
 	ratio := percent / 100
@@ -2640,7 +2677,7 @@ func formatCompactRatioPercent(ratio float64) string {
 func configUsage() {
 	fmt.Print(`Usage:
   reasonix config reasoning-language [--local] [auto|zh|en]
-  reasonix config compact-ratio [--local] [65..85]
+  reasonix config compact-ratio [--local] [30..85]
   reasonix config currency [auto|CNY|USD]
   reasonix config telemetry [auto|on|off]
 `)
@@ -2654,7 +2691,7 @@ func configTelemetryUsage() {
 
 func configCompactRatioUsage() {
 	fmt.Print(`Usage:
-  reasonix config compact-ratio [--local] [65..85]
+  reasonix config compact-ratio [--local] [30..85]
 `)
 }
 

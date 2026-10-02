@@ -1,0 +1,24 @@
+{
+  "schema_version": 2,
+  "log_size": 116830,
+  "log_generation": 1,
+  "selected_head": "main",
+  "message_count": 146,
+  "content_digest": "02655f81d8834a57085aa75a92f5b65dde87a7557e26b96806ec855051625ad3",
+  "writer_id": "historical-fixture-writer",
+  "updated_at": "2026-09-22T04:47:54.953667Z",
+  "heads": [
+    {
+      "id": "main",
+      "kind": "main",
+      "writer": "historical-fixture-writer",
+      "leaf": "partial",
+      "created_at": "2026-09-22T04:47:54.892084Z",
+      "last_activity": "2026-09-22T04:47:54.892084Z",
+      "selected": true,
+      "message_count": 146,
+      "turns": 71,
+      "preview": "中文历史问题 # %20"
+    }
+  ]
+}

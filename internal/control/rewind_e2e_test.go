@@ -30,7 +30,7 @@ func TestCompatibilityRewindRequiresConfirmationForPartialCoverage(t *testing.T)
 	}
 	sess := agent.NewSession("sys")
 	ag := agent.New(nil, tool.NewRegistry(), sess, agent.Options{}, event.Discard)
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Runner:        ag,
 		Executor:      ag,
 		SessionDir:    dir,
@@ -145,7 +145,7 @@ func TestResumeRecoversCommittingCombinedRewind(t *testing.T) {
 		t.Fatal(err)
 	}
 	ag := agent.New(nil, tool.NewRegistry(), agent.NewSession("sys"), agent.Options{}, event.Discard)
-	c := New(Options{Executor: ag, Runner: ag, SessionDir: dir, WorkspaceRoot: root})
+	c := newOwnedTestController(t, Options{Executor: ag, Runner: ag, SessionDir: dir, WorkspaceRoot: root})
 	c.Resume(loaded, sessionPath)
 	if got := ag.Session().Snapshot(); len(got) != len(fullMessages) || got[len(got)-1].Content != "later" {
 		t.Fatalf("recovered conversation = %#v, want full forward transcript", got)
@@ -187,7 +187,7 @@ func runTwoTurns(t *testing.T) (*Controller, *agent.Agent, *[]event.Event) {
 	}}
 	ag := agent.New(prov, tool.NewRegistry(), agent.NewSession("sys"), agent.Options{}, event.Discard)
 	var events []event.Event
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Runner:     ag,
 		Executor:   ag,
 		SessionDir: dir,
@@ -268,6 +268,7 @@ func TestRewindConversationSucceedsWithLiveBoundary(t *testing.T) {
 }
 
 func TestCompatibilityRewindTransfersLeaseBeforeForkSwitch(t *testing.T) {
+	t.Setenv(agent.SessionLogSchemaEnv, "v1")
 	c, ag, _ := runTwoTurns(t)
 	originalPath := c.SessionPath()
 	keeper := NewSessionLeaseKeeper()
@@ -363,7 +364,7 @@ func TestTailRewindKeepsCompactionProjection(t *testing.T) {
 	ag := agent.New(prov, tool.NewRegistry(), agent.NewSession("sys"), agent.Options{
 		ContextWindow: 10_000, CompactRatio: 0.80, RecentKeep: 2,
 	}, event.Discard)
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Runner:     ag,
 		Executor:   ag,
 		SessionDir: dir,

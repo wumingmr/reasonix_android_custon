@@ -34,7 +34,7 @@ type authMode int
 
 const (
 	authInvalid  authMode = iota // invalid config; deny all requests
-	authNone                     // no authentication (default, backward-compatible)
+	authNone                     // explicit opt-out; mutations still need the launch token
 	authToken                    // pre-shared token in URL or cookie
 	authPassword                 // login page with bcrypt password
 )
@@ -125,6 +125,9 @@ type authGate struct {
 	sessKey      []byte     // HMAC key for session signing (password mode, generated at startup)
 	behindProxy  bool       // trust X-Forwarded-For / X-Forwarded-Proto headers
 	rateLimit    *rateLimit // per-IP rate limiter for /login
+	// capabilities reports what this serve advertises on the token handshake
+	// (e.g. the browser broker); nil means no capability header.
+	capabilities func() []string
 }
 
 // newAuthGate creates the auth middleware from the serve config. For token mode
@@ -152,11 +155,16 @@ func newAuthGate(cfg config.ServeConfig) *authGate {
 		ag.sessKey = sessionKeyForPasswordHash(ag.passwordHash)
 	default:
 		ag.mode = authNone
+		ag.token = strings.TrimSpace(cfg.Token)
+		if ag.token == "" {
+			ag.token = generateToken()
+		}
 	}
 	return ag
 }
 
-// Token returns the shared token (empty if not in token mode).
+// Token returns the launch token: the shared token in token mode, the token
+// mutations need when authentication is off, empty in password mode.
 func (ag *authGate) Token() string { return ag.token }
 
 // Mode returns the auth mode name as a string.
@@ -210,6 +218,10 @@ func (ag *authGate) middleware(next http.Handler) http.Handler {
 			return
 		}
 		if ag.mode == authNone {
+			if r.URL.Path == "/auth/token" {
+				ag.handleTokenBootstrap(w, r)
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -294,6 +306,11 @@ func (ag *authGate) handleTokenBootstrap(w http.ResponseWriter, r *http.Request)
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(sessionDuration.Seconds()),
 	})
+	if ag.capabilities != nil {
+		if caps := ag.capabilities(); len(caps) > 0 {
+			w.Header().Set(capabilitiesHeader, strings.Join(caps, ","))
+		}
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -302,12 +319,10 @@ func (ag *authGate) handleTokenBootstrap(w http.ResponseWriter, r *http.Request)
 // New links use a URL fragment and handleTokenBootstrap; query links remain
 // supported so previously shared URLs keep working.
 func (ag *authGate) checkToken(w http.ResponseWriter, r *http.Request, next http.Handler) {
-	// 1. Check cookie first (fast path).
-	if c, err := r.Cookie(cookieToken); err == nil && strings.TrimSpace(c.Value) != "" {
-		if subtle.ConstantTimeCompare([]byte(c.Value), []byte(ag.token)) == 1 {
-			next.ServeHTTP(w, r)
-			return
-		}
+	// 1. Cookie or Authorization bearer (fast path).
+	if ag.presentsLaunchToken(r) {
+		next.ServeHTTP(w, r)
+		return
 	}
 
 	// 2. Check query parameter.
@@ -661,13 +676,17 @@ func isLoopbackHost(hostport string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// PlainHTTPAuthWarning reports whether serve is exposing authenticated access
-// over a non-loopback plain-HTTP listener. The listener may still be valid for a
-// trusted LAN or reverse-proxy setup, but users should see the risk explicitly.
+// PlainHTTPAuthWarning returns a warning string when serve is exposed on a
+// non-loopback plain-HTTP listener. The listener may still be valid for a
+// trusted LAN or reverse-proxy setup, but users should see the risk explicitly
+// — loudest for the unauthenticated case, which used to be the silent one.
 func PlainHTTPAuthWarning(cfg config.ServeConfig, addr string) string {
 	mode, err := NormalizeAuthMode(cfg.AuthMode)
-	if err != nil || mode == "none" || isLoopbackHost(addr) {
+	if err != nil || isLoopbackHost(addr) {
 		return ""
+	}
+	if mode == "none" {
+		return "warning: serve is listening on non-loopback HTTP with authentication disabled; anyone on this network can read sessions and history, and the launch token that changes need crosses it in clear — bind to 127.0.0.1 or set serve.auth_mode"
 	}
 	return "warning: authenticated serve is listening on non-loopback HTTP; use HTTPS via a trusted reverse proxy or bind to 127.0.0.1 for local-only access"
 }

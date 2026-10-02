@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"reasonix/internal/config"
+	"reasonix/internal/i18n"
 )
 
 func TestDoctorCommandPrintsJSON(t *testing.T) {
@@ -39,12 +40,31 @@ func TestRunDispatchesDoctor(t *testing.T) {
 	}
 }
 
+func TestDoctorUsesConfiguredLanguage(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	t.Chdir(t.TempDir())
+	previous := i18n.CurrentLanguage()
+	t.Cleanup(func() { i18n.DetectLanguage(previous) })
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("language='zh'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	captureStdout(t, func() {
+		if rc := Run([]string{"doctor", "--json"}, "test"); rc != 0 {
+			t.Fatalf("doctor rc=%d", rc)
+		}
+	})
+	if i18n.CurrentLanguage() != "zh" {
+		t.Fatalf("configured language lost: %s", i18n.CurrentLanguage())
+	}
+}
+
 func TestDoctorSessionsIsReadOnly(t *testing.T) {
 	cache := t.TempDir()
 	t.Setenv("REASONIX_CACHE_HOME", cache)
 	out := captureStdout(t, func() {
-		if rc := doctorCommand([]string{"sessions", "--json"}, "test-version"); rc != 0 {
-			t.Fatalf("doctor sessions rc = %d, want 0", rc)
+		if rc := doctorCommand([]string{"sessions", "--json"}, "test-version"); rc != 1 {
+			t.Fatalf("doctor sessions rc = %d, want 1 for missing catalog", rc)
 		}
 	})
 	var decoded map[string]any

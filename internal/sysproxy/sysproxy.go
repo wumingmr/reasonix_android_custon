@@ -4,7 +4,9 @@
 package sysproxy
 
 import (
+	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -47,26 +49,58 @@ func hostProxyURL(hostport string) *url.URL {
 }
 
 // bypassed reports whether host matches a WinINET proxy-bypass entry. "<local>"
-// matches dotless (intranet) hosts; a leading "*" is a suffix wildcard.
+// matches dotless (intranet) hosts, and "*" is a wildcard anywhere in an entry
+// ("127.*", "*.corp.local"). Loopback is bypassed unless "<-loopback>" is listed,
+// as WinINET does.
 func bypassed(host, bypass string) bool {
 	host = strings.ToLower(strings.TrimSpace(host))
 	if host == "" {
 		return false
 	}
-	for _, e := range splitList(bypass) {
-		e = strings.ToLower(e)
-		switch {
-		case e == "<local>":
+	entries := splitList(strings.ToLower(bypass))
+	if isLoopback(host) && !slices.Contains(entries, "<-loopback>") {
+		return true
+	}
+	for _, e := range entries {
+		if e == "<local>" {
 			if !strings.Contains(host, ".") {
 				return true
 			}
-		case strings.HasPrefix(e, "*"):
-			if strings.HasSuffix(host, strings.TrimPrefix(e, "*")) {
-				return true
-			}
-		case host == e:
+			continue
+		}
+		if wildcardMatch(strings.Trim(e, "[]"), host) {
 			return true
 		}
 	}
 	return false
+}
+
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.IsLoopback()
+}
+
+// wildcardMatch reports whether s matches pattern, where "*" matches any run of
+// characters and every other character matches itself.
+func wildcardMatch(pattern, s string) bool {
+	parts := strings.Split(pattern, "*")
+	if len(parts) == 1 {
+		return pattern == s
+	}
+	if !strings.HasPrefix(s, parts[0]) {
+		return false
+	}
+	s = s[len(parts[0]):]
+	last := parts[len(parts)-1]
+	for _, part := range parts[1 : len(parts)-1] {
+		i := strings.Index(s, part)
+		if i < 0 {
+			return false
+		}
+		s = s[i+len(part):]
+	}
+	return len(s) >= len(last) && strings.HasSuffix(s, last)
 }

@@ -2,10 +2,13 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"reflect"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/event"
+	"reasonix/internal/session"
 )
 
 // BindSessionWriteAuthority issues a generation-bound write authority from
@@ -35,7 +38,45 @@ func (c *Controller) BindSessionWriteAuthority(lease *agent.SessionLease) error 
 		sess.ClearWriteAuthority()
 		return err
 	}
+	if c.managedSessionEvents.Load() {
+		if err := c.activateManagedSessionEvents(sess); err != nil {
+			sess.ClearWriteAuthority()
+			return err
+		}
+	}
 	return nil
+}
+
+// activateManagedSessionEvents publishes the replacement runtime's exact
+// projection only after the final lease handoff succeeds. This keeps a failed
+// settings/model rebuild from changing the still-active controller through the
+// shared in-process v3 store.
+func (c *Controller) activateManagedSessionEvents(sess *agent.Session) error {
+	if c == nil || sess == nil {
+		return nil
+	}
+	if prompt := c.basePrompt(); prompt != "" {
+		sess.SetLeadingSystemPromptWithReason(prompt, "managed-runtime-activation")
+	}
+	// Write-authority binding can run before a service-backed Runtime is
+	// published. Its publication path seeds the projection; this preparation
+	// path must not manufacture a path-derived sidecar.
+	if service, runtime, exclusive := c.v3Binding(); exclusive && service != nil && runtime == nil {
+		return nil
+	}
+	messages := sess.Snapshot()
+	snapshot, ok := c.sessionEventSnapshot()
+	if !ok || snapshot.EventSequence == 0 {
+		if err := c.seedSessionEventsFromExecutor("managed-runtime-activation"); err != nil {
+			return err
+		}
+	} else if !reflect.DeepEqual(snapshot.Projection.ModelMessages, messages) {
+		if err := c.replaceSessionEventProjection(context.Background(), "managed-runtime-activation", messages); err != nil {
+			return err
+		}
+	}
+	planPayload, _ := json.Marshal(map[string]any{"enabled": c.PlanMode()})
+	return c.appendDomainState("plan/state", planPayload, "managed-runtime-activation")
 }
 
 // WriteAuthorityGeneration reports the generation currently bound on this
@@ -47,20 +88,28 @@ func (c *Controller) WriteAuthorityGeneration() uint64 {
 	return c.executor.Session().WriteAuthority().Generation()
 }
 
-func (c *Controller) submitCommandOrTurn(trimmed, input, display string, scopedRefsOnly bool, editedOriginal, format string) {
+func (c *Controller) submitCommandOrTurn(trimmed, input, display string, scopedRefsOnly bool, editedOriginal, format string, admission turnAdmission) {
 	if err := c.ensureWriteAuthorityReady(); err != nil {
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "input was not accepted: this session is no longer writable — reopen it and try again"})
 		return
 	}
-	c.submitCommandOrTurnReady(trimmed, input, display, scopedRefsOnly, editedOriginal, format)
+	c.submitCommandOrTurnReady(trimmed, input, display, scopedRefsOnly, editedOriginal, format, admission)
 }
 
 // Run verifies the live write generation before synchronous headless turns.
 func (c *Controller) Run(ctx context.Context, input string) error {
-	if err := c.ensureWriteAuthorityReady(); err != nil {
+	prepared, failures := c.prepareSubmissionImagesContext(ctx, SubmissionRequest{Input: input})
+	if len(failures) > 0 {
+		return ImageReferenceFailures(failures)
+	}
+	ctx = contextWithPreparedImageReferences(ctx, prepared)
+	err := c.runSynchronousTurn(ctx, nil, func(runCtx context.Context) error {
+		return c.runReady(runCtx, input)
+	})
+	if err != nil {
 		return err
 	}
-	return c.runReady(ctx, input)
+	return c.waitForGoalTerminal(ctx)
 }
 
 // RebindSessionWriteAuthority is a convenience for keepers that already hold a
@@ -75,6 +124,28 @@ func (c *Controller) RebindSessionWriteAuthority(lease *agent.SessionLease) erro
 // persistence yet) are allowed.
 func (c *Controller) ensureWriteAuthorityReady() error {
 	if c == nil || c.executor == nil {
+		return nil
+	}
+	if service, runtime, exclusive := c.v3Binding(); exclusive {
+		if runtime == nil {
+			if service == nil {
+				return session.ErrSessionNotRunning
+			}
+			if _, err := c.BindFreshSession(context.Background(), ""); err != nil {
+				return err
+			}
+			_, runtime, _ = c.v3Binding()
+			if runtime == nil {
+				return session.ErrSessionNotRunning
+			}
+		}
+		phase := runtime.StateSnapshot().Phase
+		if phase == session.RuntimeRecoveryRequired {
+			return session.ErrRecoveryRequired
+		}
+		if phase == session.RuntimeClosed {
+			return session.ErrSessionNotRunning
+		}
 		return nil
 	}
 	path := c.SessionPath()

@@ -1,0 +1,4470 @@
+{
+  "build": {
+    "schemaVersion": 1,
+    "version": "v1.38.8-preview.history.28",
+    "channel": "preview",
+    "commit": "66f838fdf056eb60a766c75f4af71f32d361a910",
+    "buildTime": "2026-09-22T19:24:17Z",
+    "electron": "44.2.0",
+    "platform": "darwin/arm64"
+  },
+  "machine": {
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "complete": true,
+  "samples": [
+    {
+      "fixture": 0,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 1,
+        "maxResidentSessions": 3,
+        "bodyBytes": 52032,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 0,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 0,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 64
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 1,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 9506,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 0,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 1,
+        "maxResidentSessions": 3,
+        "bodyBytes": 77928,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 9506,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 0,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 96
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 1,
+        "maxResidentSessions": 3,
+        "bodyBytes": 77448,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 19012,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 0,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 96
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 1,
+        "maxResidentSessions": 3,
+        "bodyBytes": 77448,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 28518,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 0,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 3,
+        "avgParseMs": 34.63333332538605,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 2,
+        "revoked": 1,
+        "active": 1,
+        "mountedSVG": 1
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 1,
+        "maxResidentSessions": 3,
+        "bodyBytes": 26016,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 28518,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 0,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 32
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 3,
+        "avgParseMs": 34.63333332538605,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 3,
+        "revoked": 2,
+        "active": 1,
+        "mountedSVG": 1
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 2,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 47530,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 0,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 2,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 85554,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 0,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 2,
+        "maxResidentSessions": 3,
+        "bodyBytes": 103944,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 133084,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 0,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 2,
+        "maxResidentSessions": 3,
+        "bodyBytes": 103464,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 142506,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 0,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 2,
+        "maxResidentSessions": 3,
+        "bodyBytes": 103464,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 151928,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 0,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 128
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 16,
+        "avgParseMs": 14.40625000745058,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 16,
+        "revoked": 9,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 2,
+        "maxResidentSessions": 3,
+        "bodyBytes": 52032,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 151928,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 0,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 64
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 16,
+        "avgParseMs": 14.40625000745058,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 18,
+        "revoked": 16,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 170940,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 0,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 208964,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 0,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 256494,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 0,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 275338,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 0,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 275338,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 0,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 29,
+        "avgParseMs": 12.889655178990857,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 31,
+        "revoked": 24,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 275338,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 0,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 29,
+        "avgParseMs": 12.889655178990857,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 33,
+        "revoked": 31,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 294350,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 1,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 332374,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 1,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 370398,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 1,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 389326,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 1,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 398748,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 1,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 42,
+        "avgParseMs": 11.735714293661571,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 46,
+        "revoked": 39,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 398748,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 1,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 42,
+        "avgParseMs": 11.735714293661571,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 48,
+        "revoked": 46,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 417760,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 2,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 455784,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 2,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 503314,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 2,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 522158,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 2,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 522158,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 2,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 55,
+        "avgParseMs": 11.794545459747315,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 61,
+        "revoked": 54,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 522158,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 2,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 55,
+        "avgParseMs": 11.794545459747315,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 63,
+        "revoked": 61,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 541170,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 3,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 560182,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 3,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 598206,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 3,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 617134,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 3,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 626556,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 3,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 66,
+        "avgParseMs": 11.484848493879491,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 74,
+        "revoked": 67,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 626556,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 3,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 66,
+        "avgParseMs": 11.484848493879491,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 76,
+        "revoked": 74,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 645568,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 4,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 683592,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 4,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 721616,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 4,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 740544,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 4,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 749966,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 4,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 79,
+        "avgParseMs": 11.198734183854695,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 89,
+        "revoked": 82,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 749966,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 4,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 79,
+        "avgParseMs": 11.198734183854695,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 91,
+        "revoked": 89,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 768978,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 807002,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 845026,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 863954,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 873376,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 92,
+        "avgParseMs": 11.017391308494236,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 104,
+        "revoked": 97,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 873376,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 92,
+        "avgParseMs": 11.017391308494236,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 106,
+        "revoked": 104,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 873376,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 873376,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 873376,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 873376,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 873376,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 92,
+        "avgParseMs": 11.017391308494236,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 117,
+        "revoked": 110,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 873376,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 92,
+        "avgParseMs": 11.017391308494236,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 119,
+        "revoked": 117,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 873376,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 873376,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 873376,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 873376,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 873376,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 92,
+        "avgParseMs": 11.017391308494236,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 132,
+        "revoked": 125,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 873376,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 92,
+        "avgParseMs": 11.017391308494236,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 134,
+        "revoked": 132,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 873376,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 94,
+        "avgParseMs": 11.496808514950123,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 147,
+        "revoked": 140,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 5,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 94,
+        "avgParseMs": 11.496808514950123,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 149,
+        "revoked": 147,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 6,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 6,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 6,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 6,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 6,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 94,
+        "avgParseMs": 11.496808514950123,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 162,
+        "revoked": 155,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 6,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 94,
+        "avgParseMs": 11.496808514950123,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 164,
+        "revoked": 162,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 7,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 7,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 7,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 7,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 7,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 94,
+        "avgParseMs": 11.496808514950123,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 177,
+        "revoked": 170,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 7,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 94,
+        "avgParseMs": 11.496808514950123,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 179,
+        "revoked": 177,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 8,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 8,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 8,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 8,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 8,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 94,
+        "avgParseMs": 11.496808514950123,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 192,
+        "revoked": 185,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 8,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 94,
+        "avgParseMs": 11.496808514950123,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 194,
+        "revoked": 192,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 9,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 9,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 9,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 9,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 9,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 94,
+        "avgParseMs": 11.496808514950123,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 207,
+        "revoked": 200,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 892388,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 9,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 94,
+        "avgParseMs": 11.496808514950123,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 209,
+        "revoked": 207,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 901894,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 930412,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 958930,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 977858,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 222,
+        "revoked": 215,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 224,
+        "revoked": 222,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 235,
+        "revoked": 228,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 237,
+        "revoked": 235,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 250,
+        "revoked": 243,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 252,
+        "revoked": 250,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 265,
+        "revoked": 258,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 10,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 267,
+        "revoked": 265,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 11,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 11,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 11,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 11,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 11,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 280,
+        "revoked": 273,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 11,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 282,
+        "revoked": 280,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 12,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 12,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 12,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 12,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 12,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 295,
+        "revoked": 288,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 12,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 297,
+        "revoked": 295,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 13,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 13,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 13,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 13,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 13,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 310,
+        "revoked": 303,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 13,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 312,
+        "revoked": 310,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 14,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 14,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 14,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 14,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 14,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 325,
+        "revoked": 318,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 14,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 327,
+        "revoked": 325,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 340,
+        "revoked": 333,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 342,
+        "revoked": 340,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 353,
+        "revoked": 346,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 7,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 355,
+        "revoked": 353,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 368,
+        "revoked": 361,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 6,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 370,
+        "revoked": 368,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 383,
+        "revoked": 376,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 5,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 15,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 385,
+        "revoked": 383,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 16,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 16,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 16,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 16,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 16,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 398,
+        "revoked": 391,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 4,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 16,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 400,
+        "revoked": 398,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 17,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 17,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 17,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 17,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 17,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 413,
+        "revoked": 406,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 3,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 17,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 415,
+        "revoked": 413,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 18,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 18,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 18,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 18,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 18,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 428,
+        "revoked": 421,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 2,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 18,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 430,
+        "revoked": 428,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 19,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 19,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 19,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 19,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 19,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 443,
+        "revoked": 436,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 19,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 445,
+        "revoked": 443,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "page",
+      "range": "第 130–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 104064,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 20,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 128
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "page",
+      "range": "第 114–160 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 130080,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 20,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "page",
+      "range": "第 98–144 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129960,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 20,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 1,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "page",
+      "range": "第 82–128 轮，共 160 轮",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 20,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "older",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 129480,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 20,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 2,
+        "residentWindowEntries": 160
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 458,
+        "revoked": 451,
+        "active": 7,
+        "mountedSVG": 7
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "latest",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 20,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 460,
+        "revoked": 458,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "A-B-A",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 20,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 460,
+        "revoked": 458,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 1,
+      "phase": "A-B-A",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 20,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 462,
+        "revoked": 460,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    },
+    {
+      "fixture": 0,
+      "phase": "A-B-A",
+      "cache": {
+        "residentSessions": 3,
+        "maxResidentSessions": 3,
+        "bodyBytes": 78048,
+        "bodyBudgetBytes": 33554432,
+        "markdownBytes": 987280,
+        "markdownBudgetBytes": 16777216,
+        "historyEvictions": 20,
+        "markdownEvictions": 0,
+        "windowMaxPages": 3,
+        "reclaimedPages": 0,
+        "residentWindowEntries": 96
+      },
+      "markdownWorker": {
+        "pending": 0,
+        "completed": 104,
+        "avgParseMs": 11.40384615613864,
+        "maxParseMs": 97.5,
+        "fallbackActive": false,
+        "workerFailures": 0
+      },
+      "objectURLs": {
+        "kind": "image/svg+xml",
+        "created": 464,
+        "revoked": 462,
+        "active": 2,
+        "mountedSVG": 2
+      }
+    }
+  ],
+  "scope": "Real UI navigation, bidirectional paging, cache accounting, worker drain and SVG object URL release for checkpoint/schema-1 fixtures; not whole-process memory or idle-runtime qualification.",
+  "runner": "desktop/packaging/history-cache-soak.mjs",
+  "runnerSha256": "3bdeaf8601a5a867406e33b7a28267d864d885a88eb802e7ccd192a918c1286b",
+  "command": "node desktop/packaging/history-cache-soak.mjs desktop/build/candidate/darwin-arm64/Reasonix.app"
+}

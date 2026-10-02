@@ -1,0 +1,58 @@
+/* Markdown fences share an opaque, contrast-corrected surface with their
+   toolbar. Wallpaper and custom foreground tokens cannot wash out controls. */
+.code-block--framed {
+  margin: 16px 0;
+  border: 1px solid var(--code-border, var(--border-soft));
+  border-radius: 12px;
+  background: var(--code-bg, var(--bg-soft));
+  color: var(--code-fg, var(--fg));
+  min-width: 0;
+}
+.code-block__header {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-local-raised);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 38px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--code-border, var(--border-soft));
+  border-radius: 11px 11px 0 0;
+  background: var(--code-bg, var(--bg-soft));
+  color: var(--code-fg, var(--fg));
+  font-size: 12px;
+}
+.code-block__language {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-code-family);
+}
+.code-block__header .code-block__header-copy {
+  flex-shrink: 0;
+  color: inherit;
+  background: var(--code-bg, var(--bg-soft));
+  border-color: var(--code-border, var(--border-soft));
+  padding: 4px 8px;
+  gap: 5px;
+  transition: none;
+}
+.code-block__header-copy .copybtn__label-inline {
+  max-width: none;
+  transition: none;
+}
+.code-block__header-copy:focus-visible {
+  outline: 2px solid var(--code-fg, var(--fg));
+  outline-offset: 2px;
+}
+.code-block--framed .code,
+.md .code-block--framed .code {
+  margin: 0;
+  padding: 16px;
+  border: 0;
+  border-radius: 0 0 11px 11px;
+}
+.code-block--framed .code--loading { opacity: 1; }

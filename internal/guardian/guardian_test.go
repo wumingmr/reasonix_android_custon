@@ -327,10 +327,11 @@ func TestGuardianUsageDoesNotLeakAcrossReviews(t *testing.T) {
 }
 
 func TestGuardianUsageAggregatesEveryModelCall(t *testing.T) {
-	prov := &scriptedProvider{responses: []scriptedResponse{
-		{text: "", usage: &provider.Usage{PromptTokens: 3, CompletionTokens: 1, TotalTokens: 4}},
+	base := &scriptedProvider{responses: []scriptedResponse{
+		{reasoning: "The action is safe; a visible verdict is still required.", usage: &provider.Usage{PromptTokens: 3, CompletionTokens: 1, TotalTokens: 4, FinishReason: "stop"}},
 		{text: `{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`, usage: &provider.Usage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7, RequestCount: 2}},
 	}}
+	prov := &reasoningScriptedProvider{scriptedProvider: base}
 	sink := &captureSink{}
 	gs := NewSession(prov, tool.NewRegistry(), PolicyPrompt(), "guardian-test", 0, nil, sink)
 	parent := agent.NewSession("sys")
@@ -346,6 +347,48 @@ func TestGuardianUsageAggregatesEveryModelCall(t *testing.T) {
 	usage := events[0].Guardian.Usage
 	if usage.PromptTokens != 8 || usage.CompletionTokens != 3 || usage.TotalTokens != 11 || usage.RequestCount != 3 {
 		t.Fatalf("aggregated usage = %+v, want prompt=8 completion=3 total=11 requests=3", usage)
+	}
+}
+
+func TestGuardianEmptyResponseFailsClosedUntilExplicitReview(t *testing.T) {
+	prov := &scriptedProvider{responses: []scriptedResponse{
+		{usage: &provider.Usage{PromptTokens: 3, CompletionTokens: 1, TotalTokens: 4}},
+		{text: `{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`, usage: &provider.Usage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7}},
+	}}
+	sink := &captureSink{}
+	gs := NewSession(prov, tool.NewRegistry(), PolicyPrompt(), "guardian-test", 0, nil, sink)
+	parent := agent.NewSession("sys")
+	parent.Add(provider.Message{Role: provider.RoleUser, Content: "do it"})
+	args := json.RawMessage(`{"file_path":"a.txt"}`)
+
+	if allow, _, err := gs.ReviewVerdict(context.Background(), "write_file", args, parent); err == nil || allow {
+		t.Fatalf("first ReviewVerdict = allow %v err %v, want fail-closed error", allow, err)
+	}
+	if got := len(prov.requestsSnapshot()); got != 1 {
+		t.Fatalf("requests after empty response = %d, want 1", got)
+	}
+	events := sink.guardianEvents()
+	if len(events) != 1 || events[0].Guardian.Usage == nil {
+		t.Fatalf("guardian events = %+v, want one usage-bearing failure", events)
+	}
+	usage := events[0].Guardian.Usage
+	if usage.PromptTokens != 3 || usage.CompletionTokens != 1 || usage.TotalTokens != 4 || usage.RequestCount != 1 {
+		t.Fatalf("failed review usage = %+v, want prompt=3 completion=1 total=4 requests=1", usage)
+	}
+
+	if allow, _, err := gs.ReviewVerdict(context.Background(), "write_file", args, parent); err != nil || !allow {
+		t.Fatalf("explicit second ReviewVerdict = allow %v err %v, want allow nil", allow, err)
+	}
+	if got := len(prov.requestsSnapshot()); got != 2 {
+		t.Fatalf("requests after explicit second review = %d, want 2", got)
+	}
+	events = sink.guardianEvents()
+	if len(events) != 2 || events[1].Guardian.Usage == nil {
+		t.Fatalf("guardian events = %+v, want two usage-bearing events", events)
+	}
+	usage = events[1].Guardian.Usage
+	if usage.PromptTokens != 5 || usage.CompletionTokens != 2 || usage.TotalTokens != 7 || usage.RequestCount != 1 {
+		t.Fatalf("second review usage = %+v, want prompt=5 completion=2 total=7 requests=1", usage)
 	}
 }
 

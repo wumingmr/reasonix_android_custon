@@ -17,34 +17,6 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-func TestSetDefaultModel(t *testing.T) {
-	c := Default()
-	if err := c.SetDefaultModel("deepseek-pro"); err != nil {
-		t.Fatalf("set valid default: %v", err)
-	}
-	if c.DefaultModel != "deepseek-pro" {
-		t.Errorf("default = %q, want deepseek-pro", c.DefaultModel)
-	}
-	if err := c.SetDefaultModel("nope"); err == nil {
-		t.Error("expected error for unknown provider")
-	}
-	// "provider/model" form is also accepted: the /model picker stores the
-	// full ref so a user can land on a non-default model under the same
-	// provider across restarts.
-	if err := c.SetDefaultModel("deepseek-pro/deepseek-v4-pro"); err != nil {
-		t.Fatalf("set provider/model default: %v", err)
-	}
-	if c.DefaultModel != "deepseek-pro/deepseek-v4-pro" {
-		t.Errorf("default = %q, want deepseek-pro/deepseek-v4-pro", c.DefaultModel)
-	}
-	if err := c.SetDefaultModel("deepseek-pro/missing"); err == nil {
-		t.Error("expected error for unknown model under known provider")
-	}
-	if err := c.SetDefaultModel(""); err == nil {
-		t.Error("expected error for empty name")
-	}
-}
-
 func TestUIThemeNormalizes(t *testing.T) {
 	c := Default()
 	for _, tt := range []struct {
@@ -237,8 +209,8 @@ func TestDesktopLayoutStyleNormalizes(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
-		{"", "classic", false},
-		{"classic", "classic", false},
+		{"", "workbench", false},
+		{"classic", "workbench", false},
 		{" workbench ", "workbench", false},
 		{"workspace", "workbench", false},
 		{"creation", "creation", false},
@@ -317,8 +289,8 @@ func TestDesktopExternalOpenerValidation(t *testing.T) {
 }
 
 func TestDesktopStatusBarStyleNormalizes(t *testing.T) {
-	if got := Default().DesktopStatusBarStyle(); got != "text" {
-		t.Fatalf("default desktop status bar style = %q, want text", got)
+	if got := Default().DesktopStatusBarStyle(); got != "icon" {
+		t.Fatalf("default desktop status bar style = %q, want icon", got)
 	}
 	for _, tt := range []struct {
 		in      string
@@ -330,7 +302,7 @@ func TestDesktopStatusBarStyleNormalizes(t *testing.T) {
 		{"icons", "icon", false},
 		{"text", "text", false},
 		{"labels", "text", false},
-		{"later", "text", true},
+		{"later", "icon", true},
 	} {
 		c := Default()
 		if err := c.SetDesktopStatusBarStyle(tt.in); (err != nil) != tt.wantErr {
@@ -450,35 +422,43 @@ func TestSetAutoPlanRejectsRetiredModes(t *testing.T) {
 
 func TestSetDesktopDefaultToolApprovalMode(t *testing.T) {
 	c := Default()
-	if got := c.DesktopDefaultToolApprovalMode(); got != "auto" {
-		t.Fatalf("desktop default tool approval mode = %q, want built-in auto", got)
+	if got := c.DesktopDefaultToolApprovalMode(); got != "workspace-write" {
+		t.Fatalf("desktop default tool approval mode = %q, want workspace-write", got)
 	}
-	for _, mode := range []string{"ask", "auto", "yolo"} {
+	for _, tc := range []struct{ in, want string }{
+		{"read-only", "read-only"},
+		{"workspace-write", "workspace-write"},
+		{"danger-full-access", "danger-full-access"},
+		{"ask", "read-only"},
+		{"auto", "workspace-write"},
+		{"yolo", "workspace-write"},
+	} {
+		mode := tc.in
 		if err := c.SetDesktopDefaultToolApprovalMode(mode); err != nil {
 			t.Fatalf("SetDesktopDefaultToolApprovalMode(%q): %v", mode, err)
 		}
-		if c.DesktopDefaultToolApprovalMode() != mode {
-			t.Fatalf("desktop default tool approval mode = %q, want %q", c.DesktopDefaultToolApprovalMode(), mode)
+		if c.DesktopDefaultToolApprovalMode() != tc.want {
+			t.Fatalf("desktop default tool approval mode = %q, want %q", c.DesktopDefaultToolApprovalMode(), tc.want)
 		}
 	}
 	if err := c.SetDesktopDefaultToolApprovalMode("full-access"); err != nil {
 		t.Fatalf("legacy full-access should be accepted: %v", err)
 	}
-	if c.DesktopDefaultToolApprovalMode() != "yolo" {
-		t.Fatalf("legacy full-access should save as yolo, got %q", c.DesktopDefaultToolApprovalMode())
+	if c.DesktopDefaultToolApprovalMode() != "danger-full-access" {
+		t.Fatalf("legacy full-access should save as danger-full-access, got %q", c.DesktopDefaultToolApprovalMode())
 	}
 	if err := c.SetDesktopDefaultToolApprovalMode("maybe"); err == nil {
 		t.Fatal("expected error for invalid desktop default tool approval mode")
 	}
 }
 
-func TestLoadForEditMissingDesktopApprovalDefaultsAuto(t *testing.T) {
+func TestLoadForEditMissingDesktopApprovalDefaultsWorkspaceWrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(path, []byte("config_version = 4\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	if got := LoadForEdit(path).DesktopDefaultToolApprovalMode(); got != "auto" {
-		t.Fatalf("missing desktop default tool approval mode = %q, want auto", got)
+	if got := LoadForEdit(path).DesktopDefaultToolApprovalMode(); got != "workspace-write" {
+		t.Fatalf("missing desktop default tool approval mode = %q, want workspace-write", got)
 	}
 }
 
@@ -616,7 +596,7 @@ func TestSetReasoningLanguage(t *testing.T) {
 
 func TestSetCompactRatio(t *testing.T) {
 	c := Default()
-	for _, ratio := range []float64{0.65, 0.7, 0.8, 0.85} {
+	for _, ratio := range []float64{0.30, 0.64, 0.65, 0.7, 0.8, 0.85} {
 		if err := c.SetCompactRatio(ratio); err != nil {
 			t.Fatalf("SetCompactRatio(%v): %v", ratio, err)
 		}
@@ -626,7 +606,7 @@ func TestSetCompactRatio(t *testing.T) {
 	}
 
 	previous := c.Agent.CompactRatio
-	for _, ratio := range []float64{0.64, 0.86, math.NaN(), math.Inf(1), math.Inf(-1)} {
+	for _, ratio := range []float64{0.29, 0.86, math.NaN(), math.Inf(1), math.Inf(-1)} {
 		if err := c.SetCompactRatio(ratio); err == nil {
 			t.Fatalf("SetCompactRatio(%v) should fail", ratio)
 		}
@@ -654,12 +634,18 @@ func TestNormalizeEffortDeepSeek(t *testing.T) {
 	}
 	for in, want := range map[string]string{"auto": "", "disabled": "disabled", "high": "high", "max": "max", "low": "high", "medium": "high", "xhigh": "max"} {
 		got, err := NormalizeEffort(e, in)
+		if in != want && in != "auto" {
+			if err == nil {
+				t.Fatalf("undeclared %q accepted as %q", in, got)
+			}
+			continue
+		}
 		if err != nil || got != want {
 			t.Fatalf("NormalizeEffort(%q) = %q/%v, want %q/nil", in, got, err, want)
 		}
 	}
 	// "off" is the retired DeepSeek "no thinking" spelling — now maps to disabled.
-	if got, err := NormalizeEffort(e, "off"); err != nil || got != "disabled" {
+	if got, err := NormalizeEffort(e, "off"); err == nil {
 		t.Fatalf("NormalizeEffort(\"off\") = %q/%v, want \"disabled\"/nil", got, err)
 	}
 }
@@ -810,8 +796,8 @@ func TestEffectiveVisionRejectsOfficialDeepSeekOverridesButPreservesCustomGatewa
 		Model:        "deepseek-v5-vision",
 		VisionModels: []string{"deepseek-v5-vision"},
 	}
-	if EffectiveVision(future) {
-		t.Fatal("a future model name must not bypass the official DeepSeek wire constraint")
+	if !EffectiveVision(future) {
+		t.Fatal("explicit vision model list must support unknown DeepSeek models")
 	}
 
 	visionOn := true
@@ -828,8 +814,8 @@ func TestEffectiveVisionRejectsOfficialDeepSeekOverridesButPreservesCustomGatewa
 	if !ok {
 		t.Fatal("ResolveModel did not find explicit future DeepSeek model")
 	}
-	if EffectiveVision(overridden) {
-		t.Fatal("model_overrides vision=true must not bypass the official DeepSeek wire constraint")
+	if !EffectiveVision(overridden) {
+		t.Fatal("model_overrides vision=true must enable unknown DeepSeek models")
 	}
 
 	custom := &ProviderEntry{
@@ -1179,9 +1165,9 @@ func TestAutoStartPlugins(t *testing.T) {
 	off := false
 	on := true
 	c.Plugins = []PluginEntry{
-		{Name: "implicit", Command: "implicit-bin"},
-		{Name: "disabled", Command: "disabled-bin", AutoStart: &off},
-		{Name: "enabled", Command: "enabled-bin", AutoStart: &on},
+		{Name: "implicit", Command: "implicit-bin", Source: MCPSourceUserConfig},
+		{Name: "disabled", Command: "disabled-bin", AutoStart: &off, Source: MCPSourceUserConfig},
+		{Name: "enabled", Command: "enabled-bin", AutoStart: &on, Source: MCPSourceUserConfig},
 	}
 	got := c.AutoStartPlugins()
 	if len(got) != 2 || got[0].Name != "implicit" || got[1].Name != "enabled" {
@@ -1319,7 +1305,7 @@ func TestSaveToRoundTrips(t *testing.T) {
 	}
 }
 
-func TestRecoveryReviewerSettingsRoundTripThroughUserSave(t *testing.T) {
+func TestRetiredRecoveryReviewerSettingsAreNotWrittenOnSave(t *testing.T) {
 	isolateUserConfigHome(t)
 	c := Default()
 	c.Agent.RecoveryModel = "deepseek-pro"
@@ -1330,8 +1316,8 @@ func TestRecoveryReviewerSettingsRoundTripThroughUserSave(t *testing.T) {
 		t.Fatalf("SaveTo: %v", err)
 	}
 	got := LoadForEdit(path)
-	if got.Agent.RecoveryModel != "deepseek-pro" || got.Agent.RecoveryTemperature != 0 {
-		t.Fatalf("agent recovery settings not preserved: %+v", got.Agent)
+	if got.Agent.RecoveryModel != "" || got.Agent.RecoveryTemperature != 0 {
+		t.Fatalf("retired recovery settings survived save: %+v", got.Agent)
 	}
 }
 
@@ -1355,8 +1341,8 @@ func TestRetiredAutoGuardKeysAreIgnoredAndRemovedOnSave(t *testing.T) {
 	if strings.Contains(text, "default_auto_recovery_checkpoint") || strings.Contains(text, "auto_recovery_checkpoint") {
 		t.Fatalf("retired Auto Guard keys survived save:\n%s", text)
 	}
-	if !strings.Contains(text, `recovery_model = "deepseek-pro"`) {
-		t.Fatalf("save removed unrelated recovery model:\n%s", text)
+	if strings.Contains(text, "recovery_model") {
+		t.Fatalf("retired recovery model survived save:\n%s", text)
 	}
 }
 
@@ -1406,113 +1392,6 @@ func TestSaveToScopesUserAndProjectFiles(t *testing.T) {
 	}
 }
 
-func TestLoadForRootKeepsOfficialProviderAliasesDistinct(t *testing.T) {
-	isolateUserConfigHome(t)
-	root := t.TempDir()
-	userPath := UserConfigPath()
-	if err := os.MkdirAll(filepath.Dir(userPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(userPath, []byte(`
-config_version = 2
-default_model = "deepseek/deepseek-v4-flash"
-
-[desktop]
-provider_access = ["deepseek"]
-
-[[providers]]
-name = "deepseek"
-kind = "openai"
-base_url = "https://api.deepseek.com"
-models = ["deepseek-v4-flash", "deepseek-v4-pro"]
-default = "deepseek-v4-flash"
-api_key_env = "USER_DEEPSEEK_KEY"
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "reasonix.toml"), []byte(`
-[[providers]]
-name = "deepseek-flash"
-kind = "openai"
-base_url = "https://api.deepseek.com"
-model = "deepseek-v4-flash"
-api_key_env = "PROJECT_DEEPSEEK_KEY"
-effort = "max"
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := LoadForRoot(root)
-	if err != nil {
-		t.Fatalf("LoadForRoot: %v", err)
-	}
-	userProvider, ok := cfg.Provider("deepseek")
-	if !ok {
-		t.Fatalf("user deepseek provider missing: %+v", cfg.Providers)
-	}
-	if userProvider.APIKeyEnv != "USER_DEEPSEEK_KEY" {
-		t.Fatalf("deepseek provider = %+v, want user provider preserved", userProvider)
-	}
-	projectProvider, ok := cfg.Provider("deepseek-flash")
-	if !ok {
-		t.Fatalf("project deepseek-flash provider missing: %+v", cfg.Providers)
-	}
-	if projectProvider.APIKeyEnv != "PROJECT_DEEPSEEK_KEY" || projectProvider.Effort != "max" {
-		t.Fatalf("deepseek-flash provider = %+v, want project provider preserved", projectProvider)
-	}
-}
-
-func TestLoadForRootKeepsUserProviderOverSameNamedProjectProvider(t *testing.T) {
-	isolateUserConfigHome(t)
-	root := t.TempDir()
-	userPath := UserConfigPath()
-	if err := os.MkdirAll(filepath.Dir(userPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(userPath, []byte(`
-[[providers]]
-name = "shared"
-kind = "openai"
-base_url = "https://global.example/v1"
-model = "global-model"
-api_key_env = "GLOBAL_SHARED_KEY"
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "reasonix.toml"), []byte(`
-[[providers]]
-name = "shared"
-kind = "openai"
-base_url = "https://project.example/v1"
-model = "project-model"
-api_key_env = "PROJECT_SHARED_KEY"
-
-[[providers]]
-name = "project-only"
-kind = "openai"
-base_url = "https://project.example/v1"
-model = "project-only-model"
-api_key_env = "PROJECT_ONLY_KEY"
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := LoadForRoot(root)
-	if err != nil {
-		t.Fatalf("LoadForRoot: %v", err)
-	}
-	shared, ok := cfg.Provider("shared")
-	if !ok {
-		t.Fatalf("shared provider missing: %+v", cfg.Providers)
-	}
-	if shared.BaseURL != "https://global.example/v1" || shared.APIKeyEnv != "GLOBAL_SHARED_KEY" || shared.Model != "global-model" {
-		t.Fatalf("shared provider = %+v, want global provider to win over project provider", shared)
-	}
-	if _, ok := cfg.Provider("project-only"); !ok {
-		t.Fatalf("project-only provider missing: %+v", cfg.Providers)
-	}
-}
-
 func TestMigrateDeprecatedAgentStepLimitsForRootRunsOnce(t *testing.T) {
 	isolateUserConfigHome(t)
 	root := t.TempDir()
@@ -1541,6 +1420,7 @@ temperature = 0.8
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	approveWorkspace(t, root)
 
 	changed, err := MigrateLegacyAgentStepLimitsForRoot(root)
 	if err != nil {
@@ -2005,6 +1885,7 @@ api_key_env = "PROJECT_KEY"
 		t.Fatal(err)
 	}
 
+	approveWorkspace(t, root)
 	cfg, err := LoadForRoot(root)
 	if err != nil {
 		t.Fatalf("LoadForRoot: %v", err)
@@ -2612,7 +2493,7 @@ func TestSaveToExistingProjectRemovesIneffectiveWindowsBashEnforce(t *testing.T)
 	}
 }
 
-func TestSaveToExistingProjectRemovesIneffectiveWindowsBashEnforceWhenTargetIsOff(t *testing.T) {
+func TestSaveToExistingProjectCanDisableWindowsBashEnforce(t *testing.T) {
 	setRuntimeGOOS(t, "windows")
 	projectPath := filepath.Join(t.TempDir(), "reasonix.toml")
 	if err := os.WriteFile(projectPath, []byte("[sandbox]\nbash = \"enforce\"\n"), 0o644); err != nil {
@@ -2628,8 +2509,8 @@ func TestSaveToExistingProjectRemovesIneffectiveWindowsBashEnforceWhenTargetIsOf
 	if err != nil {
 		t.Fatalf("read project config: %v", err)
 	}
-	if strings.Contains(string(body), `[sandbox]`) || strings.Contains(string(body), `bash = "enforce"`) {
-		t.Fatalf("ineffective Windows project bash enforce should be removed even when the target mode is raw off:\n%s", body)
+	if strings.Contains(string(body), `bash = "enforce"`) {
+		t.Fatalf("Windows sandbox mode should no longer remain enforce after disabling it:\n%s", body)
 	}
 	if _, err := toml.Decode(string(body), &Config{}); err != nil {
 		t.Fatalf("saved project config does not parse: %v", err)
@@ -2816,6 +2697,12 @@ func TestNormalizeEffortCustomSupportedEfforts(t *testing.T) {
 	}
 	for in, want := range map[string]string{"auto": "", "low": "low", "MEDIUM": "medium", "high": "high"} {
 		got, err := NormalizeEffort(e, in)
+		if in != want && in != "auto" {
+			if err == nil {
+				t.Fatalf("undeclared %q accepted as %q", in, got)
+			}
+			continue
+		}
 		if err != nil || got != want {
 			t.Fatalf("NormalizeEffort(%q) = %q/%v, want %q/nil", in, got, err, want)
 		}
@@ -2836,8 +2723,8 @@ func TestNormalizeEffortCustomDefaultEffort(t *testing.T) {
 		DefaultEffort:    "xhigh", // not in the list — must fall back to the first level
 	}
 	cap := EffortCapabilityForEntry(e)
-	if cap.Default != "low" {
-		t.Fatalf("default = %q, want low (first of supported_efforts)", cap.Default)
+	if cap.Default != "xhigh" {
+		t.Fatalf("invalid default must remain visible for validation, got %q", cap.Default)
 	}
 	// Omitting DefaultEffort also falls back to the first level.
 	e2 := *e
@@ -2850,8 +2737,8 @@ func TestNormalizeEffortCustomDefaultEffort(t *testing.T) {
 		t.Fatalf("NormalizeEffort(auto) = %q/%v, want empty/nil", got, err)
 	}
 	e.Effort = "auto"
-	if got := EffectiveEffort(e); got != "low" {
-		t.Fatalf("stored auto should fall through to default_effort, got %q", got)
+	if got := EffectiveEffort(e); got != "xhigh" {
+		t.Fatalf("invalid configured default must not silently fall back, got %q", got)
 	}
 	e.Effort = "high"
 	if got := EffectiveEffort(e); got != "high" {
@@ -2881,8 +2768,8 @@ func TestNormalizeEffortCustomLevelsCaseInsensitive(t *testing.T) {
 		t.Fatalf("default = %q, want medium", cap.Default)
 	}
 	got, err := NormalizeEffort(e, "MEDIUM")
-	if err != nil || got != "medium" {
-		t.Fatalf("NormalizeEffort(MEDIUM) = %q/%v, want medium/nil", got, err)
+	if err == nil {
+		t.Fatalf("NormalizeEffort(MEDIUM) accepted nonexact ID %q", got)
 	}
 	if got := EffectiveEffort(e); got != "medium" {
 		t.Fatalf("EffectiveEffort = %q, want medium", got)
@@ -2926,7 +2813,7 @@ func TestEffortCapabilityEmptySupportedEffortsNotConfigurable(t *testing.T) {
 	e := &ProviderEntry{
 		Name:    "mimo-pro",
 		Kind:    "openai",
-		BaseURL: "https://token-plan-cn.xiaomimimo.com/v1",
+		BaseURL: "https://unknown-gateway.example.com/v1",
 		Model:   "mimo-v2.5-pro",
 	}
 	if cap := EffortCapabilityForEntry(e); cap.Supported {
@@ -3172,6 +3059,7 @@ func TestProjectConfigSymlinkWithinRootLoadsAndSavesTarget(t *testing.T) {
 	if err := os.Symlink(filepath.Join("config", "reasonix.toml"), link); err != nil {
 		t.Skipf("symlinks are unavailable: %v", err)
 	}
+	approveWorkspace(t, "config")
 
 	loaded, err := LoadForRootReadOnly(project)
 	if err != nil {
@@ -3206,6 +3094,7 @@ func TestBrokenProjectConfigSymlinkFailsLoadAndSave(t *testing.T) {
 	if err := os.Symlink(filepath.Join("missing", "reasonix.toml"), link); err != nil {
 		t.Skipf("symlinks are unavailable: %v", err)
 	}
+	approveWorkspace(t, "missing")
 
 	if _, err := LoadForRootReadOnly(project); err == nil {
 		t.Fatal("LoadForRootReadOnly accepted a broken project config symlink")

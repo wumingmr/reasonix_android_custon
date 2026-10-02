@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"reasonix/internal/agent"
-	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
@@ -156,7 +155,7 @@ func (f *fakeReactionAdapter) cleanupMessages() []string {
 }
 
 type queueTestController struct {
-	botController
+	stubBotController
 	mu          sync.Mutex
 	steers      []string
 	rejectSteer bool
@@ -201,7 +200,7 @@ func (c *queueTestController) wasCanceled() bool {
 }
 
 type rotatingBotController struct {
-	botController
+	stubBotController
 	path     string
 	newPath  string
 	newCalls int
@@ -218,7 +217,7 @@ func (c *rotatingBotController) SessionPath() string { return c.path }
 func (c *rotatingBotController) Close()              { c.closed = true }
 
 type runtimeStatusBotController struct {
-	botController
+	stubBotController
 	status        control.RuntimeStatus
 	workspaceRoot string
 	sessionPath   string
@@ -231,7 +230,7 @@ func (c *runtimeStatusBotController) SessionPath() string                  { ret
 func (c *runtimeStatusBotController) Close()                               { c.closed = true }
 
 type blockingApprovalController struct {
-	botController
+	stubBotController
 	emit     func(event.Event)
 	emitted  chan struct{}
 	approved chan struct{}
@@ -256,7 +255,7 @@ func (c *blockingApprovalController) Approve(id string, allow, session, persist 
 }
 
 type blockingAskController struct {
-	botController
+	stubBotController
 	emit     func(event.Event)
 	emitted  chan struct{}
 	answered chan []event.AskAnswer
@@ -769,13 +768,13 @@ func TestGatewaySessionOptionsUseConnectionToolApprovalOverride(t *testing.T) {
 		Platform:     PlatformFeishu,
 		ConnectionID: "feishu-lark",
 	})
-	if model != "lark-model" || mode != "yolo" {
-		t.Fatalf("lark session options = model %q mode %q, want lark-model/yolo", model, mode)
+	if model != "lark-model" || mode != control.ToolApprovalWorkspaceWrite {
+		t.Fatalf("lark session options = model %q mode %q, want lark-model/workspace-write", model, mode)
 	}
 
 	model, _, mode = gw.sessionOptionsForMessage(InboundMessage{Platform: PlatformFeishu})
-	if model != "platform-model" || mode != "ask" {
-		t.Fatalf("platform session options = model %q mode %q, want platform-model/ask", model, mode)
+	if model != "platform-model" || mode != control.ToolApprovalReadOnly {
+		t.Fatalf("platform session options = model %q mode %q, want platform-model/read-only", model, mode)
 	}
 }
 
@@ -881,7 +880,7 @@ func TestGatewayNewSessionRemembersRotatedSessionPath(t *testing.T) {
 
 func TestGatewayRecoveryRebindsLeaseAndRemembersSessionPath(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	dir := t.TempDir()
+	dir := schemaOneTempDir(t)
 	originalPath := filepath.Join(dir, "session.jsonl")
 
 	disk := agent.NewSession("sys")
@@ -974,7 +973,7 @@ func TestGatewayRecoveryRebindsLeaseAndRemembersSessionPath(t *testing.T) {
 	}
 	transcripts := matches[:0]
 	for _, path := range matches {
-		if !strings.HasSuffix(path, ".events.jsonl") && !strings.HasSuffix(path, ".conflicts.jsonl") {
+		if !strings.HasSuffix(path, ".events.jsonl") && !strings.HasSuffix(path, ".conflicts.jsonl") && !strings.HasSuffix(path, ".turns.jsonl") {
 			transcripts = append(transcripts, path)
 		}
 	}
@@ -1203,7 +1202,7 @@ func TestGatewayCloseSessionStateReleasesSessionLease(t *testing.T) {
 	lease.Release()
 }
 
-func TestGatewayYoloCommandUpdatesCurrentSessionAndConnectionDefault(t *testing.T) {
+func TestGatewayFullAccessCommandUpdatesCurrentSessionAndConnectionDefault(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	var persistedMode string
 	var persistedConnection string
@@ -1226,7 +1225,7 @@ func TestGatewayYoloCommandUpdatesCurrentSessionAndConnectionDefault(t *testing.
 		ChatType:     ChatDM,
 		ChatID:       "chat",
 		UserID:       "user",
-		Text:         "/yolo on",
+		Text:         "/mode danger-full-access",
 	}
 	key := BuildSessionKey(msg.Session())
 	ctrl := control.New(control.Options{})
@@ -1235,18 +1234,18 @@ func TestGatewayYoloCommandUpdatesCurrentSessionAndConnectionDefault(t *testing.
 
 	gw.handleSlashCommand(context.Background(), adapter, key, msg)
 
-	if got := ctrl.ToolApprovalMode(); got != control.ToolApprovalYolo {
-		t.Fatalf("current session mode = %q, want yolo", got)
+	if got := ctrl.ToolApprovalMode(); got != control.ToolApprovalDangerFullAccess {
+		t.Fatalf("current session mode = %q, want danger-full-access", got)
 	}
-	if got := gw.cfg.ConnectionChannels["feishu-lark"].ToolApprovalMode; got != control.ToolApprovalYolo {
-		t.Fatalf("connection default mode = %q, want yolo", got)
+	if got := gw.cfg.ConnectionChannels["feishu-lark"].ToolApprovalMode; got != control.ToolApprovalDangerFullAccess {
+		t.Fatalf("connection default mode = %q, want danger-full-access", got)
 	}
-	if persistedConnection != "feishu-lark" || persistedMode != control.ToolApprovalYolo {
-		t.Fatalf("persisted = %q/%q, want feishu-lark/yolo", persistedConnection, persistedMode)
+	if persistedConnection != "feishu-lark" || persistedMode != control.ToolApprovalDangerFullAccess {
+		t.Fatalf("persisted = %q/%q, want feishu-lark/danger-full-access", persistedConnection, persistedMode)
 	}
 	sent := adapter.sentMessages()
-	if len(sent) != 1 || !strings.Contains(sent[0].Text, "已开启 YOLO") {
-		t.Fatalf("sent = %#v, want yolo confirmation", sent)
+	if len(sent) != 1 || !strings.Contains(sent[0].Text, "已切换为完全权限") {
+		t.Fatalf("sent = %#v, want full-access confirmation", sent)
 	}
 }
 
@@ -1433,7 +1432,7 @@ func TestGatewayAskReplyUnblocksWedgedTurn(t *testing.T) {
 	}
 }
 
-func TestGatewayModeCommandSupportsAskAutoAndStatus(t *testing.T) {
+func TestGatewayModeCommandSupportsPermissionPresetsAndStatus(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	gw := NewGateway(GatewayConfig{
 		ConnectionChannels: map[string]ChannelConfig{
@@ -1451,16 +1450,16 @@ func TestGatewayModeCommandSupportsAskAutoAndStatus(t *testing.T) {
 	}
 	key := BuildSessionKey(msg.Session())
 
-	msg.Text = "/mode auto"
+	msg.Text = "/mode workspace-write"
 	gw.handleSlashCommand(context.Background(), adapter, key, msg)
-	if got := gw.cfg.ConnectionChannels["weixin-weixin"].ToolApprovalMode; got != control.ToolApprovalAuto {
-		t.Fatalf("/mode auto default = %q, want auto", got)
+	if got := gw.cfg.ConnectionChannels["weixin-weixin"].ToolApprovalMode; got != control.ToolApprovalWorkspaceWrite {
+		t.Fatalf("/mode workspace-write default = %q, want workspace-write", got)
 	}
 
-	msg.Text = "/yolo off"
+	msg.Text = "/mode read-only"
 	gw.handleSlashCommand(context.Background(), adapter, key, msg)
-	if got := gw.cfg.ConnectionChannels["weixin-weixin"].ToolApprovalMode; got != control.ToolApprovalAsk {
-		t.Fatalf("/yolo off default = %q, want ask", got)
+	if got := gw.cfg.ConnectionChannels["weixin-weixin"].ToolApprovalMode; got != control.ToolApprovalReadOnly {
+		t.Fatalf("/mode read-only default = %q, want read-only", got)
 	}
 
 	msg.Text = "/mode"
@@ -1469,12 +1468,12 @@ func TestGatewayModeCommandSupportsAskAutoAndStatus(t *testing.T) {
 	if len(sent) != 3 {
 		t.Fatalf("sent count = %d, want 3", len(sent))
 	}
-	if !strings.Contains(sent[2].Text, "当前工具审批模式：询问") {
-		t.Fatalf("status = %q, want ask status", sent[2].Text)
+	if !strings.Contains(sent[2].Text, "当前权限：仅可查看") {
+		t.Fatalf("status = %q, want read-only status", sent[2].Text)
 	}
 }
 
-func TestGatewayHelpMentionsYoloCommands(t *testing.T) {
+func TestGatewayHelpMentionsPermissionPresetCommands(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	gw := NewGateway(GatewayConfig{}, nil, logger)
 	adapter := newFakeAdapter(PlatformFeishu, "fake-feishu")
@@ -1486,8 +1485,8 @@ func TestGatewayHelpMentionsYoloCommands(t *testing.T) {
 	if len(sent) != 1 {
 		t.Fatalf("sent count = %d, want 1", len(sent))
 	}
-	if !strings.Contains(sent[0].Text, "/yolo on|off|auto|status") || !strings.Contains(sent[0].Text, "/mode yolo|ask|auto") {
-		t.Fatalf("help = %q, want yolo commands", sent[0].Text)
+	if !strings.Contains(sent[0].Text, "/mode read-only|workspace-write|danger-full-access|status") {
+		t.Fatalf("help = %q, want permission preset commands", sent[0].Text)
 	}
 	if !strings.Contains(sent[0].Text, "/projects") || !strings.Contains(sent[0].Text, "/attach session") || !strings.Contains(sent[0].Text, "/search all") {
 		t.Fatalf("help = %q, want project/session commands", sent[0].Text)
@@ -1964,7 +1963,7 @@ func TestGatewayUnknownDMGetsPairingCode(t *testing.T) {
 	}
 }
 
-func TestGatewayAdminRoleRequiredForYoloWhenConfigured(t *testing.T) {
+func TestGatewayAdminRoleRequiredForFullAccessWhenConfigured(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	gw := NewGateway(GatewayConfig{
 		Allowlist: AllowlistConfig{
@@ -1979,7 +1978,7 @@ func TestGatewayAdminRoleRequiredForYoloWhenConfigured(t *testing.T) {
 		ChatType: ChatDM,
 		ChatID:   "chat",
 		UserID:   "user",
-		Text:     "/yolo on",
+		Text:     "/mode danger-full-access",
 	}
 	key := BuildSessionKey(msg.Session())
 
@@ -2261,24 +2260,24 @@ func TestGatewaySessionOptionsUseChannelOverride(t *testing.T) {
 	if model != "feishu-model" || root != "/feishu" {
 		t.Fatalf("feishu options = %q,%q; want channel override", model, root)
 	}
-	if mode != "ask" {
-		t.Fatalf("feishu tool approval mode = %q, want ask", mode)
+	if mode != control.ToolApprovalWorkspaceWrite {
+		t.Fatalf("feishu tool approval mode = %q, want workspace-write", mode)
 	}
 
 	model, root, mode = gw.sessionOptionsForMessage(InboundMessage{Platform: PlatformWeixin})
 	if model != "global-model" || root != "/weixin" {
 		t.Fatalf("weixin options = %q,%q; want global model and channel root", model, root)
 	}
-	if mode != "ask" {
-		t.Fatalf("weixin tool approval mode = %q, want ask", mode)
+	if mode != control.ToolApprovalWorkspaceWrite {
+		t.Fatalf("weixin tool approval mode = %q, want workspace-write", mode)
 	}
 
 	model, root, mode = gw.sessionOptionsForMessage(InboundMessage{Platform: PlatformQQ})
 	if model != "global-model" || root != "/global" {
 		t.Fatalf("qq options = %q,%q; want global defaults", model, root)
 	}
-	if mode != "ask" {
-		t.Fatalf("qq tool approval mode = %q, want ask", mode)
+	if mode != control.ToolApprovalWorkspaceWrite {
+		t.Fatalf("qq tool approval mode = %q, want workspace-write", mode)
 	}
 }
 
@@ -2299,8 +2298,8 @@ func TestGatewaySessionOptionsPreferConnectionOverride(t *testing.T) {
 	if model != "lark-model" || root != "/lark" {
 		t.Fatalf("lark options = %q,%q; want connection override", model, root)
 	}
-	if mode != "ask" {
-		t.Fatalf("lark tool approval mode = %q, want ask", mode)
+	if mode != control.ToolApprovalWorkspaceWrite {
+		t.Fatalf("lark tool approval mode = %q, want workspace-write", mode)
 	}
 }
 
@@ -2327,8 +2326,8 @@ func TestGatewaySessionOptionsPreferConnectionSessionMappingWorkspace(t *testing
 		ChatID:       "group-1",
 		UserID:       "user-1",
 	})
-	if model != "global-model" || root != "/mapped" || mode != "ask" {
-		t.Fatalf("mapped options = %q,%q,%q; want global model, mapped workspace, ask", model, root, mode)
+	if model != "global-model" || root != "/mapped" || mode != control.ToolApprovalWorkspaceWrite {
+		t.Fatalf("mapped options = %q,%q,%q; want global model, mapped workspace, workspace-write", model, root, mode)
 	}
 
 	_, root, _ = gw.sessionOptionsForMessage(InboundMessage{
@@ -2419,11 +2418,11 @@ func TestGatewaySessionOptionsPreferRemoteRouteOverride(t *testing.T) {
 	}, nil, logger)
 
 	model, root, mode := gw.sessionOptionsForMessage(InboundMessage{Platform: PlatformFeishu, ConnectionID: "feishu-lark", ChatType: ChatGroup, ChatID: "group-1"})
-	if model != "route-model" || root != "/route" || mode != "yolo" {
+	if model != "route-model" || root != "/route" || mode != control.ToolApprovalWorkspaceWrite {
 		t.Fatalf("route options = %q,%q,%q; want route override", model, root, mode)
 	}
 	model, root, mode = gw.sessionOptionsForMessage(InboundMessage{Platform: PlatformFeishu, ConnectionID: "feishu-lark", ChatType: ChatGroup, ChatID: "group-2"})
-	if model != "lark-model" || root != "/lark" || mode != "auto" {
+	if model != "lark-model" || root != "/lark" || mode != control.ToolApprovalWorkspaceWrite {
 		t.Fatalf("non-matching options = %q,%q,%q; want connection override", model, root, mode)
 	}
 }
@@ -2467,17 +2466,17 @@ func TestSessionProfileConsumesPersistedMapping(t *testing.T) {
 		t.Fatal("mapping-derived path must be optional (degradable), not an attach-style hard binding")
 	}
 
-	// A missing target falls back to the deterministic per-chat path instead of
-	// a fresh timestamp session, keeping the chat on one stable file.
+	// A missing legacy target falls back to the deterministic per-chat v3
+	// identity instead of manufacturing another transcript path.
 	if err := os.Remove(mapped); err != nil {
 		t.Fatal(err)
 	}
 	profile = gw.sessionProfileForMessage(msg)
-	if profile.sessionPath == "" {
-		t.Fatal("missing mapped file should fall back to a stable chat path, got empty")
+	if profile.sessionRef.SessionID == "" || profile.sessionPath != "" {
+		t.Fatalf("missing mapped file fallback = ref %+v path %q", profile.sessionRef, profile.sessionPath)
 	}
-	if !profile.sessionPathOptional {
-		t.Fatal("stable fallback must stay optional (degradable)")
+	if !profile.sessionRefOptional {
+		t.Fatal("stable v3 fallback must stay optional (degradable)")
 	}
 
 	// An /attach override outranks the mapping.
@@ -2489,8 +2488,8 @@ func TestSessionProfileConsumesPersistedMapping(t *testing.T) {
 }
 
 // Without any persisted mapping or /attach binding, the session profile must
-// resolve to a deterministic per-chat file so the same chat reuses one
-// conversation across restarts instead of spawning a fresh timestamp session
+// resolve to a deterministic per-chat v3 identity so the same chat reuses one
+// conversation across restarts instead of spawning a fresh session
 // per message (the chat-side analogue of dsh-dingtalk-channel's `ding-<chatId>`).
 func TestSessionProfileFallsBackToStableChatPath(t *testing.T) {
 	dir := t.TempDir()
@@ -2507,50 +2506,38 @@ func TestSessionProfileFallsBackToStableChatPath(t *testing.T) {
 	}
 	dm := InboundMessage{Platform: PlatformFeishu, ConnectionID: "conn-1", ChatID: "oc_abc", ChatType: ChatDM}
 	dmProfile := gw.sessionProfileForMessage(dm)
-	if dmProfile.sessionPath == "" {
-		t.Fatal("DM without a mapping must resolve to a stable session path")
+	if dmProfile.sessionRef.SessionID == "" || dmProfile.sessionPath != "" {
+		t.Fatalf("DM without a mapping resolved to ref %+v path %q", dmProfile.sessionRef, dmProfile.sessionPath)
 	}
-	if !dmProfile.sessionPathOptional {
-		t.Fatal("stable fallback path must be optional (degradable), like a mapping")
+	if !dmProfile.sessionRefOptional {
+		t.Fatal("stable fallback identity must be optional (degradable), like a mapping")
 	}
-	// Same chat, repeated messages: identical path.
-	if again := gw.sessionProfileForMessage(dm); canonicalBotPath(again.sessionPath) != canonicalBotPath(dmProfile.sessionPath) {
-		t.Fatalf("same DM chat must map to one stable file: first=%q second=%q", dmProfile.sessionPath, again.sessionPath)
+	// Same chat, repeated messages: identical identity.
+	if again := gw.sessionProfileForMessage(dm); again.sessionRef.SessionID != dmProfile.sessionRef.SessionID {
+		t.Fatalf("same DM chat must map to one stable identity: first=%q second=%q", dmProfile.sessionRef.SessionID, again.sessionRef.SessionID)
 	}
-	// Different chat: different file.
+	// Different chat: different identity.
 	other := InboundMessage{Platform: PlatformFeishu, ConnectionID: "conn-1", ChatID: "oc_xyz", ChatType: ChatDM}
 	otherProfile := gw.sessionProfileForMessage(other)
-	if canonicalBotPath(otherProfile.sessionPath) == canonicalBotPath(dmProfile.sessionPath) {
-		t.Fatalf("different chats must map to different files, both=%q", otherProfile.sessionPath)
+	if otherProfile.sessionRef.SessionID == dmProfile.sessionRef.SessionID {
+		t.Fatalf("different chats must map to different identities, both=%q", otherProfile.sessionRef.SessionID)
 	}
 	// Group chat scopes per sender, mirroring BuildSessionKey.
 	groupA := InboundMessage{Platform: PlatformFeishu, ConnectionID: "conn-1", ChatID: "oc_grp", ChatType: ChatGroup, UserID: "ou_a"}
 	groupB := InboundMessage{Platform: PlatformFeishu, ConnectionID: "conn-1", ChatID: "oc_grp", ChatType: ChatGroup, UserID: "ou_b"}
 	pa := gw.sessionProfileForMessage(groupA)
 	pb := gw.sessionProfileForMessage(groupB)
-	if pa.sessionPath == "" || pb.sessionPath == "" {
-		t.Fatal("group messages must resolve to stable session paths")
+	if pa.sessionRef.SessionID == "" || pb.sessionRef.SessionID == "" {
+		t.Fatal("group messages must resolve to stable session identities")
 	}
-	if canonicalBotPath(pa.sessionPath) == canonicalBotPath(pb.sessionPath) {
-		t.Fatalf("different group senders must map to different files, both=%q", pa.sessionPath)
+	if pa.sessionRef.SessionID == pb.sessionRef.SessionID {
+		t.Fatalf("different group senders must map to different identities, both=%q", pa.sessionRef.SessionID)
 	}
-	if again := gw.sessionProfileForMessage(groupA); canonicalBotPath(again.sessionPath) != canonicalBotPath(pa.sessionPath) {
-		t.Fatalf("same group sender must map to one stable file: first=%q second=%q", pa.sessionPath, again.sessionPath)
+	if again := gw.sessionProfileForMessage(groupA); again.sessionRef.SessionID != pa.sessionRef.SessionID {
+		t.Fatalf("same group sender must map to one stable identity: first=%q second=%q", pa.sessionRef.SessionID, again.sessionRef.SessionID)
 	}
-	// The stable path must live under the resolved session dir and carry a
-	// readable, bot-scoped name.
-	projectDir := config.ProjectSessionDir(dir)
-	if projectDir == "" {
-		t.Fatal("ProjectSessionDir must resolve for the test workspace root")
-	}
-	if !strings.HasPrefix(filepath.Base(dmProfile.sessionPath), "bot-") {
-		t.Fatalf("stable path name should be bot-scoped, got %q", filepath.Base(dmProfile.sessionPath))
-	}
-	if !strings.HasSuffix(dmProfile.sessionPath, ".jsonl") {
-		t.Fatalf("stable path must end in .jsonl, got %q", dmProfile.sessionPath)
-	}
-	if !strings.HasPrefix(dmProfile.sessionPath, projectDir+string(filepath.Separator)) {
-		t.Fatalf("stable path must live under the resolved session dir, got %q (want prefix %q)", dmProfile.sessionPath, projectDir)
+	if !strings.HasPrefix(dmProfile.sessionRef.SessionID, "bot-") {
+		t.Fatalf("stable identity should be bot-scoped, got %q", dmProfile.sessionRef.SessionID)
 	}
 }
 
@@ -2569,7 +2556,7 @@ func TestDegradedMappingStateStaysStable(t *testing.T) {
 	}
 }
 
-type stubPathController struct{ botController }
+type stubPathController struct{ stubBotController }
 
 func (stubPathController) SessionPath() string   { return "" }
 func (stubPathController) WorkspaceRoot() string { return "" }

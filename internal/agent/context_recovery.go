@@ -5,11 +5,13 @@ import (
 	"fmt"
 
 	"reasonix/internal/event"
+	"reasonix/internal/i18n"
 	"reasonix/internal/provider"
 )
 
 type contextRecoveryBudget struct {
 	retries int
+	failure error
 }
 
 func (a *Agent) recoverContextLimit(ctx context.Context, frozen samplingRequest, err error, budget *contextRecoveryBudget) (samplingRequest, bool, string) {
@@ -34,6 +36,11 @@ func (a *Agent) recoverContextLimit(ctx context.Context, frozen samplingRequest,
 		prompt = a.estimatedRequestTokens(frozen.req)
 	}
 	physical := window - prompt - outputBudgetReserve
+	// An overflow without token numbers cannot size a retry: the estimate that
+	// admitted the request is the number the provider just rejected.
+	if limit.PromptTokens <= 0 && limit.WindowTokens <= 0 {
+		physical = 0
+	}
 	if physical > 0 && budget.retries == 0 {
 		next := freezeProviderRequest(frozen.req)
 		next.MaxTokens = physical
@@ -66,24 +73,31 @@ func (a *Agent) recoverContextLimit(ctx context.Context, frozen samplingRequest,
 		return samplingRequest{req: next}, true, contextRecoveryLearnedRetry
 	}
 	if physical <= 0 && budget.retries == 0 {
+		work, finish := a.beginCompactionRun(ctx)
+		defer func() { budget.failure = finish(budget.failure) }()
+		ctx = work
 		startProjectionVersion := a.currentProjectionVersion()
 		if _, perr := a.contextManager().Prepare(ctx, ContextPreparePolicy{
 			Trigger: CompactionTriggerOverflow,
 			Force:   true,
 		}); perr != nil {
+			budget.failure = perr
 			a.setLastRecovery(contextRecoveryFailed)
 			return samplingRequest{}, false, contextRecoveryFailed
 		}
 		if a.currentProjectionVersion() <= startProjectionVersion {
+			budget.failure = fmt.Errorf("%w: %w", ErrCompactionRequired, summaryError(errCheckpointRejected))
 			a.setLastRecovery(contextRecoveryFailed)
 			return samplingRequest{}, false, contextRecoveryFailed
 		}
 		rebuilt, rerr := a.buildSamplingRequest(ctx, CompactionTriggerPressure)
 		if rerr != nil {
+			budget.failure = rerr
 			a.setLastRecovery(contextRecoveryFailed)
 			return samplingRequest{}, false, contextRecoveryFailed
 		}
 		if aerr := a.applyAdmissionToRequest(&rebuilt.req); aerr != nil {
+			budget.failure = aerr
 			a.setLastRecovery(contextRecoveryFailed)
 			return samplingRequest{}, false, contextRecoveryFailed
 		}
@@ -102,9 +116,9 @@ func (a *Agent) emitContextRecoveryNotice(kind string, limit *provider.ContextLi
 	if a == nil || a.svc.sink == nil {
 		return
 	}
-	text := "Adjusted the output budget to fit the shared context window."
+	text := i18n.M.ContextRecoveryAdjustBudget
 	if kind == contextRecoveryCompacted {
-		text = "Compacted context after a shared-window overflow and retried."
+		text = i18n.M.ContextRecoveryCompacted
 	}
 	detail := fmt.Sprintf("recovery=%s next_output=%d", kind, nextOutput)
 	if limit != nil {

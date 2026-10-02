@@ -48,7 +48,7 @@ func TestProjectTreeShowsDetachedRuntimeStatus(t *testing.T) {
 
 	ctrl.Submit("keep detached runtime running")
 	<-runner.started
-	nodes := app.ListProjectTree()
+	nodes := mustListProjectTree(t, app)
 	if len(nodes) != 1 || len(nodes[0].Children) != 1 {
 		t.Fatalf("project tree = %#v, want one global topic", nodes)
 	}
@@ -78,7 +78,12 @@ func TestProjectTreeSplitsMultipleRuntimeSessionsInSameTopic(t *testing.T) {
 	app := NewApp()
 	runnerA := &blockingRunner{started: make(chan struct{}), release: make(chan struct{})}
 	runnerB := &blockingRunner{started: make(chan struct{}), release: make(chan struct{})}
-	ctrlA := control.New(control.Options{Runner: runnerA, SessionDir: dir, SessionPath: sessionA, Label: "a", Sink: event.Discard})
+	asks := make(chan struct{}, 1)
+	ctrlA := control.New(control.Options{Runner: runnerA, SessionDir: dir, SessionPath: sessionA, Label: "a", Sink: event.FuncSink(func(e event.Event) {
+		if e.Kind == event.AskRequest {
+			asks <- struct{}{}
+		}
+	})})
 	ctrlB := control.New(control.Options{Runner: runnerB, SessionDir: dir, SessionPath: sessionB, Label: "b", Sink: event.Discard})
 	defer ctrlA.Close()
 	defer ctrlB.Close()
@@ -116,31 +121,40 @@ func TestProjectTreeSplitsMultipleRuntimeSessionsInSameTopic(t *testing.T) {
 	ctrlB.Submit("block B")
 	<-runnerA.started
 	<-runnerB.started
+	askCtx, cancelAsk := context.WithCancel(t.Context())
+	askDone := make(chan struct{})
+	go func() {
+		defer close(askDone)
+		_, _ = ctrlA.Ask(askCtx, []event.AskQuestion{{ID: "choice", Prompt: "Choose"}})
+	}()
+	defer func() { cancelAsk(); <-askDone }()
+	select {
+	case <-asks:
+	case <-time.After(3 * time.Second):
+		t.Fatal("waiting prompt was not committed")
+	}
 
-	nodes := app.ListProjectTree()
-	if len(nodes) != 1 || len(nodes[0].Children) != 1 {
-		t.Fatalf("project tree = %#v, want one global topic", nodes)
-	}
-	topic := nodes[0].Children[0]
-	if topic.Status != "" || topic.Running {
-		t.Fatalf("topic should not merge child runtime statuses: %+v", topic)
-	}
-	if len(topic.Children) != 2 {
-		t.Fatalf("topic children = %#v, want two session runtime rows", topic.Children)
+	nodes := mustListProjectTree(t, app)
+	if len(nodes) != 1 || len(nodes[0].Children) != 2 {
+		t.Fatalf("project tree = %#v, want two independent global sessions", nodes)
 	}
 	statusByPath := map[string]string{}
-	for _, child := range topic.Children {
+	for _, child := range nodes[0].Children {
+		if child.TopicID != topicID || len(child.Children) != 0 {
+			t.Fatalf("session projection = %#v, want flat independent row", child)
+		}
 		statusByPath[sessionRuntimeKey(child.SessionPath)] = child.Status
 	}
 	if statusByPath[sessionRuntimeKey(sessionA)] != topicStatusWaitingConfirmation {
-		t.Fatalf("session A status = %q, want waiting; children=%#v", statusByPath[sessionRuntimeKey(sessionA)], topic.Children)
+		t.Fatalf("session A status = %q, want waiting; sessions=%#v", statusByPath[sessionRuntimeKey(sessionA)], nodes[0].Children)
 	}
 	if statusByPath[sessionRuntimeKey(sessionB)] != topicStatusThinking {
-		t.Fatalf("session B status = %q, want thinking; children=%#v", statusByPath[sessionRuntimeKey(sessionB)], topic.Children)
+		t.Fatalf("session B status = %q, want thinking; sessions=%#v", statusByPath[sessionRuntimeKey(sessionB)], nodes[0].Children)
 	}
 
 	close(runnerA.release)
 	close(runnerB.release)
+	cancelAsk()
 	waitNotRunning(t, ctrlA)
 	waitNotRunning(t, ctrlB)
 }
@@ -185,7 +199,7 @@ func TestProjectTreeShowsBackgroundJobStatus(t *testing.T) {
 	app.tabOrder = []string{"job"}
 	app.activeTabID = "job"
 
-	nodes := app.ListProjectTree()
+	nodes := mustListProjectTree(t, app)
 	if len(nodes) != 1 || len(nodes[0].Children) != 1 {
 		t.Fatalf("project tree = %#v, want one global topic", nodes)
 	}
@@ -210,7 +224,7 @@ func TestProjectTreeShowsBackgroundJobStatus(t *testing.T) {
 
 	close(release)
 	waitNoJobs(t, ctrl)
-	nodes = app.ListProjectTree()
+	nodes = mustListProjectTree(t, app)
 	if len(nodes) != 1 || len(nodes[0].Children) != 1 {
 		t.Fatalf("project tree after job finish = %#v, want one global topic", nodes)
 	}
@@ -291,6 +305,25 @@ func TestTopicActivityStatusPresentsReadinessSeparatelyFromPause(t *testing.T) {
 	}
 	if status, ok := topicActivityStatusFromEvent(event.Event{Kind: event.TurnDone}); !ok || status != "" {
 		t.Fatalf("clean turn end = (%q, %v), want cleared status", status, ok)
+	}
+}
+
+func TestTopicActivityStatusClearsOnCompactionDone(t *testing.T) {
+	if status, ok := topicActivityStatusFromEvent(event.Event{Kind: event.CompactionStarted}); !ok || status != topicStatusThinking {
+		t.Fatalf("compaction start = (%q, %v), want (%q, true)", status, ok, topicStatusThinking)
+	}
+	manual := event.Event{Kind: event.CompactionDone, Compaction: event.Compaction{Trigger: agent.CompactionTriggerManual}}
+	if status, ok := topicActivityStatusFromEvent(manual); !ok || status != "" {
+		t.Fatalf("manual compaction done = (%q, %v), want cleared status (no thinking spinner)", status, ok)
+	}
+}
+
+func TestTopicActivityStatusKeepsThinkingAfterAutomaticCompaction(t *testing.T) {
+	for _, trigger := range []string{agent.CompactionTriggerPressure, agent.CompactionTriggerOverflow, agent.CompactionTriggerTool, "auto", ""} {
+		done := event.Event{Kind: event.CompactionDone, Compaction: event.Compaction{Trigger: trigger}}
+		if status, ok := topicActivityStatusFromEvent(done); !ok || status != topicStatusThinking {
+			t.Fatalf("compaction done (trigger %q) = (%q, %v), want (%q, true): the turn is still running", trigger, status, ok, topicStatusThinking)
+		}
 	}
 }
 

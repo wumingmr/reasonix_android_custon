@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"reasonix/internal/sandbox"
+	"reasonix/internal/tool"
 )
 
 func TestBashForegroundTimeoutConfig(t *testing.T) {
@@ -16,7 +17,7 @@ func TestBashForegroundTimeoutConfig(t *testing.T) {
 	b := bash{shell: sh, timeout: 150 * time.Millisecond}
 
 	start := time.Now()
-	out, err := b.Execute(context.Background(), argsJSON(t, map[string]any{"command": longSleepCommand(sh)}))
+	out, err := b.Execute(fullAccessBashTestContext(t.Context()), argsJSON(t, map[string]any{"command": longSleepCommand(sh)}))
 	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatalf("expected timeout error, got nil (out=%q)", out)
@@ -33,6 +34,7 @@ func TestBashExplicitZeroTimeoutDoesNotCapForeground(t *testing.T) {
 	sh := sandbox.ResolveShell("", "", nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	ctx = fullAccessBashTestContext(ctx)
 
 	start := time.Now()
 	out, err := (bash{shell: sh, timeout: 0}).Execute(ctx, argsJSON(t, map[string]any{"command": oneSecondCommand(sh)}))
@@ -50,15 +52,38 @@ func TestBashExplicitZeroTimeoutDoesNotCapForeground(t *testing.T) {
 
 func TestWorkspacePassesBashTimeout(t *testing.T) {
 	sh := sandbox.ResolveShell("", "", nil)
-	b := byName(Workspace{Dir: t.TempDir(), BashTimeout: 150 * time.Millisecond}.Tools())["bash"]
+	var shells []tool.Tool
+	for _, candidate := range (Workspace{Dir: t.TempDir(), BashTimeout: 150 * time.Millisecond}).Tools() {
+		if tool.IsShellToolName(candidate.Name()) {
+			shells = append(shells, candidate)
+		}
+	}
+	if len(shells) != 1 {
+		t.Fatalf("workspace shell tools = %v, want exactly one primary shell", toolNames(shells))
+	}
+	wantName := "bash"
+	if sh.Kind == sandbox.ShellPowerShell {
+		wantName = "pwsh"
+	}
+	if shells[0].Name() != wantName {
+		t.Fatalf("workspace shell name = %q, want %q", shells[0].Name(), wantName)
+	}
 
-	out, err := b.Execute(context.Background(), argsJSON(t, map[string]any{"command": longSleepCommand(sh)}))
+	out, err := shells[0].Execute(fullAccessBashTestContext(t.Context()), argsJSON(t, map[string]any{"command": longSleepCommand(sh), "description": "exercise configured shell timeout"}))
 	if err == nil {
 		t.Fatalf("expected workspace bash timeout, got nil (out=%q)", out)
 	}
 	if !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("error = %v, want timeout", err)
 	}
+}
+
+func toolNames(tools []tool.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, candidate := range tools {
+		names = append(names, candidate.Name())
+	}
+	return names
 }
 
 func TestNormalizeBashRunErrorAllowsPreservedWaitDelay(t *testing.T) {

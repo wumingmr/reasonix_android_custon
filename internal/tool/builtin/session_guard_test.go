@@ -38,6 +38,7 @@ func TestSessionDataGuardDeniesSessionStores(t *testing.T) {
 		projectSession,
 		filepath.Join(root, "sessions", "sub", "new.jsonl"),                     // not-yet-existing file under the store
 		filepath.Join(root, "projects", "any-slug", "sessions", "x.jsonl.meta"), // CAS ledger sidecar
+		filepath.Join(root, "projects", "@assigned", ".workspace-root"),         // project state ownership
 	} {
 		if err := g.Check(target); err == nil {
 			t.Errorf("Check(%q) = nil, want session-data denial", target)
@@ -337,12 +338,13 @@ func TestSessionDataGuardCommandHintRelativeFromStateRoot(t *testing.T) {
 }
 
 func TestBashAppendsSessionDataHint(t *testing.T) {
+	requirePOSIXShellTest(t)
 	root, cliSession, _ := stateRootFor(t)
 	guard := NewSessionDataGuard(root, nil)
 	b := ConfineBash(sandbox.Spec{Mode: "off"}, guard)
 
 	args, _ := json.Marshal(map[string]string{"command": "echo " + cliSession})
-	out, err := b.Execute(context.Background(), args)
+	out, err := b.Execute(fullAccessBashTestContext(t.Context()), args)
 	if err != nil {
 		t.Fatalf("bash: %v", err)
 	}
@@ -351,7 +353,7 @@ func TestBashAppendsSessionDataHint(t *testing.T) {
 	}
 	// An ordinary command stays clean.
 	args, _ = json.Marshal(map[string]string{"command": "echo hello"})
-	out, err = b.Execute(context.Background(), args)
+	out, err = b.Execute(fullAccessBashTestContext(t.Context()), args)
 	if err != nil {
 		t.Fatalf("bash: %v", err)
 	}

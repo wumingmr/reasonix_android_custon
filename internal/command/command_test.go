@@ -72,7 +72,7 @@ func TestLoadDecodesGB18030CommandFile(t *testing.T) {
 	dir := t.TempDir()
 	body := "---\ndescription: 中文命令\nargument-hint: [主题]\n---\n请总结 $ARGUMENTS。"
 	path := filepath.Join(dir, "summary.md")
-	if err := os.WriteFile(path, fileencoding.Encode(body, fileencoding.GB18030), 0o644); err != nil {
+	if err := os.WriteFile(path, fileencoding.MustEncode(body, fileencoding.GB18030), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

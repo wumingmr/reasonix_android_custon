@@ -12,10 +12,23 @@ both scenes.
 
 - Built-in styles, user themes, backgrounds, live preview, import/export, local library
 - Full background on the home (empty) scene; reduced opacity + directional overlay on task scenes
-- Works with Classic / Workbench / Creation and `auto` / `light` / `dark`
+- Works with Workbench / Creation and `auto` / `light` / `dark`
 - **No** online marketplace, cloud sync, or script plugins
 
 ## Theme experience (settings IA)
+
+Chat code fences use a language header and an always-visible copy control on
+the same opaque surface as the source. Syntax colors distinguish keywords,
+strings, functions, numbers and comments; they are corrected against the final
+code and diff backgrounds to reach at least 4.5:1 contrast, including inverted
+and translucent custom palettes. Wallpaper opacity does not affect the code
+or its header controls. Theme changes recolor existing syntax nodes through CSS.
+Growing code fences use the same viewer; unchanged highlighted lines retain
+their DOM, while large appended revisions preserve the colored prefix until
+idle highlighting catches up. Unknown languages remain plain text.
+
+Run `pnpm test:code-browser` in `desktop/frontend` for the actual Markdown
+component's theme, streaming, copy and narrow-viewport regressions.
 
 Appearance is split into two surfaces (no third entry):
 

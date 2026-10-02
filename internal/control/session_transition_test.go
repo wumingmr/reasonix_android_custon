@@ -20,7 +20,7 @@ func transitionController(t *testing.T) (*Controller, *agent.Agent, *SessionLeas
 		t.Fatal(err)
 	}
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
-	ctrl := New(Options{Runner: exec, Executor: exec, SessionDir: dir, SessionPath: path, Sink: event.Discard})
+	ctrl := newOwnedTestController(t, Options{Runner: exec, Executor: exec, SessionDir: dir, SessionPath: path, Sink: event.Discard})
 	keeper := NewSessionLeaseKeeper()
 	if err := keeper.Rebind(path); err != nil {
 		t.Fatal(err)

@@ -3,6 +3,7 @@ package main
 import (
 	"reasonix/internal/boot"
 	"reasonix/internal/control"
+	"reasonix/internal/skill/skillwatch"
 )
 
 func rebuildTabRuntime(a *App, tab *WorkspaceTab, old *control.Controller, opts boot.Options) (*boot.BuildResult, error) {
@@ -27,7 +28,7 @@ func (a *App) tabBuildResultForController(tab *WorkspaceTab, ctrl *control.Contr
 	}
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	if tab.ID != "" && a.tabs[tab.ID] != tab {
+	if tab.ID != "" && !a.ownsRuntimeTabLocked(tab) {
 		return nil
 	}
 	res := tab.lastBuildResult
@@ -43,7 +44,7 @@ func (a *App) setTabLastBuildResult(tab *WorkspaceTab, res *boot.BuildResult) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if tab.ID != "" && a.tabs[tab.ID] != tab {
+	if tab.ID != "" && !a.ownsRuntimeTabLocked(tab) {
 		return
 	}
 	tab.lastBuildResult = res
@@ -51,17 +52,18 @@ func (a *App) setTabLastBuildResult(tab *WorkspaceTab, res *boot.BuildResult) {
 
 // RuntimeDoctorReport is the desktop/Wails view of extension runtime diagnostics.
 type RuntimeDoctorReport struct {
-	Text                  string `json:"text"`
-	PublishedGen          uint64 `json:"publishedGeneration"`
-	AllowResume           bool   `json:"allowResume"`
-	CleanRollback         bool   `json:"cleanRollback"`
-	HasIrreversible       bool   `json:"hasIrreversible"`
-	NoOpRebuilds          uint64 `json:"noOpRebuilds"`
-	FullRebuilds          uint64 `json:"fullRebuilds"`
-	SubgraphRebuilds      uint64 `json:"subgraphRebuilds"`
-	StaleDrops            uint64 `json:"staleDrops"`
-	AdmissionRejected     uint64 `json:"admissionRejected"`
-	RuntimeOwnerFallbacks uint64 `json:"runtimeOwnerFallbacks"`
+	Text                  string                  `json:"text"`
+	PublishedGen          uint64                  `json:"publishedGeneration"`
+	AllowResume           bool                    `json:"allowResume"`
+	CleanRollback         bool                    `json:"cleanRollback"`
+	HasIrreversible       bool                    `json:"hasIrreversible"`
+	NoOpRebuilds          uint64                  `json:"noOpRebuilds"`
+	FullRebuilds          uint64                  `json:"fullRebuilds"`
+	SubgraphRebuilds      uint64                  `json:"subgraphRebuilds"`
+	StaleDrops            uint64                  `json:"staleDrops"`
+	AdmissionRejected     uint64                  `json:"admissionRejected"`
+	RuntimeOwnerFallbacks uint64                  `json:"runtimeOwnerFallbacks"`
+	SkillWatch            *skillwatch.Diagnostics `json:"skillWatch,omitempty"`
 }
 
 // RuntimeDoctor returns process-wide + active-tab extension runtime diagnostics
@@ -93,5 +95,6 @@ func (a *App) RuntimeDoctor() RuntimeDoctorReport {
 		StaleDrops:            report.Metrics.StaleDrops,
 		AdmissionRejected:     report.Metrics.AdmissionRejected,
 		RuntimeOwnerFallbacks: report.RuntimeOwnerFallbacks,
+		SkillWatch:            report.SkillWatch,
 	}
 }

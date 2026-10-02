@@ -20,14 +20,31 @@ const connector = "  ⎿  "
 // connectorBlock renders lines under the connector: the first carries the "⎿"
 // gutter, the rest align beneath it. Returns "" for no lines.
 func connectorBlock(lines []string) string {
+	return renderConnectorBlock(lines, false)
+}
+
+// connectorBlockCopy mirrors connectorBlock and marks only its generated
+// prefixes as omitted copy spans. The caller stores this rendition beside the
+// visible fixed block; it never reaches the terminal.
+func connectorBlockCopy(lines []string) string {
+	return renderConnectorBlock(lines, true)
+}
+
+func renderConnectorBlock(lines []string, copyMode bool) string {
 	if len(lines) == 0 {
 		return ""
 	}
 	indent := strings.Repeat(" ", len([]rune(connector)))
+	firstPrefix := dim(connector)
+	nextPrefix := indent
+	if copyMode {
+		firstPrefix = copyOmitSpan(firstPrefix)
+		nextPrefix = copyOmitSpan(nextPrefix)
+	}
 	var out strings.Builder
-	out.WriteString(dim(connector) + lines[0])
+	out.WriteString(firstPrefix + lines[0])
 	for _, ln := range lines[1:] {
-		out.WriteString("\n" + indent + ln)
+		out.WriteString("\n" + nextPrefix + ln)
 	}
 	return out.String()
 }
@@ -35,8 +52,11 @@ func connectorBlock(lines []string) string {
 // toolVerb maps a tool's snake_case id to the verb shown in its card.
 var toolVerb = map[string]string{
 	"bash":           "Bash",
+	"pwsh":           "PowerShell",
 	"bash_output":    "Output",
+	"job_output":     "Output",
 	"kill_shell":     "Kill",
+	"job_kill":       "Kill",
 	"wait":           "Wait",
 	"read_file":      "Read",
 	"write_file":     "Write",
@@ -60,8 +80,11 @@ var toolVerb = map[string]string{
 // special-cased — it carries a job_ids array, not a scalar).
 var toolArgKey = map[string]string{
 	"bash":          "command",
+	"pwsh":          "description",
 	"bash_output":   "job_id",
+	"job_output":    "job_id",
 	"kill_shell":    "job_id",
+	"job_kill":      "job_id",
 	"read_file":     "path",
 	"write_file":    "path",
 	"edit_file":     "path",
@@ -101,11 +124,11 @@ func toolDot(name string) string {
 
 var toolCategory = map[string]string{
 	"read_file": "read", "ls": "read", "glob": "read", "grep": "read",
-	"web_fetch": "read", "web_search": "read", "bash_output": "read",
+	"web_fetch": "read", "web_search": "read", "bash_output": "read", "job_output": "read",
 	"write_file": "write", "edit_file": "write", "multi_edit": "write",
 	"move_file": "write", "delete_range": "write", "delete_symbol": "write", "notebook_edit": "write",
-	"bash": "exec",
-	"wait": "proc", "kill_shell": "proc",
+	"bash": "exec", "pwsh": "exec", "powershell": "exec",
+	"wait": "proc", "kill_shell": "proc", "job_kill": "proc",
 }
 
 // toolDisplayName returns the card verb for a tool: a mapped builtin verb, the
@@ -123,7 +146,7 @@ func toolDisplayName(name string) string {
 // shellToolDisplayName prefers the actual interpreter label when structured
 // execution metadata is present (Git Bash / Windows PowerShell / PowerShell 7+).
 func shellToolDisplayName(name string, ex *event.ShellExecution) string {
-	if name == "bash" && ex != nil && ex.Shell != "" {
+	if tool.IsShellToolName(name) && ex != nil && ex.Shell != "" {
 		return shellrun.DisplayName(&tool.ShellExecution{Shell: ex.Shell, ShellVersion: ex.ShellVersion})
 	}
 	return toolDisplayName(name)

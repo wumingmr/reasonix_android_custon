@@ -4,6 +4,7 @@ import { act } from "react";
 import { workspaceFileIcon } from "../components/WorkspaceFileIcon";
 import type { DirEntry, FilePreview, WorkspaceChangeDetailView, WorkspaceChangesView } from "../lib/types";
 import { flushPromises, renderFilesWorkspace, renderWorkspace, waitFor } from "./workspace-panel-test-harness";
+import { performResourceAction } from "../lib/fileNavigationCommands";
 
 let passed = 0;
 let failed = 0;
@@ -65,13 +66,11 @@ console.log("\nworkspace changes git errors");
       },
     },
   );
-  await waitFor("turn verification summary", () => document.body.textContent?.includes("Turn verification") === true);
-  const text = document.querySelector(".workspace-completion-summary")?.textContent ?? "";
-  ok(text.includes("Partially complete"), "change panel localizes the completion verdict");
-  ok(text.includes("1 checks failed") && text.includes("2 checks skipped"), "change panel shows detailed check counts on demand");
-  ok(text.includes("stale checks") && text.includes("Other"), "change panel uses safe labels for known and unknown gaps");
-  ok(text.includes("Turn verification limited"), "change panel explains constrained verification without exposing an internal flag");
-  ok(!text.includes("balanced") && !text.includes("partial") && !text.includes("stale_check") && !text.includes("future_internal_value"), "change panel exposes no raw enum values");
+  await waitFor("workspace changes without a turn request", () => document.body.textContent?.includes("No changed files") === true);
+  ok(document.querySelector(".workspace-completion-summary") === null, "whole workspace does not imply that the latest turn verifies all files");
+  ok(document.querySelector(".workspace-turn-result") === null, "turn inspection requires its explicit view request");
+  const text = document.body.textContent ?? "";
+  ok(!text.includes("balanced") && !text.includes("stale_check") && !text.includes("future_internal_value"), "whole workspace exposes no completion enum values");
   await act(async () => {
     root.unmount();
   });
@@ -125,7 +124,6 @@ console.log("\nworkspace changes git errors");
       gitAvailable: true,
     },
     {
-      creationMode: true,
       history: [{ hash: "1234567890", author: "Agent", date: "2026-07-10T12:00:00Z", message: "older commit" }],
     },
   );
@@ -489,8 +487,11 @@ console.log("\nworkspace changes git errors");
         binary: false,
       }),
     },
-    { revealPathRequest: { id: 1, path: "app.ts" } },
   );
+  await act(async () => {
+    await performResourceAction({ source: "workspace", hostId: "local", tabId: "tab-a", path: "app.ts" }, "preview");
+    await flushPromises();
+  });
 
   await waitFor("code preview", () => document.body.textContent?.includes("const value = 1;") === true);
   const previewBody = document.querySelector(".workspace-preview__body") as HTMLElement;

@@ -30,7 +30,7 @@ func reloadTestModel(ctrl control.SessionAPI, rebuild runtimeRebuilder) *chatTUI
 // runtime switch in flight queues exactly one reload.
 func TestReloadDispositionDecisionTable(t *testing.T) {
 	rebuilder, _ := stubRuntimeRebuilder(nil, errors.New("unused"))
-	idleCtrl := func() *control.Controller { return control.New(control.Options{}) }
+	idleCtrl := func() *control.Controller { return newOwnedTestController(t, control.Options{}) }
 
 	// No rebuild seam (headless/test surface): unavailable even when idle.
 	m := reloadTestModel(idleCtrl(), nil)
@@ -59,8 +59,8 @@ func TestReloadDispositionDecisionTable(t *testing.T) {
 // → idle → rebuild arc: exactly one queued reload, exactly one build, and the
 // swap message carrying both controllers (the old one retires after the swap).
 func TestRunReloadCommandQueuesOnceAndDrainsWhenIdle(t *testing.T) {
-	oldCtrl := control.New(control.Options{Label: "old"})
-	newCtrl := control.New(control.Options{Label: "new"})
+	oldCtrl := newOwnedTestController(t, control.Options{Label: "old"})
+	newCtrl := newOwnedTestController(t, control.Options{Label: "new"})
 	rebuilder, calls := stubRuntimeRebuilder(&boot.BuildResult{Controller: newCtrl}, nil)
 	m := reloadTestModel(oldCtrl, rebuilder)
 	m.modelSwitchPending = true
@@ -112,7 +112,7 @@ func TestRunReloadCommandQueuesOnceAndDrainsWhenIdle(t *testing.T) {
 // leaves the running model on the old controller (the swap only happens in
 // the modelSwitchMsg success branch).
 func TestScheduleRuntimeReloadFailureKeepsOldController(t *testing.T) {
-	oldCtrl := control.New(control.Options{Label: "old"})
+	oldCtrl := newOwnedTestController(t, control.Options{Label: "old"})
 	rebuilder, calls := stubRuntimeRebuilder(nil, errors.New("build exploded"))
 	m := reloadTestModel(oldCtrl, rebuilder)
 
@@ -142,7 +142,7 @@ func TestScheduleRuntimeReloadFailureKeepsOldController(t *testing.T) {
 // TestRunReloadCommandWithoutSeamDoesNotQueue: a session with no rebuild seam
 // reports unavailable instead of queueing a reload that could never drain.
 func TestRunReloadCommandWithoutSeamDoesNotQueue(t *testing.T) {
-	m := reloadTestModel(control.New(control.Options{}), nil)
+	m := reloadTestModel(newOwnedTestController(t, control.Options{}), nil)
 	if cmd := m.runReloadCommand(); cmd != nil {
 		t.Fatal("/reload without a rebuild seam returned a cmd")
 	}

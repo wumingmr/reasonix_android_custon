@@ -2,7 +2,7 @@
 // PreToolUse / PostToolUse fire around each tool call, PermissionRequest fires
 // before a tool approval prompt is shown, UserPromptSubmit before a turn, Stop
 // after it. Hooks come from settings.json — a project
-// (.reasonix/settings.json, only when the project is trusted) and a global
+// (.reasonix/settings.json, unless the caller skips it) and a global
 // (<Reasonix home>/settings.json) file. A hook's exit
 // code is its verdict: 0 = pass, 2 = block (only on the gating events), other =
 // warn. The payload is delivered as JSON on stdin; output is captured (capped)
@@ -21,7 +21,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -163,9 +162,10 @@ type Settings struct {
 // ResolvedHook is a loaded hook with its origin baked in.
 type ResolvedHook struct {
 	HookConfig
-	Event  Event
-	Scope  Scope
-	Source string // absolute path to the settings.json it came from
+	Event    Event
+	Scope    Scope
+	Source   string                 // absolute path to the settings.json it came from
+	approval *config.ProjectProgram // the approval a project hook runs under
 }
 
 func (h ResolvedHook) timeout() time.Duration {
@@ -223,9 +223,13 @@ type LoadOptions struct {
 	// settings and plugin hooks so Windows %APPDATA%/reasonix and REASONIX_HOME
 	// isolation stay consistent across hook/doctor/capdiag (#7411, #7331).
 	ReasonixHomeDir string
-	// Trusted is retained for source compatibility. Project hooks are enabled
-	// automatically now, so callers no longer need to set it.
+	// Trusted is retained for source compatibility and ignored: project hooks
+	// run only once approved (see ProjectHooksProgram).
 	Trusted bool
+	// SkipProject leaves out the project's settings.json, for a command that
+	// runs against a checkout it must not take commands from. Global settings
+	// and installed plugins still load; ProjectRoot still sets their workspace.
+	SkipProject bool
 }
 
 // Load resolves hooks: project first, then global; within a scope,
@@ -233,10 +237,10 @@ type LoadOptions struct {
 // — a typo shouldn't take down the CLI).
 func Load(opts LoadOptions) []ResolvedHook {
 	var out []ResolvedHook
-	if opts.ProjectRoot != "" {
+	if opts.ProjectRoot != "" && !opts.SkipProject {
 		p := ProjectSettingsPath(opts.ProjectRoot)
 		if s := readSettings(p); s != nil {
-			appendResolved(&out, s, ScopeProject, p)
+			appendApprovedProjectHooks(&out, opts, p, s)
 		}
 	}
 	reasonixHomeDir := reasonixHomeForOptions(opts)
@@ -472,27 +476,6 @@ func cloneEnv(in map[string]string) map[string]string {
 	return out
 }
 
-// MatchesTool reports whether a hook applies to toolName. The match field is an
-// anchored regex; non-tool events always match. A malformed regex never fires
-// (safer than firing on everything).
-func MatchesTool(h ResolvedHook, toolName string) bool {
-	if !UsesToolMatcher(h.Event) {
-		return true
-	}
-	m := h.Match
-	if m == "" || m == "*" {
-		return true
-	}
-	re, err := regexp.Compile("^(?:" + m + ")$")
-	if err != nil {
-		return false
-	}
-	if h.PayloadFormat != "claude" {
-		return re.MatchString(toolName)
-	}
-	return slices.ContainsFunc(claudeMatchNames(toolName), re.MatchString)
-}
-
 // claudeAgentSpawningTools are every Reasonix tool that spawns a subagent and
 // so corresponds to Claude's single "Agent" tool: the general task delegator
 // (task/read_only_task/parallel_tasks) and the dedicated named wrappers
@@ -530,6 +513,7 @@ var claudeToolNames = buildClaudeToolNames()
 func buildClaudeToolNames() map[string]string {
 	out := map[string]string{
 		"bash":            "Bash",
+		"pwsh":            "Bash",
 		"read_file":       "Read",
 		"write_file":      "Write",
 		"edit_file":       "Edit",
@@ -543,8 +527,10 @@ func buildClaudeToolNames() map[string]string {
 		"todo_write":      "TodoWrite",
 		"notebook_edit":   "NotebookEdit",
 		"bash_output":     "TaskOutput",
+		"job_output":      "TaskOutput",
 		"wait":            "TaskOutput",
 		"kill_shell":      "TaskStop",
+		"job_kill":        "TaskStop",
 	}
 	for _, name := range claudeAgentSpawningTools {
 		out[name] = "Agent"
@@ -567,8 +553,10 @@ func buildClaudeToolMatchAliases() map[string][]string {
 		out[name] = []string{"Agent", "Task"}
 	}
 	out["bash_output"] = []string{"TaskOutput", "BashOutput"}
+	out["job_output"] = []string{"TaskOutput", "BashOutput"}
 	out["wait"] = []string{"TaskOutput", "BashOutput"}
 	out["kill_shell"] = []string{"TaskStop", "KillShell"}
+	out["job_kill"] = []string{"TaskStop", "KillShell"}
 	return out
 }
 
@@ -616,7 +604,9 @@ var claudeToolInputKeyRenames = map[string]map[string]string{
 	"run_skill":       {"name": "skill", "arguments": "args"},
 	"read_only_skill": {"name": "skill", "arguments": "args"},
 	"bash_output":     {"job_id": "task_id"},
+	"job_output":      {"job_id": "task_id"},
 	"kill_shell":      {"job_id": "task_id"},
+	"job_kill":        {"job_id": "task_id"},
 	// The dedicated subagent wrappers take their task text as "task";
 	// Claude's Agent tool calls the same thing "prompt".
 	"explore":         {"task": "prompt"},
@@ -701,9 +691,6 @@ func claudeFacingToolInput(toolName string, args json.RawMessage, cwd string) js
 		changed = true
 	}
 	if toolName == "ask" && fillClaudeAskDefaults(obj) {
-		changed = true
-	}
-	if toolName == "todo_write" && fillClaudeTodoDefaults(obj) {
 		changed = true
 	}
 	// parallel_tasks maps to Claude's Agent tool but carries an array of
@@ -803,42 +790,6 @@ func fillClaudeAskDefaults(obj map[string]json.RawMessage) bool {
 	return true
 }
 
-// fillClaudeTodoDefaults supplies Claude's required activeForm label from the
-// Reasonix task content when the caller omitted it.
-func fillClaudeTodoDefaults(obj map[string]json.RawMessage) bool {
-	var todos []map[string]json.RawMessage
-	if err := json.Unmarshal(obj["todos"], &todos); err != nil {
-		return false
-	}
-	changed := false
-	for _, todo := range todos {
-		var activeForm string
-		_ = json.Unmarshal(todo["activeForm"], &activeForm)
-		if strings.TrimSpace(activeForm) != "" {
-			continue
-		}
-		var content string
-		if err := json.Unmarshal(todo["content"], &content); err != nil || strings.TrimSpace(content) == "" {
-			continue
-		}
-		body, err := json.Marshal(content)
-		if err != nil {
-			return false
-		}
-		todo["activeForm"] = body
-		changed = true
-	}
-	if !changed {
-		return false
-	}
-	body, err := json.Marshal(todos)
-	if err != nil {
-		return false
-	}
-	obj["todos"] = body
-	return true
-}
-
 // joinedParallelTaskPrompts flattens a parallel_tasks "tasks" array into one
 // prompt string, blank-line separated. Malformed or empty input yields "".
 func joinedParallelTaskPrompts(tasks json.RawMessage) string {
@@ -902,6 +853,7 @@ type Outcome struct {
 	TimedOut  bool
 	Truncated bool
 	Duration  time.Duration
+	Refusal   error // why the host refused to run it, when it did
 }
 
 // Report aggregates the outcomes of running an event's hooks.
@@ -1116,6 +1068,9 @@ func Run(ctx context.Context, payload Payload, hooks []ResolvedHook, spawner Spa
 	report := Report{Event: event}
 	for _, h := range hooks {
 		if h.Event != event || !MatchesTool(h, payload.ToolName) {
+			continue
+		}
+		if refuseChangedHook(&report, h) {
 			continue
 		}
 		cwd := h.Cwd

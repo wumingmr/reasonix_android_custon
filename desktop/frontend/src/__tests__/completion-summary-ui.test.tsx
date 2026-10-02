@@ -20,7 +20,7 @@ function ok(value: unknown, label: string) {
 console.log("\ncompletion summary UI");
 
 const harness = await createTranscriptHarness();
-let opens = 0;
+const changesOpens: (WireCompletionSummary | undefined)[] = [];
 const earlierSummary = {
   preset: "balanced",
   verdict: "partial",
@@ -60,26 +60,13 @@ const items: Item[] = [
 ];
 
 try {
-  const verificationOpens: WireCompletionSummary[] = [];
-  await harness.render(items, {
-    running: false,
-    onOpenChanges: () => { opens += 1; },
-    onOpenVerification: (summary: WireCompletionSummary) => { verificationOpens.push(summary); },
-  });
-  ok(harness.container.textContent?.includes("This turn still needs attention"), "actionable summary stays visible outside the process fold");
-  ok(!harness.container.textContent?.includes("balanced"), "compact notice exposes no internal enum values");
-  const button = Array.from(harness.container.querySelectorAll("button")).find((node) => node.textContent?.includes("View changes"));
-  ok(button, "completion notice offers a View changes action");
-  button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-  await harness.flush();
-  ok(opens === 1, "View changes delegates to the workspace panel action");
-  const verifyButtons = Array.from(harness.container.querySelectorAll("button")).filter((node) => node.textContent?.includes("Turn verification"));
-  ok(verifyButtons.length === 2, "each completion notice offers a Turn verification action");
-  verifyButtons[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-  verifyButtons[1]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-  await harness.flush();
-  ok(verificationOpens[0] === earlierSummary, "an older notice opens its own turn summary");
-  ok(verificationOpens[1] === laterSummary, "the latest notice opens its own turn summary");
+  await harness.render(items, { running: false }); await harness.settle();
+  const records = harness.container.querySelectorAll(".chat-notice");
+  ok(records.length === 2, "completion results remain ordinary records outside folds");
+  ok(records[0].textContent?.includes(items[2].text), "record preserves its explanation");
+  ok(records[0].querySelector("details pre")?.textContent?.includes('"checks_failed": 1'), "older result preserves its own details");
+  ok(records[1].querySelector("details pre")?.textContent?.includes('"checks_passed": 4'), "newer result preserves its own details");
+  ok(!records[0].querySelector("button"), "retired delivery and verification actions are absent");
 } finally {
   await harness.unmount();
   await harness.close();

@@ -20,7 +20,7 @@ func TestCLIHotRebuildPathsKeepSessionTemp(t *testing.T) {
 		t.Run(command, func(t *testing.T) {
 			isolateUserConfig(t)
 
-			oldCtrl := control.New(control.Options{Label: "deepseek-flash"})
+			oldCtrl := newOwnedTestController(t, control.Options{Label: "deepseek-flash"})
 			t.Cleanup(oldCtrl.Close)
 			oldManager := oldCtrl.SessionTemp()
 			lease, err := oldManager.Acquire()
@@ -39,7 +39,7 @@ func TestCLIHotRebuildPathsKeepSessionTemp(t *testing.T) {
 			m.ctrl = oldCtrl
 			m.modelRef = "deepseek-flash/deepseek-v4-flash"
 			m.buildController = func(_ controllerBuildSpec, _ []provider.Message, _ string, outgoing control.SessionAPI) (*control.Controller, error) {
-				return control.New(control.Options{
+				return newOwnedTestController(t, control.Options{
 					Label:       "deepseek-flash",
 					SessionTemp: sessionTempFromCLIController(outgoing),
 				}), nil
@@ -48,7 +48,7 @@ func TestCLIHotRebuildPathsKeepSessionTemp(t *testing.T) {
 				// Production delegates this path to boot.Rebuild, whose owning test
 				// pins the same SessionTemp transfer. This seam exercises the CLI
 				// command/swap lifecycle without booting providers or plugins.
-				return &boot.BuildResult{Controller: control.New(control.Options{
+				return &boot.BuildResult{Controller: newOwnedTestController(t, control.Options{
 					Label:       "deepseek-flash",
 					SessionTemp: outgoing.SessionTemp(),
 				})}, nil
@@ -114,7 +114,7 @@ func TestSessionTempFromCLIControllerHelper(t *testing.T) {
 	if sessionTempFromCLIController(nil) != nil {
 		t.Fatal("nil controller should yield nil SessionTemp")
 	}
-	ctrl := control.New(control.Options{})
+	ctrl := newOwnedTestController(t, control.Options{})
 	defer ctrl.Close()
 	if got := sessionTempFromCLIController(ctrl); got == nil || got != ctrl.SessionTemp() {
 		t.Fatal("helper did not return the live Controller's SessionTemp")

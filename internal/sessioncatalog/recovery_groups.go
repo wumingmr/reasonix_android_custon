@@ -3,7 +3,6 @@ package sessioncatalog
 import (
 	"context"
 	"path/filepath"
-	"strings"
 )
 
 // RecoveryGroup is a catalog projection of one proved recovery lineage. It is
@@ -19,16 +18,16 @@ type RecoveryGroup struct {
 }
 
 // ListRecoveryGroups returns every indexed recovery lineage in directory. All
-// slices are initialized for stable CLI/Wails JSON contracts.
+// slices are initialized for stable CLI/desktop JSON contracts.
 func (c *Catalog) ListRecoveryGroups(ctx context.Context, directory string) ([]RecoveryGroup, error) {
 	out := []RecoveryGroup{}
 	if c == nil || c.db == nil {
 		return out, nil
 	}
-	directory = filepath.Clean(strings.TrimSpace(directory))
-	rows, err := c.db.QueryContext(ctx, `SELECT `+sessionSelectColumns+` FROM catalog_sessions
-		WHERE directory=? AND recovered=1 AND recovery_group_id<>'' AND missing_since=0
-		ORDER BY recovery_group_id,path`, directory)
+	directory = cleanCatalogAccessPath(directory)
+	rows, err := c.readDB(ctx).QueryContext(ctx, `SELECT `+sessionSelectColumns+` FROM catalog_sessions
+		WHERE directory_key=? AND recovered=1 AND recovery_group_id<>'' AND missing_since=0
+		ORDER BY recovery_group_id,path`, c.pathKey(directory))
 	if err != nil {
 		return out, err
 	}

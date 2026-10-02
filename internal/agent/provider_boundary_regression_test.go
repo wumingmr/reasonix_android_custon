@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
@@ -41,7 +42,7 @@ func TestPressurePruneNeverPromotesRawToolContent(t *testing.T) {
 	a := New(nil, tool.NewRegistry(), sess, Options{}, event.Discard)
 
 	a.sess.compactionRunMu.Lock()
-	advanced, err := a.pruneToolResultsToProjectionLocked(CompactionTriggerPressure)
+	advanced, err := a.pruneToolResultsToProjectionLocked(context.Background(), CompactionTriggerPressure)
 	a.sess.compactionRunMu.Unlock()
 	if err != nil || !advanced {
 		t.Fatalf("pressure prune advanced=%v err=%v", advanced, err)

@@ -537,6 +537,9 @@ func mcpEnableCLI(args []string, enabled bool) int {
 	}
 	if enabled {
 		fmt.Printf("enabled MCP server %q — tools restore from cache; process starts on first call\n", name)
+		if config.RepositoryDeclared(entry) {
+			fmt.Printf("approved for %s: %s (a later change to this declaration needs approval again)\n", workspace, config.MCPLaunchLine(entry))
+		}
 	} else {
 		fmt.Printf("disabled MCP server %q — tools removed from the catalog; authorization retained\n", name)
 	}
@@ -595,43 +598,13 @@ func mcpImportCLI() int {
 	return 0
 }
 
-func mcpList() int {
-	cfg, err := config.Load()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	listed := 0
-	for _, p := range cfg.Plugins {
-		typ := p.Type
-		if typ == "" {
-			typ = "stdio"
-		}
-		auto := ""
-		if !p.ShouldAutoStart() {
-			auto = " [auto_start=false]"
-		}
-		if typ == "stdio" {
-			line := strings.TrimSpace(p.Command + " " + strings.Join(p.Args, " "))
-			fmt.Printf("%-16s (stdio)%s  %s\n", p.Name, auto, line)
-		} else {
-			fmt.Printf("%-16s (%s)%s  %s\n", p.Name, typ, auto, p.URL)
-		}
-		listed++
-	}
-	if listed == 0 {
-		fmt.Println("no MCP servers configured")
-	}
-	return 0
-}
-
 func mcpGetCLI(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: reasonix mcp get <name>")
 		return 2
 	}
 	name := args[0]
-	cfg, err := config.Load()
+	cfg, err := config.LoadForRoot(mcpCLIWorkspaceRoot())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -662,15 +635,15 @@ func printMCPEntry(p config.PluginEntry) {
 		if len(p.Env) > 0 {
 			fmt.Println("env:")
 			for _, k := range sortedMapKeys(p.Env) {
-				fmt.Printf("  %s=%s\n", k, redactMCPConfigValue(k, p.Env[k]))
+				fmt.Printf("  %s=%s\n", k, config.RedactMCPConfigValue(k, p.Env[k]))
 			}
 		}
 	} else {
-		fmt.Printf("url: %s\n", redactMCPURL(p.URL))
+		fmt.Printf("url: %s\n", config.RedactMCPURL(p.URL))
 		if len(p.Headers) > 0 {
 			fmt.Println("headers:")
 			for _, k := range sortedMapKeys(p.Headers) {
-				fmt.Printf("  %s=%s\n", k, redactMCPConfigValue(k, p.Headers[k]))
+				fmt.Printf("  %s=%s\n", k, config.RedactMCPConfigValue(k, p.Headers[k]))
 			}
 		}
 	}
@@ -686,64 +659,6 @@ func sortedMapKeys(m map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-func redactMCPConfigValue(key, value string) string {
-	if looksSensitiveMCPKey(key) || looksSensitiveMCPValue(value) {
-		return "<redacted>"
-	}
-	return value
-}
-
-func looksSensitiveMCPKey(key string) bool {
-	lower := strings.ToLower(strings.TrimSpace(key))
-	for _, needle := range []string{"auth", "token", "secret", "credential", "api_key", "api-key", "apikey", "cookie"} {
-		if strings.Contains(lower, needle) {
-			return true
-		}
-	}
-	return false
-}
-
-func looksSensitiveMCPQueryKey(key string) bool {
-	return strings.EqualFold(strings.TrimSpace(key), "key") || looksSensitiveMCPKey(key)
-}
-
-func looksSensitiveMCPValue(value string) bool {
-	lower := strings.ToLower(value)
-	for _, needle := range []string{"access_token", "id_token", "refresh_token", "api_key", "api-key", "apikey", "bearer "} {
-		if strings.Contains(lower, needle) {
-			return true
-		}
-	}
-	return false
-}
-
-func redactMCPURL(raw string) string {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return raw
-	}
-	u, err := url.Parse(trimmed)
-	if err != nil || u == nil {
-		if looksSensitiveMCPValue(raw) {
-			return "<redacted>"
-		}
-		return raw
-	}
-	q := u.Query()
-	changed := false
-	for key := range q {
-		if looksSensitiveMCPQueryKey(key) {
-			q.Set(key, "<redacted>")
-			changed = true
-		}
-	}
-	if !changed {
-		return raw
-	}
-	u.RawQuery = q.Encode()
-	return u.String()
 }
 
 func mcpAddCLI(args []string) int {
@@ -811,13 +726,6 @@ func mcpRemoveCLI(args []string) int {
 	}
 	fmt.Printf("removed MCP server %q\n", name)
 	return 0
-}
-
-func mcpCLIWorkspaceRoot() string {
-	if cwd, err := os.Getwd(); err == nil && strings.TrimSpace(cwd) != "" {
-		return cwd
-	}
-	return "."
 }
 
 func mcpUsage() {

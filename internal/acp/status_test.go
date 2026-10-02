@@ -10,7 +10,6 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/billing"
-	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
 )
@@ -320,13 +319,13 @@ func TestRestoreStatusMarksInterruptedTurnPaused(t *testing.T) {
 	}
 }
 
-func TestStatusWorkModeSetConfigOptionSwitchesQualityFloor(t *testing.T) {
+func TestStatusWorkModeSetConfigOptionIsHiddenCompatibilityNoOp(t *testing.T) {
 	factory := &runtimeTrackingFactory{configurableFactory: &configurableFactory{}}
 	client, stop := startServer(t, factory)
 	defer stop()
 	client.call(t, "initialize", InitializeParams{ProtocolVersion: 1})
 	sessionID := openStatusSession(t, client, t.TempDir())
-	if status := getStatus(t, client, sessionID); status.WorkMode != "balanced" || status.PlannerMode != "on" {
+	if status := getStatus(t, client, sessionID); status.WorkMode != "standard" || status.PlannerMode != "on" {
 		t.Fatalf("initial runtime status = %+v", status)
 	}
 	buildsBefore := factory.buildCount()
@@ -344,21 +343,20 @@ func TestStatusWorkModeSetConfigOptionSwitchesQualityFloor(t *testing.T) {
 		if err := json.Unmarshal(resp.Result, &set); err != nil {
 			t.Fatalf("set work mode %q result: %v", value, err)
 		}
-		want := control.QualityFloorStandard
-		if value == "delivery" {
-			want = control.QualityFloorDelivery
-		}
 		var floorOpt *SessionConfigOption
 		for i := range set.ConfigOptions {
 			if set.ConfigOptions[i].ID == "quality_floor" {
 				floorOpt = &set.ConfigOptions[i]
 			}
 		}
-		if floorOpt == nil || floorOpt.CurrentValue != want {
-			t.Fatalf("quality floor option after work_mode %q = %+v, want %q", value, floorOpt, want)
+		if floorOpt != nil {
+			t.Fatalf("retired quality floor option still advertised after work_mode %q: %+v", value, floorOpt)
+		}
+		if set.DeprecatedNotice == "" {
+			t.Fatalf("work_mode %q missing retirement notice", value)
 		}
 		status := getStatus(t, client, sessionID)
-		if status.WorkMode != "balanced" || status.PlannerMode != "on" {
+		if status.WorkMode != "standard" || status.PlannerMode != "on" {
 			t.Fatalf("runtime status after deprecated work_mode %q = %+v", value, status)
 		}
 	}

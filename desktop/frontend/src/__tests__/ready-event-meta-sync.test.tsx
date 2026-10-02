@@ -7,6 +7,7 @@ import type { AppBindings } from "../lib/bridge";
 import { useController } from "../lib/useController";
 import { historySliceFromMessages } from "./mockHistorySlice";
 import type { BalanceInfo, CheckpointMeta, ContextInfo, EffortInfo, HistoryMessage, HistorySliceRequest, JobView, Meta, TabMeta } from "../lib/types";
+import { installDesktopHostStub } from "./desktopHostStub";
 
 let passed = 0;
 let failed = 0;
@@ -120,21 +121,13 @@ const effort: EffortInfo = { supported: true, current: "auto", default: "auto", 
 const balance: BalanceInfo = { available: false, display: "" };
 const jobs: JobView[] = [];
 const checkpoints: CheckpointMeta[] = [];
-const readyHandlers: Array<(tabId?: string) => void> = [];
-const historyGate = deferred<HistoryMessage[]>();
+let historyGate = deferred<HistoryMessage[]>();
 let backendReady = false;
 let listTabsCalls = 0;
 let historyCalls = 0;
 let metaCalls = 0;
 
-window.runtime = {
-  EventsOn: (name: string, cb: (...data: unknown[]) => void) => {
-    if (name === "agent:ready") readyHandlers.push(cb as (tabId?: string) => void);
-    return () => {};
-  },
-  BrowserOpenURL: () => {},
-};
-window.go = {
+const desktopStub = installDesktopHostStub(({
   main: {
     App: {
       ListTabs: async () => {
@@ -150,6 +143,7 @@ window.go = {
       BalanceForTab: async () => balance,
       JobsForTab: async () => jobs,
       CheckpointsForTab: async () => checkpoints,
+      ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
       HistoryForTab: async () => historyGate.promise,
       HistoryPageForTab: async () => {
         historyCalls += 1;
@@ -164,7 +158,7 @@ window.go = {
       ReplayPendingPrompts: async () => {},
     } as Partial<AppBindings> as AppBindings,
   },
-};
+}).main.App);
 
 type Controller = ReturnType<typeof useController>;
 let controller: Controller | undefined;
@@ -189,7 +183,7 @@ eq(metaCalls, 0, "startup history remains in flight before ancillary meta");
 
 backendReady = true;
 await act(async () => {
-  for (const handler of readyHandlers) handler("tab-ready");
+  desktopStub.emit("agent:ready", "tab-ready");
   await flushPromises();
 });
 await waitFor("ready metadata refreshed before history settles", () => controller?.state.meta?.ready === true);
@@ -205,6 +199,29 @@ await act(async () => {
 });
 await waitFor("history finishes", () => controller?.state.hydrating === false);
 ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "hello") ?? false, "history still hydrates after the ready metadata sync");
+
+// A failed cut can precede runtime readiness (or an explicit retry). Recovery
+// must clear the current error without leaving a second, permanent chat notice.
+for (const recovery of ["ready", "retry"] as const) {
+  historyGate = deferred<HistoryMessage[]>();
+  await act(async () => {
+    const pending = controller!.retrySessionHistory();
+    historyGate.reject(new Error("runtime changed while following transcript"));
+    await pending;
+    await flushPromises();
+  });
+  ok(Boolean(controller?.state.hydrateError), `${recovery}: real failure remains reportable`);
+  ok(controller?.state.items.some(item => item.kind === "user" && item.text === "hello") ?? false, `${recovery}: failure preserves history`);
+  historyGate = deferred<HistoryMessage[]>();
+  historyGate.resolve([{ role: "user", content: "hello" }]);
+  await act(async () => {
+    if (recovery === "ready") desktopStub.emit("agent:ready", "tab-ready");
+    else await controller!.retrySessionHistory();
+    await flushPromises();
+  });
+  await waitFor(`${recovery}: recovered history`, () => controller?.state.hydrating === false && !controller.state.hydrateError);
+  ok(!controller?.state.items.some(item => item.kind === "notice" && item.text.includes("Failed to load conversation history")), `${recovery}: recovery leaves no obsolete history failure notice`);
+}
 
 await act(async () => {
   root.unmount();

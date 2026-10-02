@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"reasonix/internal/autoresearch"
-	"reasonix/internal/evidence"
 )
 
 type legacyResearchSetup struct {
@@ -107,17 +106,12 @@ func (c *Controller) restorePendingLegacyGoal(legacy legacyGoalRestore) bool {
 		return false
 	}
 	c.replaceLegacyRestore(legacy)
-	restoreTodos := c.goalTodos()
-	if len(legacy.todos) > 0 {
-		restoreTodos = append([]evidence.TodoItem(nil), legacy.todos...)
-		if c.executor != nil {
-			c.executor.ReplaceTodoState(restoreTodos)
-		}
-	}
+	// Archived research todos remain only in the preserved legacy material. A
+	// resumed Goal starts a new turn and never passes them to persistence.
 	goal, err := c.legacyResearchArchive.loadGoalText(legacy.taskID)
 	if err != nil {
 		if epoch, ok := c.goals.blockLegacyRestore(legacy.epoch, err.Error()); ok {
-			_, _ = c.persistGoalStateAtEpoch(epoch, restoreTodos)
+			_, _ = c.persistGoalStateAtEpoch(epoch)
 			c.advanceLegacyRestoreEpoch(legacy.taskID, legacy.epoch, epoch)
 			c.notice("legacy research archive resume failed: " + err.Error())
 		} else {
@@ -127,11 +121,11 @@ func (c *Controller) restorePendingLegacyGoal(legacy legacyGoalRestore) bool {
 	}
 	if strings.TrimSpace(c.goals.goalText()) == "" {
 		if epoch, ok := c.goals.fillGoalTextIfEmpty(legacy.epoch, goal); ok {
-			_, persistErr := c.persistGoalStateAtEpoch(epoch, restoreTodos)
+			_, persistErr := c.persistGoalStateAtEpoch(epoch)
 			if persistErr != nil {
 				reason := "persist migrated legacy Goal: " + persistErr.Error()
 				if blockedEpoch, blocked := c.goals.failLegacyRestorePersistence(epoch, reason); blocked {
-					c.replaceLegacyRestore(legacyGoalRestore{taskID: legacy.taskID, todos: restoreTodos, epoch: blockedEpoch})
+					c.replaceLegacyRestore(legacyGoalRestore{taskID: legacy.taskID, epoch: blockedEpoch})
 					c.notice("legacy research archive resume failed: " + reason)
 				} else {
 					c.clearLegacyRestore(legacy.taskID, legacy.epoch)
@@ -175,23 +169,22 @@ func (c *Controller) retryBlockedLegacyGoal() (handled, resumed bool) {
 			reason = "legacy research archive could not be recovered"
 		}
 		if nextEpoch, applied := c.goals.blockLegacyRestore(epoch, reason); applied {
-			_, _ = c.persistGoalStateAtEpoch(nextEpoch, c.goalTodos())
+			_, _ = c.persistGoalStateAtEpoch(nextEpoch)
 			c.replaceLegacyRestore(legacyGoalRestore{taskID: taskID, epoch: nextEpoch})
 		}
 		c.notice("legacy research archive resume failed: " + reason)
 		return true, false
 	}
-	todos := c.goalTodos()
 	resumedEpoch, applied := c.goals.resumeLegacyArchive(epoch, resolvedGoal)
 	if !applied {
 		c.replaceLegacyRestore(legacyGoalRestore{})
 		return true, false
 	}
-	persisted, persistErr := c.persistGoalStateAtEpoch(resumedEpoch, todos)
+	persisted, persistErr := c.persistGoalStateAtEpoch(resumedEpoch)
 	if persistErr != nil {
 		reason := "persist migrated legacy Goal: " + persistErr.Error()
 		if blockedEpoch, blocked := c.goals.failLegacyRestorePersistence(resumedEpoch, reason); blocked {
-			c.replaceLegacyRestore(legacyGoalRestore{taskID: taskID, todos: todos, epoch: blockedEpoch})
+			c.replaceLegacyRestore(legacyGoalRestore{taskID: taskID, epoch: blockedEpoch})
 			c.notice("legacy research archive resume failed: " + reason)
 		} else {
 			c.replaceLegacyRestore(legacyGoalRestore{})

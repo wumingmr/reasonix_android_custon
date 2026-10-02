@@ -124,11 +124,11 @@ func loadDotEnvFileAs(path string, source CredentialSource) {
 }
 
 func readDotEnvFile(path string) (dotEnvFile, bool) {
-	raw, err := fileencoding.ReadFileUTF8(path)
+	raw, err := readCredentialFile(path)
 	if err != nil {
 		return dotEnvFile{}, false
 	}
-	values, err := godotenv.Unmarshal(string(raw))
+	values, err := godotenv.Unmarshal(string(fileencoding.DecodeToUTF8(raw)))
 	if err != nil {
 		return dotEnvFile{}, false
 	}

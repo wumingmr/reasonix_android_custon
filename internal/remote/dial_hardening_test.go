@@ -69,9 +69,21 @@ func TestClientKeepsAliasCredentialsDistinctForSharedEndpoint(t *testing.T) {
 	}
 }
 
-type noDeadlineConn struct{ net.Conn }
+type noDeadlineConn struct {
+	net.Conn
+	deadlineSet chan struct{}
+}
 
-func (noDeadlineConn) SetDeadline(time.Time) error      { return errors.New("unsupported") }
+func (c noDeadlineConn) SetDeadline(time.Time) error {
+	select {
+	case c.deadlineSet <- struct{}{}:
+	default:
+	}
+	return errors.New("unsupported")
+}
+func (noDeadlineConn) RemoteAddr() net.Addr {
+	return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 22}
+}
 func (noDeadlineConn) SetReadDeadline(time.Time) error  { return errors.New("unsupported") }
 func (noDeadlineConn) SetWriteDeadline(time.Time) error { return errors.New("unsupported") }
 
@@ -79,21 +91,33 @@ func TestSSHHandshakeHonorsContextWhenDeadlinesUnsupported(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
 	defer server.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
+	deadlineSet := make(chan struct{}, 1)
 	go func() {
-		_, err := newSSHClient(ctx, noDeadlineConn{client},
-			ResolvedHost{HostName: "target", Port: 22, User: "u"},
+		_, err := newSSHClient(ctx, noDeadlineConn{Conn: client, deadlineSet: deadlineSet},
+			ResolvedHost{HostName: "target", Port: 22, User: "u", IdentityFileNone: true},
 			&AuthOptions{DisableAgent: true}, &HostKeyPolicy{}, time.Second)
 		done <- err
 	}()
+	// SetDeadline runs after the cancellation watcher is installed and directly
+	// before the SSH handshake. Wait for that event instead of asserting that a
+	// loaded Windows runner schedules a 40 ms timer within a 500 ms wall clock.
+	select {
+	case <-deadlineSet:
+	case err := <-done:
+		t.Fatalf("handshake returned before installing its cancellation watcher: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("handshake did not install its cancellation watcher")
+	}
+	cancel()
 	select {
 	case err := <-done:
 		if err == nil {
 			t.Fatal("banner-less handshake unexpectedly succeeded")
 		}
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(5 * time.Second):
 		t.Fatal("handshake outlived its context on a ProxyJump-style connection")
 	}
 }

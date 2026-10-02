@@ -18,8 +18,8 @@ assert.match(panel, /treeRef\.current\.length === 0/, "v2 event re-fetches shell
 assert.match(panel, /void refresh\(\)/, "empty-tree event path calls refresh");
 assert.match(
   panel,
-  /projectTreeTopicPageIsFresh\(topicRevisionRef\.current, key, page\.revision\)/,
-  "topic pages compare revisions within their own project",
+  /projectTreeTopicPageIsFresh\(topicRevisionRef\.current, listKey, page\.revision\)/,
+  "topic pages compare revisions within their own project/group list",
 );
 assert.doesNotMatch(
   panel,
@@ -31,7 +31,7 @@ assert.match(
   /onProjectTreeChangedV2[\s\S]*projectTreeRevisionIsFresh\(latestRevisionRef\.current, event\.revision\)/,
   "equal-revision catalog events use the shared freshness contract",
 );
-assert.match(runtime, /onProjectTreeRuntimeChanged/, "runtime projection has a dedicated Wails subscription");
+assert.match(runtime, /onProjectTreeRuntimeChanged/, "runtime projection has a dedicated bridge subscription");
 assert.match(runtimeHook, /bindProjectTreeRuntime/, "ProjectTree binds the runtime projection after mount");
 assert.match(runtimeHook, /GetProjectTreeRuntimeSnapshot/, "runtime subscription reconciles with a post-subscribe snapshot");
 assert.match(bridge, /reason !== "runtime"/, "current frontend ignores tagged legacy runtime invalidations");
@@ -55,8 +55,9 @@ assert.match(
 );
 assert.doesNotMatch(
   panel,
-  /\[\s*expanded,\s*loadProjectTopics,\s*query,\s*timeFilter,\s*tree\s*\]/,
+  /\[\s*expanded,\s*loadProjectTopics,\s*query,\s*tree\s*\]/,
   "debounced reload depends on the shell signature, not tree (topic loads would re-arm it forever)",
 );
+assert.doesNotMatch(panel, /timeFilter/, "ProjectTree no longer owns a sidebar time filter");
 
 console.log("  PASS  project tree shell race contract");

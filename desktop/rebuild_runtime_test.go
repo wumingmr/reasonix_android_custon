@@ -7,6 +7,7 @@ import (
 	"reasonix/internal/boot"
 	"reasonix/internal/control"
 	"reasonix/internal/extension"
+	"reasonix/internal/skill/skillwatch"
 )
 
 func TestRuntimeDoctorEmptyApp(t *testing.T) {
@@ -18,6 +19,22 @@ func TestRuntimeDoctorEmptyApp(t *testing.T) {
 	// Nil app still returns process-wide metrics/recoverability.
 	if !report.AllowResume {
 		t.Fatal("empty process should allow resume")
+	}
+}
+
+func TestRuntimeDoctorIncludesSkillWatchResources(t *testing.T) {
+	ctrl := &control.Controller{}
+	watch := skillwatch.NewService(skillwatch.Options{})
+	t.Cleanup(func() { _ = watch.Close() })
+	tab := &WorkspaceTab{ID: "tab-watch", Ctrl: ctrl}
+	a := &App{tabs: map[string]*WorkspaceTab{tab.ID: tab}, activeTabID: tab.ID}
+	a.setTabLastBuildResult(tab, &boot.BuildResult{Controller: ctrl, Owner: extension.NewRuntimeOwner(), SkillWatchService: watch})
+	report := a.RuntimeDoctor()
+	if report.SkillWatch == nil {
+		t.Fatal("skill watch diagnostics missing")
+	}
+	if report.SkillWatch.PhysicalWatches != 0 || report.SkillWatch.LogicalSubscriptions != 0 {
+		t.Fatalf("unexpected idle skill watch counters: %+v", report.SkillWatch)
 	}
 }
 

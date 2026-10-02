@@ -1,7 +1,8 @@
 import { asArray } from "./array";
-import { isRuntimeSessionNode, isTopicNode, type WorkbenchOrganizeMode, type WorkbenchSortMode } from "./projectTreeTopic";
+import { isRuntimeSessionNode, isTopicNode, type WorkbenchSortMode } from "./projectTreeTopic";
 import { topicActivityTime } from "./session";
 import type { ProjectNode } from "./types";
+import { projectSessionIdentity } from "./projectSessionIdentity";
 
 export type PinnedTreeSections = {
   pinned: ProjectNode[];
@@ -34,47 +35,26 @@ function sortWorkbenchChildren(children: ProjectNode[], sortMode: WorkbenchSortM
     if (manualOrder !== 0) return manualOrder;
     const activityOrder = topicSortValue(b, sortMode) - topicSortValue(a, sortMode);
     if (activityOrder !== 0) return activityOrder;
-    const aKey = a.topicId || a.key;
-    const bKey = b.topicId || b.key;
+    const aKey = projectSessionIdentity(a);
+    const bKey = projectSessionIdentity(b);
     return aKey < bKey ? -1 : aKey > bKey ? 1 : 0;
   });
 }
 
 export function arrangeWorkbenchTree(
   nodes: ProjectNode[],
-  organizeMode: WorkbenchOrganizeMode,
   sortMode: WorkbenchSortMode,
 ): ProjectNode[] {
-  const arranged = nodes.map((node) => {
+  return nodes.map((node) => {
     if (node.kind !== "project" && node.kind !== "global_folder") return node;
     return { ...node, children: sortWorkbenchChildren(asArray(node.children), sortMode) };
   });
-  if (organizeMode === "project") return arranged;
-  const mode = organizeMode === "recent" ? "updated" : sortMode;
-  return [...arranged].sort((a, b) => {
-    if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
-    return projectSortValue(b, mode) - projectSortValue(a, mode);
-  });
-}
-
-export function arrangeClassicProjectTree(nodes: ProjectNode[], sortMode: WorkbenchSortMode): ProjectNode[] {
-  return arrangeWorkbenchTree(nodes, "project", sortMode);
-}
-
-export const CLASSIC_TOPIC_PREVIEW_LIMIT = 5;
-
-export function classicTopicWindow(children: ProjectNode[], showAll: boolean): { visible: ProjectNode[]; hiddenCount: number } {
-  if (showAll || children.length <= CLASSIC_TOPIC_PREVIEW_LIMIT) return { visible: children, hiddenCount: 0 };
-  return {
-    visible: children.slice(0, CLASSIC_TOPIC_PREVIEW_LIMIT),
-    hiddenCount: children.length - CLASSIC_TOPIC_PREVIEW_LIMIT,
-  };
 }
 
 function projectTreeTopicIdentity(node: ProjectNode): string | null {
-  if ((!isTopicNode(node) && !isRuntimeSessionNode(node)) || !node.topicId) return null;
+  if (!isTopicNode(node) && !isRuntimeSessionNode(node)) return null;
   const global = node.kind === "global_topic" || node.kind === "global_session";
-  return `${global ? "global" : "project"}\u001f${global ? "" : node.root ?? ""}\u001f${node.topicId}`;
+  return `${global ? "global" : "project"}\u001f${global ? "" : node.root ?? ""}\u001f${projectSessionIdentity(node)}`;
 }
 
 export function splitPinnedProjectTree(

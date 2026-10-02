@@ -17,7 +17,7 @@ func steerFallbackController(t *testing.T) (*Controller, *agent.Agent) {
 	t.Helper()
 	prov := &scriptedTurns{turns: [][]provider.Chunk{textTurn("ok")}}
 	ag := agent.New(prov, tool.NewRegistry(), agent.NewSession(""), agent.Options{}, event.Discard)
-	return New(Options{Runner: ag, Executor: ag, Sink: event.Discard}), ag
+	return newOwnedTestController(t, Options{Runner: ag, Executor: ag, Sink: event.Discard}), ag
 }
 
 func sessionHasUserText(ag *agent.Agent, text string) bool {
@@ -50,7 +50,7 @@ func TestSteerFallbackParksWhileRunning(t *testing.T) {
 	c.Steer("queued while exiting")
 
 	c.mu.Lock()
-	parked := len(c.parkedTurns)
+	parked := len(c.turns.pending)
 	c.mu.Unlock()
 	if parked != 1 {
 		t.Fatalf("steer fallback should park while running, parked=%d", parked)
@@ -117,7 +117,7 @@ func TestSteerFallbackDoesNotInjectCapabilityRoute(t *testing.T) {
 	ag := agent.New(nil, tool.NewRegistry(), agent.NewSession(""), agent.Options{}, sink)
 	reg := tool.NewRegistry()
 	reg.Add(capabilityTestTool{name: "run_skill"})
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Runner:   runner,
 		Executor: ag,
 		Skills: []skill.Skill{{

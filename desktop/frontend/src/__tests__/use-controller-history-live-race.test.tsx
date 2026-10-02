@@ -4,9 +4,11 @@ import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { AppBindings } from "../lib/bridge";
-import { useController } from "../lib/useController";
+import { initialState, useController } from "../lib/useController";
+import { getTranscriptStore } from "../lib/transcriptStore";
 import { historySliceFromMessages } from "./mockHistorySlice";
 import type { HistorySlice, Meta, TabMeta, WireEvent } from "../lib/types";
+import { installDesktopHostStub } from "./desktopHostStub";
 
 let passed = 0;
 let failed = 0;
@@ -99,17 +101,9 @@ const meta: Meta = {
   goalStatus: "stopped",
 };
 const historyGate = deferred<HistorySlice>();
-const eventHandlers: Array<(event: WireEvent) => void> = [];
 let historyStarted = false;
 
-window.runtime = {
-  EventsOn: (name: string, callback: (...data: unknown[]) => void) => {
-    if (name === "agent:event") eventHandlers.push(callback as (event: WireEvent) => void);
-    return () => {};
-  },
-  BrowserOpenURL: () => {},
-};
-window.go = {
+const desktopStub = installDesktopHostStub(({
   main: {
     App: {
       ListTabs: async () => [tab],
@@ -119,6 +113,7 @@ window.go = {
       BalanceForTab: async () => ({ available: false, display: "" }),
       JobsForTab: async () => [],
       CheckpointsForTab: async () => [],
+      ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
       HistorySliceForTab: async () => {
         historyStarted = true;
         return historyGate.promise;
@@ -127,11 +122,13 @@ window.go = {
       ReplayPendingPrompts: async () => {},
     } as Partial<AppBindings> as AppBindings,
   },
-};
+}).main.App);
 
 type Controller = ReturnType<typeof useController>;
 let controller: Controller | undefined;
+let renders = 0;
 function Probe() {
+  renders++;
   controller = useController();
   return null;
 }
@@ -143,13 +140,14 @@ await act(async () => {
   root.render(<Probe />);
   await flushPromises();
 });
-await waitFor("history request", () => historyStarted && eventHandlers.length > 0);
+await waitFor("history request", () => historyStarted && (desktopStub.events.get("agent:event")?.size ?? 0) > 0);
 
 await act(async () => {
-  for (const handler of eventHandlers) handler({ kind: "turn_started", tabId: tab.id });
+  desktopStub.emit("agent:event", { kind: "turn_started", tabId: tab.id });
+  desktopStub.emit("agent:event", { kind: "text", tabId: tab.id, messageId: "active", text: "active prefix" });
   await flushPromises();
 });
-ok(controller?.state.items.some((item) => item.kind === "assistant" && item.streaming) ?? false, "turn starts while history is pending");
+ok(controller?.state.transcriptConnection === "syncing", "frames wait for atomic baseline installation");
 
 historyGate.resolve(historySliceFromMessages(
   tab.id,
@@ -167,6 +165,21 @@ ok(controller?.state.items.some((item) => item.kind === "assistant" && item.stre
 ok(controller?.state.items[0]?.kind === "user", "late history lands in front of the live turn");
 ok(controller?.state.items.at(-1)?.kind === "assistant", "late history leaves the live turn at the tail");
 
+await act(async () => { await flushPromises(); await flushPromises(); });
+const backgroundMeta = { ...meta, sessionPath: "/background", label: "before" };
+getTranscriptStore().setState("background", { ...initialState, meta: backgroundMeta, running: true });
+let backgroundNotifications = 0;
+const releaseBackground = getTranscriptStore().subscribeState("background", () => backgroundNotifications++);
+const foregroundRenders = renders;
+await act(async () => {
+  desktopStub.emit("tab:meta", { tabId: "background", meta: { ...backgroundMeta, label: "updated" } });
+  await flushPromises();
+});
+ok(backgroundNotifications > 0, "background state still reaches its own subscribers");
+ok(getTranscriptStore().states.get("background")?.meta?.label === "updated", "background metadata is published");
+ok(getTranscriptStore().states.get("background")?.running === true, "background task keeps running");
+ok(renders === foregroundRenders, "background structural events do not rerender the foreground controller");
+releaseBackground();
 await act(async () => { root.unmount(); });
 dom.window.close();
 

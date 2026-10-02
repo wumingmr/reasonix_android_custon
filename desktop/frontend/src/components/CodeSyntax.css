@@ -1,0 +1,65 @@
+/* ── highlight.js token theme (mapped to palette) ────────────────────────── */
+.hljs-comment,
+.hljs-quote {
+  color: var(--hl-comment);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-section,
+.hljs-doctag,
+.hljs-type,
+.hljs-name,
+.hljs-strong {
+  color: var(--hl-keyword);
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-attribute,
+.hljs-meta .hljs-string {
+  color: var(--hl-string);
+}
+.hljs-addition {
+  color: var(--add-fg);
+}
+.hljs-deletion {
+  color: var(--del-fg);
+}
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-link,
+.hljs-selector-attr,
+.hljs-selector-pseudo {
+  color: var(--hl-number);
+}
+.hljs-title,
+.hljs-title.function_,
+.hljs-section .hljs-title {
+  color: var(--hl-func);
+}
+.hljs-class .hljs-title,
+.hljs-title.class_,
+.hljs-built_in,
+.hljs-attr {
+  color: var(--hl-type);
+}
+.hljs-variable,
+.hljs-template-variable,
+.hljs-property,
+.hljs-params,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: var(--hl-builtin);
+}
+.hljs-meta,
+.hljs-comment .hljs-doctag {
+  color: var(--hl-meta);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}

@@ -4,6 +4,7 @@ import { AnchoredPopover } from "./AnchoredPopover";
 import { RemoteConnectionErrorDialog } from "./RemoteConnectionErrorDialog";
 import { Tooltip } from "./Tooltip";
 import { contextWindowPercentages } from "../lib/contextWindow";
+import { formatTps } from "../lib/format";
 import { useI18n, type Translator } from "../lib/i18n";
 import { formatMoneyLocalized } from "../lib/money";
 import { normalizeStatusBarItems, type StatusBarItemId } from "../lib/statusBarItems";
@@ -66,12 +67,6 @@ function formatTokenCount(tokens?: number): string {
 function formatTurnCount(turns: number | undefined, t: Translator): string {
   if (typeof turns !== "number" || turns < 0) return "-";
   return t(turns === 1 ? "history.turnOne" : "history.turnOther", { n: turns });
-}
-function formatTps(tps?: number | null, estimated = false): string | null {
-  if (!tps || tps <= 0) return null;
-  const prefix = estimated ? "≈" : "";
-  if (tps < 1) return `${prefix}<1 t/s`;
-  return `${prefix}${Math.round(tps)} t/s`;
 }
 
 const STATUS_SOURCE_ORDER = ["executor", "planner", "subagent", "compaction", "classifier", "title"];
@@ -164,7 +159,6 @@ export function StatusBar({
   context,
   usage,
   balance,
-  running,
   sessionTurns,
   sessionTokens,
   turnTokens,
@@ -176,8 +170,7 @@ export function StatusBar({
   turnRateBand,
   cost,
   currency,
-  modelLabel,
-  labelStyle = "text",
+  labelStyle = "icon",
   items,
   workspacePath,
   workspaceName,
@@ -244,12 +237,12 @@ export function StatusBar({
   const turnEstimated = usage?.estimated === true;
   const sessionEstimated = context.estimated === true;
   const markEstimated = (value: string, estimated: boolean) => estimated && value !== "-" ? `≈${value}` : value;
-  const turnCostLabel = appendRateBand(markEstimated(formatMoneyLocalized(turnCost, currency, { locale }), turnEstimated), turnRateBand, t);
+  const turnCostLabel = appendRateBand(markEstimated(formatMoneyLocalized(turnCost, currency, { locale, fractionDigits: 2 }), turnEstimated), turnRateBand, t);
   const costLabel = markEstimated(formatMoneyLocalized(cost, currency, { locale }), sessionEstimated);
   const displayWorkspacePath = (workspacePath || workspaceName || "").trim();
   const workspaceLabel = compactPath(displayWorkspacePath, workspaceName);
   const branchLabel = (gitBranch || "").trim();
-  const workspaceTitle = displayWorkspacePath ? workspaceTooltip(t, displayWorkspacePath, workspacePath, branchLabel) : "";
+  const workspaceTitle = workspaceTooltip(t, displayWorkspacePath, workspacePath, branchLabel);
   const turnLabel = formatTurnCount(sessionTurns, t);
   const tokenLabel = markEstimated(formatTokenCount(sessionTokens), sessionEstimated);
   const turnTokenLabel = markEstimated(formatTokenCount(turnTokens), turnEstimated);
@@ -289,27 +282,11 @@ export function StatusBar({
   const cacheTooltip = sourceCacheTooltip(t, t("status.cacheTitle"), context);
   const avgCacheTooltip = sourceCacheTooltip(t, t("status.cacheAvgTitle"), context);
   const itemRenderers: Record<StatusBarItemId, ReactNode> = {
-    model: (
-      <Tooltip label={t("status.modelTitle")}>
-        <span className="stat stat--model">
-          <span className={`statusbar__dot ${running ? "statusbar__dot--busy" : ""}`} />
-          {modelLabel && <span className="statusbar__model">{modelLabel}</span>}
-        </span>
-      </Tooltip>
-    ),
-    workspace: workspaceLabel ? (
+    workspace: branchLabel || workspaceLabel ? (
       <Tooltip label={workspaceTitle} className="statusbar__metric statusbar__metric--workspace">
         <span className="stat statusbar__workspace">
-          <span className="stat__label stat__label--icon" aria-hidden="true"><Folder size={12} /></span>
-          <b>{workspaceLabel}</b>
-        </span>
-      </Tooltip>
-    ) : null,
-    git_branch: branchLabel ? (
-      <Tooltip label={`${t("status.gitBranchTitle")}: ${branchLabel}`} className="statusbar__metric statusbar__metric--branch">
-        <span className="stat statusbar__branch">
-          <span className="stat__label stat__label--icon" aria-hidden="true"><GitBranch size={12} /></span>
-          <b>{branchLabel}</b>
+          <span className="stat__label stat__label--icon" aria-hidden="true">{branchLabel ? <GitBranch size={12} /> : <Folder size={12} />}</span>
+          <b>{branchLabel || workspaceLabel}</b>
         </span>
       </Tooltip>
     ) : null,

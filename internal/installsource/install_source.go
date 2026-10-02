@@ -6,8 +6,6 @@ package installsource
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -121,7 +119,7 @@ func NewTool(opts Options) tool.Tool {
 	}
 }
 
-func (*installSourceTool) Name() string   { return "install_source" }
+func (*installSourceTool) Name() string   { return tool.HostInstallSource }
 func (*installSourceTool) ReadOnly() bool { return false }
 
 func (*installSourceTool) Description() string {
@@ -202,7 +200,10 @@ func (t *installSourceTool) Execute(ctx context.Context, raw json.RawMessage) (s
 	// reuse the exact approved snapshot. Clean it on every exit path, including
 	// plan-ID mismatch or host approval denial before executeApply runs.
 	defer cleanupActionResources(actions)
-	planID := computePlanID(req, actions)
+	planID, err := computePlanID(req, actions)
+	if err != nil {
+		return "", fmt.Errorf("create install approval identity: %w", err)
+	}
 	if len(actions) == 0 {
 		out := response{
 			OK:       false,
@@ -634,8 +635,13 @@ func (t *installSourceTool) resolvePath(p string) string {
 // same plan. It intentionally excludes Apply and PlanID; everything that changes
 // what will be written/connected must live either in req's planning fields or in
 // the action DTO.
-func computePlanID(req request, actions []action) string {
+func computePlanID(req request, actions []action) (string, error) {
 	public := publicActions(actions)
+	// Approval binds the execution inputs, independently of display redaction.
+	for i := range actions {
+		public[i].Env = actions[i].Env
+		public[i].Headers = actions[i].Headers
+	}
 	sort.Slice(public, func(i, j int) bool {
 		return actionPlanKey(public[i]) < actionPlanKey(public[j])
 	})
@@ -672,10 +678,11 @@ func computePlanID(req request, actions []action) string {
 		Strict:    req.strict(),
 		Actions:   public,
 	}
-	body, _ := json.Marshal(payload)
-	h := sha256.New()
-	h.Write(body)
-	return "sha256:" + hex.EncodeToString(h.Sum(nil)[:16])
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return config.ModelSettingsRequestDigest(body)
 }
 
 // kindCounts tallies the per-kind action count for the response. Skill

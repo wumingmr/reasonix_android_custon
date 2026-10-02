@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"reasonix/internal/boot"
+	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/i18n"
@@ -214,12 +215,9 @@ func (m *chatTUI) scheduleCurrentControllerRebuild(reason, successNotice string)
 	return m.pendingModelSwitch
 }
 
-func (m *chatTUI) bindRuntimeRebuilder(maxSteps int, sink event.Sink, yolo bool, overrides cliBuildOverrides, buildOpts func(string, int, bool, event.Sink, cliBuildOverrides) boot.Options) {
+func (m *chatTUI) bindRuntimeRebuilder(maxSteps int, sink event.Sink, yolo bool, overrides *cliBuildOverrides, buildOpts func(string, int, bool, event.Sink, cliBuildOverrides) boot.Options) {
 	m.rebuildRuntime = func(ctx context.Context, spec controllerBuildSpec, old *control.Controller) (*boot.BuildResult, error) {
-		effectiveOverrides := overrides
-		if spec.EffortOverride != nil {
-			effectiveOverrides.Effort = spec.EffortOverride
-		}
+		effectiveOverrides := overrides.forSelection(m.cfg, spec)
 		opts := buildOpts(spec.ModelRef, maxSteps, false, sink, effectiveOverrides)
 		var res *boot.BuildResult
 		var err error
@@ -231,6 +229,8 @@ func (m *chatTUI) bindRuntimeRebuilder(maxSteps int, sink event.Sink, yolo bool,
 		if err != nil {
 			return nil, err
 		}
+		overrides.Effort = effectiveOverrides.Effort
+		overrides.EffortModel = spec.ModelRef
 		m.lastBuildResult = res
 		res.Controller.EnableInteractiveApproval()
 		if yolo {
@@ -238,4 +238,13 @@ func (m *chatTUI) bindRuntimeRebuilder(maxSteps int, sink event.Sink, yolo bool,
 		}
 		return res, nil
 	}
+}
+
+func (overrides cliBuildOverrides) forSelection(cfg *config.Config, spec controllerBuildSpec) cliBuildOverrides {
+	overrides.Effort = config.RebindSessionEffort(cfg, overrides.EffortModel, spec.ModelRef, overrides.Effort)
+	overrides.EffortModel = spec.ModelRef
+	if spec.EffortOverride != nil {
+		overrides.Effort = spec.EffortOverride
+	}
+	return overrides
 }

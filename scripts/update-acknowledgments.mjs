@@ -2,7 +2,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 
 const repo = 'esengine/DeepSeek-Reasonix';
-const api = `https://api.github.com/repos/${repo}/contributors?per_page=20&anon=1`;
+const api = `https://api.github.com/repos/${repo}/contributors?per_page=30&anon=1`;
 const startMarker = '<!-- reasonix-top-contributors:start -->';
 const endMarker = '<!-- reasonix-top-contributors:end -->';
 
@@ -24,7 +24,7 @@ if (!Array.isArray(contributors) || contributors.length === 0) {
   throw new Error('GitHub contributors API returned no contributors');
 }
 
-const top = contributors.slice(0, 20).map((c, index) => ({
+const top = contributors.filter((c) => c.type !== 'Bot').slice(0, 20).map((c, index) => ({
   rank: index + 1,
   login: typeof c.login === 'string' ? c.login : '',
   name: typeof c.name === 'string' ? c.name : '',

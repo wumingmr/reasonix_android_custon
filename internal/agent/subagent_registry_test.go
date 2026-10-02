@@ -138,6 +138,37 @@ func TestSubagentToolRegistryFiltersUnavailableToolsAndWrapsBash(t *testing.T) {
 	}
 }
 
+func TestSubagentRegistriesNormalizeLegacyShellAllowlistToPwsh(t *testing.T) {
+	parent := tool.NewRegistry()
+	parent.Add(subagentRegistryTool{
+		name:   "pwsh",
+		schema: `{"type":"object","properties":{"command":{"type":"string"},"description":{"type":"string"},"run_in_background":{"type":"boolean"}},"required":["command","description"]}`,
+	})
+	parent.Add(subagentRegistryTool{name: "read_file", readOnly: true})
+
+	for _, legacyName := range []string{"bash", "Bash", "PowerShell", "powershell", "Pwsh", "pwsh"} {
+		t.Run(legacyName, func(t *testing.T) {
+			writer := SubagentToolRegistry(parent, []string{legacyName, "read_file"})
+			pwsh, ok := writer.Get("pwsh")
+			if !ok {
+				t.Fatalf("writer registry did not normalize %q to pwsh: %v", legacyName, writer.Names())
+			}
+			if _, ok := writer.Get("bash"); ok {
+				t.Fatalf("writer registry exposed legacy bash beside pwsh: %v", writer.Names())
+			}
+			if strings.Contains(string(pwsh.Schema()), "run_in_background") {
+				t.Fatalf("writer pwsh should be foreground-only: %s", pwsh.Schema())
+			}
+
+			readOnly := ReadOnlySubagentToolRegistry(parent, []string{legacyName, "read_file"})
+			pwsh, ok = readOnly.Get("pwsh")
+			if !ok || !pwsh.ReadOnly() {
+				t.Fatalf("read-only registry did not retain safe pwsh for %q: %v", legacyName, readOnly.Names())
+			}
+		})
+	}
+}
+
 func TestSubagentToolRegistryRestrictsCapabilityProxyToAllowedMCPIDs(t *testing.T) {
 	parent := tool.NewRegistry()
 	parent.Add(subagentCapabilityProxy{subagentRegistryTool{name: "use_capability", readOnly: true}})
@@ -696,7 +727,7 @@ func TestTaskToolDescribesSubagentToolBoundary(t *testing.T) {
 		"description": task.Description(),
 		"schema":      string(task.Schema()),
 	} {
-		for _, want := range []string{"wait", "bash_output", "kill_shell", "foreground-only"} {
+		for _, want := range []string{"job_output", "job_kill", "legacy wait/bash_output/kill_shell", "foreground-only"} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("task %s should mention %q in subagent tool boundary: %s", label, want, text)
 			}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -113,20 +114,100 @@ func bwrapBaseArgs(spec Spec) []string {
 		"--proc", "/proc",
 	}
 	args = append(args, bwrapTmpMountArgs(spec)...)
+	if spec.ReadOnly {
+		return append(args, bwrapForbidReadArgs(spec.ForbidReadRoots)...)
+	}
 	if spec.Network {
 		// Re-allow network by removing the network namespace.
 		args = args[1:] // drop --unshare-net
 	}
-	for _, root := range spec.WriteRoots {
+	plan := linuxWritePlan(spec)
+	for _, root := range bwrapWriteBinds(plan) {
 		args = append(args, bwrapWriteRootMountArgs(root)...)
 	}
-	if !spec.MinimalWrites {
-		for _, root := range linuxWriteDirs() {
-			args = append(args, "--bind", root, root)
+	args = append(args, bwrapProtectedWriteArgs(spec, plan.callers)...)
+	args = append(args, bwrapGitMetadataArgs(spec)...)
+	return append(args, bwrapForbidReadArgs(spec.ForbidReadRoots)...)
+}
+
+// bwrapGitMetadataArgs pins existing protected directories as mount points, which
+// rename and rmdir refuse, and binds protected files and trees read-only; paths
+// beneath a tree are left to it, so an over-budget group costs one mount. A dir
+// holding a writable root is skipped (rebinding hides the mounts beneath), and
+// only existing non-symlinks are mount targets: binding a link exposes its target.
+func bwrapGitMetadataArgs(spec Spec) []string {
+	meta := gitMetadataForSpec(spec)
+	paths := meta.Paths
+	for _, common := range meta.Commons {
+		paths = append(paths, gitGroupPaths(common, gitGroupMaxMounts)...)
+	}
+	var trees []string
+	for _, p := range paths {
+		if p.Tree {
+			trees = append(trees, p.Path)
 		}
 	}
-	args = append(args, bwrapProtectedWriteArgs(spec, spec.WriteRoots)...)
-	return append(args, bwrapForbidReadArgs(spec.ForbidReadRoots)...)
+	writable := writableDirsForSpec(spec)
+	var out []string
+	for _, p := range paths {
+		if slices.ContainsFunc(trees, func(t string) bool { return strings.HasPrefix(p.Path, t+string(filepath.Separator)) }) {
+			continue
+		}
+		info, err := os.Lstat(p.Path)
+		if err != nil {
+			continue
+		}
+		switch {
+		case (p.Tree && info.IsDir()) || (!p.Tree && !p.Pin && info.Mode().IsRegular()):
+			out = append(out, "--ro-bind", p.Path, p.Path)
+		case p.Pin && info.IsDir() && !slices.ContainsFunc(writable, func(w string) bool { return PathWithin(p.Path, w) }):
+			out = append(out, "--bind", p.Path, p.Path)
+		}
+	}
+	return out
+}
+
+func writableDirsForSpec(spec Spec) []string {
+	return linuxWritePlan(spec).dirs
+}
+
+func gitMetadataRoots(spec Spec) []string { return linuxWritePlan(spec).callers }
+
+// linuxWritePlan resolves the caller's roots and, unless MinimalWrites, the
+// host caches bwrap binds beside them.
+func linuxWritePlan(spec Spec) writeRootPlan {
+	var extras []string
+	if !spec.MinimalWrites {
+		extras = hostWriteDirCandidates()
+	}
+	return planWriteRoots(spec.WriteRoots, extras, spec.SessionTemp)
+}
+
+// bwrapWriteBinds are the outermost existing resolved directories: a nested
+// bind adds nothing, and its path runs through a directory a confined command
+// can re-point between the check and the mount. Host /tmp is replaced by the
+// tmp mount rather than re-exposed.
+func bwrapWriteBinds(plan writeRootPlan) []string {
+	var dirs []string
+	for _, d := range existingDirs(plan.dirs) {
+		if d != "/tmp" {
+			dirs = append(dirs, d)
+		}
+	}
+	out := make([]string, 0, len(dirs))
+	for i, d := range dirs {
+		nested := false
+		for j, other := range dirs {
+			if i != j && other != d && PathWithin(other, d) {
+				nested = true
+				break
+			}
+		}
+		if !nested {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 func bwrapProtectedWriteArgs(spec Spec, writeRoots []string) []string {
@@ -191,6 +272,9 @@ func resolveProtectedWriteRoots(roots []string) []string {
 }
 
 func bwrapTmpMountArgs(spec Spec) []string {
+	if spec.ReadOnly {
+		return nil
+	}
 	if dir := strings.TrimSpace(spec.SessionTemp); dir != "" {
 		return []string{"--bind", dir, "/tmp"}
 	}
@@ -301,7 +385,7 @@ func pathWithin(path, root string) bool {
 	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-func linuxWriteDirs() []string {
+func hostWriteDirCandidates() []string {
 	dirs := []string{}
 	if td := os.TempDir(); td != "" && td != "/tmp" {
 		dirs = append(dirs, td)
@@ -311,21 +395,27 @@ func linuxWriteDirs() []string {
 			dirs = append(dirs, filepath.Join(home, sub))
 		}
 	}
-	seen := map[string]bool{}
-	out := make([]string, 0, len(dirs))
+	return dirs
+}
+
+func linuxWriteDirs() []string {
+	var out []string
+	for _, d := range existingDirs(planWriteRoots(nil, hostWriteDirCandidates(), "").dirs) {
+		if d != "/tmp" {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+func hostWriteDirs() []string { return hostWriteDirCandidates() }
+
+func existingDirs(dirs []string) []string {
+	var out []string
 	for _, d := range dirs {
-		abs, err := filepath.Abs(d)
-		if err != nil {
-			continue
+		if dirExists(d) {
+			out = append(out, d)
 		}
-		if real, err := filepath.EvalSymlinks(abs); err == nil {
-			abs = real
-		}
-		if abs == "/tmp" || seen[abs] || !dirExists(abs) {
-			continue
-		}
-		seen[abs] = true
-		out = append(out, abs)
 	}
 	return out
 }
@@ -334,3 +424,8 @@ func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
 }
+
+// HostWritableDirs lists the host directories any jailed command may write
+// besides its write roots: toolchain caches, and TMPDIR when it is not /tmp.
+// A cache not created yet is listed too, since the next command binds it.
+func HostWritableDirs() []string { return hostWriteDirCandidates() }

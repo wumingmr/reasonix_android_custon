@@ -10,8 +10,8 @@ import (
 // for it with the real tool, so the answer shapes the plan instead of being
 // stapled onto a finished one.
 var plannerNonResearchTools = []string{
+	"job_output",
 	"bash_output",
-	"complete_step",
 	"slash_command",
 	"todo_write",
 	"wait",

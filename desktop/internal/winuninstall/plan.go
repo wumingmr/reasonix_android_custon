@@ -51,7 +51,7 @@ func Plan(current, legacy *Registration, installRoot, version string, uninstalle
 	legacyOwned := registrationOwnsRoot(legacy, root)
 	// A legacy-only key may still point at the Tauri 0.53 uninstaller. The full
 	// signed installer replaces that binary before migrating the key; the
-	// update helper must not promote it into the current Wails identity.
+	// update helper must not promote it into the current desktop identity.
 	if !currentOwned {
 		return ReconcilePlan{}, nil
 	}
@@ -64,7 +64,7 @@ func Plan(current, legacy *Registration, installRoot, version string, uninstalle
 			DisplayVersion:       strings.TrimPrefix(version, "v"),
 			Publisher:            "Reasonix",
 			InstallLocation:      root,
-			DisplayIcon:          joinWindowsPath(root, "reasonix-launcher.exe"),
+			DisplayIcon:          joinWindowsPath(root, "Reasonix.exe"),
 			UninstallString:      quoteWindowsPath(uninstaller),
 			QuietUninstallString: quoteWindowsPath(uninstaller) + " /S",
 		},

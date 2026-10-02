@@ -434,6 +434,70 @@ func SessionDir() string {
 	return filepath.Join(dir, "sessions")
 }
 
+// SessionStoreDir is the execution-v2 session root. Keeping it physically
+// separate prevents older binaries from treating v3 commits as legacy JSONL
+// transcripts and writing a format they do not understand.
+func SessionStoreDir() string {
+	dir := userSupportDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "sessions-v4")
+}
+
+// DesktopSessionStoreDir is the SessionID-only Desktop store. It is a new
+// generation so older binaries never mistake its layout for a project-local
+// sessions-v4 root. The persistence root is by-id: workspace ownership lives
+// in DesktopWorkspaceStatePath rather than in physical directories.
+func DesktopSessionStoreDir() string {
+	dir := userSupportDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "desktop-sessions-v5", "by-id")
+}
+
+// DesktopWorkspaceStatePath is the durable ordered Workspace -> SessionID
+// registry used by the Desktop sidebar and session lifecycle.
+func DesktopWorkspaceStatePath() string {
+	dir := userSupportDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "desktop", "workspace-state-v1.json")
+}
+
+// DesktopDraftStatePath is the local-only session draft database. Drafts are
+// deliberately separate from the Workspace -> Session registry: a draft is an
+// editor surface and must not become a session until its first execution.
+func DesktopDraftStatePath() string {
+	dir := userSupportDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "desktop", "drafts-v1.sqlite")
+}
+
+// DesktopSessionUIStatePath stores local composer input independently of history.
+func DesktopSessionUIStatePath() string {
+	dir := userSupportDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "desktop", "session-ui-v1.sqlite")
+}
+
+// DesktopLegacyEmptySessionCleanupPath stores the one-shot upgrade batch used
+// to retire historical empty default-title sessions. It is intentionally
+// separate from the workspace registry so older binaries can ignore it.
+func DesktopLegacyEmptySessionCleanupPath() string {
+	dir := userSupportDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "desktop", "legacy-empty-session-cleanup-v1.json")
+}
+
 // StatsDir is where usage statistics are persisted (one .jsonl per day, e.g.
 // stats/2026-08-02.jsonl). It lives under the user state root — not the install
 // directory, which is typically read-only and replaced on upgrade — so usage
@@ -448,8 +512,9 @@ func StatsDir() string {
 }
 
 // ProjectSessionDir is the per-workspace session directory the desktop sidebar
-// lists: <state root>/projects/<slug>/sessions. Empty when either the state root
-// or workspaceRoot doesn't resolve.
+// lists. Existing projects use <state root>/projects/<slug>/sessions; newly
+// registered slug collisions use their assigned directory. Empty when either
+// the state root or workspaceRoot doesn't resolve.
 func ProjectSessionDir(workspaceRoot string) string {
 	base := MemoryUserDir()
 	root := strings.TrimSpace(workspaceRoot)
@@ -459,7 +524,38 @@ func ProjectSessionDir(workspaceRoot string) string {
 	if abs, err := filepath.Abs(root); err == nil {
 		root = abs
 	}
-	return filepath.Join(base, "projects", WorkspaceSlug(root), "sessions")
+	return filepath.Join(ProjectStateDir(base, root), "sessions")
+}
+
+// ProjectSessionStoreDir is the per-workspace execution-v2 session root.
+func ProjectSessionStoreDir(workspaceRoot string) string {
+	base := MemoryUserDir()
+	root := strings.TrimSpace(workspaceRoot)
+	if base == "" || root == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
+	return filepath.Join(ProjectStateDir(base, root), "sessions-v4")
+}
+
+// DesktopTopicStatePath returns the authoritative SQLite path for Desktop
+// topic metadata. Global topics live directly under the user state root;
+// project topics share the same stable workspace slug as project sessions.
+func DesktopTopicStatePath(workspaceRoot string) string {
+	base := MemoryUserDir()
+	if base == "" {
+		return ""
+	}
+	root := strings.TrimSpace(workspaceRoot)
+	if root == "" {
+		return filepath.Join(base, "desktop", "topic-state-v1.sqlite")
+	}
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
+	return filepath.Join(ProjectStateDir(base, root), "desktop", "topic-state-v1.sqlite")
 }
 
 // WorkspaceSlug flattens an absolute workspace path into the directory name

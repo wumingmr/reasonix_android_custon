@@ -10,8 +10,15 @@ import (
 
 func TestCanonicalSessionPathMatchesLeaseRegistryKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "Mixed-Case", "20260705-Test.jsonl")
-	if got, want := CanonicalSessionPath(path), canonicalSessionSavePath(path); got != want {
-		t.Fatalf("CanonicalSessionPath(%q) = %q, want lease key %q", path, got, want)
+	identity, err := resolveSessionPathIdentity(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := CanonicalSessionPath(path), identity.Key; got != want {
+		t.Fatalf("CanonicalSessionPath(%q) = %q, want identity key %q", path, got, want)
+	}
+	if got, want := canonicalSessionSavePath(path), identity.PhysicalPath; got != want {
+		t.Fatalf("canonicalSessionSavePath(%q) = %q, want access path %q", path, got, want)
 	}
 }
 

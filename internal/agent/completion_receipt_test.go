@@ -15,13 +15,12 @@ func TestReceiptCarriesWhatProseDoesNot(t *testing.T) {
 	} {
 		ledger.Record(r)
 	}
-	c := buildShadowContract("fix the add bug in calc.py", ledger.Receipts(), nil)
-	got := completionReceipt(completion.Build(c, ledger))
+	got := completionReceipt(completion.BuildFacts(ledger, "", nil))
 	if got == nil {
 		t.Fatal("a turn that changed a file must produce a receipt")
 	}
-	if got.Verdict != "partial" {
-		t.Fatalf("verdict = %q, want partial", got.Verdict)
+	if got.Verdict != "unknown" {
+		t.Fatalf("verdict = %q, want unknown", got.Verdict)
 	}
 	if len(got.Changes) != 1 || got.Changes[0].Path != "calc.py" || got.Changes[0].Reviewed {
 		t.Fatalf("changes = %+v, want calc.py recorded as unreviewed", got.Changes)
@@ -29,8 +28,8 @@ func TestReceiptCarriesWhatProseDoesNot(t *testing.T) {
 	if len(got.Verifications) != 1 || !got.Verifications[0].Passed {
 		t.Fatalf("verifications = %+v, want the passing command named", got.Verifications)
 	}
-	if len(got.Gaps) != 1 || got.Gaps[0].Kind != "unreviewed_change" || got.Gaps[0].Detail != "calc.py" {
-		t.Fatalf("gaps = %+v, want the unreviewed path named", got.Gaps)
+	if len(got.Gaps) != 0 {
+		t.Fatalf("unreviewed path acquired inferred quality gap: %+v", got.Gaps)
 	}
 }
 
@@ -39,8 +38,7 @@ func TestReceiptCarriesWhatProseDoesNot(t *testing.T) {
 func TestNoReceiptForATurnWithNothingToJudge(t *testing.T) {
 	ledger := evidence.NewLedger()
 	ledger.Record(evidence.Receipt{ToolName: "read_file", Success: true, Read: true, Paths: []string{"calc.py"}, OutputBytes: 64})
-	c := buildShadowContract("what does this function do?", ledger.Receipts(), nil)
-	if got := completionReceipt(completion.Build(c, ledger)); got != nil {
+	if got := completionReceipt(completion.BuildFacts(ledger, "", nil)); got != nil {
 		t.Fatalf("read-only answer produced a receipt: %+v", got)
 	}
 }

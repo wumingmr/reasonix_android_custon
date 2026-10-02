@@ -18,6 +18,7 @@ import (
 	"reasonix/internal/config"
 	"reasonix/internal/event"
 	"reasonix/internal/recovery"
+	"reasonix/internal/turnevent"
 )
 
 // metrics_app.go is the aggregate desktop-metrics flush: anonymous (signal,
@@ -258,7 +259,7 @@ func (m *metricsAggregator) observeBotSettingsSnapshot(c *config.Config) {
 	bot := c.Bot
 	m.inc("settings_bot_enabled", boolBucket(bot.Enabled))
 	m.inc("settings_bot_model", safeModelBucket(c, bot.Model))
-	m.inc("settings_bot_tool_approval", knownBucketDefault(bot.ToolApprovalMode, "ask", "ask", "auto", "yolo"))
+	m.inc("settings_bot_tool_approval", knownBucketDefault(bot.ToolApprovalMode, "workspace-write", "read-only", "workspace-write", "danger-full-access", "ask", "auto", "yolo"))
 	m.inc("settings_bot_allowlist", boolBucket(bot.Allowlist.Enabled))
 	m.inc("settings_bot_allow_all", boolBucket(bot.Allowlist.AllowAll))
 	m.inc("settings_bot_qq_enabled", boolBucket(bot.QQ.Enabled))
@@ -271,7 +272,7 @@ func (m *metricsAggregator) observeBotSettingsSnapshot(c *config.Config) {
 		m.inc("settings_bot_connection_enabled", boolBucket(conn.Enabled))
 		m.inc("settings_bot_connection_status", knownBucket(conn.Status, "disconnected", "pending", "connected", "error"))
 		m.inc("settings_bot_connection_model", safeModelBucket(c, conn.Model))
-		m.inc("settings_bot_connection_approval", knownBucketDefault(conn.ToolApprovalMode, "default", "default", "ask", "auto", "yolo"))
+		m.inc("settings_bot_connection_approval", knownBucketDefault(conn.ToolApprovalMode, "default", "default", "read-only", "workspace-write", "danger-full-access", "ask", "auto", "yolo"))
 	}
 }
 
@@ -328,7 +329,7 @@ func (m *metricsAggregator) observe(e event.Event) {
 		}
 	case event.TurnDone:
 		m.inc("turns", "total")
-		if e.Err != nil && e.Outcome != event.TurnOutcomeRecoveryPaused {
+		if e.Err != nil && e.Outcome != event.TurnOutcomeRecoveryPaused && e.Outcome != event.TurnOutcomeCompletionUncertain && e.Outcome != event.TurnOutcomeIncompleteRead {
 			m.inc("provider_error", errorClass(e.Err.Error()))
 		}
 	case event.ToolResult:
@@ -338,10 +339,28 @@ func (m *metricsAggregator) observe(e event.Event) {
 	case event.CompactionDone:
 		m.inc("compaction", "total")
 	case event.Notice:
-		if e.Text == "No visible answer was produced; asking the assistant to respond again." || strings.HasPrefix(e.Detail, "empty final answer blocked") {
+		if e.Code == event.NoticeCodeEmptyFinal || strings.HasPrefix(e.Detail, "empty final answer blocked") {
 			m.inc("empty_final", "total")
 		}
 	}
+}
+
+func (m *metricsAggregator) observeSubagentLifecycle(info event.SubagentLifecycleInfo) {
+	phase := knownBucket(info.Phase, "child_created", "child_running", "child_completed", "child_partial", "child_failed", "child_cancelled", "child_resume")
+	status := knownBucket(info.Status, "queued", "running", "completed", "partial", "failed", "cancelled")
+	m.inc("subagent_lifecycle", phase+"_"+status)
+	if info.ErrorCode != "" {
+		m.inc("subagent_error", knownBucket(info.ErrorCode, "completion_uncertain", "final_readiness", "review_unavailable", "max_steps", "incomplete_read", "provider_connection", "subagent_error"))
+	}
+	if info.Retryable {
+		m.inc("subagent_retryable", "yes")
+	} else {
+		m.inc("subagent_retryable", "no")
+	}
+}
+
+func metricsEventRequiresPersist(e event.Event) bool {
+	return e.Kind == event.TurnDone
 }
 
 func cacheBucket(hit, miss int) string {
@@ -484,6 +503,57 @@ func observeControllerRecoveryMetrics(m *metricsAggregator, ctrl any) {
 	}
 }
 
+func (m *metricsAggregator) observeTurnEventMetrics(stats turnevent.MetricsSnapshot) {
+	if m == nil {
+		return
+	}
+	m.add("turn_ledger_stream_raw", "total", int(stats.RawEvents))
+	m.add("turn_ledger_stream_records", "total", int(stats.StreamRecords))
+	m.add("turn_ledger_write_bytes", "total", int(stats.BytesWritten))
+	m.add("turn_ledger_replay_events", "total", int(stats.ReplayEvents))
+	m.add("turn_ledger_replay_bytes", "total", int(stats.ReplayBytes))
+	m.add("turn_ledger_replay_reset", "total", int(stats.ReplayResets))
+	m.add("turn_ledger_compaction", "success", int(stats.Compactions))
+	m.add("turn_ledger_compaction", "failed", int(stats.CompactionFailures))
+	m.add("turn_ledger_compaction_bytes", "before", int(stats.BytesBeforeCompact))
+	m.add("turn_ledger_compaction_bytes", "after", int(stats.BytesAfterCompact))
+	m.add("turn_ledger_failure", "write", int(stats.WriteFailures))
+	m.add("turn_ledger_recovery", "torn_tail", int(stats.TornTails))
+	m.add("turn_ledger_projection_retry", "total", int(stats.ProjectionRetries))
+	latencyBuckets := []string{"lt_1ms", "1_5ms", "5_20ms", "20_100ms", "gte_100ms"}
+	for i, bucket := range latencyBuckets {
+		m.add("turn_ledger_append_latency", bucket, int(stats.AppendLatencyBuckets[i]))
+		m.add("turn_ledger_replay_latency", bucket, int(stats.ReplayLatencyBuckets[i]))
+		m.add("turn_ledger_compact_latency", bucket, int(stats.CompactLatencyBuckets[i]))
+	}
+	switch {
+	case stats.FileSizeBytes < 256<<10:
+		m.inc("turn_ledger_file_size", "lt_256k")
+	case stats.FileSizeBytes < 1<<20:
+		m.inc("turn_ledger_file_size", "256k_1m")
+	case stats.FileSizeBytes < 8<<20:
+		m.inc("turn_ledger_file_size", "1m_8m")
+	case stats.FileSizeBytes < 32<<20:
+		m.inc("turn_ledger_file_size", "8m_32m")
+	default:
+		m.inc("turn_ledger_file_size", "gte_32m")
+	}
+	if stats.UnconfirmedTurns > 0 {
+		m.add("turn_ledger_projection_pending", "total", stats.UnconfirmedTurns)
+	}
+}
+
+func observeControllerTurnEventMetrics(m *metricsAggregator, ctrl any) {
+	if m == nil || ctrl == nil {
+		return
+	}
+	if drainer, ok := ctrl.(interface {
+		DrainTurnEventMetrics() turnevent.MetricsSnapshot
+	}); ok {
+		m.observeTurnEventMetrics(drainer.DrainTurnEventMetrics())
+	}
+}
+
 // persist merges the session delta into the pending file and resets it, so a
 // force-kill loses at most the counts since the last turn.
 func (m *metricsAggregator) persist() {
@@ -578,14 +648,12 @@ func (a *App) flushMetrics() {
 	metricsPendingMu.Unlock()
 	flat := flatten(readCounters(temp))
 	device := collectDeviceInfo()
-	runtimeContext := webRuntimeContextForTelemetry(500 * time.Millisecond)
 	payload := metricsPayload{
 		Version: version, OS: runtime.GOOS, Arch: runtime.GOARCH, Channel: channel,
 		OSBuild: device.OSBuild, OSRevision: device.OSRevision,
 		DistroID: device.DistroID, DistroVersion: device.DistroVersion,
 		KernelVersion: device.KernelVersion, SessionType: device.SessionType,
-		RuntimeEngine: runtimeContext.Engine, RuntimeVersion: runtimeContext.RuntimeVersion,
-		GPUMode: runtimeContext.GPUMode, Counters: flat,
+		RuntimeEngine: desktopRendererEngine, Counters: flat,
 	}
 	if id, err := installID(); err == nil {
 		payload.InstallID = id

@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,9 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
-
-	"mvdan.cc/sh/v3/syntax"
 
 	"reasonix/internal/ablation"
 	"reasonix/internal/capability"
@@ -21,8 +17,12 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
 	"reasonix/internal/extension/dispatch"
+	"reasonix/internal/fileops"
+	"reasonix/internal/i18n"
+	"reasonix/internal/imageinput"
 	"reasonix/internal/instruction"
 	"reasonix/internal/jobs"
+	"reasonix/internal/mcpinteraction"
 	"reasonix/internal/memory"
 	"reasonix/internal/nilutil"
 	"reasonix/internal/plancontract"
@@ -31,8 +31,6 @@ import (
 	"reasonix/internal/runtimepolicy"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/sessiontemp"
-	"reasonix/internal/shellparse"
-	"reasonix/internal/taskcontract"
 	"reasonix/internal/tool"
 	"reasonix/internal/workspacelease"
 )
@@ -45,11 +43,10 @@ var deprecatedContextRetentionWarning sync.Once
 
 const maxEmptyFinalBlocks = 3
 
-// maxStreamRecoveries is the number of body-phase stream retries after the
-// initial sampling attempt (Codex-aligned default: 1 + 5 = 6 attempts total).
-const maxStreamRecoveries = 5
-const maxSamplingAttempts = maxStreamRecoveries + 1
-const maxExecutorHandoffNudges = 1
+// These bounds cover corrected tool arguments and protocol/context repairs.
+// Transport failures never replay the failed request automatically.
+const maxToolArgumentRepairs = 3
+const maxSamplingAttempts = 4
 
 // defaultReasoningByteLimit caps stored hidden reasoning for one stream.
 // It does not cancel generation; official DeepSeek may emit up to 384K tokens.
@@ -61,11 +58,10 @@ const defaultReasoningByteLimit = 8 << 20
 // its text is cache-frozen — changing it breaks steer replay matching and the
 // prefix stability of every live delivery session.
 const DeliveryRuntimeMarker = `<delivery-runtime>
-This session is in delivery-first mode. Before any state-changing tool call,
-establish concrete, verifiable acceptance criteria with todo_write. After the
-change, inspect the result, run relevant verification, and sign off each step
-with complete_step citing the successful verification command. The host enforces
-these gates and will reject mutation or finalization when evidence is missing.
+This session is in delivery-first mode. Use todo_write when a task benefits from
+an explicit task list, update it from your own assessment, and finish when the
+user's request is handled. Structured file tools require a current host-observed
+file version; reading any useful window establishes that observation.
 </delivery-runtime>`
 
 // Renderer redraws the assistant's final-answer text as styled output. It is
@@ -280,18 +276,31 @@ type ToolHooks interface {
 // Agent drives a single task: a Provider, a tool Registry, and a Session wired
 // into the main loop.
 type Agent struct {
+	// protocolRunSeq scopes provider-protocol recovery records across runs. It
+	// is unrelated to the retired Auto Guard execution gate.
+	protocolRunSeq atomic.Uint64
+
+	imageInput    agentImageInput
+	imageResolver ImageRequestResolver
 	agentConfig
+	// reads groups the run-scoped read registry and its generation: both are
+	// replaced at each run start so cursors from an earlier run never continue.
+	reads readState
+	// fileObservations is the non-persisted, per-agent observation table used by
+	// structured file tools. A new Agent (resume, fork, rollback, or sub-agent)
+	// always starts with an empty table.
+	fileObservations *fileops.Store
+	stragglers       runStragglers
 	// svc are the collaborators this agent talks to; see services.go.
 	svc agentServices
 	// sess is the state one conversation owns; SetSession restarts it. See
 	// sessionstate.go.
-	sess sessionRuntime
-	// executorHandoffGuard is enabled by Coordinator only for the executor agent.
-	executorHandoffGuard bool
-	responseLanguage     atomic.Value // string: auto|zh|en
-	reasoningLanguage    atomic.Value // string: auto|zh|en
+	sess              sessionRuntime
+	responseLanguage  atomic.Value // string: auto|zh|en
+	reasoningLanguage atomic.Value // string: auto|zh|en
 
 	requireVisibleFinal bool // internal callers require final Content
+	continuationPolicy  ContinuationPolicy
 
 	// unwrittenResolve is the resolve watermark a failed state write still owes.
 	// It outlives the conversation, which is why it is not in sessionRuntime.
@@ -307,22 +316,12 @@ type Agent struct {
 	// for the agent's lifetime and validates proxy calls after resolution.
 	readOnlyExecution bool
 
-	// mutationDependencyBarrier records the first durable-state write that
-	// failed or was blocked in the current provider tool batch. executeOne
-	// re-checks it after proxy resolution so use_capability cannot bypass the
-	// barrier by advertising schema-level ReadOnly()==true. The pointed-to
-	// cause is immutable and contains no arguments, paths, or remote addresses.
-	mutationDependencyBarrier atomic.Pointer[mutationBarrierCause]
-
 	// plannerMCPExecution relaxes the strict read-only MCP boundary for the
 	// two-model Planner only: authorized, non-destructive MCP targets may run
 	// through use_capability even without readOnlyHint. Ordinary writers, bash,
 	// and destructive MCP stay blocked. Strict read-only sub-agents leave this
 	// false and still require readOnlyHint.
 	plannerMCPExecution bool
-
-	// recovery is who this agent is to the shared gate above.
-	recovery recoveryIdentity
 
 	// writeWorkspaceRoot is the workspace used to normalize parent write
 	// reservations when writeScheduler is set.
@@ -342,24 +341,11 @@ type Agent struct {
 	steerRunActive bool
 
 	// task is the state shared by every Run continuing one delivery scope: the
-	// receipt ledger complete_step validates citations against, the spend that
-	// outlives a single Run, and the guards keyed to the task rather than the
-	// turn. See taskstate.go.
+	// spend that outlives a single Run and resource limits keyed to the task
+	// rather than the turn. See taskstate.go.
 	task taskRuntime
 
 	planContract *plancontract.Plan // approved plan this turn executes, if any
-
-	// hostAdvanceSeq guarantees unique tool IDs across turns: every
-	// emitTodoState call increments it so the frontend always sees a fresh
-	// dispatch even when the same panel index is signed off in different turns.
-	hostAdvanceSeq atomic.Int64
-
-	// projectChecks are structured project instructions that complete_step can
-	// verify against same-turn bash receipts after a write-backed completion.
-	projectChecks []instruction.VerifyCheck
-
-	// closedLoop gates come from Goal/Plan scope and strict contract
-	// obligations. Host state only; never enters the provider-cached prefix.
 
 	// inheritedExec is the writer parent's host execution context.
 	inheritedExec *runtimepolicy.InheritedExecutionContext
@@ -396,13 +382,8 @@ type Agent struct {
 	// tool loop is active, but it must keep this message and everything after it
 	// verbatim so cancellation/crash recovery can retain completed tool pairs.
 	activeTurnCreatedAt atomic.Int64
-}
-
-type repeatFailureRecord struct {
-	count        int
-	errClass     string
-	paths        []string
-	stateRecheck bool
+	// Pinned revisions are staged after admission and appended with the user turn.
+	pinned pinnedContextRuntime
 }
 
 // KeepPolicy is a bitmask controlling which messages are preserved beyond the
@@ -469,33 +450,18 @@ func (a *Agent) SetExtensions(d *dispatch.Dispatcher) {
 	a.svc.extensions = d
 }
 
-// SetRecoveryGate installs Auto Guard. Safe to call before the run loop starts;
-// nil disables its checks.
+// SetRecoveryGate is retained for source compatibility. Auto Guard is retired,
+// so no caller can reinstall its execution gates.
 func (a *Agent) SetRecoveryGate(g RecoveryGate) {
-	if a == nil {
-		return
-	}
-	if nilutil.IsNil(g) {
-		g = nil
-	}
-	a.svc.recoveryGate = g
 }
 
 // SetRecoveryIdentity sets the agent/task labels used on recovery cards.
 func (a *Agent) SetRecoveryIdentity(agentID, taskID string) {
-	if a == nil {
-		return
-	}
-	a.recovery.agentID = strings.TrimSpace(agentID)
-	a.recovery.taskID = strings.TrimSpace(taskID)
 }
 
-// RecoveryGate returns the attached Auto Guard (may be nil).
+// RecoveryGate is retained for source compatibility and always returns nil.
 func (a *Agent) RecoveryGate() RecoveryGate {
-	if a == nil {
-		return nil
-	}
-	return a.svc.recoveryGate
+	return nil
 }
 
 // SetPlanModeReadOnlyTrustGate retains the legacy confirmation bridge for old
@@ -542,6 +508,10 @@ func (a *Agent) withTurnPreferences(input string) string {
 // Interactive frontends wire one in; headless runs leave it nil.
 func (a *Agent) SetAsker(as Asker) { a.svc.asker = as }
 
+// SetInteractionBroker installs the broker that carries MCP server-initiated
+// elicitations to the user. Headless runs leave it nil so requests cancel.
+func (a *Agent) SetInteractionBroker(b mcpinteraction.Broker) { a.svc.interactionBroker = b }
+
 // SetMemoryQueue installs the sink the remember/forget tools use to apply a
 // memory change in the current session. The controller wires itself in.
 func (a *Agent) SetMemoryQueue(q memory.Queue) { a.svc.memQueue = q }
@@ -574,35 +544,6 @@ func (a *Agent) MutationObserver() *checkpoint.MutationObserver {
 	return a.svc.mutationObserver
 }
 
-// Session returns the agent's current conversation, useful for persistence
-// hooks that need to read the message log between turns. sessMu serialises this
-// pointer read against SetSession, so a frontend (serve's concurrent /history and
-// /new handlers) can't race the swap. The run loop touches a.session directly and
-// only swaps it via SetSession while idle, so its reads need no lock.
-func (a *Agent) Session() *Session {
-	a.sess.mu.Lock()
-	defer a.sess.mu.Unlock()
-	return a.sess.conversation
-}
-
-// SetSession replaces the agent's conversation wholesale. Used by
-// `reasonix --resume` to load a saved JSONL transcript before the first turn,
-// so the model picks up exactly where it left off. Callers serialise it against a
-// running turn (it only fires while idle); sessMu guards the pointer swap itself.
-func (a *Agent) SetSession(s *Session) {
-	a.sess.reset(s)
-	// The replaced conversation's task is over, but the ledger and the bill
-	// answer to beginRunTurn's scope check rather than to this seam.
-	a.task.repeatFailures = nil
-	a.task.repeatScope = ""
-	a.pending.preserveEvidence = false
-	a.pending.finalReadinessRecovery = false
-	a.pending.finalReadinessRecoveryPrepared = false
-	if s != nil {
-		a.rebuildTodoState(s.Snapshot())
-	}
-}
-
 // LastUsage returns the most recent per-turn token telemetry the provider
 // reported (nil if no turn has run yet). The TUI uses it to show a context
 // gauge alongside the prompt; ContextManager.Prepare owns cache-breaking
@@ -616,7 +557,7 @@ func (a *Agent) SessionCache() (hit, miss int) {
 }
 
 // ContextWindow returns the configured context-window size in tokens. 0
-// means compaction is disabled for this agent.
+// means automatic compaction is disabled for this agent.
 func (a *Agent) ContextWindow() int { return a.contextWindow }
 
 // mid-turn steer marker.
@@ -811,41 +752,6 @@ func (a *Agent) flushSteerQueue() {
 	a.steerMu.Unlock()
 }
 
-// UnappliedSteerNotice returns the durable warning shown for guidance that was
-// accepted during an abnormal turn exit but never reached a provider request.
-func UnappliedSteerNotice(text string) string {
-	return "Guidance was not applied because the turn ended before it could be processed. Send it again if it is still needed:\n" + text
-}
-
-// RecordUnappliedSteer stores guidance that could not affect its intended
-// in-flight turn. The orphan-tool sentinel makes older readers drop the record
-// during wire normalization, while current readers use LocalOnly to exclude it
-// before every provider request. itemID correlates the notice with the durable
-// session inbox entry when one exists.
-func (a *Agent) RecordUnappliedSteer(text string, itemID ...string) {
-	if a == nil || a.sess.conversation == nil {
-		return
-	}
-	id := ""
-	if len(itemID) > 0 {
-		id = itemID[0]
-	}
-	a.sess.conversation.Add(provider.Message{
-		Role:       provider.RoleTool,
-		Content:    a.withTurnPreferences(midTurnSteerMessage(text)),
-		ToolCallID: provider.LocalOnlyToolID,
-		Name:       provider.LocalOnlyToolName,
-		LocalOnly:  true,
-	})
-	a.svc.sink.Emit(event.Event{
-		Kind:   event.Notice,
-		Level:  event.LevelWarn,
-		Code:   event.NoticeCodeUnappliedSteer,
-		Text:   UnappliedSteerNotice(text),
-		ItemID: id,
-	})
-}
-
 func (a *Agent) steerQueueLen() int {
 	a.steerMu.Lock()
 	defer a.steerMu.Unlock()
@@ -858,13 +764,20 @@ func (a *Agent) CompactRatio() float64 { return a.compactRatio }
 
 // CompactNow forces one projection compaction (canonical transcript untouched).
 func (a *Agent) CompactNow(ctx context.Context, instructions string) error {
-	_, err := a.contextManager().Prepare(ctx, ContextPreparePolicy{Trigger: CompactionTriggerManual, Instructions: instructions, Force: true})
+	_, err := a.contextManager().Prepare(ctx, ContextPreparePolicy{
+		Trigger:              CompactionTriggerManual,
+		Instructions:         instructions,
+		Force:                true,
+		AllowChunkedFallback: true,
+	})
 	return err
 }
 
 // Options configures an Agent.
 type Options struct {
-	MaxSteps int
+	ImageInput           *imageinput.Config
+	ImageRequestResolver ImageRequestResolver
+	MaxSteps             int
 	// MaxStepsKey names the explicit runtime control shown when the MaxSteps guard
 	// is hit. Empty defaults to the generic max_steps tool/runtime parameter.
 	MaxStepsKey string
@@ -890,6 +803,9 @@ type Options struct {
 	ModelRef string
 	// RequireVisibleFinal makes internal callers reject reasoning-only responses.
 	RequireVisibleFinal bool
+	// ContinuationPolicy is the internal host policy for synthetic same-Run
+	// continuation. The zero value (ContinuationDisabled) is the product default.
+	ContinuationPolicy ContinuationPolicy
 	// Gate is the per-call permission gate. nil disables gating.
 	Gate Gate
 	// ReadOnlyExecution enables a permanent host-side read-only boundary for
@@ -913,7 +829,7 @@ type Options struct {
 	// files outside the workspace roots. nil keeps fail-closed behavior.
 	ConfigWriteApprover tool.ConfigWriteApprover
 
-	// Context management. ContextWindow <= 0 disables compaction. Ratios and
+	// Context management. ContextWindow <= 0 disables automatic compaction. Ratios and
 	// RecentKeep fall back to defaults when unset.
 	ContextWindow int
 	CompactRatio  float64
@@ -973,7 +889,8 @@ type Options struct {
 	// construction; boot always supplies it for writer-capable sessions.
 	WorkspaceLease *workspacelease.Owner
 
-	// ProjectChecks are host-observable structured checks extracted during boot.
+	// ProjectChecks is a retired compatibility option. Project instructions
+	// remain in normal model context and are not compiled into host obligations.
 	ProjectChecks []instruction.VerifyCheck
 
 	// InheritedExecution is the writer parent's host execution context.
@@ -996,9 +913,8 @@ type Options struct {
 	// CapabilityAudit is the optional non-persisted metrics sink for routing.
 	CapabilityAudit *capability.Audit
 
-	// RequireReviewReportKind, when non-empty, makes RunSubAgentWithSession fail
-	// unless the subagent recorded a successful review_report of this kind —
-	// review/security subagents must return typed, host-verifiable reports.
+	// RequireReviewReportKind is a retired compatibility field. Subagents return
+	// their ordinary final answer without a proof tool.
 	RequireReviewReportKind evidence.ReviewKind
 
 	// ReasoningLanguage controls visible reasoning language preference as transient
@@ -1013,9 +929,8 @@ type Options struct {
 	// Plan execution classifies bash through Permissions instead.
 	PlanModeReadOnlyCommands []string
 
-	// RecoveryGate is the optional Auto Guard boundary. It checks deterministic
-	// high-risk mutations and failure recovery before permission approval and
-	// write-lock acquisition.
+	// RecoveryGate and the identity fields are retired compatibility inputs.
+	// Agent construction ignores them.
 	RecoveryGate RecoveryGate
 	// RecoveryAgentID labels this agent on recovery cards (empty = root).
 	RecoveryAgentID string
@@ -1038,10 +953,10 @@ type Options struct {
 	// (or cloned for) sub-agents. nil disables v2 capture. Does not affect
 	// provider-visible tool schemas or prompts.
 	MutationObserver *checkpoint.MutationObserver
-	// LegacyAnchorSafetyGate is an internal kill switch for reverting
-	// delete_range to the pre-fingerprint full-file fresh-read requirement.
-	// It never enters provider-visible prompts or tool schemas.
-	LegacyAnchorSafetyGate bool
+
+	// SessionCheckpointer flushes the accepted session event prefix at semantic
+	// boundaries before model and top-level tool side effects.
+	SessionCheckpointer SessionCheckpointer
 }
 
 // New constructs an Agent. MaxSteps <= 0 means no cap — the run loop continues
@@ -1095,26 +1010,29 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		reasoningByteLimit = defaultReasoningByteLimit
 	}
 	a := &Agent{
+		imageInput:    newImageInput(opts.ImageInput, prov),
+		imageResolver: opts.ImageRequestResolver,
 		svc: newAgentServices(prov, tools, sink, gate, planModeReadOnlyTrust,
 			sandboxEscapeApprover, configWriteApprover, hooks, opts),
+		reads:            readState{},
+		fileObservations: fileops.NewStore(),
 		agentConfig: agentConfig{
-			maxSteps:               opts.MaxSteps,
-			maxStepsKey:            maxStepsKey,
-			reasoningByteLimit:     reasoningByteLimit,
-			maxOutputTokens:        opts.MaxOutputTokens,
-			temperature:            opts.Temperature,
-			usageSource:            usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
-			modelRef:               strings.TrimSpace(opts.ModelRef),
-			workspaceID:            strings.TrimSpace(opts.WorkspaceID),
-			classifierTaskText:     opts.ClassifierTaskText,
-			writeWorkspaceRoot:     strings.TrimSpace(opts.WriteWorkspaceRoot),
-			subagentDepth:          subagentDepth,
-			maxSubagentDepth:       maxSubagentDepth,
-			contextWindow:          opts.ContextWindow,
-			compactRatio:           opts.CompactRatio,
-			recentKeep:             opts.RecentKeep,
-			archiveDir:             opts.ArchiveDir,
-			legacyAnchorSafetyGate: opts.LegacyAnchorSafetyGate,
+			maxSteps:           opts.MaxSteps,
+			maxStepsKey:        maxStepsKey,
+			reasoningByteLimit: reasoningByteLimit,
+			maxOutputTokens:    opts.MaxOutputTokens,
+			temperature:        opts.Temperature,
+			usageSource:        usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
+			modelRef:           strings.TrimSpace(opts.ModelRef),
+			workspaceID:        strings.TrimSpace(opts.WorkspaceID),
+			classifierTaskText: opts.ClassifierTaskText,
+			writeWorkspaceRoot: strings.TrimSpace(opts.WriteWorkspaceRoot),
+			subagentDepth:      subagentDepth,
+			maxSubagentDepth:   maxSubagentDepth,
+			contextWindow:      opts.ContextWindow,
+			compactRatio:       opts.CompactRatio,
+			recentKeep:         opts.RecentKeep,
+			archiveDir:         opts.ArchiveDir,
 		},
 		sess: sessionRuntime{
 			conversation: session,
@@ -1125,14 +1043,10 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 			ledger: evidence.NewLedger(),
 			budget: runBudget{limit: normalizeTaskBudget(opts.TaskBudget)},
 		},
-		requireVisibleFinal: opts.RequireVisibleFinal,
-		recovery: recoveryIdentity{
-			agentID: strings.TrimSpace(opts.RecoveryAgentID),
-			taskID:  strings.TrimSpace(opts.RecoveryTaskID),
-		},
+		requireVisibleFinal:    opts.RequireVisibleFinal,
+		continuationPolicy:     opts.ContinuationPolicy,
 		readOnlyExecution:      opts.ReadOnlyExecution,
 		plannerMCPExecution:    opts.PlannerMCPExecution,
-		projectChecks:          append([]instruction.VerifyCheck(nil), opts.ProjectChecks...),
 		inheritedExec:          opts.InheritedExecution,
 		ablation:               opts.Ablation,
 		capabilityLedger:       opts.CapabilityLedger,
@@ -1146,13 +1060,13 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 	}
 	a.SetResponseLanguage(opts.ResponseLanguage)
 	a.SetReasoningLanguage(opts.ReasoningLanguage)
-	a.bindToolResultSessionCapability()
+	a.bindCapabilityObservers()
 	a.maybeArmForkFromEnv()
 	a.maybeWrapForkCaptureProvider()
 	if warnDeprecatedRetention {
 		deprecatedContextRetentionWarning.Do(func() {
 			a.svc.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
-				Text:   "agent.keep and agent.recent_keep are deprecated.",
+				Text:   i18n.M.DeprecatedContextRetention,
 				Detail: "Harness-style compaction now retains only the newest 16% of the context window; legacy retention fields are preserved in configuration but ignored at runtime."})
 		})
 	}
@@ -1172,27 +1086,7 @@ func deprecatedContextRetentionConfigured(opts Options) bool {
 // capability call preference, post-write verification, review, and sign-off.
 // It is authoritative only for host control flow, never for tool schemas.
 func (a *Agent) closedLoopActive() bool {
-	if a == nil {
-		return false
-	}
-	if a.turn.deliveryScopeActive {
-		return true
-	}
-	if a.planContractSnapshot() != nil {
-		return true
-	}
-	if a.turn.constraints.PolicyFloor == taskcontract.PolicyFloorDelivery {
-		return true
-	}
-	if a.turn.engine == nil {
-		return false
-	}
-	for _, o := range a.turn.engine.Snapshot().Obligations {
-		if o.Enforcement == taskcontract.EnforcementStrict {
-			return true
-		}
-	}
-	return false
+	return a != nil && a.turn.deliveryScopeActive
 }
 
 func usageSourceOrDefault(source, fallback string) string {
@@ -1237,11 +1131,16 @@ func (a *Agent) reserveParentWrite(runTool tool.Tool, args json.RawMessage, read
 // adaptive stop is the no-progress ladder rather than a round count. Turn policy
 // lives in beginRunTurn / runToolLoop / handleFinalResponse / handleToolRound.
 func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
+	defer a.finishRunRecovery(&runErr)
+	if err := a.prepareProtocolRecovery(ctx); err != nil {
+		return err
+	}
+	a.restoreProtocolProjection()
+	ctx = a.withProviderCacheSession(ctx)
 	runMaxSteps := a.maxSteps
 	runMaxStepsKey := a.maxStepsKey
-	a.recovery.runSeq.Add(1)
-	// All role settings participate in the workspace lease for the run; write
-	// locks are acquired per mutating tool and released when that tool ends.
+	a.protocolRunSeq.Add(1)
+	// Participate in the run lease; per-tool write leases end with execution.
 	if a.svc.workspaceLease != nil {
 		a.svc.workspaceLease.BeginRun()
 		defer a.svc.workspaceLease.EndRun()
@@ -1261,7 +1160,7 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	a.steerMu.Unlock()
 
 	// Commit background-job evidence leases only after this turn delivers.
-	// wait/bash_output merge a finished background writer's receipts into the
+	// job_output (and replay-only wait/bash_output aliases) merges a finished background writer's receipts into the
 	// ledger provisionally; if the turn reaches a final answer (runErr == nil)
 	// the delivery gates have verified and reviewed those mutations, so the
 	// job's evidence can be permanently drained. A failed or cancelled turn
@@ -1282,14 +1181,18 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	// agent.before_start: an extension may abort the run before the user turn
 	// is appended. The redacted reason surfaces like a normal run error.
 	if err := a.interceptAgentStart(ctx); err != nil {
-		// Explicit readiness recovery is consumed only once beginRunTurn starts.
-		// If an extension blocks earlier, release the in-memory reservation so
-		// the still-pending durable marker can authorize a later retry.
-		a.RestoreFinalReadinessRecoveryPreparation()
+		a.discardStagedPinnedContext()
 		return err
 	}
 
-	_, state := a.beginRunTurn(ctx, input)
+	pinned, err := a.preparePinnedRevision()
+	if err != nil {
+		return err
+	}
+	_, state, err := a.beginRunTurn(ctx, input, pinned)
+	if err != nil {
+		return err
+	}
 	if a.pending.forkRestore != nil {
 		a.pending.forkRestore(state)
 	}
@@ -1326,23 +1229,9 @@ type ReadinessResult struct {
 
 // ReadinessResult returns the current final-readiness outcome for the host.
 func (a *Agent) ReadinessResult() ReadinessResult {
-	check := a.finalReadinessCheckFor()
-	if check.reason == "" {
-		return ReadinessResult{Ready: true, ProgressKey: check.progressSignature()}
-	}
-	return ReadinessResult{
-		Ready:       false,
-		Missing:     check.missingIDs(),
-		Reason:      check.reason,
-		ProgressKey: check.progressSignature(),
-	}
-}
-
-func boolInt(v bool) int {
-	if v {
-		return 1
-	}
-	return 0
+	// Compatibility query only: quality assessments are no longer execution
+	// conditions. Historical missing checks remain in their original records.
+	return ReadinessResult{Ready: true}
 }
 
 // DeliveryCheckpoint returns the compact Goal-scoped delivery state. It is safe
@@ -1370,318 +1259,21 @@ func (a *Agent) updateDeliveryCheckpoint(runErr error) {
 	if cp.ScopeID != a.task.scopeID {
 		cp = evidence.DeliveryCheckpoint{ScopeID: a.task.scopeID}
 	}
-	cp.CriteriaEstablished = cp.CriteriaEstablished || a.turn.deliveryCriteriaEstablished || a.task.ledger.HasSuccessfulTodoWrite()
 	cp.WorkObserved = cp.WorkObserved || a.task.ledger.HasSuccessfulWorkReceipt()
 	if _, ok := a.task.ledger.LatestSuccessfulMutationIndex(); ok {
 		cp.MutationObserved = true
-		cp.PendingMutation = true
 	}
 	if a.task.ledger.HasSuccessfulToolReceipt("remember") && !a.task.ledger.HasSuccessfulMutationOtherThan("remember") {
 		cp.MutationObserved = true
 	}
-	if runErr == nil && cp.PendingMutation && a.deliveryMutationCheckpointReady() {
-		cp.PendingMutation = false
-	}
 	a.task.checkpoint = cp
-}
-
-func (a *Agent) deliveryMutationCheckpointReady() bool {
-	if a.task.ledger == nil || !a.turn.deliveryCriteriaEstablished {
-		return false
-	}
-	mutation, ok := a.task.ledger.LatestSuccessfulMutationIndex()
-	if !ok {
-		mutation = -1
-	}
-	return a.task.ledger.HasSuccessfulCompleteStepAfter(mutation) &&
-		a.task.ledger.HasSuccessfulDeliverySignoffAfter(mutation) &&
-		a.task.ledger.HasSuccessfulReviewAfter(mutation) &&
-		a.deliveryReviewGateFailure() == ""
 }
 
 func (a *Agent) setTodoState(todos []evidence.TodoItem) {
 	a.sess.todoMu.Lock()
-	a.sess.todoState = evidence.NormalizeSerialTodos(todos)
+	a.sess.todoState = append([]evidence.TodoItem(nil), todos...)
+	a.sess.todoWritten = true
 	a.sess.todoMu.Unlock()
-}
-
-func (a *Agent) hasActiveCanonicalTodo() bool {
-	a.sess.todoMu.Lock()
-	defer a.sess.todoMu.Unlock()
-	for _, todo := range a.sess.todoState {
-		if canonicalTodoStatus(todo.Status) == "in_progress" {
-			return true
-		}
-	}
-	return false
-}
-
-func (a *Agent) canonicalTodoProgress() (int, bool) {
-	a.sess.todoMu.Lock()
-	defer a.sess.todoMu.Unlock()
-	completed := 0
-	incomplete := false
-	for _, todo := range a.sess.todoState {
-		status := canonicalTodoStatus(todo.Status)
-		if status == "completed" {
-			completed++
-		} else {
-			incomplete = true
-		}
-	}
-	return completed, incomplete
-}
-
-// registryHasWriterTools reports whether any registered tool can mutate state.
-// A strictly read-only registry (read_only_task / read_only_skill subagents)
-// can never satisfy a "state change required" delivery expectation, so that
-// expectation must not be armed for it.
-func registryHasWriterTools(reg *tool.Registry) bool {
-	if reg == nil {
-		return false
-	}
-	for _, name := range reg.Names() {
-		if t, ok := reg.Get(name); ok && !t.ReadOnly() {
-			return true
-		}
-	}
-	return false
-}
-
-// advanceCanonicalTodo flips the canonical todo matching a signed-off step to
-// completed (promoting the next pending item to in_progress) and emits a
-// synthetic todo_write so the task panel reflects it without the model
-// re-sending the whole list. No-op when nothing matches or it is already done.
-func (a *Agent) advanceCanonicalTodo(step string) {
-	a.sess.todoMu.Lock()
-	if len(a.sess.todoState) == 0 {
-		a.sess.todoMu.Unlock()
-		return
-	}
-	m, ok := evidence.MatchStep(step, a.sess.todoState)
-	if !ok || !evidence.AdvanceSerialTodo(a.sess.todoState, m.Index-1) {
-		a.sess.todoMu.Unlock()
-		return
-	}
-	snapshot := append([]evidence.TodoItem(nil), a.sess.todoState...)
-	a.sess.todoMu.Unlock()
-	a.recordTodoState(snapshot)
-	a.emitTodoState(snapshot, m.Index)
-}
-
-// emitTodoState emits a synthetic todo_write event so the frontend task panel
-// reflects a host-advanced completion without the model re-sending the list.
-// itemIndex is the 1-based position of the completed todo in the panel.
-func (a *Agent) emitTodoState(todos []evidence.TodoItem, itemIndex int) {
-	args, err := json.Marshal(map[string]any{"todos": todos})
-	if err != nil {
-		return
-	}
-	id := fmt.Sprintf("host-advance-%d-%d", a.hostAdvanceSeq.Add(1), itemIndex)
-	t := event.Tool{ID: id, Name: "todo_write", Args: string(args), ReadOnly: true}
-	a.svc.sink.Emit(event.Event{Kind: event.ToolDispatch, Tool: t})
-	t.Output = "task list advanced by complete_step"
-	a.svc.sink.Emit(event.Event{Kind: event.ToolResult, Tool: t})
-}
-
-// RebuildTodoState re-derives canonical task state from the current session
-// transcript. Call after externally truncating the session (e.g. after a
-// user-cancel strip) so Agent.todoState stays consistent with the messages.
-func (a *Agent) RebuildTodoState() {
-	a.rebuildTodoState(a.Session().Snapshot())
-}
-
-// rebuildTodoState reconstructs the canonical task list from a transcript: the
-// latest successful todo_write is the base, then every complete_step after it
-// advances an item. Deterministic from persisted messages, so it survives a
-// fresh load or a rewind (the truncated history yields the historical state).
-// Empty after compaction drops the todo_write — no worse than no canonical list.
-func (a *Agent) rebuildTodoState(msgs []provider.Message) {
-	successful := successfulToolCallIDs(msgs)
-	var todos []evidence.TodoItem
-	baseIdx := -1
-	for i, msg := range msgs {
-		for _, tc := range msg.ToolCalls {
-			if tc.Name != "todo_write" || !successful[tc.ID] {
-				continue
-			}
-			rec := evidence.ReceiptFromToolCall(tc.Name, json.RawMessage(tc.Arguments), true, true)
-			// A successful empty todo_write is an explicit clear. Preserve it as the
-			// latest base so history reloads do not resurrect an older non-empty list.
-			todos = evidence.NormalizeSerialTodos(rec.Todos)
-			baseIdx = i
-		}
-	}
-	if baseIdx < 0 {
-		a.setTodoState(nil)
-		return
-	}
-	for i := baseIdx; i < len(msgs); i++ {
-		for _, tc := range msgs[i].ToolCalls {
-			if tc.Name != "complete_step" || !successful[tc.ID] {
-				continue
-			}
-			rec := evidence.ReceiptFromToolCall(tc.Name, json.RawMessage(tc.Arguments), true, true)
-			if m, ok := evidence.MatchStep(rec.Step, todos); ok {
-				evidence.AdvanceSerialTodo(todos, m.Index-1)
-			}
-		}
-	}
-	a.setTodoState(todos)
-	a.consumeTodoOnlyReadinessMarkerIfResolved()
-}
-
-func successfulToolCallIDs(msgs []provider.Message) map[string]bool {
-	successful := map[string]bool{}
-	for _, msg := range msgs {
-		if msg.Role != provider.RoleTool || msg.ToolCallID == "" {
-			continue
-		}
-		if !toolResultFailed(msg.Content) {
-			successful[msg.ToolCallID] = true
-		}
-	}
-	return successful
-}
-
-func toolResultFailed(content string) bool {
-	content = strings.TrimSpace(content)
-	return strings.HasPrefix(content, "error:") ||
-		strings.HasPrefix(content, "blocked:") ||
-		strings.HasPrefix(content, "Error:") ||
-		strings.HasPrefix(content, "[error")
-}
-
-func shouldNudgeExecutorHandoff(input, answer string) bool {
-	return !executorHandoffAllowsTextOnly(input, answer)
-}
-
-func executorHandoffAllowsTextOnly(input, answer string) bool {
-	if looksLikeExecutorHandoffDeferral(answer) {
-		return false
-	}
-	task, plan, ok := parseExecutorHandoff(input)
-	if !ok {
-		return false
-	}
-	if handoffTaskLooksTextOnly(task) {
-		return true
-	}
-	return handoffPlanLooksTextOnly(plan)
-}
-
-func parseExecutorHandoff(input string) (task, plan string, ok bool) {
-	input = StripTransientUserBlocks(input)
-	marker := "# " + executorHandoffMarker
-	i := strings.Index(input, marker)
-	if i < 0 {
-		return "", "", false
-	}
-	input = input[i+len(marker):]
-	_, input, ok = strings.Cut(input, "\n\nOriginal task:\n")
-	if !ok {
-		return "", "", false
-	}
-	task, input, ok = strings.Cut(input, "\n\nPlanner output:\n")
-	if !ok {
-		return "", "", false
-	}
-	plan, _, ok = strings.Cut(input, "\n\nExecutor instructions:")
-	if !ok {
-		return "", "", false
-	}
-	if beforeToolContext, _, found := strings.Cut(plan, "\n\nExecutor tool context:"); found {
-		plan = beforeToolContext
-	}
-	return strings.TrimSpace(task), strings.TrimSpace(plan), true
-}
-
-func looksLikeExecutorHandoffDeferral(answer string) bool {
-	lower := strings.ToLower(strings.TrimSpace(answer))
-	if lower == "" {
-		return true
-	}
-	if containsAnySubstring(lower, executorHandoffDeferralPhrases) {
-		return true
-	}
-	switch strings.Trim(lower, " \t\r\n.!?。！？") {
-	case "ok", "okay", "sounds good", "done", "好的", "可以", "没问题", "收到":
-		return true
-	default:
-		return false
-	}
-}
-
-func handoffTaskLooksTextOnly(task string) bool {
-	lower := strings.ToLower(strings.TrimSpace(task))
-	if lower == "" {
-		return false
-	}
-	if containsAnySubstring(lower, executorHandoffWorkRequestTerms) {
-		return false
-	}
-	return containsAnySubstring(lower, executorHandoffTextOnlyTaskTerms)
-}
-
-func handoffPlanLooksTextOnly(plan string) bool {
-	lower := strings.ToLower(strings.TrimSpace(plan))
-	if lower == "" {
-		return false
-	}
-	if containsAnySubstring(lower, executorHandoffLocalActionTerms) {
-		return false
-	}
-	if containsAnySubstring(lower, executorHandoffTextOnlyPlanTerms) {
-		return true
-	}
-	return strings.Contains(lower, "?")
-}
-
-func containsAnySubstring(s string, terms []string) bool {
-	for _, term := range terms {
-		if strings.Contains(s, term) {
-			return true
-		}
-	}
-	return false
-}
-
-var executorHandoffDeferralPhrases = []string{
-	"plan looks", "looks good", "should be easy", "should be straightforward",
-	"i can implement", "i'll implement", "i will implement", "i'll get started",
-	"let me ", "i will now", "i'll now", "i can do that",
-	"计划看起来", "可以实现", "我会", "我将", "接下来我", "马上开始",
-}
-
-var executorHandoffWorkRequestTerms = []string{
-	"implement", "fix", "refactor", "migrate", "edit", "write", "create", "delete",
-	"update", "remove", "add ", "test", "build", "repair", "patch",
-	"修改", "修复", "实现", "新增", "重构", "迁移", "补齐", "更新", "删除", "移除",
-}
-
-var executorHandoffTextOnlyTaskTerms = []string{
-	"now what", "what next", "tl;dr", "tldr", "summarize", "summary", "explain",
-	"i installed", "i just installed", "i turned on", "i enabled", "it's on", "it is on",
-	"怎么办", "下一步", "然后呢", "总结", "解释", "说明", "装了", "装好了", "安装了", "开了", "开启了", "打开了",
-}
-
-var executorHandoffLocalActionTerms = []string{
-	"write_file", "read_file", "apply_patch", "bash",
-	"workspace", "repo", "repository", "codebase", "file", "path",
-	"write ", "edit ", "modify ", "create ", "delete ", "remove ", "update ", "add ", "patch ", "refactor ", "implement ",
-	"run ", "command", "test", "build",
-	"文件", "路径", "仓库", "代码", "写入", "编辑", "修改", "创建", "删除", "移除", "更新", "新增", "运行", "命令", "测试", "构建",
-}
-
-var executorHandoffTextOnlyPlanTerms = []string{
-	"tell the user", "ask the user", "guide the user", "explain to the user",
-	"summarize", "summary", "tl;dr", "tldr", "answer the user", "respond to the user",
-	"provide guidance", "walk the user", "instruct the user", "have the user",
-	"user should", "the user should", "user can", "the user can", "manual", "manually",
-	"no tools needed", "no tool calls needed", "does not need tools", "needs no tools",
-	"listen", "play a song", "compare the difference", "checkbox",
-	"告诉用户", "询问用户", "问用户", "让用户", "请用户", "指导用户", "解释", "总结", "回答",
-	"手动", "无需工具", "不需要工具", "试听", "听歌", "对比", "勾选",
 }
 
 func executorHandoffRetryMessage() string {
@@ -1697,34 +1289,12 @@ func hasVisibleFinalAnswer(text string) bool {
 	return strings.TrimSpace(text) != ""
 }
 
-// reasoningOnlyFinishHonoured reports whether the model finished with a stop
-// signal but placed its answer in the reasoning stream rather than the content
-// block. DeepSeek thinking mode does this occasionally: it streams a long
-// reasoning_content, then returns finish_reason="stop" with an empty content.
-// The model has signalled completion, so the host accepts the turn instead of
-// retrying and forcing another expensive thinking round.
-//
-// The accept is scoped to DeepSeek thinking mode (ToolCallReasoningPolicy):
-// for other providers a reasoning-only turn keeps the empty-final retry
-// safety net — local <think>-tag models often recover a visible answer on
-// the second attempt, and a gateway that mislabels truncation as "stop"
-// must not have a degenerate turn committed as the final answer.
-func reasoningOnlyFinishHonoured(p provider.Provider, u *provider.Usage, reasoning string) bool {
-	if !provider.RequiresToolCallReasoning(p) {
-		return false
-	}
-	if u == nil || u.FinishReason != "stop" {
-		return false
-	}
-	return strings.TrimSpace(reasoning) != ""
-}
-
 func emptyFinalRetryMessage() string {
 	return "The previous assistant response finished without any visible answer text. Continue the same task now and provide a concise visible answer to the user. Do not send reasoning only."
 }
 
 func emptyFinalNotice() string {
-	return "No visible answer was produced; asking the assistant to respond again."
+	return i18n.M.EmptyFinal
 }
 
 func emptyFinalNoticeDetail(prov string, u *provider.Usage, reasoningLen int) string {
@@ -1735,12 +1305,8 @@ func emptyFinalNoticeDetail(prov string, u *provider.Usage, reasoningLen int) st
 	return fmt.Sprintf("empty final answer blocked: %s returned no visible answer text (finish=%s, reasoning=%d chars); retrying", prov, finish, reasoningLen)
 }
 
-func executorHandoffNoticeText() string {
-	return "The assistant answered before taking action; asking it to use the required tools."
-}
-
 func toolBudgetNoticeText() string {
-	return "Tool round limit reached; asking the assistant to summarize progress."
+	return i18n.M.ToolBudget
 }
 
 // stream runs one completion, emitting reasoning and text deltas as typed
@@ -1756,13 +1322,9 @@ func (a *Agent) stream(ctx context.Context, turn int, sink event.Sink) streamedT
 }
 
 func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink, frozen *samplingRequest, attemptID string) streamedTurn {
-	ctx = provider.WithRetryNotify(ctx, func(info provider.RetryInfo) {
-		sink.Emit(event.Event{Kind: event.Retrying, RetryAttempt: info.Attempt, RetryMax: info.Max, RetryScope: event.RetryScopeHeaders})
-	})
-	// Reuse a parent attempt counter when present so stream retries accumulate
-	// into one RequestCount; otherwise install a fresh counter for this call.
+	// Reuse a parent counter so protocol/context repair requests accumulate into
+	// one RequestCount; otherwise install a fresh counter for this call.
 	ctx = provider.WithRequestAttemptCounter(ctx)
-	ctx = a.withMissingReasoningFallback(ctx)
 	// A stream can terminate locally before the provider channel closes (for
 	// example when the client-side reasoning guard fires). Own a child context
 	// here so every return path aborts the HTTP request and releases the provider
@@ -1795,14 +1357,12 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 	transformReasoning := a.svc.hooks != nil && a.svc.hooks.HasPostLLMCall()
 
 	var text, reasoning strings.Builder
-	var signature string                    // provider-issued proof for the reasoning (Anthropic thinking)
-	var reasoningID, reasoningStatus string // Responses reasoning item id/status (meta chunk)
+	meta := reasoningStreamMeta{complete: true}
 	var calls []provider.ToolCall
 	var responsesItems []json.RawMessage
 	search := newSearchTurn()
 	var partialCalls []provider.ToolCall
 	var usage *provider.Usage
-	reasoningComplete := true
 	var partialToolStarted bool
 	var maxArgChars int
 	var lastArgProgress time.Time
@@ -1810,8 +1370,9 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 	// finishReasoning output that becomes the round-tripped reasoning.
 	collect := func(stored string, err error) streamedTurn {
 		return streamedTurn{
-			text: text.String(), reasoning: stored, signature: signature,
-			reasoningID: reasoningID, reasoningStatus: reasoningStatus, reasoningComplete: reasoningComplete,
+			text: text.String(), reasoning: stored, signature: meta.signature,
+			reasoningID: meta.id, reasoningStatus: meta.status, reasoningComplete: meta.complete,
+			reasoningState: meta.state, thinkingBlocks: meta.blocks,
 			calls: calls, responsesItems: responsesItems, serverSearch: search.calls, usage: usage,
 			partialToolStarted: partialToolStarted, partialCalls: partialCalls,
 			maxArgChars: maxArgChars, err: err,
@@ -1827,13 +1388,19 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 			}
 		}
 		stored = display
-		if a.preserveRawReasoning(signature, reasoningID, reasoningStatus, calls, search.calls) {
+		if a.preserveRawReasoning(original, meta.signature, meta.id, meta.status, calls, search.calls) {
 			stored = original
 		}
 		return stored, display
 	}
 	for {
 		var chunk provider.Chunk
+		// Cancellation wins over already buffered provider tokens.
+		if ctx.Err() != nil {
+			stored, _ := finishReasoning()
+			usage = provider.UsageWithRequestAttemptCount(ctx, bestEffortStreamUsage(usage, text.Len(), reasoning.Len(), "interrupted"))
+			return collect(stored, ctx.Err())
+		}
 		select {
 		case <-ctx.Done():
 			stored, _ := finishReasoning()
@@ -1853,38 +1420,35 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 				// response before it is persisted. A replacement becomes the
 				// visible assistant turn (the user's transcript); a block fails
 				// the turn.
-				providerSignature := signature
-				finalText, finalReasoning, signature, calls, usage, err := a.interceptProviderResponse(
-					ctx, text.String(), stored, signature, calls, usage)
+				providerSignature := meta.signature
+				finalText, finalReasoning, finalSignature, calls, usage, err := a.interceptProviderResponse(
+					ctx, text.String(), stored, meta.signature, calls, usage)
 				if err != nil {
 					return streamedTurn{partialToolStarted: partialToolStarted, partialCalls: partialCalls, maxArgChars: maxArgChars, err: err}
 				}
 				// Responses reasoning IDs/status and Anthropic signatures are
 				// provider-bound metadata. Never attach the provider's metadata
 				// to reasoning that an extension replaced.
-				if finalReasoning != stored || signature != providerSignature {
-					reasoningID, reasoningStatus = "", ""
+				if finalReasoning != stored || finalSignature != providerSignature {
+					meta.id, meta.status = "", ""
+					meta.blocks = nil
+					responsesItems = provider.WithoutResponsesReasoning(responsesItems)
 				}
 				if finalReasoning != stored {
 					// The extension replaced the reasoning: what is persisted
 					// and what the closing Message event re-renders must agree.
 					display = finalReasoning
 				}
-				if finalText != "" || display != "" {
-					sink.Emit(event.Event{
-						Kind:      event.Message,
-						Text:      DisplayAssistantText(finalText),
-						Reasoning: display,
-					})
-				}
 				usage = provider.UsageWithRequestAttemptCount(ctx, usage)
 				// A clean terminal never reports partialToolStarted: the calls
 				// slice is now authoritative and the partial cards were merged.
 				return streamedTurn{
-					text: finalText, reasoning: finalReasoning, signature: signature,
-					reasoningID: reasoningID, reasoningStatus: reasoningStatus,
-					reasoningComplete: reasoningComplete,
-					calls:             calls, responsesItems: responsesItems, serverSearch: search.calls, usage: usage,
+					displayReasoning: display,
+					text:             finalText, reasoning: finalReasoning, signature: finalSignature,
+					reasoningID: meta.id, reasoningStatus: meta.status,
+					reasoningComplete: meta.complete,
+					reasoningState:    meta.state, thinkingBlocks: meta.blocks,
+					calls: calls, responsesItems: responsesItems, serverSearch: search.calls, usage: usage,
 					partialCalls: partialCalls, maxArgChars: maxArgChars,
 				}
 			}
@@ -1892,25 +1456,10 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 		}
 		switch chunk.Type {
 		case provider.ChunkReasoning:
-			reasoning.WriteString(chunk.Text)
-			if chunk.Signature != "" {
-				signature = chunk.Signature
-			}
-			// 元数据 chunk（空 Text）：reasoning item id/status 贯通
-			// SSE → session → 下一轮回传（评审 #7234 第 1 点）。
-			if chunk.ReasoningID != "" {
-				reasoningID = chunk.ReasoningID
-			}
-			if chunk.ReasoningStatus != "" {
-				reasoningStatus = chunk.ReasoningStatus
-			}
+			meta.ingest(chunk, &reasoning, a.reasoningByteLimit)
 			if chunk.Text != "" && !transformReasoning {
 				sink.Emit(event.Event{Kind: event.Reasoning, Text: chunk.Text})
 			}
-			// Bound stored hidden reasoning only. Do not cancel the provider
-			// stream: official DeepSeek bills this output and still needs to
-			// emit the visible answer or tool calls.
-			reasoningComplete = boundReasoningReplay(&reasoning, chunk.Text, a.reasoningByteLimit, reasoningComplete)
 		case provider.ChunkText:
 			text.WriteString(chunk.Text)
 			sink.Emit(event.Event{Kind: event.Text, Text: chunk.Text})
@@ -1952,9 +1501,7 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 				}
 			}
 		case provider.ChunkResponsesItem:
-			if len(chunk.ResponsesItem) > 0 {
-				responsesItems = append(responsesItems, append(json.RawMessage(nil), chunk.ResponsesItem...))
-			}
+			responsesItems = meta.ingestResponsesItem(responsesItems, chunk.ResponsesItem, a.reasoningByteLimit)
 		case provider.ChunkServerSearch:
 			search.onChunk(sink, chunk, attemptID)
 		case provider.ChunkUsage:
@@ -1995,6 +1542,7 @@ func bestEffortStreamUsage(current *provider.Usage, textBytes, reasoningBytes in
 		return nil
 	}
 	var usage provider.Usage
+	usage.Unknown = current == nil
 	if current != nil {
 		usage = *current
 	}
@@ -2043,42 +1591,8 @@ func upsertPartialToolCall(calls []provider.ToolCall, call provider.ToolCall) []
 	return append(calls, call)
 }
 
-func (a *Agent) recordInterruptedDisplay(text, reasoning string, calls []provider.ToolCall, pending bool, workDurationMs int64) {
-	displayCalls := make([]provider.ToolCall, 0, len(calls))
-	interrupted := make([]string, 0, len(calls))
-	seen := make(map[string]struct{}, len(calls))
-	for _, call := range calls {
-		name := strings.TrimSpace(call.Name)
-		key := call.ID + "\x00" + name
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		displayCalls = append(displayCalls, provider.ToolCall{ID: call.ID, Name: name})
-		if name != "" {
-			interrupted = append(interrupted, name)
-		}
-	}
-	a.sess.conversation.Add(provider.Message{
-		Role:             provider.RoleTool,
-		Content:          text,
-		ReasoningContent: reasoning,
-		ToolCalls:        displayCalls,
-		ToolCallID:       provider.LocalOnlyToolID,
-		Name:             provider.LocalOnlyToolName,
-		WorkDurationMs:   workDurationMs,
-		LocalOnly:        true,
-		InterruptedTurn: &provider.InterruptedTurnRecovery{
-			Pending:                 pending,
-			InterruptedTools:        interrupted,
-			DroppedPartialText:      strings.TrimSpace(text) != "",
-			DroppedPartialReasoning: strings.TrimSpace(reasoning) != "",
-		},
-	})
-}
-
 func (a *Agent) capturePrefixShape(schemas []provider.ToolSchema) PrefixShape {
-	return CaptureShape(a.systemPrompt(), schemas, a.sess.conversation.RewriteVersion())
+	return captureTurnContextShape(a.systemPrompt(), schemas, a.sess.conversation.RewriteVersion(), a.modelVisibleMessages())
 }
 
 func (a *Agent) systemPrompt() string {
@@ -2146,10 +1660,10 @@ func toProviderToolExecution(in *tool.ShellExecution) *provider.ToolExecution {
 	return out
 }
 
-func (a *Agent) emitFullToolDispatch(ctx context.Context, c provider.ToolCall, refreshed bool) {
+func (a *Agent) emitFullToolDispatch(ctx context.Context, c provider.ToolCall, refreshed bool) error {
 	t, _, ambiguous := a.svc.tools.ResolveCall(c.Name)
 	ok := t != nil && len(ambiguous) == 0
-	ev := event.Tool{ID: c.ID, Name: c.Name, Args: c.Arguments, ReadOnly: ok && t.ReadOnly(), Refreshed: refreshed}
+	ev := event.Tool{ID: c.ID, Name: c.Name, Args: c.Arguments, ReadOnly: ok && t.ReadOnly(), Refreshed: refreshed, RunState: provider.ToolRunPending}
 	ev.FileDiff = event.FileDiff{Diff: c.Diff, Added: c.Added, Removed: c.Removed}
 	if ok && ev.Diff == "" && ev.Added == 0 && ev.Removed == 0 {
 		if ch, ok := tool.PreviewChange(ctx, t, json.RawMessage(c.Arguments)); ok {
@@ -2163,13 +1677,13 @@ func (a *Agent) emitFullToolDispatch(ctx context.Context, c provider.ToolCall, r
 			ev.Profile = pr.ResolveProfile(json.RawMessage(c.Arguments))
 		}
 	}
-	a.svc.sink.Emit(event.Event{Kind: event.ToolDispatch, Tool: ev})
+	return event.EmitChecked(a.svc.sink, event.Event{Kind: event.ToolDispatch, MessageID: messageIdentity(ctx), Tool: ev})
 }
 
 // emitResolvedToolDispatch upserts the real target classification of a stable
 // proxy call without changing the provider-visible Name/Args. Append-only sinks
 // ignore Refreshed events; stateful frontends replace the existing card by ID.
-func (a *Agent) emitResolvedToolDispatch(c provider.ToolCall) {
+func (a *Agent) emitResolvedToolDispatch(ctx context.Context, c provider.ToolCall) {
 	if c.ResolvedReadOnly == nil {
 		return
 	}
@@ -2178,9 +1692,9 @@ func (a *Agent) emitResolvedToolDispatch(c provider.ToolCall) {
 			DisplayName:  c.Name,
 			TargetName:   c.ResolvedName,
 			CapabilityID: c.CapabilityID,
-		})
+		}, c.ID)
 	}
-	a.svc.sink.Emit(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{
+	a.svc.sink.Emit(event.Event{Kind: event.ToolDispatch, MessageID: messageIdentity(ctx), Tool: event.Tool{
 		ID:           c.ID,
 		Name:         c.Name,
 		Args:         c.Arguments,
@@ -2257,74 +1771,6 @@ func completedMCPConnect(reg *tool.Registry, name string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// recoveryPlanTransition detects structural rewrites of an active canonical
-// task list. Initial plans and progress-only status updates stay on the fast
-// path; changing step identity, order, or hierarchy while work remains is a
-// semantic transition for the independent Auto reviewer.
-func (a *Agent) recoveryPlanTransition(toolName string, args json.RawMessage) (bool, string, string, string) {
-	if a == nil || toolName != "todo_write" || a.planMode.Load() {
-		return false, "", "", ""
-	}
-	before := a.CanonicalTodoState()
-	if len(before) == 0 || len(evidence.IncompleteTodos(before)) == 0 {
-		return false, "", "", ""
-	}
-	after := evidence.ReceiptFromToolCall("todo_write", args, true, true).Todos
-	if evidence.ValidateSerialTodos(after) != nil {
-		return false, "", "", ""
-	}
-	if len(after) == 0 {
-		return true, planReviewText(before), planReviewText(after), planTransitionDiff(before, after)
-	}
-	if !evidence.PreservesCompletedTodoPositions(before, after) {
-		// Let todo_write report malformed or invalid state directly; an invalid
-		// task list is not a meaningful plan proposal for the reviewer.
-		return false, "", "", ""
-	}
-	if samePlanStructure(before, after) {
-		return false, "", "", ""
-	}
-	return true, planReviewText(before), planReviewText(after), planTransitionDiff(before, after)
-}
-
-func samePlanStructure(a, b []evidence.TodoItem) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i].Level != b[i].Level || normalizePlanStep(a[i].Content) != normalizePlanStep(b[i].Content) {
-			return false
-		}
-	}
-	return true
-}
-
-func normalizePlanStep(s string) string {
-	return strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
-}
-
-func planReviewText(todos []evidence.TodoItem) string {
-	var b strings.Builder
-	for i, todo := range todos {
-		indent := ""
-		if todo.Level == 1 {
-			indent = "  "
-		}
-		fmt.Fprintf(&b, "%s%d. %s [%s]", indent, i+1, normalizePlanStep(todo.Content), canonicalTodoStatus(todo.Status))
-		if i+1 < len(todos) {
-			b.WriteByte('\n')
-		}
-	}
-	return b.String()
-}
-
-func recoveryTaskScopeID(deliveryScopeID string, runSeq uint64) string {
-	if scope := strings.TrimSpace(deliveryScopeID); scope != "" {
-		return "goal:" + scope
-	}
-	return fmt.Sprintf("turn:%d", runSeq)
 }
 
 func (a *Agent) readOnlyExecutionBlock(visible tool.Tool, resolved *tool.ResolvedCall) (toolOutcome, bool) {
@@ -2517,209 +1963,6 @@ func (a *Agent) planModeDecision(toolName string, readOnly bool, safety planmode
 	})
 }
 
-func (a *Agent) repeatedSuccessBlock(call provider.ToolCall, t tool.Tool) (string, bool) {
-	sig, ok := repeatSuccessSignature(call, t)
-	if !ok || a.turn.repeatSuccessCounts == nil {
-		return "", false
-	}
-	count := a.turn.repeatSuccessCounts[sig]
-	if count < repeatSuccessBreakThreshold {
-		return "", false
-	}
-	return fmt.Sprintf(
-		"blocked: [loop guard] %q has already succeeded %d times with the same write-like arguments in this user turn. Re-running it is unlikely to help and may burn tokens or repeat file writes. Change approach: use edit_file or multi_edit for file changes, verify with a read/test command, or explain the blocker in your final answer.",
-		call.Name, count), true
-}
-
-func (a *Agent) recordRepeatSuccess(call provider.ToolCall, t tool.Tool) {
-	sig, ok := repeatSuccessSignature(call, t)
-	if !ok {
-		return
-	}
-	if a.turn.repeatSuccessCounts == nil {
-		a.turn.repeatSuccessCounts = make(map[string]int)
-	}
-	a.turn.repeatSuccessCounts[sig]++
-}
-
-func repeatSuccessSignature(call provider.ToolCall, t tool.Tool) (string, bool) {
-	if t.ReadOnly() {
-		return "", false
-	}
-	switch call.Name {
-	case "write_file", "edit_file", "multi_edit", "move_file", "notebook_edit":
-		return call.Name + "\x00" + canonicalToolArgs(call.Arguments), true
-	case "bash":
-		var p struct {
-			Command         string `json:"command"`
-			RunInBackground bool   `json:"run_in_background"`
-		}
-		if err := json.Unmarshal([]byte(call.Arguments), &p); err != nil {
-			return "", false
-		}
-		if p.RunInBackground || !isShellFileWriteCommand(p.Command) {
-			return "", false
-		}
-		return "bash\x00" + normalizeShellCommand(p.Command), true
-	default:
-		return "", false
-	}
-}
-
-func canonicalToolArgs(raw string) string {
-	var v any
-	if err := json.Unmarshal([]byte(raw), &v); err != nil {
-		return strings.TrimSpace(raw)
-	}
-	b, err := json.Marshal(v)
-	if err != nil {
-		return strings.TrimSpace(raw)
-	}
-	var compact bytes.Buffer
-	if err := json.Compact(&compact, b); err != nil {
-		return string(b)
-	}
-	return compact.String()
-}
-
-func normalizeShellCommand(command string) string {
-	if fields, malformed := shellparse.StaticFields(command); malformed == "" && len(fields) > 0 {
-		return strings.Join(fields, " ")
-	}
-	return strings.Join(strings.Fields(command), " ")
-}
-
-func isShellFileWriteCommand(command string) bool {
-	lower := strings.ToLower(command)
-	switch {
-	case shellPythonOpenWrites(lower):
-		return true
-	case strings.Contains(lower, "set-content") || strings.Contains(lower, "add-content") || strings.Contains(lower, "out-file"):
-		return true
-	case strings.Contains(lower, "sed -i") || strings.Contains(lower, "perl -pi"):
-		return true
-	case hasShellWriteRedirect(command):
-		return true
-	default:
-		return false
-	}
-}
-
-func shellPythonOpenWrites(lower string) bool {
-	if !strings.Contains(lower, "open(") {
-		return false
-	}
-	if strings.Contains(lower, ".write(") {
-		return true
-	}
-	for _, marker := range []string{", 'w", `, "w`, ", 'a", `, "a`, ", 'x", `, "x`, "mode='w", `mode="w`, "mode='a", `mode="a`, "mode='x", `mode="x`} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func hasShellWriteRedirect(command string) bool {
-	file, err := shellparse.ParseBash(command)
-	if err == nil {
-		hasWrite := false
-		syntax.Walk(file, func(node syntax.Node) bool {
-			redir, ok := node.(*syntax.Redirect)
-			if !ok {
-				return true
-			}
-			if bashRedirectWritesFile(command, redir) {
-				hasWrite = true
-				return false
-			}
-			return true
-		})
-		return hasWrite
-	}
-	return hasShellWriteRedirectFallback(command)
-}
-
-func bashRedirectWritesFile(source string, redir *syntax.Redirect) bool {
-	if redir == nil {
-		return false
-	}
-	switch redir.Op {
-	case syntax.RdrOut, syntax.AppOut, syntax.RdrClob, syntax.AppClob,
-		syntax.RdrAll, syntax.RdrAllClob, syntax.AppAll, syntax.AppAllClob,
-		syntax.RdrInOut:
-		return !redirectWordIsNullSink(source, redir.Word)
-	default:
-		return false
-	}
-}
-
-func redirectWordIsNullSink(source string, word *syntax.Word) bool {
-	if word == nil {
-		return false
-	}
-	if value, ok := shellparse.StaticWord(word); ok {
-		if isNullSinkWord(strings.TrimSpace(value)) {
-			return true
-		}
-	}
-	value := strings.TrimSpace(redirectWordSource(source, word))
-	if isNullSinkWord(value) {
-		return true
-	}
-	if len(value) >= 2 && ((value[0] == '\'' && value[len(value)-1] == '\'') || (value[0] == '"' && value[len(value)-1] == '"')) {
-		return isNullSinkWord(value[1 : len(value)-1])
-	}
-	return false
-}
-
-func isNullSinkWord(value string) bool {
-	if value == "/dev/null" {
-		return true
-	}
-	return strings.EqualFold(value, "$null") || strings.EqualFold(value, "nul")
-}
-
-func redirectWordSource(source string, word *syntax.Word) string {
-	if word == nil || !word.Pos().IsValid() || !word.End().IsValid() {
-		return ""
-	}
-	start := int(word.Pos().Offset())
-	end := int(word.End().Offset())
-	if start < 0 || end < start || end > len(source) {
-		return ""
-	}
-	return source[start:end]
-}
-
-func hasShellWriteRedirectFallback(command string) bool {
-	var quote rune
-	var prev rune
-	for _, r := range command {
-		if quote != 0 {
-			if r == quote {
-				quote = 0
-			}
-			prev = r
-			continue
-		}
-		if r == '\'' || r == '"' {
-			quote = r
-			prev = r
-			continue
-		}
-		if r == '>' {
-			if prev == '2' {
-				prev = r
-				continue
-			}
-			return true
-		}
-		prev = r
-	}
-	return false
-}
-
 // isBackgroundTaskCall reports whether a `task` call set run_in_background, so a
 // fire-and-return dispatch isn't mistaken for a sub-agent that has stopped.
 func isBackgroundTaskCall(args string) bool {
@@ -2748,7 +1991,9 @@ func firstLine(s string) string {
 
 // truncateToolOutput builds the stable provider-visible Content form for a tool
 // result. Under-cap bodies are byte-identical; over-cap bodies keep a tool-aware
-// head and tail while RawContent stores the full local original.
+// preview while RawContent stores the full local original. read_file is special:
+// its preview is a contiguous prefix so an exact recovery cursor can never skip
+// source text that the model did not actually see.
 func truncateToolOutput(s string) (string, string) {
 	return truncateToolOutputFor(s, "", "")
 }
@@ -2759,9 +2004,12 @@ func truncateToolOutputFor(s, toolName, toolCallID string) (string, string) {
 	if len(s) <= maxToolOutputBytes {
 		return s, ""
 	}
+	if toolName == "read_file" {
+		return truncateReadFileOutput(s, toolName, toolCallID)
+	}
 	strategy := snipStrategy{head: 40, tail: 40, headChars: 8000, tailChars: 8000}
 	switch {
-	case toolName == "bash" || toolName == "shell" || strings.Contains(toolName, "bash"):
+	case tool.IsShellToolName(toolName) || strings.Contains(toolName, "bash"):
 		strategy = snipStrategy{head: 40, tail: 40, headChars: 8000, tailChars: 8000}
 	case toolName == "read_file" || toolName == "web_fetch" || strings.Contains(toolName, "read"):
 		strategy = snipStrategy{head: 120, tail: 12, headChars: 12000, tailChars: 2000}
@@ -2806,20 +2054,8 @@ func truncateToolOutputFor(s, toolName, toolCallID string) (string, string) {
 		}
 		marker = toolOutputRecoveryMarker(toolName, toolCallID, resultRef, len(s), len(head)+len(tail))
 	}
-	notice := fmt.Sprintf("tool output truncated: %d of %d bytes elided", len(s)-len(head)-len(tail), len(s))
+	notice := fmt.Sprintf(i18n.M.ToolOutputTruncatedFmt, len(s)-len(head)-len(tail), len(s))
 	return head + marker + tail, notice
-}
-
-// snapToRuneBoundary returns s[lo:hi] with the bounds nudged outward until
-// both land on rune-start positions.
-func snapToRuneBoundary(s string, lo, hi int) string {
-	for lo > 0 && !utf8.RuneStart(s[lo]) {
-		lo--
-	}
-	for hi < len(s) && !utf8.RuneStart(s[hi]) {
-		hi++
-	}
-	return s[lo:hi]
 }
 
 // finishReasonMessage maps an abnormal finish_reason to a one-line warning,
@@ -2831,12 +2067,29 @@ func finishReasonMessage(u *provider.Usage) (string, bool) {
 	}
 	switch u.FinishReason {
 	case "length":
-		return "response truncated: hit max output tokens", true
+		return i18n.M.FinishReasonLength, true
 	case "content_filter":
-		return "response blocked by content filter", true
+		return i18n.M.FinishReasonContentFilter, true
 	case "repetition_truncation":
-		return "response truncated: model repetition detected", true
+		return i18n.M.FinishReasonRepetition, true
 	default:
 		return "", false
+	}
+}
+
+// streamInterruptNotice explains why a provider stream never reached a clean
+// terminal, in words a user can act on. Only the closed StreamInterrupt* enum
+// is rendered — the wrapped transport error can carry URLs or gateway bodies
+// and must not reach the transcript (#9560).
+func streamInterruptNotice(err error) (code, text string) {
+	switch provider.StreamInterruptReason(err) {
+	case provider.StreamInterruptIdleTimeout:
+		return event.NoticeCodeStreamInterruptedIdleTimeout, i18n.M.StreamInterruptedIdleTimeout
+	case provider.StreamInterruptPrematureEOF:
+		return event.NoticeCodeStreamInterruptedPrematureEOF, i18n.M.StreamInterruptedPrematureEOF
+	case provider.StreamInterruptConnectionReset:
+		return event.NoticeCodeStreamInterruptedConnectionReset, i18n.M.StreamInterruptedConnectionReset
+	default:
+		return "", ""
 	}
 }

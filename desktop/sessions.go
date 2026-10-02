@@ -15,8 +15,8 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
-	"reasonix/internal/filelock"
 	"reasonix/internal/fileutil"
+	filelock "reasonix/internal/identitylock"
 	"reasonix/internal/store"
 )
 
@@ -67,23 +67,6 @@ func desktopSessionDir(root string) string {
 	return config.SessionDir()
 }
 
-// loadSessionTitles reads the basename→title map (missing/corrupt → empty).
-func loadSessionTitles(dir string) map[string]string {
-	m := map[string]string{}
-	b, err := readFileWithTimeout(sessionTitlesPath(dir), topicFileReadTimeout)
-	if err != nil {
-		return m
-	}
-	_ = json.Unmarshal(b, &m)
-	// Older builds could persist titles polluted with internal wrappers
-	// (memory-compiler contracts, transient blocks) — clean at the read
-	// boundary; UserPreviewText is a no-op on clean titles (#5666).
-	for key, title := range m {
-		m[key] = agent.UserPreviewText(title)
-	}
-	return m
-}
-
 func loadSessionTitlesForUpdate(dir string) (map[string]string, error) {
 	return loadStringMapForUpdate(sessionTitlesPath(dir))
 }
@@ -126,46 +109,6 @@ func saveSessionTitles(dir string, m map[string]string) error {
 	return fileutil.AtomicWriteFile(sessionTitlesPath(dir), b, 0o600)
 }
 
-// setSessionTitle sets (or, with an empty title, clears) a session's custom name.
-func setSessionTitle(dir, sessionPath, title string) error {
-	sessionPath, _, err := validateSessionPath(dir, sessionPath)
-	if err != nil {
-		return err
-	}
-	key := filepath.Base(sessionPath)
-	return updateSessionTitles(dir, func(m map[string]string) bool {
-		title = strings.TrimSpace(title)
-		if title == "" {
-			if _, ok := m[key]; !ok {
-				return false
-			}
-			delete(m, key)
-			return true
-		}
-		if m[key] == title {
-			return false
-		}
-		m[key] = title
-		return true
-	})
-}
-
-// deleteSessionFile moves a session's .jsonl and file sidecars into the local
-// trash. Title/display sidecars stay in place so trash previews and restores can
-// preserve the user's labels.
-func deleteSessionFile(dir, sessionPath string) error {
-	sessionPath, key, err := validateSessionPath(dir, sessionPath)
-	if err != nil {
-		return err
-	}
-	return trashSessionArtifacts(dir, sessionPath, key)
-}
-
-type trashedSessionMeta struct {
-	Key       string `json:"key"`
-	DeletedAt int64  `json:"deletedAt"`
-}
-
 type sessionTrashArtifact struct {
 	src  string
 	name string
@@ -176,25 +119,6 @@ func sessionTelemetryPath(sessionPath string) string {
 		return ""
 	}
 	return sessionPath + ".telemetry.json"
-}
-
-func sessionTrashArtifacts(sessionPath, key string) []sessionTrashArtifact {
-	stem := strings.TrimSuffix(key, ".jsonl")
-	return []sessionTrashArtifact{
-		{src: sessionPath, name: key},
-		{src: store.SessionMeta(sessionPath), name: key + ".meta"},
-		{src: store.SessionGoalState(sessionPath), name: stem + ".goal-state.json"},
-		{src: store.SessionEventLog(sessionPath), name: stem + ".events.jsonl"},
-		{src: store.SessionEventLogDamaged(sessionPath), name: stem + ".events.jsonl.damaged"},
-		{src: store.SessionEventIndex(sessionPath), name: stem + ".event-index.json"},
-		{src: store.SessionDisplayIndex(sessionPath), name: stem + ".display-index.json"},
-		{src: store.SessionConflictLog(sessionPath), name: stem + ".conflicts.jsonl"},
-		{src: store.SessionRecoveryState(sessionPath), name: stem + ".recovery.json"},
-		{src: sessionTelemetryPath(sessionPath), name: key + ".telemetry.json"},
-		{src: store.SessionCheckpointDir(sessionPath), name: stem + ".ckpt"},
-		{src: store.SessionJobsDir(sessionPath), name: stem + ".jobs"},
-		{src: store.SessionInboxDir(sessionPath), name: stem + ".inbox"},
-	}
 }
 
 // errSessionBusyElsewhere is the sanitized error surfaced when a destructive
@@ -209,7 +133,9 @@ var errSessionBusyElsewhere = errors.New("session is in use by another Reasonix 
 // would let another process acquire the lease in between and then lose its
 // freshly locked lease file, breaking cross-process mutual exclusion.
 func acquireSessionRemovalGuard(sessionPath string) (*agent.SessionRemovalGuard, error) {
-	guard, err := agent.TryAcquireSessionRemovalGuard(sessionPath)
+	guard, err := withSessionLeaseContentionRetry(func() (*agent.SessionRemovalGuard, error) {
+		return agent.TryAcquireSessionRemovalGuard(sessionPath)
+	})
 	if err != nil {
 		if errors.Is(err, agent.ErrSessionLeaseHeld) {
 			return nil, errSessionBusyElsewhere
@@ -466,7 +392,7 @@ func trashSessionArtifactsBeforeMove(dir, sessionPath, key string, beforeMove fu
 	if err := guard.RemoveSidecarsAndRelease(); err != nil {
 		return err
 	}
-	meta := trashedSessionMeta{Key: key, DeletedAt: time.Now().UnixMilli()}
+	meta := trashedSessionMeta{Key: key, DeletedAt: time.Now().UnixMilli(), Kind: "deleted"}
 	b, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
 		return err
@@ -794,7 +720,7 @@ func validateSessionPath(dir, sessionPath string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	if !store.IsSessionTranscriptName(filepath.Base(absPath)) {
+	if !isLegacySessionTranscriptName(filepath.Base(absPath)) {
 		return "", "", fmt.Errorf("not a session file: %s", sessionPath)
 	}
 	rel, err := filepath.Rel(absDir, absPath)
@@ -839,7 +765,7 @@ func validateTrashedSessionPath(dir, sessionPath string) (string, string, string
 	if err != nil {
 		return "", "", "", err
 	}
-	if !store.IsSessionTranscriptName(filepath.Base(absPath)) {
+	if !isLegacySessionTranscriptName(filepath.Base(absPath)) {
 		return "", "", "", fmt.Errorf("not a session file: %s", sessionPath)
 	}
 	rel, err := filepath.Rel(root, absPath)
@@ -887,6 +813,7 @@ type sessionDisplayMap map[string]map[string]string
 type sessionPlannerDisplayMap map[string][]plannerDisplayTurn
 
 type plannerDisplayTurn struct {
+	TurnID   string           `json:"turnId,omitempty"`
 	UserHash string           `json:"userHash"`
 	Messages []HistoryMessage `json:"messages"`
 }
@@ -1008,15 +935,28 @@ func updateSessionPlannerDisplays(dir string, recoverCorrupt bool, mutate func(s
 }
 
 func recordSessionPlannerDisplay(dir, sessionPath, userContent string, messages []HistoryMessage) error {
+	return recordSessionPlannerDisplayForTurn(dir, sessionPath, "", userContent, messages)
+}
+
+func recordSessionPlannerDisplayForTurn(dir, sessionPath, turnID, userContent string, messages []HistoryMessage) error {
 	if strings.TrimSpace(sessionPath) == "" || strings.TrimSpace(userContent) == "" || len(messages) == 0 {
 		return nil
 	}
 	key := filepath.Base(sessionPath)
 	turn := plannerDisplayTurn{
+		TurnID:   strings.TrimSpace(turnID),
 		UserHash: messageDisplayKey(userContent),
 		Messages: cloneHistoryMessages(messages),
 	}
 	return updateSessionPlannerDisplays(dir, false, func(m sessionPlannerDisplayMap) bool {
+		if turn.TurnID != "" {
+			for i := range m[key] {
+				if m[key][i].TurnID == turn.TurnID {
+					m[key][i] = turn
+					return true
+				}
+			}
+		}
 		m[key] = append(m[key], turn)
 		return true
 	})
@@ -1064,6 +1004,7 @@ func sessionPlannerDisplayTurns(dir, sessionPath string) []plannerDisplayTurn {
 			continue
 		}
 		out = append(out, plannerDisplayTurn{
+			TurnID:   turn.TurnID,
 			UserHash: turn.UserHash,
 			Messages: cloneHistoryMessages(turn.Messages),
 		})

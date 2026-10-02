@@ -15,30 +15,31 @@ import (
 	"reasonix/internal/tool/builtin"
 )
 
-func TestBindWritePathsRebindsBashWriteRoots(t *testing.T) {
+func TestBindWritePathsRebindsShellWriteRoots(t *testing.T) {
 	root := t.TempDir()
 	claim, err := NormalizeWritePaths(root, []string{"docs"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	reg := tool.NewRegistry()
-	reg.Add(builtin.ConfineBash(sandbox.Spec{
+	shell := builtin.ConfineBash(sandbox.Spec{
 		Mode:       "enforce",
 		WriteRoots: []string{root},
-	}, builtin.SessionDataGuard{}))
-	reg.Add(foregroundOnlyBash{inner: mustGet(t, reg, "bash")})
+	}, builtin.SessionDataGuard{})
+	reg.Add(shell)
+	reg.Add(foregroundOnlyBash{inner: mustGet(t, reg, shell.Name())})
 
 	bound, removed := BindWritePaths(reg, claim, root, true)
 	if len(removed) != 0 {
 		t.Fatalf("removed = %v, want none", removed)
 	}
-	if _, ok := bound.Get("bash"); !ok {
-		t.Fatal("bash should be kept when sandbox can rebind")
+	if _, ok := bound.Get(shell.Name()); !ok {
+		t.Fatalf("%s should be kept when sandbox can rebind", shell.Name())
 	}
 
 	_, removed = BindWritePaths(reg, claim, root, false)
-	if len(removed) != 1 || removed[0] != "bash" {
-		t.Fatalf("removed = %v, want [bash]", removed)
+	if len(removed) != 1 || removed[0] != shell.Name() {
+		t.Fatalf("removed = %v, want [%s]", removed, shell.Name())
 	}
 }
 

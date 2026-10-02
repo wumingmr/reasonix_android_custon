@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"reasonix/internal/provider"
-	"reasonix/internal/provider/openai"
 )
 
 // ProviderPreset is a curated, editable provider starter template. Presets are
@@ -101,18 +100,10 @@ var (
 	kimiCodingModels    = []string{"kimi-for-coding"}
 
 	longCat20Models              = []string{"LongCat-2.0"}
-	deepSeekOfficialModels       = []string{"deepseek-v4-flash", "deepseek-v4-pro", openai.OfficialDeepSeekVisionModel}
-	deepSeekOfficialVisionModels = []string{openai.OfficialDeepSeekVisionModel}
-	tokenRhythmModels            = []string{
-		"deepseek-v4-flash", "deepseek-v4-pro", "glm-5", "glm-5.1",
-		"minimax-m2.7", "kimi-k2.5", "kimi-k2.6", "minimax-m2.5",
-		"mimo-v2.5-pro", "qwen3.7-max", "kimi-k2.7-code", "glm-5.2",
-		"qwen3.8-max", "deepseek-v4-flash-0731",
-	}
-	tokenRhythmVisionModels = []string{"kimi-k2.5", "kimi-k2.6", "kimi-k2.7-code"}
-
-	mimoV25Models       = []string{"mimo-v2.5-pro", "mimo-v2.5"}
-	mimoV25VisionModels = []string{"mimo-v2.5"}
+	deepSeekOfficialModels       = []string{"deepseek-flash", "deepseek-v4-pro"}
+	deepSeekOfficialVisionModels = []string{"deepseek-flash"}
+	mimoModels                   = []string{"mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.5-pro", "mimo-v2.5"}
+	mimoCuratedVisionModels      = []string{"mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.5"}
 
 	minimaxMSeriesModels       = []string{"MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"}
 	minimaxMSeriesVisionModels = []string{"MiniMax-M3"}
@@ -126,8 +117,7 @@ var (
 	qwenAPIVisionModels  = []string{"qwen3.7-plus", "qwen3.6-plus", "qwen3.5-plus", "kimi-k2.5"}
 	qwenPlanModels       = []string{"qwen3.7-plus", "qwen3.6-plus", "kimi-k2.5", "glm-5", "MiniMax-M2.5", "qwen3.5-plus", "qwen3-max-2026-01-23", "qwen3-coder-next", "qwen3-coder-plus", "glm-4.7"}
 	qwenPlanVisionModels = []string{"qwen3.7-plus", "qwen3.6-plus", "qwen3.5-plus", "kimi-k2.5"}
-
-	stepfunPlanModels = []string{"step-3.7-flash", "step-3.5-flash", "step-3.5-flash-2603"}
+	stepfunPlanModels    = []string{"step-3.7-flash", "step-3.5-flash", "step-3.5-flash-2603"}
 
 	// Only step-3.7-flash is enabled server-side on the Responses API
 	// ("this model is not enabled for the Responses API" for 3.5 SKUs).
@@ -140,8 +130,10 @@ var (
 	stepfunAPIVisionModels = []string{"step-3.7-flash"}
 
 	legacyOpenCodeGoModels           = []string{"glm-5.2", "glm-5.1", "kimi-k2.7-code", "kimi-k2.6", "deepseek-v4-pro", "deepseek-v4-flash", "mimo-v2.5-pro", "mimo-v2.5"}
-	opencodeGoModels                 = []string{"glm-5.3", "glm-5.2", "glm-5.1", "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "deepseek-v4-pro", "deepseek-v4-flash", "mimo-v2.5-pro", "mimo-v2.5", "hy3"}
-	opencodeGoVisionModels           = []string{"kimi-k3"}
+	preVisionOpenCodeGoModels        = []string{"glm-5.3", "glm-5.2", "glm-5.1", "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "deepseek-v4-pro", "deepseek-v4-flash", "mimo-v2.5-pro", "mimo-v2.5", "hy3"}
+	preVisionOpenCodeGoVisionModels  = []string{"kimi-k3"}
+	opencodeGoModels                 = provider.OpenCodeGoModelIDs(provider.OpenCodeGoRouteChat)
+	opencodeGoVisionModels           = provider.OpenCodeGoVisionModelIDs(provider.OpenCodeGoRouteChat)
 	opencodeZenAnthropicModels       = []string{"claude-sonnet-4-6", "claude-opus-4-8", "claude-haiku-4-5", "qwen3.6-plus", "qwen3.5-plus", "qwen3.6-plus-free"}
 	opencodeZenAnthropicVisionModels = []string{"claude-sonnet-4-6", "claude-opus-4-8", "claude-haiku-4-5"}
 
@@ -161,48 +153,6 @@ func qwenModelContextOverrides() map[string]ProviderModelOverride {
 		"glm-5":                {ContextWindow: 202_752},
 		"glm-4.7":              {ContextWindow: 202_752},
 		"kimi-k2.5":            {ContextWindow: 262_144},
-	}
-}
-
-func tokenRhythmModelOverrides() map[string]ProviderModelOverride {
-	return map[string]ProviderModelOverride{
-		"deepseek-v4-flash": {
-			ReasoningProtocol: ReasoningProtocolDeepSeek,
-			SupportedEfforts:  []string{"disabled", "low", "high", "max"},
-			DefaultEffort:     "high",
-		},
-		"deepseek-v4-pro": {
-			ReasoningProtocol: ReasoningProtocolDeepSeek,
-			SupportedEfforts:  []string{"disabled", "high", "max"},
-			DefaultEffort:     "high",
-		},
-		"deepseek-v4-flash-0731": {
-			ReasoningProtocol: ReasoningProtocolDeepSeek,
-			SupportedEfforts:  []string{"disabled", "low", "high", "max"},
-			DefaultEffort:     "high",
-		},
-		"glm-5": {
-			ReasoningProtocol: ReasoningProtocolGLM,
-			SupportedEfforts:  []string{"enabled", "disabled"},
-			DefaultEffort:     "enabled",
-		},
-		"glm-5.1": {
-			ReasoningProtocol: ReasoningProtocolGLM,
-			SupportedEfforts:  []string{"enabled", "disabled"},
-			DefaultEffort:     "enabled",
-			ContextWindow:     200_000,
-		},
-		"glm-5.2": {
-			ReasoningProtocol: ReasoningProtocolGLM,
-			SupportedEfforts:  []string{"enabled", "disabled"},
-			DefaultEffort:     "enabled",
-		},
-		"minimax-m2.7":   {ContextWindow: 200_000},
-		"kimi-k2.5":      {ContextWindow: 256_000},
-		"kimi-k2.6":      {ContextWindow: 256_000},
-		"minimax-m2.5":   {ContextWindow: 200_000},
-		"mimo-v2.5-pro":  {ContextWindow: 256_000},
-		"kimi-k2.7-code": {ContextWindow: 256_000},
 	}
 }
 
@@ -226,7 +176,7 @@ var curatedProviderPresets = []ProviderPreset{
 			Kind:           "anthropic",
 			BaseURL:        deepSeekAnthropicBaseURL,
 			Models:         deepSeekOfficialModels,
-			Default:        "deepseek-v4-flash",
+			Default:        "deepseek-flash",
 			VisionModels:   deepSeekOfficialVisionModels,
 			APIKeyEnv:      "DEEPSEEK_API_KEY",
 			BalanceURL:     "https://api.deepseek.com/user/balance",
@@ -365,12 +315,12 @@ var curatedProviderPresets = []ProviderPreset{
 			Name:          "mimo-api",
 			Kind:          "openai",
 			BaseURL:       "https://api.xiaomimimo.com/v1",
-			Models:        mimoV25Models,
-			VisionModels:  mimoV25VisionModels,
-			Default:       "mimo-v2.5-pro",
+			Models:        mimoModels,
+			VisionModels:  mimoCuratedVisionModels,
+			Default:       "mimo-v2.6-pro",
 			APIKeyEnv:     "MIMO_API_KEY",
 			ContextWindow: 1048576,
-			Prices:        mimoDomesticPrices(mimoV25Models),
+			Prices:        mimoDomesticPrices(mimoModels),
 			NoProxy:       true,
 		}},
 	},
@@ -383,13 +333,13 @@ var curatedProviderPresets = []ProviderPreset{
 			Name:          "mimo-anthropic",
 			Kind:          "anthropic",
 			BaseURL:       "https://api.xiaomimimo.com/anthropic",
-			Models:        mimoV25Models,
-			VisionModels:  mimoV25VisionModels,
-			Default:       "mimo-v2.5-pro",
+			Models:        mimoModels,
+			VisionModels:  mimoCuratedVisionModels,
+			Default:       "mimo-v2.6-pro",
 			APIKeyEnv:     "MIMO_API_KEY",
 			Thinking:      "adaptive",
 			ContextWindow: 1048576,
-			Prices:        mimoDomesticPrices(mimoV25Models),
+			Prices:        mimoDomesticPrices(mimoModels),
 			NoProxy:       true,
 		}},
 	},
@@ -402,12 +352,12 @@ var curatedProviderPresets = []ProviderPreset{
 			Name:          "mimo-token-plan-cn",
 			Kind:          "openai",
 			BaseURL:       "https://token-plan-cn.xiaomimimo.com/v1",
-			Models:        mimoV25Models,
-			VisionModels:  mimoV25VisionModels,
-			Default:       "mimo-v2.5-pro",
+			Models:        mimoModels,
+			VisionModels:  mimoCuratedVisionModels,
+			Default:       "mimo-v2.6-pro",
 			APIKeyEnv:     "MIMO_TOKEN_PLAN_API_KEY",
 			ContextWindow: 1048576,
-			Prices:        mimoDomesticPrices(mimoV25Models),
+			Prices:        mimoDomesticPrices(mimoModels),
 			NoProxy:       true,
 		}},
 	},
@@ -420,13 +370,13 @@ var curatedProviderPresets = []ProviderPreset{
 			Name:          "mimo-token-plan-cn-anthropic",
 			Kind:          "anthropic",
 			BaseURL:       "https://token-plan-cn.xiaomimimo.com/anthropic",
-			Models:        mimoV25Models,
-			VisionModels:  mimoV25VisionModels,
-			Default:       "mimo-v2.5-pro",
+			Models:        mimoModels,
+			VisionModels:  mimoCuratedVisionModels,
+			Default:       "mimo-v2.6-pro",
 			APIKeyEnv:     "MIMO_TOKEN_PLAN_API_KEY",
 			Thinking:      "adaptive",
 			ContextWindow: 1048576,
-			Prices:        mimoDomesticPrices(mimoV25Models),
+			Prices:        mimoDomesticPrices(mimoModels),
 			NoProxy:       true,
 		}},
 	},
@@ -439,12 +389,12 @@ var curatedProviderPresets = []ProviderPreset{
 			Name:          "mimo-token-plan-sgp",
 			Kind:          "openai",
 			BaseURL:       "https://token-plan-sgp.xiaomimimo.com/v1",
-			Models:        mimoV25Models,
-			VisionModels:  mimoV25VisionModels,
-			Default:       "mimo-v2.5-pro",
+			Models:        mimoModels,
+			VisionModels:  mimoCuratedVisionModels,
+			Default:       "mimo-v2.6-pro",
 			APIKeyEnv:     "MIMO_TOKEN_PLAN_API_KEY",
 			ContextWindow: 1048576,
-			Prices:        mimoDomesticPrices(mimoV25Models),
+			Prices:        mimoDomesticPrices(mimoModels),
 		}},
 	},
 	{
@@ -456,13 +406,13 @@ var curatedProviderPresets = []ProviderPreset{
 			Name:          "mimo-token-plan-sgp-anthropic",
 			Kind:          "anthropic",
 			BaseURL:       "https://token-plan-sgp.xiaomimimo.com/anthropic",
-			Models:        mimoV25Models,
-			VisionModels:  mimoV25VisionModels,
-			Default:       "mimo-v2.5-pro",
+			Models:        mimoModels,
+			VisionModels:  mimoCuratedVisionModels,
+			Default:       "mimo-v2.6-pro",
 			APIKeyEnv:     "MIMO_TOKEN_PLAN_API_KEY",
 			Thinking:      "adaptive",
 			ContextWindow: 1048576,
-			Prices:        mimoDomesticPrices(mimoV25Models),
+			Prices:        mimoDomesticPrices(mimoModels),
 		}},
 	},
 	{
@@ -474,12 +424,12 @@ var curatedProviderPresets = []ProviderPreset{
 			Name:          "mimo-token-plan-ams",
 			Kind:          "openai",
 			BaseURL:       "https://token-plan-ams.xiaomimimo.com/v1",
-			Models:        mimoV25Models,
-			VisionModels:  mimoV25VisionModels,
-			Default:       "mimo-v2.5-pro",
+			Models:        mimoModels,
+			VisionModels:  mimoCuratedVisionModels,
+			Default:       "mimo-v2.6-pro",
 			APIKeyEnv:     "MIMO_TOKEN_PLAN_API_KEY",
 			ContextWindow: 1048576,
-			Prices:        mimoDomesticPrices(mimoV25Models),
+			Prices:        mimoDomesticPrices(mimoModels),
 		}},
 	},
 	{
@@ -491,13 +441,13 @@ var curatedProviderPresets = []ProviderPreset{
 			Name:          "mimo-token-plan-ams-anthropic",
 			Kind:          "anthropic",
 			BaseURL:       "https://token-plan-ams.xiaomimimo.com/anthropic",
-			Models:        mimoV25Models,
-			VisionModels:  mimoV25VisionModels,
-			Default:       "mimo-v2.5-pro",
+			Models:        mimoModels,
+			VisionModels:  mimoCuratedVisionModels,
+			Default:       "mimo-v2.6-pro",
 			APIKeyEnv:     "MIMO_TOKEN_PLAN_API_KEY",
 			Thinking:      "adaptive",
 			ContextWindow: 1048576,
-			Prices:        mimoDomesticPrices(mimoV25Models),
+			Prices:        mimoDomesticPrices(mimoModels),
 		}},
 	},
 	{
@@ -578,7 +528,7 @@ var curatedProviderPresets = []ProviderPreset{
 			Kind:           "responses",
 			BaseURL:        "https://api.deepseek.com",
 			Models:         deepSeekOfficialModels,
-			Default:        "deepseek-v4-flash",
+			Default:        "deepseek-flash",
 			VisionModels:   deepSeekOfficialVisionModels,
 			APIKeyEnv:      "DEEPSEEK_API_KEY",
 			BalanceURL:     "https://api.deepseek.com/user/balance",
@@ -897,6 +847,7 @@ var curatedProviderPresets = []ProviderPreset{
 			BaseURL:          "https://api.stepfun.com/step_plan/v1",
 			Models:           stepfunPlanModels,
 			Default:          "step-3.7-flash",
+			ContextWindow:    stepfunContextWindow,
 			APIKeyEnv:        "STEPFUN_API_KEY",
 			SupportedEfforts: []string{"low", "medium", "high"},
 			DefaultEffort:    "medium",
@@ -913,6 +864,7 @@ var curatedProviderPresets = []ProviderPreset{
 			BaseURL:          "https://api.stepfun.com/v1",
 			Models:           stepfunResponsesModels,
 			Default:          "step-3.7-flash",
+			ContextWindow:    stepfunContextWindow,
 			APIKeyEnv:        "STEPFUN_API_KEY",
 			ResponsesMode:    "stateless",
 			SupportedEfforts: []string{"low", "medium", "high"},
@@ -930,6 +882,7 @@ var curatedProviderPresets = []ProviderPreset{
 			BaseURL:          "https://api.stepfun.com/step_plan",
 			Models:           stepfunPlanModels,
 			Default:          "step-3.7-flash",
+			ContextWindow:    stepfunContextWindow,
 			APIKeyEnv:        "STEPFUN_API_KEY",
 			Thinking:         "adaptive",
 			SupportedEfforts: []string{"low", "medium", "high"},
@@ -948,6 +901,7 @@ var curatedProviderPresets = []ProviderPreset{
 			Models:           stepfunAPIModels,
 			VisionModels:     stepfunAPIVisionModels,
 			Default:          "step-3.7-flash",
+			ContextWindow:    stepfunContextWindow,
 			APIKeyEnv:        "STEPFUN_API_KEY",
 			SupportedEfforts: []string{"low", "medium", "high"},
 			DefaultEffort:    "medium",
@@ -964,6 +918,7 @@ var curatedProviderPresets = []ProviderPreset{
 			BaseURL:          "https://api.stepfun.com",
 			Models:           stepfunAPIModels,
 			Default:          "step-3.7-flash",
+			ContextWindow:    stepfunContextWindow,
 			APIKeyEnv:        "STEPFUN_API_KEY",
 			Thinking:         "adaptive",
 			SupportedEfforts: []string{"low", "medium", "high"},
@@ -1058,6 +1013,7 @@ var curatedProviderPresets = []ProviderPreset{
 			APIKeyEnv: "KILOCODE_API_KEY",
 		}},
 	},
+	modelscopePreset,
 	{
 		ID:          "ollama-cloud",
 		Label:       "Ollama Cloud",
@@ -1076,15 +1032,6 @@ var curatedProviderPresets = []ProviderPreset{
 
 func boolPointer(value bool) *bool {
 	return &value
-}
-
-func cloneProviderPreset(p ProviderPreset) ProviderPreset {
-	p.Entries = cloneProviderEntries(p.Entries)
-	for i := range p.Entries {
-		p.Entries[i].PresetID = p.ID
-		p.Entries[i].PresetVersion = ProviderPresetVersion
-	}
-	return p
 }
 
 func cloneProviderEntries(in []ProviderEntry) []ProviderEntry {

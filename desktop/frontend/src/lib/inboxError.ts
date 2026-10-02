@@ -18,6 +18,9 @@ const CODE_INDEX = {
   channel_read_only: 10,
   workspace_starting: 11,
   workspace_start_failed: 12,
+  inbox_not_submitted: 16,
+  image_attachment_unreadable: 17,
+  inbox_target_transient: 18,
 } as const;
 
 type InboxErrorCode = keyof typeof CODE_INDEX;
@@ -43,6 +46,9 @@ const ERROR_COPY: Record<Locale, readonly string[]> = {
     "The inbox operation could not be completed",
     "The turn ended before guidance could be applied. It will remain queued for the next turn",
     "Cancel failed: {error}",
+    "The message was not sent. Refresh the session and try again",
+    "The image could not be read. Re-add it or try again",
+    "The session is switching. The message will be sent automatically.",
   ],
   zh: [
     "收件箱已暂停",
@@ -61,6 +67,9 @@ const ERROR_COPY: Record<Locale, readonly string[]> = {
     "无法完成收件箱操作",
     "引导尚未应用时当前回合已结束；它会保留在队列中，供下一回合处理",
     "取消失败：{error}",
+    "消息未发送，请刷新会话后重试",
+    "图片读取失败，请重新添加或重试",
+    "会话正在切换，消息会自动发出。",
   ],
   "zh-TW": [
     "收件匣已暫停",
@@ -79,6 +88,9 @@ const ERROR_COPY: Record<Locale, readonly string[]> = {
     "無法完成收件匣操作",
     "引導尚未套用時目前回合已結束；它會保留在佇列中，供下一回合處理",
     "取消失敗：{error}",
+    "訊息未傳送，請重新整理會話後重試",
+    "圖片讀取失敗，請重新加入或重試",
+    "工作階段正在切換，訊息會自動送出。",
   ],
 };
 
@@ -119,6 +131,17 @@ export function inboxSteerQueuedMessage(locale: Locale): string {
 export function isInboxItemMissing(error: unknown): boolean {
   const raw = errorText(error);
   return raw === `${CODE_PREFIX}inbox_item_not_found` || raw === "inbox item not found";
+}
+
+// The idle-tab code is consumed by the Stop path, never displayed.
+export function isTurnNotRunning(error: unknown): boolean {
+  return errorText(error) === `${CODE_PREFIX}turn_not_running`;
+}
+
+// The tab moved to another session between reading the permission snapshot and
+// applying the choice; the choice belongs to the session that was read.
+export function isPermissionSessionChanged(error: unknown): boolean {
+  return errorText(error) === `${CODE_PREFIX}permission_session_changed`;
 }
 
 export function formatInboxCancelError(error: unknown, locale: Locale): string {

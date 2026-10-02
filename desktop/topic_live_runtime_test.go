@@ -13,7 +13,7 @@ import (
 	"reasonix/internal/sessioncatalog"
 )
 
-func TestStartTopicActivationPrefersLiveRuntimeOverRepresentative(t *testing.T) {
+func TestStartTopicActivationKeepsExplicitRepresentativeSeparateFromLiveSibling(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	projectRoot := t.TempDir()
 	sessionDir := desktopSessionDir(projectRoot)
@@ -68,17 +68,15 @@ func TestStartTopicActivationPrefersLiveRuntimeOverRepresentative(t *testing.T) 
 	if tab == nil {
 		t.Fatal("activated tab missing")
 	}
-	if tab.Ctrl != stub {
-		t.Fatal("clicking the live topic row opened the catalog representative instead of attaching the live controller")
+	if tab.Ctrl == stub {
+		t.Fatal("explicit history selection reused the same-topic sibling controller")
 	}
-	if sessionRuntimeKey(tab.currentSessionPath()) != sessionRuntimeKey(livePath) {
-		t.Fatalf("session path = %q, want live %q", tab.currentSessionPath(), livePath)
-	}
+	assertActivatedNativeSource(t, app, tab, oldPath)
 	if stub.closed.Load() {
 		t.Fatal("live controller was closed while attaching")
 	}
-	if ticket.Meta.SessionPath != "" && sessionRuntimeKey(ticket.Meta.SessionPath) != sessionRuntimeKey(livePath) {
-		t.Fatalf("ticket session path = %q, want live %q", ticket.Meta.SessionPath, livePath)
+	if ticket.Meta.SessionPath != "" && sessionRuntimeKey(ticket.Meta.SessionPath) != sessionRuntimeKey(oldPath) {
+		t.Fatalf("ticket session path = %q, want selected %q", ticket.Meta.SessionPath, oldPath)
 	}
 }
 
@@ -90,7 +88,7 @@ func TestStartTopicActivationReadyDoesNotWaitForRebuildMutex(t *testing.T) {
 		t.Fatalf("mkdir sessions: %v", err)
 	}
 	pathA := writeTopicSession(t, sessionDir, "a.jsonl", "topic-a", "Topic A", projectRoot)
-	oldB := writeTopicSessionWithPrompt(t, sessionDir, "b-old.jsonl", "topic-b", "Topic B", projectRoot, "old b", time.Now().Add(-time.Hour))
+	writeTopicSessionWithPrompt(t, sessionDir, "b-old.jsonl", "topic-b", "Topic B", projectRoot, "old b", time.Now().Add(-time.Hour))
 	liveB := writeTopicSessionWithPrompt(t, sessionDir, "b-live.jsonl", "topic-b", "Topic B", projectRoot, "live b", time.Now())
 
 	app := NewApp()
@@ -144,20 +142,18 @@ func TestStartTopicActivationReadyDoesNotWaitForRebuildMutex(t *testing.T) {
 	app.runtimeRebuildMu.Lock()
 	defer app.runtimeRebuildMu.Unlock()
 
-	started := time.Now()
 	ticket, err := app.StartTopicActivation(TopicActivationRequest{
 		Scope:         "project",
 		WorkspaceRoot: projectRoot,
 		TopicID:       "topic-b",
-		SessionPath:   oldB,
+		SessionPath:   liveB,
 		RequestID:     "req-rebuild",
 	})
 	if err != nil {
 		t.Fatalf("StartTopicActivation: %v", err)
 	}
-	if time.Since(started) > 300*time.Millisecond {
-		t.Fatalf("StartTopicActivation blocked %s while MCP rebuild held the mutex", time.Since(started))
-	}
+	// runtimeRebuildMu remains held, so obtaining a ticket proves that activation
+	// publication does not wait for the MCP rebuild mutex.
 	deadline := time.After(400 * time.Millisecond)
 	for {
 		select {
@@ -238,9 +234,18 @@ func installCoveringLeafTopicCatalog(t *testing.T, app *App) (parent, leaf, live
 	save(leaf, "legacy-leaf-topic", q, a,
 		provider.Message{Role: provider.RoleUser, Content: "next"},
 		provider.Message{Role: provider.RoleAssistant, Content: "done"})
+	leafSession, err := agent.LoadSession(leaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafDigest, err := agent.ContentDigestForMessages(leafSession.Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := agent.SaveBranchMetaPreserveUpdated(leaf, agent.BranchMeta{
 		ID: "leaf", Scope: "global", TopicID: "legacy-leaf-topic",
 		Recovered: true, ParentID: "root", RecoveryDepth: 1,
+		Revision: 1, ContentDigest: leafDigest, RecoveryDigest: leafDigest,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +276,7 @@ func TestResolveOpenTopicSessionPathKeepsPausedLiveOnCoveringParent(t *testing.T
 	}
 }
 
-func TestStartTopicActivationAttachesPausedLiveWhenOpeningCoveringParent(t *testing.T) {
+func TestStartTopicActivationKeepsRecoveryContinuationSeparateFromLiveSibling(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	app := NewApp()
 	app.ctx = context.Background()
@@ -329,13 +334,27 @@ func TestStartTopicActivationAttachesPausedLiveWhenOpeningCoveringParent(t *test
 	if tab == nil {
 		t.Fatal("activated tab missing")
 	}
-	if tab.Ctrl != stub {
-		t.Fatal("clicking the covering parent opened the catalog leaf instead of attaching the paused live controller")
+	if tab.Ctrl == stub {
+		t.Fatal("recovery parent selection reused an unrelated same-topic controller")
 	}
-	if sessionRuntimeKey(tab.currentSessionPath()) != sessionRuntimeKey(livePath) {
-		t.Fatalf("session path = %q, want live %q (parent %q leaf %q)", tab.currentSessionPath(), livePath, parent, leaf)
+	assertActivatedNativeSource(t, app, tab, leaf)
+	if ticket.Meta.SessionPath != "" && sessionRuntimeKey(ticket.Meta.SessionPath) != sessionRuntimeKey(leaf) {
+		t.Fatalf("ticket session path = %q, want recovery leaf %q", ticket.Meta.SessionPath, leaf)
 	}
-	if ticket.Meta.SessionPath != "" && sessionRuntimeKey(ticket.Meta.SessionPath) != sessionRuntimeKey(livePath) {
-		t.Fatalf("ticket session path = %q, want live %q", ticket.Meta.SessionPath, livePath)
+}
+
+func assertActivatedNativeSource(t *testing.T, app *App, tab *WorkspaceTab, sourcePath string) {
+	t.Helper()
+	if tab.SessionID != "" || sessionRuntimeKey(tab.currentSessionPath()) != sessionRuntimeKey(sourcePath) {
+		t.Fatalf("activated session did not preserve native source %q: %q %q", sourcePath, tab.SessionID, tab.currentSessionPath())
+	}
+	state, err := app.workspaceRegistry().Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mapping := range state.SourceMappings {
+		if sessionRuntimeKey(mapping.Path) == sessionRuntimeKey(sourcePath) {
+			t.Fatal("ordinary activation created an import mapping")
+		}
 	}
 }

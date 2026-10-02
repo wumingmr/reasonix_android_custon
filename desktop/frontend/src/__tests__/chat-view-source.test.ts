@@ -1,0 +1,233 @@
+import assert from "node:assert/strict";
+import { ChatSource, type ChatInput } from "../lib/chatViewSource";
+import type { Item } from "../lib/useController";
+
+const items: Item[] = [
+  { kind: "user", id: "u1", text: "first", checkpointTurn: 1 },
+  { kind: "assistant", id: "a1", text: "settled", reasoning: "reason", streaming: false },
+  { kind: "user", id: "u2", text: "second", checkpointTurn: 2 },
+  { kind: "assistant", id: "a2", text: "", reasoning: "", streaming: true },
+];
+const input: ChatInput = { items, running: true, hydrating: false, hasOlder: true, loadingOlder: false };
+const source = new ChatSource("test");
+source.update(input);
+await Promise.resolve();
+const order = source.getOrderSnapshot();
+const oldAnswer = source.getNodeSnapshot("a1");
+let lists = 0, historical = 0, active = 0;
+source.subscribeOrder(() => lists++);
+source.subscribeNode("a1", () => historical++);
+source.subscribeNode("a2", () => active++);
+for (let i = 0; i < 120; i++) source.updateLive({ id: "a2", text: `answer ${i}`, reasoning: `thought ${i}`, reasoningComplete: true });
+assert.equal(active, 120);
+assert.equal(lists, 0);
+assert.equal(historical, 0);
+assert.equal(source.getOrderSnapshot(), order);
+assert.equal(source.getNodeSnapshot("a1"), oldAnswer);
+
+const settled = items.map(item => item.id === "a2" ? { ...item, text: "answer 119", reasoning: "thought 119", streaming: false } as Item : item);
+source.update({ ...input, items: settled, running: false });
+await Promise.resolve();
+assert.equal(source.getOrderSnapshot(), order, "settlement preserves every node host key");
+assert.equal(source.getNodeSnapshot("u2:process")?.kind, "process");
+const process = source.getNodeSnapshot("u2:process");
+assert.ok(process?.kind === "process" && process.collapsed);
+source.toggleProcess("u2");
+source.update({ ...input, items: [...settled], running: false });
+await Promise.resolve();
+const expanded = source.getNodeSnapshot("u2:process");
+assert.ok(expanded?.kind === "process" && !expanded.collapsed, "manual open survives publication");
+const earlier: Item[] = [{ kind: "user", id: "u0", text: "older", checkpointTurn: 0 }, { kind: "assistant", id: "a0", text: "older answer", reasoning: "", streaming: false }];
+const beforePrepend = source.getNodeSnapshot("a1");
+source.update({ ...input, items: [...earlier, ...settled], running: false });
+await Promise.resolve();
+assert.equal(source.getNodeSnapshot("a1"), beforePrepend);
+assert.deepEqual(source.getOrderSnapshot().slice(-order.length), order);
+
+const warning: Item = { kind: "notice", id: "warning", level: "warn", text: "interrupted" };
+source.update({ ...input, items: [...settled, warning], running: false });
+await Promise.resolve();
+const failed = source.getNodeSnapshot("u2:process");
+assert.ok(failed?.kind === "process" && failed.foldable && !failed.collapsed, "an interrupted turn stays open but can be folded");
+assert.ok(source.getOrderSnapshot().includes("warning"));
+source.update({ ...input, items: [settled[1]], running: false });
+await Promise.resolve();
+const incomplete = source.getNodeSnapshot("history-head:process");
+assert.ok(incomplete?.kind === "process" && incomplete.foldable, "a group without its user message still has a fold seat");
+source.update(input);
+source.dispose();
+const notified = active;
+await Promise.resolve();
+source.updateLive({ id: "a2", text: "late", reasoning: "", reasoningComplete: true });
+assert.equal(active, notified);
+assert.deepEqual(source.getOrderSnapshot(), []);
+console.log("chat view: stable streaming, settlement, prepend, fold, incomplete history and disposal passed");
+
+const reasoningSource = new ChatSource("reasoning-isolation");
+let reasoningAnswer: Extract<Item, { kind: "assistant" }> = {
+  kind: "assistant", id: "reasoning-answer", text: "answer", reasoning: "thought", streaming: true, reasoningComplete: false,
+};
+const publishReasoning = () => reasoningSource.update({ ...input, items: [items[0], reasoningAnswer] });
+publishReasoning();
+await Promise.resolve();
+let reasoningChanges = 0;
+reasoningSource.subscribeNode("reasoning-answer:reasoning", () => reasoningChanges++);
+const unchangedReasoning = reasoningSource.getNodeSnapshot("reasoning-answer:reasoning");
+for (let index = 0; index < 20; index++) reasoningSource.updateLive({
+  id: reasoningAnswer.id, text: `answer ${index}`, reasoning: "thought", reasoningComplete: false,
+});
+assert.equal(reasoningChanges, 0, "text-only stream publications do not invalidate reasoning");
+assert.equal(reasoningSource.getNodeSnapshot("reasoning-answer:reasoning"), unchangedReasoning);
+reasoningAnswer = { ...reasoningAnswer, text: "projected answer" };
+publishReasoning();
+await Promise.resolve();
+assert.equal(reasoningChanges, 0, "controller/history projection shares the same reasoning isolation");
+reasoningSource.updateLive({ id: reasoningAnswer.id, text: "projected answer", reasoning: "thought", reasoningComplete: true });
+assert.equal(reasoningChanges, 1, "completion alone still publishes even when reasoning text is unchanged");
+reasoningSource.updateLive({ id: reasoningAnswer.id, text: "projected answer", reasoning: "new thought", reasoningComplete: true });
+assert.equal(reasoningChanges, 2, "reasoning content changes still publish");
+reasoningAnswer = { ...reasoningAnswer, reasoning: "new thought", reasoningComplete: true, streaming: false, reasoningDurationMs: 1234 };
+reasoningSource.update({ ...input, running: false, items: [items[0], reasoningAnswer] });
+await Promise.resolve();
+assert.equal(reasoningChanges, 3, "settlement and duration still publish");
+const settledReasoning = reasoningSource.getNodeSnapshot("reasoning-answer:reasoning");
+assert.ok(settledReasoning?.kind === "reasoning");
+assert.equal(settledReasoning.item.streaming, false);
+assert.equal(settledReasoning.item.reasoningDurationMs, 1234);
+reasoningSource.dispose();
+
+const recovered = new ChatSource("recovered-weather");
+const weather: Item[] = [
+  { kind: "user", id: "weather-user", text: "weather", checkpointTurn: 4 },
+  { kind: "tool", id: "failed-fetch", name: "web_fetch", args: "{}", readOnly: true, status: "error", error: "DNS refused" },
+  { kind: "assistant", id: "retry-message", text: "Trying another source", reasoning: "Need current data", streaming: false },
+  { kind: "notice", id: "permission", level: "info", title: "Permission saved", text: "permission saved to /tmp/reasonix.toml: long command" },
+  { kind: "tool", id: "successful-fetch", name: "bash", args: "{}", readOnly: true, status: "done", output: "25 degrees" },
+  { kind: "assistant", id: "weather-answer", text: "Sunny, 25 degrees", reasoning: "Sources agree", streaming: false },
+];
+recovered.update({ ...input, items: weather, running: false });
+await Promise.resolve();
+const compact = recovered.getNodeSnapshot("weather-user:process");
+assert.ok(compact?.kind === "process" && compact.collapsed, "recovered call errors do not prevent completed-turn folding");
+assert.equal(compact.toolCallCount, 2);
+assert.equal(compact.messageCount, 1);
+assert.equal(compact.failureCount, 1, "failed call count remains visible in the collapsed summary");
+assert.ok(compact.members.includes("permission"), "system receipts are inside the process range");
+assert.ok(!compact.members.includes("weather-answer"), "final answer remains outside the process range");
+recovered.toggleProcess("weather-user");
+recovered.dispose();
+const restored = new ChatSource("recovered-weather");
+restored.update({ ...input, items: weather, running: false });
+assert.equal((restored.getNodeSnapshot("weather-user:process") as typeof compact).collapsed, false, "manual open survives session revisit");
+restored.update({ ...input, items: [...weather, { kind: "notice", id: "stopped", level: "info", text: "Stopped" }], running: false });
+const interrupted = restored.getNodeSnapshot("weather-user:process") as typeof compact;
+assert.ok(interrupted.foldable && !interrupted.collapsed, "terminal interruption stays open and keeps the manual choice");
+restored.dispose();
+
+const deliverables = new ChatSource("deliverables");
+const deliverableItems: Item[] = [
+  { kind: "user", id: "deliverable-user", text: "build a game", checkpointTurn: 5 },
+  { kind: "tool", id: "write-game", name: "write_file", args: '{"path":"game.html","content":"game"}', readOnly: false, status: "done", output: "wrote game.html" },
+  { kind: "tool", id: "write-notes", name: "write_file", args: '{"path":"notes.md","content":"notes"}', readOnly: false, status: "done", output: "wrote notes.md" },
+  { kind: "tool", id: "failed-write", name: "write_file", args: '{"path":"missing.md"}', readOnly: false, status: "error", error: "denied" },
+  { kind: "tool", id: "present-old", name: "present", args: '{"files":[{"path":"game.html"}]}', readOnly: true, status: "done", output: "Presented game.html", presentedFiles: [{ path: "game.html", description: "Old description" }] },
+  { kind: "tool", id: "present-doc", name: "present", args: '{"files":[{"path":"README.md"}]}', readOnly: true, status: "done", output: "Presented README.md", presentedFiles: [{ path: "README.md", description: "Instructions" }] },
+  { kind: "tool", id: "present-new", name: "present", args: '{"files":[{"path":"game.html"}]}', readOnly: true, status: "done", output: "Presented game.html", presentedFiles: [{ path: "game.html", description: "Playable game" }] },
+  { kind: "notice", id: "turn-result", level: "info", text: "Turn complete", completionSummary: {
+    preset: "balanced", verdict: "complete", mutations: 2, changed_files: 2, checks_passed: 0, checks_failed: 0,
+    checks_suppressed: 0, review: "passed", constraint_degraded: false,
+    receipt: { verdict: "complete", diff: { id: "5:result", turn: 5, coverage: "complete", added: 4, removed: 1, reasons: [], files: [
+      { path: "game.html", kind: "create", added: 3, removed: 0 },
+      { path: "notes.md", kind: "create", added: 1, removed: 1 },
+    ] } },
+  } },
+  { kind: "assistant", id: "deliverable-answer", text: "Open `game.html`.", reasoning: "", streaming: false },
+];
+deliverables.update({ ...input, items: deliverableItems, running: false });
+await Promise.resolve();
+const tail = deliverables.getNodeSnapshot("deliverable-user:tail");
+assert.ok(tail?.kind === "tail");
+assert.deepEqual(tail.presentedFiles, [
+  { path: "game.html", description: "Playable game", toolCallId: "present-new" },
+  { path: "README.md", description: "Instructions", toolCallId: "present-doc" },
+]);
+assert.deepEqual(tail.modifiedFiles, [
+  { path: "game.html", toolCallId: "write-game", operation: "written" },
+  { path: "notes.md", toolCallId: "write-notes", operation: "written" },
+], "the changed-files review keeps presented files in the same turn inventory");
+assert.equal(tail.completionSummary?.receipt?.diff?.added, 4, "the tail carries the frozen review receipt");
+const presentProcess = deliverables.getNodeSnapshot("deliverable-user:process");
+assert.ok(presentProcess?.kind === "process" && presentProcess.toolCallCount === 6);
+deliverables.dispose();
+
+const filesWithoutAnswer = new ChatSource("files-without-answer");
+filesWithoutAnswer.update({ ...input, running: false, items: [
+  { kind: "user", id: "files-user", text: "make files", checkpointTurn: 6 },
+  { kind: "tool", id: "write-only", name: "write_file", args: '{"path":"draft.txt","content":"draft"}', readOnly: false, status: "done", output: "wrote draft.txt" },
+  { kind: "tool", id: "present-only", name: "present", args: '{"files":[{"path":"result.pdf"}]}', readOnly: true, status: "done", output: "Presented result.pdf", presentedFiles: [{ path: "result.pdf" }] },
+] });
+const noAnswerTail = filesWithoutAnswer.getNodeSnapshot("files-user:tail");
+assert.ok(noAnswerTail?.kind === "tail");
+assert.equal(noAnswerTail.answerKey, undefined);
+assert.deepEqual(noAnswerTail.presentedFiles, [{ path: "result.pdf", toolCallId: "present-only" }]);
+assert.deepEqual(noAnswerTail.modifiedFiles, [{ path: "draft.txt", toolCallId: "write-only", operation: "written" }]);
+assert.ok(filesWithoutAnswer.getOrderSnapshot().includes("files-user:tail"));
+filesWithoutAnswer.dispose();
+
+const auditSource = new ChatSource("proxy-audit");
+auditSource.update({ ...input, running: false, items: [
+  { kind: "user", id: "audit-user", text: "inspect" },
+  { kind: "notice", id: "audit", code: "capability_proxy_audit", level: "info", text: "proxy target", detail: '{"callId":"call","target":"read"}' },
+  { kind: "tool", id: "call", name: "use_capability", args: "{}", readOnly: true, status: "done" },
+  { kind: "notice", id: "unassociated", code: "capability_proxy_audit", level: "info", text: "diagnostic only", detail: "{}" },
+] });
+assert.ok(!auditSource.getOrderSnapshot().includes("audit"), "paired audit must not duplicate the tool row");
+const auditProcess = auditSource.getNodeSnapshot("audit-user:process");
+assert.ok(auditProcess?.kind === "process" && !auditProcess.members.includes("audit"));
+assert.equal(auditSource.toolAudits("call").length, 1, "paired audit stays available in tool details");
+assert.ok(auditSource.getOrderSnapshot().includes("unassociated"), "unpaired audit remains available as diagnostics");
+auditSource.dispose();
+
+const maintenanceSource = new ChatSource("maintenance-card");
+maintenanceSource.update({ ...input, running: true, items: [
+  { kind: "user", id: "compact-user", text: "/compact" },
+  { kind: "tool", id: "previous-tool", name: "bash", args: "{}", readOnly: true, status: "done" },
+  { kind: "assistant", id: "previous-answer", text: "done", reasoning: "", streaming: false },
+  { kind: "compaction", id: "maintenance:op", pending: true, trigger: "manual", messages: 0, summary: "", archive: "", operationId: "op", status: "running" },
+] });
+await Promise.resolve();
+const maintenanceProcess = maintenanceSource.getNodeSnapshot("compact-user:process");
+assert.ok(maintenanceProcess?.kind === "process" && !maintenanceProcess.members.includes("maintenance:op"), "maintenance card is independent from the previous process fold");
+assert.ok(maintenanceSource.getOrderSnapshot().includes("maintenance:op"), "pending maintenance remains mounted");
+maintenanceSource.dispose();
+
+const endings: Record<string, Item[]> = {
+  clean: [{ kind: "assistant", id: "clean-answer", text: "done", reasoning: "", streaming: false, turnFinal: true }],
+  stopped: [{ kind: "notice", id: "stopped-note", level: "info", text: "Stopped" }],
+  errored: [{ kind: "notice", id: "errored-note", level: "warn", text: "provider error" }],
+  unfinishedTool: [{ kind: "tool", id: "hung", name: "fleet", args: "{}", readOnly: true, status: "stopped" }],
+  streamingLeftover: [{ kind: "assistant", id: "leftover", text: "partial", reasoning: "", streaming: true }],
+};
+for (const [ending, tail] of Object.entries(endings)) {
+  const source = new ChatSource(`ending-${ending}`);
+  const turn: Item[] = [
+    { kind: "user", id: "q", text: "go", checkpointTurn: 1 },
+    { kind: "tool", id: "t1", name: "bash", args: "{}", readOnly: true, status: "done", output: "ok" },
+    ...tail,
+  ];
+  source.update({ ...input, items: turn, running: false });
+  await Promise.resolve();
+  const seat = () => source.getNodeSnapshot("q:process") as Extract<NonNullable<ReturnType<typeof source.getNodeSnapshot>>, { kind: "process" }>;
+  assert.ok(seat().foldable, `${ending}: every ended turn has a fold control`);
+  const startsFolded = seat().collapsed;
+  assert.equal(startsFolded, ending === "clean", `${ending}: only a settled turn starts folded`);
+  source.toggleProcess("q");
+  assert.equal(seat().collapsed, !startsFolded, `${ending}: the control flips the turn`);
+  source.update({ ...input, items: [...turn], running: false });
+  await Promise.resolve();
+  assert.equal(seat().collapsed, !startsFolded, `${ending}: the manual choice survives republication`);
+  source.toggleProcess("q");
+  assert.equal(seat().collapsed, startsFolded, `${ending}: the control flips back`);
+  source.dispose();
+}
+console.log("chat view: every ended turn is foldable by hand");

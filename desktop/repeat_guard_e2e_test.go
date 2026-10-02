@@ -33,7 +33,7 @@ func (t desktopCountingTool) Execute(context.Context, json.RawMessage) (string, 
 	return "ok", nil
 }
 
-func TestDesktopE2EBlocksRepeatedSuccessfulBashFileWrite(t *testing.T) {
+func TestDesktopE2ERemindsWithoutBlockingRepeatedSuccessfulBashFileWrite(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping desktop E2E repeat-guard test in short mode")
 	}
@@ -75,15 +75,15 @@ func TestDesktopE2EBlocksRepeatedSuccessfulBashFileWrite(t *testing.T) {
 				if e.Err != nil {
 					t.Fatalf("turn failed: %v", e.Err)
 				}
-				if got := atomic.LoadInt32(&calls); got != 2 {
-					t.Fatalf("bash executed %d times, want 2 before the repeat guard blocks", got)
+				if got := atomic.LoadInt32(&calls); got != 3 {
+					t.Fatalf("bash executed %d times, want all 3 calls to run", got)
 				}
 				if len(results) != 3 {
 					t.Fatalf("tool results = %d, want 3", len(results))
 				}
 				last := results[len(results)-1].Tool.Output
-				if !strings.Contains(last, "[loop guard]") || !strings.Contains(last, "edit_file") {
-					t.Fatalf("third repeated write should nudge the model to change tools, got %q", last)
+				if !strings.Contains(last, "[repeat reminder]") || !strings.Contains(last, "called 3 consecutive times") {
+					t.Fatalf("third repeated write should add a non-blocking reminder, got %q", last)
 				}
 				return
 			}

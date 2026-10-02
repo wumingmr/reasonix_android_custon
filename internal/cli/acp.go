@@ -19,6 +19,7 @@ import (
 	"reasonix/internal/extension/providerext"
 	"reasonix/internal/i18n"
 	"reasonix/internal/netclient"
+	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/tool"
@@ -161,6 +162,7 @@ func (f *acpFactory) sessionBootOptions(p acp.SessionParams) (boot.Options, erro
 	if f.bashOverride == "enforce" {
 		bashOverride = "enforce"
 	}
+	sessionDir := f.SessionDir()
 	return boot.Options{
 		Model:                    firstNonEmpty(p.Model, f.model),
 		RequireKey:               true,
@@ -169,7 +171,15 @@ func (f *acpFactory) sessionBootOptions(p acp.SessionParams) (boot.Options, erro
 		EffortOverride:           p.EffortOverride,
 		Stderr:                   os.Stderr,
 		WorkspaceRoot:            root,
+		SessionDir:               sessionDir,
+		SessionService:           cliSessionService(sessionDir),
+		NativeLegacySession:      p.NativeLegacySession,
+		BackgroundScope:          p.BackgroundScope,
+		SessionTemp:              p.SessionTemp,
+		PersistentShell:          p.PersistentShell,
+		SessionHostID:            "local",
 		ExtraPlugins:             p.MCPServers,
+		MCPHostProfile:           plugin.HostProfileForInteractive(p.MCPInteractions),
 		CleanupPendingReconciler: acp.ReconcileCleanupPending,
 		OnSessionRecovered:       p.OnSessionRecovered,
 		OnSessionTransition:      p.OnSessionTransition,
@@ -323,21 +333,21 @@ func (f *acpFactory) SessionConfigState(_ context.Context, p acp.SessionConfigSt
 		effortEntry = *entry
 	}
 	effortOverride := cloneStringPtr(p.EffortOverride)
-	hadEffortOverride := effortOverride != nil
 	if effortOverride != nil {
 		if strings.TrimSpace(*effortOverride) == "" {
 			effortEntry.Effort = ""
 		} else {
 			normalized, err := config.NormalizeEffort(&effortEntry, *effortOverride)
 			if err != nil {
-				effortEntry.Effort = ""
-				cleared := ""
-				effortOverride = &cleared
+				return acp.SessionConfigState{}, err
 			} else {
 				effortEntry.Effort = normalized
 				effortOverride = &normalized
 			}
 		}
+	}
+	if err := config.ReasoningCapabilityForEntry(&effortEntry).Validate(effortEntry.Model, config.EffectiveEffort(&effortEntry)); err != nil {
+		return acp.SessionConfigState{}, err
 	}
 
 	options := []acp.SessionConfigOption{{
@@ -351,9 +361,7 @@ func (f *acpFactory) SessionConfigState(_ context.Context, p acp.SessionConfigSt
 	if cap := config.EffortCapabilityForEntry(&effortEntry); cap.Supported {
 		currentEffort := config.EffortDisplay(&effortEntry)
 		if !containsString(cap.Levels, currentEffort) {
-			currentEffort = "auto"
-			auto := ""
-			effortOverride = &auto
+			currentEffort = config.EffectiveEffort(&effortEntry)
 		}
 		options = append(options, acp.SessionConfigOption{
 			ID:           "effort",
@@ -363,9 +371,6 @@ func (f *acpFactory) SessionConfigState(_ context.Context, p acp.SessionConfigSt
 			CurrentValue: currentEffort,
 			Options:      acpEffortOptions(cap.Levels),
 		})
-	} else if hadEffortOverride {
-		cleared := ""
-		effortOverride = &cleared
 	}
 	// RuntimeProfile stays pinned for old status readers; mode options are unpublished.
 	return acp.SessionConfigState{

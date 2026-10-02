@@ -1,5 +1,8 @@
 # Reasonix Guide
 
+Provider model capability metadata is documented in
+[`MODEL_CAPABILITIES.md`](./MODEL_CAPABILITIES.md).
+
 <a href="../README.md">README</a>
 &nbsp;·&nbsp;
 <a href="./GUIDE.zh-CN.md">简体中文</a>
@@ -23,6 +26,7 @@
 - [Desktop hooks](#desktop-hooks)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Permissions & sandbox](#permissions--sandbox)
+- [File deliverables and the `present` tool](./PRESENT_TOOL.md)
 - [Capability diagnostics](#capability-diagnostics)
 - [Plugins (MCP)](#plugins-mcp)
 - [Slash commands](#slash-commands)
@@ -78,9 +82,9 @@ reasoning_language = "auto"      # visible reasoning text: auto|zh|en
 
 [[providers]]
 name        = "deepseek-flash"
-kind        = "anthropic"
-base_url    = "https://api.deepseek.com/anthropic"
-model       = "deepseek-v4-flash"
+kind        = "openai"
+base_url    = "https://api.deepseek.com"
+model       = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 web_search  = true
 # also preset: deepseek-pro
@@ -242,8 +246,30 @@ the terminal; stop it with Ctrl-C.
 An explicit `reasonix web --auth none` disables the default token and should be
 used only when the listener is intentionally trusted. `reasonix serve` keeps its
 backward-compatible, config-driven `auth_mode = "none"` default on
-`127.0.0.1:8787`. If you bind Serve outside loopback, expose it through a tunnel,
-or put it behind a reverse proxy, enable authentication before sharing the URL:
+`127.0.0.1:8787`.
+
+Without authentication (`auth_mode = "none"`, the `serve` default) reads stay
+open on the listener, but every state-changing request, approvals included,
+needs the launch token:
+
+- Serve writes the token to a 0600 file under `<Reasonix home>/remote/` and
+  prints only its path next to an `approvals:` link; append
+  `#token=<file contents>` to open it in a browser. A managed launch with
+  `--token-file` names that file instead. Token mode prints its `share:` link
+  the same way.
+- Send it as `Authorization: Bearer <token>`, or open the link once so the page
+  sets its cookie. Without it the request answers 403 `launch_token_required`.
+- Prefer `--token-file` over `--token`: argv is visible to other processes,
+  sandboxed ones included. A plaintext `[serve].token` in the global
+  config is readable from inside the sandbox; keep the secret in a file.
+- On macOS and Linux the OS sandbox denies the remote state directory and any
+  `--token-file`. Windows has no bash sandbox, so there nothing keeps an agent
+  command from reading the file.
+- `[serve]` is read from the user config only; a project `reasonix.toml`
+  cannot set it.
+
+If you bind Serve outside loopback, expose it through a tunnel, or put it behind
+a reverse proxy, enable authentication before sharing the URL:
 
 ```bash
 reasonix serve --auth token
@@ -271,10 +297,12 @@ The web UI exposes chat, tool approvals, session history, rewind/fork/summarize,
 model and reasoning-effort controls, Goal, a live todo panel fed by the
 `todo_write` tool, extension status/card/form/notification surfaces, and
 provider balance when configured. Extension-hosted providers appear in the
-model picker. Run `/reload` while idle to fail-atomically reload extension
-sidecars and the runtime generation without restarting Serve. Use `--model`,
-`--max-steps`, or `--resume` for one-off launches; otherwise `serve` uses the
-user-global `default_model`.
+model picker. Serve can keep several sessions active at once: creating or
+resuming another session detaches a busy turn instead of cancelling it, and the
+session list continues to report that background activity. Run `/reload` while
+idle to fail-atomically reload extension sidecars and the runtime generation
+without restarting Serve. Use `--model`, `--max-steps`, or `--resume` for
+one-off launches; otherwise `serve` uses the user-global `default_model`.
 
 If the selected Provider has no saved API key, a loopback-bound Serve still
 starts and shows a Provider setup page instead of failing before the browser can
@@ -302,77 +330,12 @@ opens the existing serve web client through that tunnel. The agent, its tools,
 and its files all live on the remote host at full fidelity; nothing runs through
 a lossy file proxy. V1 supports Linux and macOS remote hosts.
 
-Hosts live in a user-global `[remote]` section of `config.toml`. Like
-`[secrets]`, a project `reasonix.toml` cannot inject or override remote hosts —
-a cloned repo can never steer where Reasonix opens SSH connections. Credentials
-follow the provider idiom: the host names an env var (`passphrase_env`,
-`password_env`) whose value lives in Reasonix's global `.env`; key material
-itself is never stored — `identity_file` is a path.
-
-```toml
-[remote]
-[[remote.hosts]]
-name          = "gpu-box"
-host          = "203.0.113.7"
-user          = "dev"
-identity_file = "~/.ssh/id_ed25519"
-workspace     = "~/projects/app"
-serve_install = "auto"            # Remote CLI: auto | npm | upload | never
-
-[[remote.hosts.forwards]]
-type   = "local"                  # local (-L) | remote (-R)
-bind   = "127.0.0.1:5432"
-target = "127.0.0.1:5432"
-```
-
-CLI:
-
-```bash
-reasonix remote add gpu-box dev@203.0.113.7 --workspace '~/projects/app'
-reasonix remote import --all              # import aliases; ssh -G resolves Include/Match rules when connecting
-reasonix remote test gpu-box              # dial + auth + host-key confirmation
-reasonix remote connect gpu-box --open    # bootstrap serve, tunnel, open the URL
-reasonix remote serve status gpu-box
-reasonix remote fs ls gpu-box:'~/projects/app'
-```
-
-Hosts with `use_ssh_config` enabled resolve the final effective configuration
-through the local OpenSSH `ssh -G`, including `Include`, wildcard `Host`,
-`Match` (including `Match exec`), repeated `IdentityFile`, `ProxyJump`, and
-`IdentitiesOnly`. Import stores the original alias instead of a stale snapshot.
-
-`connect` is a foreground supervisor (like `ssh -N` plus the serve bootstrap):
-it keeps the tunnel and configured forwards alive, auto-reconnects with
-exponential backoff if the link drops, and re-attaches forwards on reconnect.
-Ctrl-C disconnects the local side only — the remote serve keeps running, so the
-next `connect` reuses it. There is no background daemon in V1.
-
-Host keys are verified against your OpenSSH `~/.ssh/known_hosts` (read-only)
-plus a Reasonix-managed `~/.reasonix/remote/known_hosts`. A first-seen key
-prompts for trust-on-first-use and is recorded in the managed file; a key that
-contradicts a recorded one is a hard error that names the offending line and is
-never auto-accepted.
-
-Remote-side state lives under the remote host's `~/.reasonix/remote/`:
-`serve-<workspace-slug>.json` (pid, bound loopback address, workspace),
-`serve-<slug>.token` (0600; the auth token, passed to serve via `--token-file`
-so it never appears in `ps`), and `serve-<slug>.log`.
-
-In the desktop app, manage hosts under **Settings -> Remote SSH**, then use the
-status-bar chip or the host row's **Remote explorer** button to browse and edit
-files over SFTP, manage port forwards, and start/open the remote workspace.
-Opening a workspace creates a separate native Reasonix window, similar to a
-VS Code Remote SSH window. The primary window owns the SSH tunnel; the remote
-window is an isolated, lightweight shell and does not restore or acquire local
-conversation sessions. The remote web page uses the provider configuration and
-API keys on the **remote** host — the desktop never exposes its own providers
-to a remote host. If that host is missing the selected Provider's API key, the
-window shows the authenticated setup page first, saves the key only in the
-remote Reasonix credential file, and activates the Provider without restarting
-the remote Serve process. A transient SSH outage keeps the remote window open;
-the desktop reconnects in the background, re-attaches its loopback forward, and
-reloads the window against the recovered Serve. An authentication or host-key
-failure is terminal and closes the unusable remote window instead.
+The dedicated **[Remote sessions](./REMOTE_SESSIONS.md)** guide covers host
+configuration (`[remote]` in `config.toml`), SSH-config resolution and import,
+the `reasonix remote` CLI, the remote serve bootstrap and its install ladder,
+the remote session lifecycle and takeover, the desktop remote workspace, the
+`remote` and `local-proxy` credential modes, connection failure semantics, and
+troubleshooting.
 
 ## Custom OpenAI-compatible providers
 
@@ -381,14 +344,16 @@ Custom provider** for proxies, aggregators, or self-hosted services that speak
 the OpenAI-compatible chat API or Anthropic-compatible Messages API.
 
 For common providers, choose **Add model service -> Recommended preset** instead.
-New official DeepSeek entries use the Anthropic-compatible Messages endpoint by
-default and enable provider-side `web_search`; the same `DEEPSEEK_API_KEY` works
-for both protocols. On startup, Reasonix upgrades unmodified legacy
+New official DeepSeek entries use Chat Completions by default and enable
+independent `web_search`; the same `DEEPSEEK_API_KEY` works across supported
+protocols. On startup, Reasonix upgrades unmodified legacy
 `deepseek-flash` / `deepseek-pro` entries that still use the official endpoint
 and standard key/model settings. Customized official Chat Completions entries
-stay unchanged and show an **Upgrade protocol** action in Settings. Proxy
-endpoints, custom headers, model lists, and capability overrides are never
-migrated automatically. Existing
+keep their protocol choice and show an **Upgrade protocol** action in Settings.
+Proxy endpoints, custom headers, and capability overrides do not trigger a
+protocol migration. Separately, the version 11 catalog upgrade appends
+`deepseek-flash` once to existing official model lists, including customized
+lists. It preserves the selected/default model and later user deletion. Existing
 separately named `deepseek-anthropic` entries remain compatible, but that
 redundant preset is no longer offered for new access. Reasonix can prefill editable custom-provider entries for Kimi CN,
 Kimi Global,
@@ -400,25 +365,29 @@ DeepSeek Anthropic, OpenCode Go DeepSeek Responses, OpenCode Zen
 Anthropic, Qwen/DashScope CN/Global, Qwen Coding Plan CN/Global
 OpenAI-compatible and Anthropic-compatible endpoints, StepFun OpenAI-compatible
 and Anthropic-compatible endpoints, NovitaAI, GMI Cloud, Vercel AI Gateway,
-HuggingFace Router, NVIDIA NIM, KiloCode, and Ollama Cloud. Plan names describe
+HuggingFace Router, ModelScope, NVIDIA NIM, KiloCode, and Ollama Cloud. Plan names describe
 the access/payment route; they include CN/Global only when the provider exposes
 distinct regional endpoints. Kimi Coding Plan is therefore a dedicated plan
 endpoint, while Kimi direct API is split into CN and Global. The preset path
 usually needs only the provider API key: the key value is stored in Reasonix home
 `.env`, while `config.toml` stores the endpoint, model list, key
-environment-variable name, context window, vision model metadata, proxy bypass
+environment-variable name, context window, model capability metadata, proxy bypass
 for China-only endpoints, MiniMax `reasoning_split`, GLM/MiniMax thinking
 heuristics, Anthropic-compatible Bearer auth where needed, Ollama Cloud
-max-effort support, and OpenCode Go per-model reasoning overrides. Official DeepSeek Anthropic, Responses, and Chat Completions catalogs also
-include `deepseek-v4-flash-vision-exp`. In Settings, mark that SKU for image
-input with the same checkbox used by other providers, then select it. Composer
+max-effort support, and OpenCode Go per-model reasoning overrides. New official DeepSeek Anthropic, Responses, and Chat Completions catalogs offer
+`deepseek-flash` and `deepseek-v4-pro`. The retired `deepseek-v4-flash` and
+`deepseek-v4-flash-vision-exp` IDs remain valid for saved references. Settings derives image support from
+model capability metadata. Each model also has an Image input Auto / On / Off
+selector. For an ID-only relay list, unknown means unrecognized, not confirmed
+text-only: select On after confirming support with the relay, then save. See the
+[image input guide](MODEL_CAPABILITIES.md#set-image-input-for-a-relay-model).
+Composer
 and `@` user images are sent as official visual input using the three documented
 shapes: inline base64 `data:` URLs for local files, `http(s)` image URLs as-is,
 and Files API `file-api-` ids (local images over 32 MiB on official DeepSeek are
 uploaded automatically). Chat Completions uses `image_url` or `file`, Anthropic
 uses `image`+`source.base64|url|file`, and Responses uses `input_image`.
-Flash and Pro stay text-only on the wire even if checked, and tool screenshots
-are not forwarded as image parts. The vision SKU uses the Flash rate card. The dedicated
+Flash and its retired aliases accept images; V4 Pro remains text-only. The dedicated
 OpenCode Go DeepSeek Anthropic and DeepSeek Responses presets expose the verified
 Flash routes and enable provider-side `web_search` by default; the Responses
 variant uses stateless context replay. The existing mixed OpenCode Go Anthropic
@@ -490,6 +459,38 @@ tokens. For example, 128K commonly means `128000`; if the provider documents
 `131072`, use that exact value. Values below 16384 show a non-blocking warning
 because they can trigger frequent compaction and reduce cache hit rates.
 
+### Self-hosted runtimes: the runtime's limit, not the model's
+
+For a local server, the number that governs the request is the **runtime's
+configured context length**, which is usually far below what the model was
+trained for. Ollama serves its own 4096-token default unless
+`OLLAMA_CONTEXT_LENGTH` is set or the Modelfile carries `PARAMETER num_ctx`, so a
+262K-context model routinely runs at 4096. Its OpenAI-compatible `/v1` surface
+has no field for `num_ctx`, so the value cannot be raised per request and has to
+be set on the server.
+
+Runtimes differ in what they do when the prompt exceeds that limit:
+
+| Runtime | Prompt over the limit |
+| --- | --- |
+| Ollama | `200 OK`, prompt **silently truncated** |
+| LM Studio | depends on its context-overflow policy; `truncateMiddle` and `rollingWindow` truncate silently, and an OpenAI-compatible client cannot select the policy per request |
+| llama.cpp server | HTTP 400, `the request exceeds the available context size` |
+| vLLM | HTTP 400, `the engine prompt length ... exceeds the max_model_len` |
+
+The last two fail loudly, so you will see them. The silent cases are the
+dangerous ones, because the symptom does not look like truncation:
+
+- the model ignores its tools, or invents tool names that do not exist — the tool
+  schemas are the largest part of the prefix and the first thing cut;
+- it answers as though it never saw the system prompt or your actual question;
+- it reads as a weak model rather than a misconfigured server.
+
+Reasonix detects a silently truncated prompt from the token counts the provider
+reports and warns once per session. Check the server first — `ollama ps` shows
+the context each loaded model is actually running with — then set **Context
+window** to that same number.
+
 Model capability mode options:
 
 | Option | Effect |
@@ -549,12 +550,12 @@ loading model are documented in [the Chinese desktop hooks guide](./DESKTOP_HOOK
 ## Keyboard shortcuts
 
 Shortcuts are documented by client because users usually look for the keys that
-work in the surface they are using. Desktop keeps its Plan toggle, while the CLI
-cycles Ask, Auto, and Plan with `Shift+Tab`. Desktop uses `Cmd+Y` on macOS or
-`Ctrl+Y` elsewhere for YOLO by default. If YOLO is rebound on Windows/Linux,
-`Ctrl+Y` becomes the standard composer redo fallback. Desktop paste stays on the
-platform paste key; in the CLI, terminal-native text paste and
-application-owned image paste use separate shortcuts.
+work in the surface they are using. On Desktop, `Shift+Tab` toggles Plan and
+permission presets stay in the composer menu. In the CLI, `Shift+Tab` cycles
+Read only → Workspace write → YOLO → Plan, while `Ctrl+Y` toggles YOLO
+directly. YOLO is the visible label for the canonical `danger-full-access`
+permission preset. Desktop paste stays on the platform paste key; in the CLI,
+terminal-native text paste and application-owned image paste use separate shortcuts.
 
 `[ui].shortcut_layout` is still accepted for old configs, but the shortcut
 behavior below is unified across layouts.
@@ -566,6 +567,12 @@ traditional terminal cursor or `underline` for a lower-profile cursor. This
 setting does not change desktop or web text fields.
 
 ### Desktop GUI
+
+The Desktop Todo shelf derives its label from both `todo_write` and the owning
+tab's runtime: active work is **In progress**, an approval or question is
+**Waiting for input**, and an idle/restored current item is **Ready to continue**.
+The latter exposes a **Continue** action that rechecks the captured tab before
+sending, so a rapid tab switch cannot route stale work into another session.
 
 Desktop shortcuts are managed from **Settings → Shortcuts**. Pick a configurable
 row, press a new key combination, and Reasonix saves it for the desktop app.
@@ -594,13 +601,12 @@ Composer shortcuts:
 | --- | --- | --- |
 | `Enter` | Sends the current message | IME composition confirmation is left alone. |
 | `Shift+Enter` | Inserts a newline | The composer keeps focus. |
-| `Shift+Tab` | Toggles Plan on/off | Plan changes the workflow instruction; built-in writers keep the active Ask/Auto/YOLO and Sandbox boundary, while MCP writer/destructive targets stay hard-blocked for the whole planning phase. |
+| `Shift+Tab` | Toggles Plan on/off | Plan changes the workflow instruction while the selected permission preset remains active. |
 | `Cmd+Z` on macOS, `Ctrl+Z` on Windows/Linux | Undoes the latest composer edit | Native typing stays in the WebView history; Reasonix-managed paste, cut, folded blocks, and structured tokens are restored as complete transactions. |
-| `Cmd+Shift+Z` on macOS, `Ctrl+Shift+Z` on Windows/Linux | Redoes the latest composer edit | On Windows/Linux, `Ctrl+Y` is also accepted after the YOLO shortcut has been rebound. |
-| `Cmd+Y` / `Ctrl+Y` (default) | Toggles YOLO on/off | Turning YOLO off restores the previous Ask/Auto base when known. The current binding is shown in **Settings → Shortcuts**. |
-| `Cmd+V` on macOS, `Ctrl+V` on Windows/Linux | Pastes clipboard content | Clipboard images are attached; images can also be dropped into the composer. Official DeepSeek Flash/Pro stay text-only; switch to `deepseek-v4-flash-vision-exp` to send those images. |
+| `Cmd+Shift+Z` on macOS, `Ctrl+Shift+Z` on Windows/Linux | Redoes the latest composer edit | Uses the platform-native editing history. |
+| `Cmd+V` on macOS, `Ctrl+V` on Windows/Linux | Pastes clipboard content | Clipboard images are attached; images can also be dropped into the composer. On official DeepSeek, `deepseek-flash` and `deepseek-v4-flash` accept images natively; V4 Pro stays text-only. |
 | Plain `Up` / `Down` at the prompt boundary | Recalls older or newer submitted prompts | Modified arrows and native text navigation stay with the textarea. |
-| `Esc` while a turn is running | Cancels the running turn | If the turn has not produced a response yet, the draft is restored. |
+| `Esc` while a turn or compaction is running | Cancels the cancellable foreground operation | A compaction stop preserves the draft and queued messages; an unanswered turn restores its draft. |
 
 Menus and controls:
 
@@ -609,8 +615,8 @@ Menus and controls:
 | `Up` / `Down` in slash, `@`, or past-chat menus | Moves the highlighted item | Past-chat search uses the same navigation keys. |
 | `Enter` / `Tab` in those menus | Accepts the highlighted item | Directory-like entries can keep the menu open for the next level. |
 | `Esc` in those menus | Closes the current menu or returns from past-chat search | Regular typing continues after the menu closes. |
-| Ask / Auto / YOLO approval controls | Picks the tool approval posture directly | Clicking these controls is unchanged by keyboard shortcuts. |
-| Tool approval card | `Left` / `Right`, `Enter`, `1`-`4`, `Esc` | Move the highlighted action, confirm it, pick a numbered action, or deny. The default highlighted action is Allow once. |
+| Read only / Workspace write / Full access | Selects the current session permission preset | Settings controls only the default for new sessions. |
+| Tool approval card | `Left` / `Right`, `Enter`, `1`-`3`, `Esc` | Move between Allow once, Allow for this session, and Deny. The default is Allow once. |
 | Plan approval card | `Left` / `Right`, `Enter`, `1`-`3`, `Esc` | Move between Revise plan, Start execution, and Exit plan. The default highlighted action is Start execution. |
 | Plan control | Toggles Plan on/off | Same mode as `Shift+Tab`. |
 | Goal item in the collaboration menu | Starts, views, or clears Goal | Goal is not in any keyboard cycle. |
@@ -624,7 +630,7 @@ cursor, while wheel events in the transcript keep scrolling the conversation.
 Use `/theme auto|light|dark` to select the background mode, or `/theme <style>`
 to select one of the named accent palettes shown by bare `/theme`.
 
-The responsive footer keeps the active Ask/Auto/Plan or YOLO posture and current
+The responsive footer keeps the active permission preset, Plan state, and current
 interaction state on the left. On wider terminals, model and effort
 stay together on the right; a second row shows available Git identity, cache hit
 rate, context use, compaction headroom, jobs, and balance. `ready` is the idle
@@ -648,7 +654,7 @@ Chat and transcript shortcuts:
 | Transcript text selection | Copies transcript text | Releasing an in-app drag writes through the verified native clipboard path in a local session (`pbcopy` on macOS, the available Wayland/X11 tool on Linux, or the Windows clipboard). SSH falls back to OSC 52 and labels the fallback instead of claiming native success. `Ctrl+C`/`Super+C`/`Meta+C` or right-clicking the active selection copies it again. |
 | Composer text selection | Selects, copies, or replaces draft text | Releasing an in-app drag copies the selection through the same verified clipboard path as transcript text. Typing or pasting replaces the selection; arrow keys collapse it. |
 | Right-click with no active selection | Pastes clipboard text locally | In a local session with in-app mouse capture on, Reasonix reads text only and routes it through the normal bracketed-paste handling. Over SSH, use the terminal paste shortcut because the remote process cannot read the local clipboard; `/mouse` restores the terminal's native right-click menu. Right-click with an active selection still copies that selection. |
-| `/mouse` | Toggles in-app mouse capture | Off hands the mouse back to your terminal, restoring its native click-drag selection and right-click context menu, at the cost of in-app drag-select, the transcript scrollbar, and wheel-scroll. Set `REASONIX_DISABLE_MOUSE=1` to start every session with it off. |
+| `/mouse` | Toggles in-app mouse capture | Off hands the mouse back to your terminal, restoring its native click-drag selection and right-click context menu, at the cost of in-app drag-select, the transcript scrollbar, and wheel-scroll. Set `REASONIX_DISABLE_MOUSE=1` to start every session with it off. Remote (SSH) sessions start with capture off so native selection works out of the box; `REASONIX_DISABLE_MOUSE=0` forces capture on everywhere. Over SSH the TUI also enables synchronized output (mode 2026) so repaints do not flicker on the round trip; set `REASONIX_DISABLE_SYNC_OUTPUT=1` to opt out. |
 | `Ctrl+C` | Copies, cancels, clears, or quits | Copies an active transcript or composer selection first. Otherwise it cancels a running turn, clears non-empty input, or quits on a second empty-composer press. |
 | `Ctrl+D` | Quits the TUI | Immediate quit. |
 | Your terminal's text-paste shortcut | Pastes text | Text stays on the terminal's bracketed-paste path (`Cmd+V` on macOS, commonly `Ctrl+Shift+V` on Linux, and the terminal's configured shortcut elsewhere). Reasonix consumes the resulting paste event and never probes for an image first. |
@@ -666,9 +672,9 @@ Mode and display shortcuts:
 
 | Key or command | What it does | Notes |
 | --- | --- | --- |
-| `Shift+Tab` | Cycles Ask → Auto → Plan → Ask | YOLO remains outside this composer-mode cycle; the footer shows the active mode. |
-| `Ctrl+Y` | Toggles YOLO on/off | Turning YOLO off restores the previous Ask/Auto base when known. Terminals that forward Command/Super may also send `Cmd+Y`, but `Ctrl+Y` is the reliable terminal shortcut. |
-| `--yolo`, `--dangerously-skip-permissions` | Starts chat in YOLO | Same runtime mode as `Ctrl+Y`. |
+| `Shift+Tab` | Cycles Read only → Workspace write → YOLO → Plan | YOLO applies `danger-full-access`; leaving Plan returns to Read only. |
+| `Ctrl+Y` | Toggles YOLO | Entering YOLO applies `danger-full-access`; pressing it again restores the prior safe permission preset. |
+| `--permission-mode read-only|workspace-write|danger-full-access` | Selects the initial permission preset | New sessions default to `workspace-write`. |
 | `/theme [auto|light|dark|style]` | Shows or switches the CLI theme | Bare `/theme` lists background modes and named accent palettes. The choice is saved to the user config; `REASONIX_THEME` and `REASONIX_THEME_STYLE` can override it for one run. |
 | `Ctrl+O` | Toggles verbose reasoning display | Also available through `/verbose`. |
 | `Ctrl+B` | Expands or collapses long shell output | Long shell-output hint lines can also be clicked in the transcript; text selection is handled in-app while the full-screen TUI has mouse reporting enabled. |
@@ -692,41 +698,26 @@ Mode meanings:
 
 | Mode | Meaning |
 | --- | --- |
-| Ask | Prompts for fallback writer approvals. |
-| Auto | Auto-allows fallback approvals, including interactive `remember`/`forget`; explicit `ask` / `deny` rules still apply. |
-| YOLO | Skips ordinary tool approval prompts, including `remember`/`forget`; `deny`, user `ask` questions, and plan approval prompts still wait. |
-| Plan | Directs the model to plan first — a plan-first workflow, not an all-tools read-only mode. Built-in writers still follow the active Ask/Auto/YOLO rules and Sandbox; installed MCP writers, destructive targets, and readers from unauthorized servers are hard-blocked for the whole planning phase (approval cannot release them; they return once Plan exits), and explicit phase-only tools such as `complete_step` wait until approval. |
+| Read only | Reads the workspace; writes and external side effects require a scoped authorization. |
+| Workspace write | Writes inside the workspace and private session temporary directory. This is the default. |
+| Full access | Runs as the current OS user without Reasonix filesystem or network sandboxing. Explicit host deny rules still apply before launch. |
+| Plan | Plans before implementation. State-changing actions are blocked until approval, including Full access, proxy tools, and subagents. After approval, ordinary permissions and sandbox rules still apply. |
 | Goal | Pursues a saved objective until complete, blocked, or cleared. |
 
 ## Permissions & sandbox
 
-Permissions gate each tool call: `deny` > `ask` > `allow` > fallback. Bash and
-file mutation tools require approval by default; read-only tools generally do
-not. Approvals are stored and matched as permission rules, not button labels:
-for example `Bash(npm run build)`, `Bash(npm run test:*)`, and `Edit(docs/**)`.
-`reasonix` can grant Bash as an exact command or as a conservative command
-prefix (for example `Bash(go test:*)`), while file-editing tools share session
-edit grants and persist path-scoped rules such as `Edit(src/app.go)`.
-Parameter/arithmetic expansions, assignments, heredocs, file redirects, and globs cannot reuse a bare
-Bash, prefix, or glob allow; a user-approved reusable choice saves the whole
-command as `Bash=<literal>`. They still follow normal fallback, so Auto executes
-them without an extra prompt. Command/process substitution, a dynamic command
-name, `eval`, `source`, shell `-c`, inline runtime code, and unparseable forms
-require a human in interactive Ask/Auto. Headless Ask/Auto/DontAsk reject that
-nested/indirect class unless an exact literal exists; YOLO may bypass it.
-Advanced users can set `[permissions] allow_dynamic_bash = true` to let an
-Allow fallback, including Auto, cover that class; explicit `ask` and `deny`
-rules still take precedence.
-Because a headless run has no approval UI, the default Ask posture also fails
-closed on ordinary writer fallback and explicit ask rules. Use
-`reasonix run --auto ...`, `-y`, or `--permission-mode auto` when unattended
-automation should allow ordinary writer fallback; configured `ask` and `deny`
-rules always remain authoritative.
+The active permission preset supplies the enforced filesystem boundary for
+Bash, file tools, background processes, and subagents. `workspace-write` runs
+ordinary builds, tests, pipes, command substitutions, and inline scripts without
+syntax-based prompts while confining writes to the workspace and private session
+temporary directory. A write outside that boundary can be allowed once or for
+the displayed directory during the current session. Permanent approval is not
+offered.
 
-Ask is not read-only: after approval, a writer can still run. Permissions decide
-whether to allow or prompt; the Sandbox is the enforced capability boundary.
-The sandbox remains a second boundary after authorization; confinement cannot
-make ambiguous command parsing safe to authorize automatically.
+Configured `deny` rules always win. Installed MCP servers and plugins are trusted
+in `workspace-write`; unknown side-effect capabilities in `read-only` still need
+authorization. If the platform sandbox is unavailable, restricted presets fail
+closed instead of offering an unconfined retry.
 
 Permissions are *policy* (which calls to allow / prompt). The **sandbox** is
 *enforcement*: they are two layers. A permitted call still cannot write outside
@@ -748,9 +739,82 @@ commands may write only those same roots plus platform-specific command
 temp/cache roots, cannot read configured `forbid_read` roots while the OS
 sandbox is active, and reach the network only when `[sandbox] network` is set.
 Reasonix always removes saved provider and bot credential variables from tool
-subprocess environments and automatically adds its global credential `.env` to
-the runtime read-deny boundary. Project `.env` files keep their existing
+subprocess environments. On macOS and Linux it also automatically adds the
+global credential `.env` to the runtime read-deny boundary. Windows does not:
+it has no OS-level shell sandbox, and denying the current user would also deny
+the host settings process. Project `.env` files keep their existing
 workspace-scoped behavior.
+
+**Git metadata is host-protected.** Inside the bash sandbox, the Git
+configuration and hooks of the workspace repository stay read-only, because the
+host's own git reads them.
+
+The repository is the one git itself discovers from each writable root. A
+`.git` file is followed to the gitdir it names the way git resolves it,
+relative to the file with symlinks followed, so the protection lands on what
+git will read. Protected:
+
+- `.git` itself, the gitdir, the common dir and every symlink on the way to
+  them: none can be removed, renamed or replaced by a symlink.
+- `config`, `config.worktree`, `commondir` and `hooks/` of the gitdir and of
+  the common dir.
+- `config`, `config.worktree` and `commondir` of each existing `worktrees/*`
+  entry, and `config` and `config.worktree` of entries created later.
+- `config`, `config.worktree`, `commondir` and `hooks/` of each submodule
+  gitdir under `modules/`, existing or created later.
+
+Everything else under `.git` (objects, refs, index, logs, lock files) stays
+writable, so add, commit, branch, checkout, merge, rebase, stash, tag and
+worktree creation keep working. These operations change:
+
+| Operation | In the sandbox |
+| --- | --- |
+| `git config` without `--global`, `git remote add` / `set-url`, `git branch -m`, `git submodule init`, `git submodule update --init`, `git sparse-checkout init`, `git maintenance register`, `git init` in an existing repository | Fails |
+| Installing a hook into `.git/hooks` | Fails |
+| `git worktree remove` / `prune` of a linked worktree that existed before the command | Fails; one added in the same command can be removed |
+| Cloning a new submodule (`git submodule add`, `git submodule update` for one not yet cloned) | Fails on macOS; on Linux the clone lands but its config entry does not |
+| `git branch --set-upstream-to`, `git checkout --track`, `git push -u` | Reports the refused write but exits 0; no upstream is recorded |
+
+To add or initialise submodules, run it outside the sandbox (in a terminal, or through an approved danger-full-access retry); updating submodules that are
+already cloned works inside it.
+
+When a command's output names one of these paths, the bash result says so with
+`sandbox.git_metadata_protected`, also when git exited 0. `additional_write_dirs` cannot grant it.
+
+A protected file that already has another hard link refuses every confined
+command with `sandbox.git_metadata_linked`, because a write through the other
+name would reach it; the user removes that link outside the sandbox.
+
+Limits:
+
+- On Linux, bubblewrap can only mount over paths that exist and cannot pin a
+  symlink. Creating an absent `commondir`, `config.worktree` or hooks
+  directory, or swapping a symlink on the `gitdir:` path, is not stopped there.
+- Closing that on Linux is the host's side: its own git has to pin its git and
+  common directories instead of rediscovering them.
+- Existing worktree and submodule gitdirs get exact rules, up to 128 each on
+  macOS and 512 on Linux.
+- On macOS, patterns cover the rest and gitdirs created later. They skip
+  `refs/` and `logs/`, so a branch or tag named `config` or `hooks` stays
+  writable, but a new submodule named `hooks` is protected whole.
+- On macOS with more than 128 worktrees, `git worktree add` fails; past 128
+  submodules each command starts about 0.1 s slower.
+- On Linux, past 512 gitdirs the whole `worktrees/` or `modules/` directory is
+  mounted read-only, and a command can cause that by planting `HEAD` files.
+  A command can likewise plant a submodule gitdir with a hard-linked config,
+  after which every confined command is refused until the user removes it.
+- A repository created by a sandboxed command is protected from the next
+  command on.
+- A `.git` made unrecognisable to git (for example a corrupted `HEAD`) sends
+  git's discovery further up.
+- A repository nested in the workspace that is not a submodule gitdir under
+  `modules/` is not protected, including one a command creates and records as
+  a gitlink.
+- The host can run such a repository's configuration through its gitlink
+  unless the host's own git excludes it.
+- Hooks that `core.hooksPath` points outside `.git`, and files `include.path`
+  names, are ordinary workspace files.
+- Windows has no shell sandbox, so none of this is enforced there.
 
 **Session-private temporary directory.** Within one logical chat session, Bash
 commands share a private temporary directory so consecutive calls can exchange
@@ -780,27 +844,32 @@ $tmpFile = Join-Path $env:TEMP "result.json"
 | --- | --- | --- |
 | Linux + bubblewrap | Virtual `/tmp` (bound to the private dir) | Shared for the session (not a fresh empty tmpfs each call) |
 | macOS Seatbelt | Host path of the private dir (allowed by policy) | Host macOS temporary directory; scripts should use `$TMPDIR` |
-| Windows (no OS Bash sandbox) | Host path of the private dir | Not promised to match (e.g. Git Bash `/tmp`) |
+| Windows (no OS sandbox) | Host path of the private dir | Not promised to match (e.g. Git Bash `/tmp`) |
 
 Independent sandboxes such as MCP servers keep their own isolation and do not
 inherit the chat session's temporary directory. An approved sandbox-escape
 command still receives the private temp environment variables, but on Linux its
 literal `/tmp` is no longer mapped by bubblewrap.
 
-**Windows note:** Reasonix does not ship an OS-level Bash sandbox on Windows.
-The effective mode is fixed to `off`; even an older config containing
-`bash = "enforce"` resolves to `off`, `reasonix doctor` flags the ignored value,
-and the desktop selector is read-only. Bash commands therefore run unconfined,
-while the dedicated file tools still enforce `workspace_root`, `allow_write`,
-and `forbid_read` in process. Saved credential variables are still removed from
-the child environment, but an approved unconfined shell runs as the user and is
-not a security boundary for other user-readable files.
+**Windows note:** Windows has no OS-level shell sandbox. The restricted-token
+backend is retired from enforcement because denying the current user's own SID
+locked hosts out of their credential store and the token broke common
+toolchains. Permission presets still apply as Reasonix tool-layer
+boundaries: Read only refuses file writes and asks before every shell command,
+and Workspace write keeps file tools inside `workspace_root` and `allow_write`
+and asks before writing elsewhere. Shell commands in every preset run as the
+current OS user without confinement, so `[sandbox] network` and shell-level
+`forbid_read` are not enforced there; dedicated file tools still honor
+`forbid_read`. Saved credential variables are removed from child environments,
+but local tools run as the user and can deliberately read other user-readable
+files. `[sandbox] bash = "enforce"` resolves to `off` on Windows and
+`reasonix doctor` reports the ignored value.
 
 When no OS sandbox backend is available, `bash = "enforce"` refuses bash
 execution instead of running unconfined. Install the platform sandbox backend
 (bubblewrap/`bwrap` on Linux, `sandbox-exec` on macOS) or set
 `[sandbox] bash = "off"` to explicitly restore the pre-1.16 unconfined shell
-behavior. On Windows the compatible value is always `off`.
+behavior.
 
 For coding-quality reports, run `reasonix doctor quality <branch-id-or-path>`
 (add `--json` for structured output). This reads the selected session but emits
@@ -997,8 +1066,8 @@ locally — `/help` lists them all. Built-in **skills** such as `/init`,
 `/reasonix-guide` when you need config or capability troubleshooting; it points
 at `reasonix doctor capabilities` (see
 [Capability diagnostics](./CAPABILITY_DIAGNOSTICS.md)). `/new` starts a new
-session while saving the previous transcript for history/resume; `/clear` asks
-for confirmation, then discards the current context without saving it. `/tree`
+session while saving the previous transcript for history/resume; `/clear`
+discards the current context without saving it and asks for confirmation. `/tree`
 shows saved conversation branches, `/branch [name]` forks the current
 conversation tip, `/branch <turn> [name]` forks from an earlier checkpointed
 turn, and `/switch <id|name>` loads another branch. **Custom commands** are
@@ -1006,6 +1075,34 @@ Markdown files under `.reasonix/commands/` (project) or `~/.reasonix/commands/`
 (user) — `review.md` becomes `/review`, a subdirectory namespaces it
 (`git/commit.md` → `/git:commit`). The body is a prompt template; invoking the
 command sends it as a turn.
+
+`/compact [focus]` runs as a session maintenance operation. Desktop and remote
+clients show one recoverable progress card and keep Stop available while the
+summary request can still be cancelled. Messages sent during compaction remain
+in the existing session inbox and run in order after compaction finishes or
+stops. Stopping compaction does not withdraw those queued messages. If a
+summary adapter does not stop within the cancellation grace period, or the
+result cannot be saved safely, the session enters an explicit recovery state
+instead of accepting a late summary or reporting idle.
+
+Compaction and ordinary turns share one foreground admission gate, including
+direct CLI, ACP, Bot, inbox, desktop, and remote entry points. In the terminal
+UI, `Esc` stops a cancellable compaction without clearing the current draft.
+An empty history or empty selected range completes as “No history to compact”
+without calling the summary model. The operation card keeps its error, applied
+result, and estimated token change across refreshes and reconnects; a persisted
+progress record is marked interrupted only after runtime synchronization proves
+that no matching operation is active.
+
+Maintenance owns the shared session runtime as well as the controller, so a
+controller replacement cannot take over during compaction. Start and terminal
+operation records are durably checkpointed independently of ordinary turns.
+If either checkpoint fails, queued work stays behind the recovery barrier.
+An older idle snapshot cannot interrupt a newer live operation; inferred
+interruptions can be corrected by fresh runtime evidence. Unknown operation
+states display an unavailable-record message instead of success. Empty selected
+ranges are no-ops only below the hard context limit; an oversized context still
+requires safe recovery.
 
 ### Subagent profiles
 
@@ -1062,13 +1159,10 @@ schemas. Use `/memory recall` to see the selected IDs, scores, reasons,
 freshness, budget, and suppression decision.
 
 New, bounded, non-sensitive project/reference facts can be created
-automatically with no setup or approval click. In Ask, global facts, user
-preferences, feedback, updates, duplicates, sensitive/oversized content, and
-every `forget` require explicit confirmation. Interactive Auto treats these
-memory tools as normal fallback operations while preserving explicit `ask` and
-`deny` rules; interactive YOLO bypasses memory ask prompts but still honors
-deny. The storage layer makes the automatic create grant create-only, so it
-cannot overwrite a fact that appears concurrently.
+automatically with no setup or approval click. Other memory changes follow the
+active permission preset and explicit `ask` / `deny` rules. The storage layer
+makes the automatic create grant create-only, so it cannot overwrite a fact
+that appears concurrently.
 A top-level headless controller may use the same one-shot low-risk create path;
 sub-agents and headless surfaces without the owning scoped controller fail closed.
 
@@ -1171,21 +1265,19 @@ The default is `0` (off). Reaching a positive token budget produces one summary
 and a resumable `budget_spend` pause. `/goal resume` grants a fresh configured
 slice while cumulative Goal statistics remain intact. Explicit positive
 `max_steps`, task time, and task cost budgets remain available as well.
-Progress is goal-scoped and novelty based:
-new read/search results, mutations, verification, todo/signoff changes, and
-reviews advance the goal; an exact tool/argument/result repeat does not.
-Cumulative turns, tokens, real provider requests, and active work time are
-tracked and shown as statistics; a token limit appears only when explicitly
-configured. A paused goal keeps its todos, evidence
-checkpoint, and runtime history — use `/goal resume` to continue, or `/goal
-pause` to pause a running goal manually. `/goal status` shows turns, requests,
-tokens, and work time. Repeated host failures, zero-evidence rounds, and Todo
-stall thresholds inject a strategy redirect and reset their intervention epoch;
-they do not pause the Goal. At the end of every goal turn
-the model reports its disposition through the structured `update_goal` tool
-(continue/complete/blocked); when no report arrives, an independent bounded
-evaluator judges the turn once, and any evaluator failure pauses the goal
-instead of continuing silently.
+Cumulative rounds, tokens and real provider requests are tracked and shown as
+statistics; a token limit appears only when explicitly configured. A paused
+goal keeps its objective and runtime history — use `/goal resume` to continue,
+or `/goal pause` to pause a running goal manually. `/goal status` shows rounds,
+requests and tokens. Exact consecutive tool calls receive reminders at the
+third, fifth, and eighth occurrence; the calls still execute. An active, armed
+goal continues after an ordinary model final through the runtime idle driver;
+there is no per-turn `continue` report. The model uses `update_goal(complete)`
+when it judges the whole objective finished and `update_goal(blocked)` for a
+concrete persistent blocker. No evaluator, todo percentage or host quality
+gate decides completion. Restoring, importing or forking loads the durable
+goal disarmed; a directly authorized user turn or explicit UI action must
+resume it.
 
 For complex work, write the objective as a
 [task contract](./TASK_CONTRACT.md): Context, Request, Output format,
@@ -1194,26 +1286,21 @@ for autonomous work. It keeps going with sensible defaults unless the next step
 requires an irreversible or externally visible operation, a scope change, or
 information only the user can provide.
 
-Legacy simple/write/research classes are still inferred for sidecar and CLI
-compatibility, but they no longer select an execution quota. There is no
-separate research runtime to configure. Goal state stays in the normal session sidecar, progress
-comes only from novel host receipts, canonical todos, `complete_step`, review
-and the evidence checkpoint, and completion is decided by closed-loop readiness
-plus the bounded Goal evaluator. An `update_goal`
-`completion.unverified` account is honored for checks the model could not run; a second
-identical complete on the same leftover checks finishes the Goal instead of
-looping. Legacy `.reasonix/autoresearch/<task-id>/` archives are
-read-only: an explicit old path can be recovered as an ordinary Goal, but new
-runs never create or update those directories. Deprecated budget flags are
-accepted for compatibility but are hidden from help and completion.
+Legacy simple/write/research classes and Goal sidecars are read only at the
+explicit compatibility/import boundary. There is no separate research runtime
+to configure. Current Goal state is a versioned `goal/state` projection in the
+linear v3 session, and activation is process-local. Legacy
+`.reasonix/autoresearch/<task-id>/` archives remain read-only. Deprecated
+budget flags are accepted for compatibility but hidden from help and
+completion.
 
-### Ordered batch sign-offs
+### Model task progress
 
-The host may process multiple `complete_step` calls from one provider tool-call
-round. They must follow the canonical Todo order, and each step's work and
-evidence must already exist before its sign-off call. The host advances the
-Todo state after each successful call; skipped, pending, or out-of-order steps
-remain rejected. This does not change the provider-visible tool schema.
+`todo_write` updates progress for the current top-level turn. A newly admitted
+Goal round starts with a fresh todo plan; compaction, steer and interactive
+answers inside that round keep the current list. The host does not finish todos
+when a turn or Goal ends. `complete_step` is absent from discovery; an old call
+returns a normal `tool_retired` result and never changes task state.
 
 ## @ references
 
@@ -1263,19 +1350,19 @@ The planner uses one stable system prompt. A small host-authored
 `<planner-turn>` block names the explicit route and preserves the planner
 prefix cache after the one-time prompt upgrade. The plan should separate
 verified from candidate touchpoints and include non-goals, risks, acceptance
-criteria, and command-level verification when evidence supports them. If a
-planner still does not finalize after its bounded research and finalization
-round, ordinary plan-and-execute work continues with the executor using the
-original task. Plan-only and approval-gated requests remain fail-closed, and
-the incomplete planner turn is rolled back instead of leaving an unusable
-continuation tail.
+criteria, and command-level verification when evidence supports them. The
+planner must call `submit_plan`; a prose reply without a submitted plan is a
+protocol error. If a planner still does not finalize after its bounded
+research and finalization round, the turn fails closed on every route and the
+executor is not started. The incomplete planner turn is rolled back instead of
+leaving an unusable continuation tail.
 
-Reasonix manages normal execution automatically: if an active todo produces no
-new completion, unique read, command, or mutation for 8 tool-call rounds, the
-host asks the executor to reassess. In Goal mode, the later threshold forces a
-smaller step, different tool/approach, focused delegation, or a real blocker
-report, then execution continues. Exact repeats do not count as progress; new
-host-observed work renews the lease. Two-level task lists keep
+Ordinary clean finals end the turn. Goal, review, and guardian flows keep
+their own continuation constraints. In Goal mode, if an active todo produces
+no new completion, unique read, command, or mutation past the stall threshold,
+the host forces a smaller step, different tool/approach, focused delegation,
+or a real blocker report, then execution continues. Exact repeats do not count
+as progress; new host-observed work renews the lease. Two-level task lists keep
 the same single-current contract: the active level-1 sub-step is the one
 `in_progress` item while its level-0 phase stays `pending`; sub-steps are worked
 and signed off in order, and once every sub-step has completed the phase itself
@@ -1360,6 +1447,27 @@ the strict read-only entrances:
 | `reasonix review` (CLI) | Read-only review of a diff or branch |
 | Desktop preview/review subagents | Read-only desktop analysis surfaces |
 
+These children run your configured hooks, each under its own session ID.
+The Planner uses `<session>:planner`, derived from the parent session every time
+a hook fires, so it follows `/new` and `/clear`. The desktop profile try run
+loads the workspace's project hooks and your global hooks, as a chat session in
+that workspace would, under `try-subagent:<run>`. `reasonix review` is
+different: it runs only your own hooks, meaning global
+`<Reasonix home>/settings.json` and installed plugins, under `review:<run>`. It
+never runs `.reasonix/settings.json` from the checkout under review, and its
+hooks use the `[tools.shell]` from your user `config.toml`, never the checkout's
+`reasonix.toml`, because reviewing an untrusted branch must not execute commands
+or interpreters that branch configures.
+
+`reasonix review` usually runs inside a checkout you have not vetted, so its
+tools, skills and hooks come only from your own configuration. The review
+skill resolves from the built-in and your user-level skill directories, never
+the checkout's `.reasonix/skills` (or `.agents`, `.agent`, `.claude`). Search
+(`[tools.search]`) and the bash sandbox (`[sandbox]`) come from your user
+`config.toml`, never the checkout's `reasonix.toml`. The checkout's config still
+picks the provider when it sets `default_model`; pass `--model` to choose your
+own.
+
 In persisted sessions, `parallel_tasks` and `fleet` return a bounded preview
 plus one `Subagent reference` per completed child instead of concatenating every
 full answer into a truncation-prone tool result. The parent can call
@@ -1367,6 +1475,11 @@ full answer into a truncation-prone tool result. The parent can call
 are scoped to the current conversation lineage and workspace. Headless runs
 without a persisted parent session remain ephemeral and receive fair bounded
 previews, but cannot mint durable references.
+
+Persisted child results include `status` (`completed`, `partial`, `failed`, or
+`cancelled`) and `retryable`. Partial or retryable failed runs retain a visible
+answer and reference so the parent can inspect them with `read_subagent_result`
+or continue the same `task`/`run_skill` transcript with `continue_from`.
 
 The interactive two-model Planner uses a dedicated construction path
 (`NewPlannerAgent`): it still blocks bash, file writers, and ordinary writers,
@@ -1409,17 +1522,10 @@ non-destructive MCP, while a strict child requires an explicit reader hint and
 never exposes writers at all.
 
 Reasonix uses **fact-driven execution**. Ordinary requests always enter the
-executor. There is no automatic task mode. The one session role is the quality floor: standard (default) or delivery; facts can still raise it. Planner,
+executor. There is no automatic task mode or selectable quality floor. Planner,
 Goal, permission, sandbox, and the task contract are independent states.
 
-Standard and Delivery stop after the visible model turn. Readiness gaps are
-reported as a recoverable result and never trigger a hidden follow-up request.
-Delivery exposes the existing `Continue checks` action; the user must activate
-it before another recovery turn starts. Standard keeps verification, review and
-sign-off gaps as completion attention, while Goal and approved Plan retain their
-own state-machine continuation. Historical canonical todos remain visible, and
-provider-level stream/truncation recovery remains independent of final-readiness
-recovery.
+Ordinary turns end when the model ends normally, even with unfinished todos or failed checks. There are no quality retries or todo-driven continuation rounds. Active Goals alone drive automatic continuation; approved Plans execute as ordinary tasks. Historical checkpoints remain available through an explicit `Continue checks` request, without restoring quality gates. Protocol recovery, cancellation, and resource limits remain independent.
 
 Every task shares the same provider-visible core tool surface: direct
 read/bash/edit/write, background-shell lifecycle tools, `ask`/`compress` when
@@ -1429,23 +1535,7 @@ never expands the top-level provider schema, so the prompt-cache tool prefix
 stays stable across every task. The Harness minimal preset is not a task
 complexity mode.
 
-The model decides whether to investigate, write todos, or spawn a sub-agent.
-The host then builds verification obligations from the actual tool call, the
-real target path, and the execution receipt:
-
-- A read-only call creates no obligation.
-- A local docs, i18n, fixture, or style edit is advisory targeted verification.
-- A single production-file edit is recoverable targeted verification plus
-  diff review.
-- Multi-file or unclear local writes require a todo and criteria first.
-- Schema, migration, public-interface, auth, or destructive work becomes
-  strict verification, review, and sign-off after the write is observed.
-- Goal items and approved Plan criteria are always strict.
-- Prompt words such as OAuth or token never create action risk by themselves.
-
-Meta tools such as `task`, `run_skill`, and `review` are not counted as mutations
-by themselves — only real child writes are. Read-only analysis remains available
-without forcing a write.
+The model decides whether to investigate, update todos, verify changes, or request review. User and project instructions stay in task context. File counts, authentication paths, schemas, migrations, and explicit verification language do not create host acceptance obligations. The host retains action permissions, preapproval Plan write restrictions, sandboxing, workspace leases, and structured-file stale-version protection. An ordinary tool failure does not skip later independent calls in the same batch. Results show actual commands, failures, interruptions, and checks made stale by later edits; model completion reports are separate from these facts.
 
 For interactive frontends, Plan Mode is always an explicit user choice. Select
 Plan in the desktop collaboration-mode control or cycle to Plan with

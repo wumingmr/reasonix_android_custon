@@ -24,12 +24,56 @@ export interface ActivationDiagnostic {
   failureClass?: string;
 }
 
+export interface NavigationDiagnostic {
+  intent: number;
+  tabId: string;
+  requestedAtMs: number;
+  identityPublishedAtMs?: number;
+  historyRequestedAtMs?: number;
+  historyReadableAtMs?: number;
+  runtimeReadyAtMs?: number;
+  firstPaintAtMs?: number;
+  composerEnabledAtMs?: number;
+  historyCacheHit?: boolean;
+  runtimeReattached?: boolean;
+}
+
 export interface HistoryPageDiagnostic {
   entries: number;
   inlineBytes: number;
   durationMs: number;
   stale: boolean;
-  source: string; // index|scan|live-index|live-fallback|"" (unknown)
+  source: string; // index|scan|live-index|live-fallback|resume-loaded|"" (unknown)
+}
+
+/** Backend cost breakdown for one session switch (desktop HistorySwitchPhases).
+ *  Durations, counts, and byte sizes only — never session paths or message text. */
+export interface HistorySwitchPhases {
+  resolveMs: number;
+  loadMs: number;
+  rebindMs: number;
+  historyMs: number;
+  totalMs: number;
+  loadedMessages: number;
+  loadedBytes: number;
+  historyEntries: number;
+  /** Full durable reads of the target session. One is correct; a switch that
+   *  rebuilt its first screen from the log instead of the loaded transcript
+   *  reports two, which is the duplicate load the benchmark fails on. */
+  durableReads: number;
+  outcome: string;
+}
+
+/** The message fields the inline byte total counts. */
+interface HistoryInlineMessage {
+  content: string;
+  reasoning?: string;
+  detail?: string;
+  code?: string;
+  submitText?: string;
+  summary?: string;
+  archive?: string;
+  toolResultError?: string;
 }
 
 export interface MarkdownWorkerDiagnostic {
@@ -50,6 +94,12 @@ export interface TranscriptCacheDiagnostic {
   markdownBudgetBytes: number;
   historyEvictions: number;
   markdownEvictions: number;
+  /** Pages of resident history the window budget has reclaimed. */
+  reclaimedPages: number;
+  /** Messages held across every resident window; the bounded reading cost. */
+  residentWindowEntries: number;
+  /** Adjacent pages the window keeps per session before reclaiming. */
+  windowMaxPages: number;
 }
 
 export interface MountedRowsDiagnostic {
@@ -78,12 +128,19 @@ export function activationFailureClass(error: string | undefined): string {
 }
 
 const MAX_ACTIVATION_LOG = 128;
+const MAX_NAVIGATION_LOG = 128;
 
 const activations = new Map<string, ActivationDiagnostic>();
 const activationOrder: string[] = [];
 let lastActivationKey: string | null = null;
+const navigations = new Map<number, NavigationDiagnostic>();
+const navigationOrder: number[] = [];
+let lastNavigationIntent: number | null = null;
 
 let lastHistoryPage: HistoryPageDiagnostic | null = null;
+let lastResumeHistory: HistoryPageDiagnostic | null = null;
+let resumeSwitchPhases: HistorySwitchPhases | null = null;
+let resumeSnapshotMs: number | undefined;
 let historyPages = 0;
 let historyStalePages = 0;
 let historyIndexHits = 0;
@@ -108,6 +165,67 @@ function trimActivationLog(): void {
   while (activationOrder.length > MAX_ACTIVATION_LOG) {
     const oldest = activationOrder.shift();
     if (oldest) activations.delete(oldest);
+  }
+}
+
+function navigationEntry(intent: number): NavigationDiagnostic {
+  let entry = navigations.get(intent);
+  if (entry) return entry;
+  entry = { intent, tabId: "", requestedAtMs: now() };
+  navigations.set(intent, entry);
+  navigationOrder.push(intent);
+  lastNavigationIntent = intent;
+  while (navigationOrder.length > MAX_NAVIGATION_LOG) {
+    const oldest = navigationOrder.shift();
+    if (oldest !== undefined) navigations.delete(oldest);
+  }
+  return entry;
+}
+
+/** The user's local navigation intent was claimed. First writer wins so the
+ *  desktop owner and controller can both report the boundary safely. */
+export function noteNavigationRequested(intent: number): void {
+  if (!Number.isSafeInteger(intent) || intent < 0) return;
+  navigationEntry(intent);
+}
+
+export function noteNavigationIdentityPublished(intent: number, tabId: string): void {
+  const entry = navigationEntry(intent);
+  if (entry.identityPublishedAtMs === undefined) entry.identityPublishedAtMs = now();
+  if (tabId) entry.tabId = tabId;
+}
+
+export function noteNavigationHistoryRequested(intent: number, cacheHit: boolean): void {
+  const entry = navigationEntry(intent);
+  if (entry.historyRequestedAtMs === undefined) entry.historyRequestedAtMs = now();
+  entry.historyCacheHit = cacheHit;
+}
+
+export function noteNavigationHistoryReadable(intent: number, cacheHit: boolean): void {
+  const entry = navigationEntry(intent);
+  if (entry.historyReadableAtMs === undefined) entry.historyReadableAtMs = now();
+  entry.historyCacheHit = cacheHit;
+}
+
+export function noteNavigationRuntimeReady(intent: number, reattached = false): void {
+  const entry = navigationEntry(intent);
+  if (entry.runtimeReadyAtMs === undefined) entry.runtimeReadyAtMs = now();
+  entry.runtimeReattached = entry.runtimeReattached || reattached;
+}
+
+export function noteNavigationFirstPaint(intent: number): void {
+  const entry = navigationEntry(intent);
+  if (entry.firstPaintAtMs === undefined) entry.firstPaintAtMs = now();
+}
+
+/** Composer readiness is observed outside the controller. Attribute it to the
+ *  newest navigation that published this tab identity. */
+export function noteNavigationComposerEnabled(tabId: string): void {
+  for (let index = navigationOrder.length - 1; index >= 0; index -= 1) {
+    const entry = navigations.get(navigationOrder[index]);
+    if (!entry || entry.tabId !== tabId) continue;
+    if (entry.composerEnabledAtMs === undefined) entry.composerEnabledAtMs = now();
+    return;
   }
 }
 
@@ -160,6 +278,43 @@ export function noteHistoryPage(page: HistoryPageDiagnostic): void {
   lastHistoryPage = page;
 }
 
+export function beginResumeHistory(): void {
+  lastResumeHistory = null;
+  resumeSwitchPhases = null;
+  resumeSnapshotMs = undefined;
+}
+
+/** One ResumeSessionPage response built from the transcript the switch already
+ *  loaded, plus the backend's phase breakdown for that switch. */
+export function noteResumeHistoryPage(
+  page: { messages: readonly HistoryInlineMessage[]; switch?: HistorySwitchPhases | null },
+  durationMs: number,
+  snapshotMs?: number,
+): void {
+  let inlineBytes = 0;
+  for (const message of page.messages) {
+    inlineBytes += message.content.length + (message.reasoning?.length ?? 0)
+      + (message.detail?.length ?? 0) + (message.code?.length ?? 0)
+      + (message.submitText?.length ?? 0) + (message.summary?.length ?? 0)
+      + (message.archive?.length ?? 0) + (message.toolResultError?.length ?? 0);
+  }
+  lastResumeHistory = { entries: page.messages.length, inlineBytes, durationMs, stale: false, source: snapshotMs === undefined ? "resume-loaded" : "transcript-snapshot" };
+  resumeSwitchPhases = page.switch && Number.isSafeInteger(page.switch.durableReads) && page.switch.durableReads >= 0 ? { ...page.switch } : null;
+  resumeSnapshotMs = snapshotMs;
+}
+
+export function noteTranscriptFollowSwitch(phases: HistorySwitchPhases | void, metrics: { entries: number; inlineBytes: number }, durationMs: number, snapshotMs: number): void {
+  lastResumeHistory = { ...metrics, durationMs, stale: false, source: "transcript-v2" };
+  resumeSwitchPhases = phases ? { ...phases } : null;
+  resumeSnapshotMs = snapshotMs;
+}
+
+/** Durable reads a switch made beyond the one that produced its first screen. */
+export function resumeSwitchDashboard(): { phases: HistorySwitchPhases | null; duplicateLoadCount: number | null } {
+  if (!resumeSwitchPhases) return { phases: null, duplicateLoadCount: null };
+  return { phases: { ...resumeSwitchPhases }, duplicateLoadCount: Math.max(0, resumeSwitchPhases.durableReads - 1) };
+}
+
 /** Current virtual-mounted vs total transcript row counts (Transcript.tsx). */
 export function noteTranscriptRowCounts(mounted: number, total: number): void {
   mountedRows = { mounted, total };
@@ -190,12 +345,23 @@ export interface SessionPipelineDiagnostics {
     startingToReadyMs?: number;
     totalMs?: number;
   };
+  navigation?: NavigationDiagnostic & {
+    clickToIdentityMs?: number;
+    clickToFirstHistoryMs?: number;
+    clickToFirstPaintMs?: number;
+    clickToRuntimeReadyMs?: number;
+    clickToComposerEnabledMs?: number;
+  };
   history?: HistoryPageDiagnostic & {
     pages: number;
     staleCount: number;
     indexHits: number;
     indexMisses: number;
   };
+  resumeHistory?: HistoryPageDiagnostic;
+  resumeSwitch?: HistorySwitchPhases;
+  duplicateLoadCount: number | null;
+  resumeSnapshotMs?: number;
   mountedRows?: MountedRowsDiagnostic;
   transcriptRecovery?: TranscriptRecoveryDiagnostic;
   markdownWorker?: MarkdownWorkerDiagnostic;
@@ -214,20 +380,40 @@ function deriveActivation(entry: ActivationDiagnostic): SessionPipelineDiagnosti
   return out;
 }
 
+function deriveNavigation(entry: NavigationDiagnostic): SessionPipelineDiagnostics["navigation"] {
+  const out: SessionPipelineDiagnostics["navigation"] = { ...entry };
+  if (entry.identityPublishedAtMs !== undefined) out.clickToIdentityMs = entry.identityPublishedAtMs - entry.requestedAtMs;
+  if (entry.historyReadableAtMs !== undefined) out.clickToFirstHistoryMs = entry.historyReadableAtMs - entry.requestedAtMs;
+  if (entry.firstPaintAtMs !== undefined) out.clickToFirstPaintMs = entry.firstPaintAtMs - entry.requestedAtMs;
+  if (entry.runtimeReadyAtMs !== undefined) out.clickToRuntimeReadyMs = entry.runtimeReadyAtMs - entry.requestedAtMs;
+  if (entry.composerEnabledAtMs !== undefined) out.clickToComposerEnabledMs = entry.composerEnabledAtMs - entry.requestedAtMs;
+  return out;
+}
+
 /** Point-in-time snapshot for the crash/performance report context. */
 export function sessionPipelineDiagnostics(): SessionPipelineDiagnostics {
-  const out: SessionPipelineDiagnostics = {};
+  const out: SessionPipelineDiagnostics = { duplicateLoadCount: null };
   const activation = lastActivationKey ? activations.get(lastActivationKey) : undefined;
   if (activation) out.activation = deriveActivation(activation);
-  if (lastHistoryPage) {
+  const navigation = lastNavigationIntent === null ? undefined : navigations.get(lastNavigationIntent);
+  if (navigation) out.navigation = deriveNavigation(navigation);
+  // A switch reports its first screen before any slice runs, so fall back to it
+  // instead of reporting no history at all.
+  const historyPage = lastHistoryPage ?? lastResumeHistory;
+  if (historyPage) {
     out.history = {
-      ...lastHistoryPage,
+      ...historyPage,
       pages: historyPages,
       staleCount: historyStalePages,
       indexHits: historyIndexHits,
       indexMisses: historyIndexMisses,
     };
   }
+  if (lastResumeHistory) out.resumeHistory = { ...lastResumeHistory };
+  if (resumeSnapshotMs !== undefined) out.resumeSnapshotMs = resumeSnapshotMs;
+  const { phases, duplicateLoadCount } = resumeSwitchDashboard();
+  if (phases) out.resumeSwitch = phases;
+  out.duplicateLoadCount = duplicateLoadCount;
   if (mountedRows.mounted > 0 || mountedRows.total > 0) out.mountedRows = { ...mountedRows };
   if (transcriptRecoverySeen) out.transcriptRecovery = { ...transcriptRecovery };
   if (markdownWorkerProvider) {
@@ -262,7 +448,13 @@ export function resetSessionDiagnostics(): void {
   activations.clear();
   activationOrder.length = 0;
   lastActivationKey = null;
+  navigations.clear();
+  navigationOrder.length = 0;
+  lastNavigationIntent = null;
   lastHistoryPage = null;
+  lastResumeHistory = null;
+  resumeSwitchPhases = null;
+  resumeSnapshotMs = undefined;
   historyPages = 0;
   historyStalePages = 0;
   historyIndexHits = 0;

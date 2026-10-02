@@ -20,6 +20,7 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/i18n"
+	"reasonix/internal/netclient"
 	"reasonix/internal/notify"
 	"reasonix/internal/provider"
 	"reasonix/internal/telemetry"
@@ -75,17 +76,17 @@ func TestModelForResumePathUsesStoredModelWhenAvailable(t *testing.T) {
 		},
 	}
 
-	if got := modelForResumePath("", path, cfg); got != "saved/model" {
+	if got, err := modelForResumePath("", path, cfg); err != nil || got != "saved/model" {
 		t.Fatalf("modelForResumePath = %q, want saved/model", got)
 	}
-	if got := modelForResumePath("explicit/model", path, cfg); got != "explicit/model" {
+	if got, err := modelForResumePath("explicit/model", path, cfg); err != nil || got != "explicit/model" {
 		t.Fatalf("explicit model was overwritten: %q", got)
 	}
-	if got := modelForResumePath("", filepath.Join(dir, "missing.jsonl"), cfg); got != "" {
+	if got, err := modelForResumePath("", filepath.Join(dir, "missing.jsonl"), cfg); err != nil || got != "" {
 		t.Fatalf("missing session model = %q, want empty fallback", got)
 	}
 	cfg.Providers = cfg.Providers[:1]
-	if got := modelForResumePath("", path, cfg); got != "" {
+	if got, err := modelForResumePath("", path, cfg); err != nil || got != "" {
 		t.Fatalf("unknown stored model = %q, want empty fallback", got)
 	}
 }
@@ -195,24 +196,6 @@ func mustGetwd(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return cwd
-}
-
-func isolateCLIConfigHome(t *testing.T) string {
-	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	// Keep tests on the default-path code path while preventing a caller's
-	// higher-priority REASONIX_HOME from escaping this temporary home.
-	t.Setenv("REASONIX_HOME", "")
-	if err := os.Unsetenv("REASONIX_HOME"); err != nil {
-		t.Fatalf("unset REASONIX_HOME: %v", err)
-	}
-	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("AppData", filepath.Join(home, "AppData"))
-	t.Chdir(t.TempDir())
-	return home
 }
 
 func TestIsolateCLIConfigHomeOverridesExistingReasonixHome(t *testing.T) {
@@ -535,10 +518,10 @@ func TestParsePermissionModeClaudeAliases(t *testing.T) {
 	tests := map[string]cliPermissionMode{
 		"ask":               {approval: control.ToolApprovalAsk},
 		"manual":            {approval: control.ToolApprovalAsk},
-		"acceptEdits":       {approval: control.ToolApprovalAsk, allow: []string{"write_file", "edit_file", "multi_edit", "move_file", "notebook_edit", "delete_range", "delete_symbol"}},
-		"dontAsk":           {approval: control.ToolApprovalDontAsk},
+		"acceptEdits":       {approval: control.ToolApprovalWorkspaceWrite},
+		"dontAsk":           {approval: control.ToolApprovalReadOnly},
 		"plan":              {approval: control.ToolApprovalAsk, plan: true},
-		"bypassPermissions": {approval: control.ToolApprovalYolo},
+		"bypassPermissions": {approval: control.ToolApprovalWorkspaceWrite},
 	}
 	for input, want := range tests {
 		got, err := parsePermissionMode(input)
@@ -552,8 +535,8 @@ func TestResolveRunPermissionModeRequiresExplicitAuto(t *testing.T) {
 	if got, err := resolveRunPermissionMode("ask", false, false); err != nil || got != "ask" {
 		t.Fatalf("default run permission mode = (%q, %v), want ask", got, err)
 	}
-	if got, err := resolveRunPermissionMode("ask", true, false); err != nil || got != "auto" {
-		t.Fatalf("-y run permission mode = (%q, %v), want auto", got, err)
+	if got, err := resolveRunPermissionMode("ask", true, false); err != nil || got != "workspace-write" {
+		t.Fatalf("legacy -y run permission mode = (%q, %v), want workspace-write", got, err)
 	}
 	if got, err := resolveRunPermissionMode("dontAsk", true, true); err == nil || got != "" {
 		t.Fatalf("combined permission flags = (%q, %v), want conflict", got, err)
@@ -582,67 +565,6 @@ func TestRunKeepsChatAndCodeCompatibilityAliases(t *testing.T) {
 	want := [][]string{{"--resume"}, {"--continue"}}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("interactive calls = %#v, want %#v", calls, want)
-	}
-}
-
-func TestRunMigratesLegacyConfigBeforeConfigOnlyCommands(t *testing.T) {
-	isolateCLIConfigHome(t)
-	legacyPath := filepath.Join(filepath.Dir(config.UserConfigPath()), "reasonix.toml")
-	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(legacyPath, []byte(`
-default_model = "deepseek-flash"
-
-[[plugins]]
-name = "legacy-cli"
-command = "legacy-bin"
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	out := captureStdout(t, func() {
-		if rc := Run([]string{"mcp", "list"}, "test-version"); rc != 0 {
-			t.Fatalf("mcp list rc = %d, want 0", rc)
-		}
-	})
-	if !strings.Contains(out, "legacy-cli") {
-		t.Fatalf("mcp list should include migrated legacy config:\n%s", out)
-	}
-
-	body, err := os.ReadFile(config.UserConfigPath())
-	if err != nil {
-		t.Fatalf("read migrated user config: %v", err)
-	}
-	for _, want := range []string{`config_version = 7`, `[desktop]`, `name    = "legacy-cli"`} {
-		if !strings.Contains(string(body), want) {
-			t.Fatalf("migrated config missing %q:\n%s", want, body)
-		}
-	}
-}
-
-func TestRunAppliesUserConfigUpgradesOnStartup(t *testing.T) {
-	isolateCLIConfigHome(t)
-	path := config.UserConfigPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("config_version = 2\ndefault_model = \"deepseek-flash\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	captureStdout(t, func() {
-		if rc := Run([]string{"mcp", "list"}, "test-version"); rc != 0 {
-			t.Fatalf("mcp list rc = %d, want 0", rc)
-		}
-	})
-
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read upgraded user config: %v", err)
-	}
-	if !strings.Contains(string(body), "config_version = 7") {
-		t.Fatalf("CLI startup should apply user config upgrades:\n%s", body)
 	}
 }
 
@@ -841,6 +763,32 @@ func TestConfigCompactRatioCommandWritesUserConfigAndReportsSource(t *testing.T)
 	}
 }
 
+func TestConfigCompactRatioCommandAcceptsLowerBound(t *testing.T) {
+	isolateCLIConfigHome(t)
+
+	for _, value := range []string{"30", "64"} {
+		t.Run(value, func(t *testing.T) {
+			out := captureStdout(t, func() {
+				if rc := Run([]string{"config", "compact-ratio", value}, "test-version"); rc != 0 {
+					t.Fatalf("config compact-ratio %s rc = %d, want 0", value, rc)
+				}
+			})
+			if !strings.Contains(out, "compact_ratio = "+value+"%") {
+				t.Fatalf("config compact-ratio %s output = %q", value, out)
+			}
+			want := 0.0
+			if value == "30" {
+				want = 0.30
+			} else {
+				want = 0.64
+			}
+			if got := config.LoadForEdit(config.UserConfigPath()).Agent.CompactRatio; got != want {
+				t.Fatalf("saved compact ratio = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
 func TestConfigCompactRatioQueryReportsBuiltInDefault(t *testing.T) {
 	isolateCLIConfigHome(t)
 
@@ -907,14 +855,14 @@ func TestConfigCompactRatioLocalCreatesMinimalProjectOverride(t *testing.T) {
 func TestConfigCompactRatioRejectsValuesOutsideEditableRange(t *testing.T) {
 	isolateCLIConfigHome(t)
 
-	for _, value := range []string{"64", "86", "NaN", "+Inf", "not-a-number"} {
+	for _, value := range []string{"29", "86", "NaN", "+Inf", "not-a-number"} {
 		t.Run(value, func(t *testing.T) {
 			errOut := captureStderr(t, func() {
 				if rc := Run([]string{"config", "compact-ratio", value}, "test-version"); rc != 2 {
 					t.Fatalf("config compact-ratio %s rc = %d, want 2", value, rc)
 				}
 			})
-			if !strings.Contains(errOut, "percentage between 65 and 85") {
+			if !strings.Contains(errOut, "percentage between 30 and 85") {
 				t.Fatalf("config compact-ratio %s stderr = %q", value, errOut)
 			}
 		})
@@ -1548,7 +1496,7 @@ func TestFetchOrFallback(t *testing.T) {
 			BaseURL: "",
 			Models:  []string{"preset-a", "preset-b"},
 		}
-		got := fetchOrFallback(&probe, "Test")
+		got := fetchOrFallback(&probe, "Test", netclient.ProxySpec{})
 		if !reflect.DeepEqual(got, []string{"preset-a", "preset-b"}) {
 			t.Errorf("got %v, want preset-a/b", got)
 		}
@@ -1561,7 +1509,7 @@ func TestFetchOrFallback(t *testing.T) {
 			APIKeyEnv: "REASONIX_FETCH_TEST_KEY",
 			Models:    []string{"preset-a"},
 		}
-		got := fetchOrFallback(&probe, "Test")
+		got := fetchOrFallback(&probe, "Test", netclient.ProxySpec{})
 		if !reflect.DeepEqual(got, []string{"preset-a"}) {
 			t.Errorf("got %v, want preset-a", got)
 		}
@@ -1591,7 +1539,7 @@ func TestFetchModelListCompatWalksCandidates(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		models, err := fetchModelListCompat(context.Background(), srv.URL, "k")
+		models, err := fetchModelListCompat(context.Background(), srv.URL, "k", netclient.ProxySpec{})
 		if err != nil {
 			t.Fatalf("fetchModelListCompat: %v", err)
 		}
@@ -1613,7 +1561,7 @@ func TestFetchModelListCompatWalksCandidates(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		models, err := fetchModelListCompat(context.Background(), srv.URL+"/v1", "k")
+		models, err := fetchModelListCompat(context.Background(), srv.URL+"/v1", "k", netclient.ProxySpec{})
 		if err != nil {
 			t.Fatalf("fetchModelListCompat: %v", err)
 		}
@@ -1631,7 +1579,7 @@ func TestFetchModelListCompatWalksCandidates(t *testing.T) {
 		}))
 		defer srv.Close()
 
-		models, err := fetchModelListCompat(context.Background(), srv.URL, "k")
+		models, err := fetchModelListCompat(context.Background(), srv.URL, "k", netclient.ProxySpec{})
 		if err != nil {
 			t.Fatalf("expected graceful empty result on all-miss, got err: %v", err)
 		}
@@ -1642,11 +1590,52 @@ func TestFetchModelListCompatWalksCandidates(t *testing.T) {
 
 	t.Run("non-404 network error short-circuits with the real error", func(t *testing.T) {
 		// Point at a closed port — connection refused, not a 404.
-		models, err := fetchModelListCompat(context.Background(), "http://127.0.0.1:1", "k")
+		models, err := fetchModelListCompat(context.Background(), "http://127.0.0.1:1", "k", netclient.ProxySpec{})
 		if err == nil {
 			t.Fatalf("expected error for unreachable host, got models=%v", models)
 		}
 	})
+
+	t.Run("configured proxy reaches a proxy-only gateway", func(t *testing.T) {
+		const gateway = "http://reasonix-cli-probe.invalid/v1"
+		proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.String() != gateway+"/models" {
+				http.Error(w, "unexpected target "+r.URL.String(), http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"data":[{"id":"proxied-model"}]}`)
+		}))
+		defer proxy.Close()
+
+		spec := netclient.ProxySpec{Mode: netclient.ModeCustom, URL: proxy.URL}
+		models, err := fetchModelListCompat(context.Background(), gateway, "k", spec)
+		if err != nil {
+			t.Fatalf("fetchModelListCompat through proxy: %v", err)
+		}
+		if !reflect.DeepEqual(models, []string{"proxied-model"}) {
+			t.Fatalf("models = %v, want [proxied-model]", models)
+		}
+	})
+}
+
+func TestFetchOrFallbackUsesConfiguredProxy(t *testing.T) {
+	const gateway = "http://reasonix-preset-probe.invalid/v1"
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.String() != gateway+"/models" {
+			http.Error(w, "unexpected target "+r.URL.String(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"id":"live-model"}]}`)
+	}))
+	defer proxy.Close()
+
+	probe := config.ProviderEntry{BaseURL: gateway, Models: []string{"preset-model"}}
+	spec := netclient.ProxySpec{Mode: netclient.ModeCustom, URL: proxy.URL}
+	if got := fetchOrFallback(&probe, "Test", spec); !reflect.DeepEqual(got, []string{"live-model"}) {
+		t.Fatalf("models = %v, want live proxy result", got)
+	}
 }
 
 // TestFamilyStaticModels proves the offline fallback unions every member of a
@@ -1849,6 +1838,7 @@ func TestPromptCustomProviderManualDefaultsKeyEnvFromBaseURL(t *testing.T) {
 		bufio.NewScanner(strings.NewReader("sensenova-chat\n\n\n")),
 		"https://token.sensenova.cn/v1",
 		"",
+		false,
 		"",
 	)
 	if err != nil {
@@ -1868,6 +1858,7 @@ func TestPromptCustomProviderManualPreservesExplicitKeyEnv(t *testing.T) {
 		bufio.NewScanner(strings.NewReader("manual-chat\n\n")),
 		"https://token.sensenova.cn/v1",
 		"CUSTOM_API_KEY",
+		true,
 		"",
 	)
 	if err != nil {
@@ -1885,14 +1876,14 @@ func TestPromptCustomProviderManualPreservesExplicitKeyEnv(t *testing.T) {
 func TestPromptAPIKeyEnvNameRejectsModelName(t *testing.T) {
 	i18n.DetectLanguage("en")
 	var out bytes.Buffer
-	got := promptAPIKeyEnvName(
+	got, typed := promptAPIKeyEnvName(
 		bufio.NewScanner(strings.NewReader("grok-4.5\n\n")),
 		&out,
 		i18n.M.CustomPromptKeyEnv,
 		"CUSTOM_API_YAIROUTER_COM_API_KEY",
 	)
-	if got != "CUSTOM_API_YAIROUTER_COM_API_KEY" {
-		t.Fatalf("key env = %q, want generated default", got)
+	if got != "CUSTOM_API_YAIROUTER_COM_API_KEY" || typed {
+		t.Fatalf("key env = %q (typed %v), want the untyped generated default", got, typed)
 	}
 	if text := out.String(); !strings.Contains(text, "not a valid API Key variable name") || !strings.Contains(text, "do not enter a model name") {
 		t.Fatalf("validation guidance missing from prompt output: %q", text)
@@ -1904,6 +1895,7 @@ func TestPromptCustomProviderManualAsksForModelBeforeCredentialName(t *testing.T
 		bufio.NewScanner(strings.NewReader("grok-4.5\ngrok-4.5\n\n\n")),
 		"https://api.example.com/v1",
 		"",
+		false,
 		"",
 	)
 	if err != nil {
@@ -1925,6 +1917,7 @@ func TestPromptCustomProviderStagesExplicitKeyEvenWhenProcessEnvMatches(t *testi
 		bufio.NewScanner(strings.NewReader("grok-4.5\n")),
 		"https://api.example.com/v1",
 		key,
+		true,
 		"same-secret",
 	)
 	if err != nil {
@@ -1940,6 +1933,7 @@ func TestPromptCustomProviderStagesExplicitKeyEvenWhenProcessEnvMatches(t *testi
 		bufio.NewScanner(strings.NewReader("grok-4.5\n")),
 		"https://api.example.com/v1",
 		key,
+		true,
 		"new-secret",
 	)
 	if err != nil {
@@ -2062,7 +2056,7 @@ func TestWithBuiltinFamiliesForLanguageUsesDeepSeekPricing(t *testing.T) {
 	if flash == nil {
 		t.Fatal("deepseek-flash provider missing")
 	}
-	if flash.Price == nil || flash.Price.Output != 1.32 || flash.Price.Currency != "$" {
+	if flash.Price == nil || flash.Price.Output != 1.2 || flash.Price.Currency != "$" {
 		t.Fatalf("flash price = %+v, want frozen USD official table", flash.Price)
 	}
 }
@@ -2197,7 +2191,7 @@ func TestParseRuntimeProfile(t *testing.T) {
 	for input, want := range map[string]string{
 		"": "standard", "balanced": "standard", "standard": "standard", "full": "standard",
 		"economy": "standard", "light": "standard", "lite": "standard", "eco": "standard",
-		"delivery": "delivery", "deliver": "delivery", "quality": "delivery",
+		"delivery": "standard", "deliver": "standard", "quality": "standard",
 	} {
 		got, err := parseRuntimeProfile(input)
 		if err != nil || got != want {

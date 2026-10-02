@@ -2,8 +2,6 @@ package runtimepolicy
 
 import (
 	"context"
-
-	"reasonix/internal/taskcontract"
 )
 
 type contextKey struct{}
@@ -14,7 +12,6 @@ type InheritedExecutionContext struct {
 	Constraints  Constraints
 	PlanReadOnly bool
 	GoalScopeID  string
-	PlanContract *taskcontract.DelegatedContract
 }
 
 // WithContext stores host execution constraints for the turn.

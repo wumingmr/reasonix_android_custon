@@ -9,6 +9,8 @@ import (
 
 	"reasonix/internal/extension"
 	"reasonix/internal/extension/protocol"
+	"reasonix/internal/extension/providerconv"
+	"reasonix/internal/provider"
 )
 
 // Host payload DTOs: one struct per intercept point. These are the host-side
@@ -87,7 +89,9 @@ func (p *ContextPayload) Validate() error {
 	if p.Messages == nil {
 		return errors.New("messages must be an array")
 	}
-	return nil
+	// Validate before adopting the replacement so an optional extension's bad
+	// transcript follows its normal warn-and-skip policy, not a fatal late gate.
+	return provider.ValidateModelTranscript(providerconv.MessagesFromProtocol(p.Messages))
 }
 
 // ProviderRequestPayload is the provider.request payload.
@@ -103,7 +107,10 @@ func (ProviderRequestPayload) Point() extension.InterceptorPoint {
 // Validate enforces the request invariants, including the JSON-Schema shape
 // of every tool's parameters (protocol.ProviderRequest.Validate).
 func (p *ProviderRequestPayload) Validate() error {
-	return p.Request.Validate()
+	if err := p.Request.Validate(); err != nil {
+		return err
+	}
+	return provider.ValidateModelTranscript(providerconv.MessagesFromProtocol(p.Request.Messages))
 }
 
 // ProviderResponsePayload is the provider.response payload: the assembled

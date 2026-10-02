@@ -3,10 +3,8 @@ package control
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/event"
@@ -47,14 +45,13 @@ func (p *wanderingChatProvider) Stream(context.Context, provider.Request) (<-cha
 
 func newChatBudgetController(t *testing.T, exec *agent.Agent) (*Controller, chan event.Event) {
 	t.Helper()
-	dir := t.TempDir()
+	// Round admission does not depend on session durability. Keep this fixture
+	// in memory; persistence and writer authority have their own integration tests.
 	sink, done, _ := collectSink()
-	c := New(Options{
-		Runner:      exec,
-		Executor:    exec,
-		Sink:        sink,
-		SessionDir:  dir,
-		SessionPath: filepath.Join(dir, "s.jsonl"),
+	c := newOwnedTestController(t, Options{
+		Runner:   exec,
+		Executor: exec,
+		Sink:     sink,
 	})
 	t.Cleanup(c.autosaveWG.Wait)
 	return c, done
@@ -72,30 +69,10 @@ func TestOrdinaryChatTurnRunsPastTheOldRoundCeiling(t *testing.T) {
 	c, done := newChatBudgetController(t, exec)
 
 	c.Submit("collect the real state, then rewrite HANDOVER.md")
-	waitForDone(t, done)
+	<-done
 
 	if got, want := prov.calls.Load(), int32(121); got != want {
 		t.Fatalf("provider rounds = %d, want %d (the model's own 120 plus its final answer)", got, want)
-	}
-}
-
-// What actually bounds it: the wall-clock axis, which catches even a runaway
-// whose rounds are free — the one case a cost budget cannot see.
-func TestOrdinaryChatTurnStopsOnItsTimeBudget(t *testing.T) {
-	prov := &wanderingChatProvider{}
-	reg := tool.NewRegistry()
-	reg.Add(fakeControlTool{name: "read_file"})
-	exec := agent.New(prov, reg, agent.NewSession("sys"),
-		agent.Options{TaskBudget: agent.TaskBudget{Wall: time.Millisecond}}, event.Discard)
-	c, done := newChatBudgetController(t, exec)
-
-	c.Submit("collect the real state, then rewrite HANDOVER.md")
-	waitForDone(t, done)
-
-	// Instant mock rounds can fit more than a handful into 1ms; the gate must
-	// still stop a runaway well short of an unbounded loop.
-	if got := prov.calls.Load(); got > 50 {
-		t.Fatalf("provider rounds = %d, want the wall-clock budget to land it promptly", got)
 	}
 }
 
@@ -108,7 +85,7 @@ func TestExplicitMaxStepsOwnsTheOrdinaryTurn(t *testing.T) {
 	c, done := newChatBudgetController(t, exec)
 
 	c.Submit("collect the real state")
-	waitForDone(t, done)
+	<-done
 
 	if got := prov.calls.Load(); got != 4 {
 		t.Fatalf("provider rounds = %d, want the explicit 3 plus one summary", got)

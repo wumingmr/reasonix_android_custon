@@ -27,7 +27,10 @@ func TestTopLevelSignPathWorkflowCallGraph(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
+		".github/workflows/certum-signing-smoke.yml",
+		".github/workflows/release-candidate.yml",
 		".github/workflows/release-desktop.yml",
+		".github/workflows/release-promote.yml",
 		".github/workflows/release-stable.yml",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -64,5 +67,24 @@ jobs:
 	}
 	if !info.externallyTriggered || !info.directSigning {
 		t.Fatalf("token-backed workflow was not classified as a signing entry point: %+v", info)
+	}
+}
+
+func TestWorkflowUsingCertumTokenIsSigningEntryPoint(t *testing.T) {
+	info, err := parseWorkflow([]byte(`
+on: workflow_dispatch
+jobs:
+  sign:
+    runs-on: windows-2022
+    steps:
+      - uses: ./.github/actions/setup-certum
+        with:
+          otp-uri: ${{ secrets.CERTUM_OTP_URI }}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.externallyTriggered || !info.directSigning {
+		t.Fatalf("Certum signing entry point not detected: %+v", info)
 	}
 }

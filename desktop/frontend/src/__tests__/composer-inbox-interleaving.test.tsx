@@ -8,6 +8,7 @@ import { Composer } from "../components/Composer";
 import { LocaleProvider } from "../lib/i18n";
 import { ToastProvider } from "../lib/toast";
 import type { CollaborationMode, ToolApprovalMode } from "../lib/types";
+import { installDesktopHostStub } from "./desktopHostStub";
 
 let passed = 0;
 let failed = 0;
@@ -88,7 +89,7 @@ function installDom() {
 }
 
 function installBridgeApp(methods: Record<string, unknown>) {
-  (window as unknown as { go: { main: { App: Record<string, unknown> } } }).go = {
+installDesktopHostStub(({
     main: {
       App: {
         Commands: async () => [],
@@ -96,12 +97,14 @@ function installBridgeApp(methods: Record<string, unknown>) {
         ModelsForTab: async () => [],
         ListDir: async () => [],
         ListDirForTab: async () => [],
+        ListDirForTarget: async () => [],
         SearchFileRefs: async () => [],
         SearchFileRefsForTab: async () => [],
+        SearchFileRefsForTarget: async () => [],
         ...methods,
       },
     },
-  };
+  }).main.App);
 }
 
 async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {}) {
@@ -123,8 +126,7 @@ async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {
     onSetMode: () => {},
     onSetCollaborationMode: (_mode: CollaborationMode) => {},
     onSetToolApprovalMode: () => {},
-    onToggleYoloApprovalMode: () => {},
-    onClearGoal: () => {},
+        onClearGoal: () => {},
     onSwitchModel: () => {},
     onSetEffort: () => {},
     ready: true,
@@ -155,7 +157,7 @@ async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {
 console.log("\ncomposer inbox interleaving");
 
 {
-  // A fast tool boundary may consume a newly accepted steer before the Wails
+  // A fast tool boundary may consume a newly accepted steer before the bridge
   // enqueue promise resolves. The late receipt must not resurrect the chip.
   const dom = installDom();
   const enqueueStarted = deferred<void>();
@@ -168,7 +170,7 @@ console.log("\ncomposer inbox interleaving");
   });
   const { root, rerender } = await renderComposer({ running: true });
   await rerender({ insertRequest: { id: 7001, text: "consume before receipt", mode: "replace" } });
-  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  const sendButton = document.querySelector(".composer__queue-steer") as HTMLButtonElement | null;
   if (!sendButton) throw new Error("running composer send button did not render for early consume");
   await act(async () => {
     sendButton.click();

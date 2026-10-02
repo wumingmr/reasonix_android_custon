@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"reasonix/internal/attachment"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
@@ -47,13 +48,16 @@ func TestRunPersistsRawUserInputSeparatelyFromProviderContext(t *testing.T) {
 	if got := stored[1].RawContent; got != raw {
 		t.Fatalf("stored raw content = %q, want raw %q", got, raw)
 	}
+	if stored[1].Origin != provider.MessageOriginUser {
+		t.Fatalf("stored origin = %q, want user", stored[1].Origin)
+	}
 	if stored[1].ProviderContent != "" {
 		t.Fatalf("stored transitional provider content was not cleared: %+v", stored[1])
 	}
 	if len(prov.request.Messages) < 2 || !strings.HasPrefix(prov.request.Messages[1].Content, composed) {
 		t.Fatalf("provider request did not receive composed context: %+v", prov.request.Messages)
 	}
-	if prov.request.Messages[1].RawContent != "" || prov.request.Messages[1].ProviderContent != "" {
+	if prov.request.Messages[1].RawContent != "" || prov.request.Messages[1].ProviderContent != "" || prov.request.Messages[1].Origin != "" {
 		t.Fatalf("provider request leaked display metadata: %+v", prov.request.Messages[1])
 	}
 
@@ -105,9 +109,8 @@ Policy: prefer means use the skill for the required change
 	if got := a.turn.turnInput; got != raw {
 		t.Fatalf("contract input = %q, want authenticated raw input %q", got, raw)
 	}
-	c := a.LiveContract()
-	if c == nil || len(c.Requirements) != 0 || len(c.Checks) != 0 {
-		t.Fatalf("transient route created delivery requirements: %+v", c)
+	if result := a.ReadinessResult(); !result.Ready || len(result.Missing) != 0 {
+		t.Fatalf("transient route created requirements: %+v", result)
 	}
 }
 
@@ -152,5 +155,23 @@ func TestSubagentImageCandidatesAreCopiedAndIsolated(t *testing.T) {
 	got[0] = "mutated again"
 	if again := SubagentImageCandidates(ctx); again[0] != "data:image/png;base64,AAAA" {
 		t.Fatalf("candidate accessor exposed mutable context state: %v", again)
+	}
+}
+
+func TestSubagentImageInputsAreCopiedAndPreferredOverCandidates(t *testing.T) {
+	inputs := []attachment.ImageInput{{Kind: attachment.KindURL, URL: "https://example.invalid/a.png"}}
+	ctx := WithSubagentImageInputs(context.Background(), inputs)
+	inputs[0].URL = "mutated"
+	got := SubagentImageInputs(ctx)
+	if len(got) != 1 || got[0].URL != "https://example.invalid/a.png" {
+		t.Fatalf("inputs = %+v", got)
+	}
+	ctx = WithSubagentImageCandidates(ctx, []string{"data:image/png;base64,AAAA"})
+	wired := withSubagentTurnImages(ctx)
+	if len(userImages(wired)) != 0 {
+		t.Fatalf("ImageInputs path leaked Images = %v", userImages(wired))
+	}
+	if len(userImageInputs(wired)) != 1 || userImageInputs(wired)[0].URL != "https://example.invalid/a.png" {
+		t.Fatalf("wired ImageInputs = %+v", userImageInputs(wired))
 	}
 }

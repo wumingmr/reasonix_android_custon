@@ -17,7 +17,6 @@
 //
 // Normalize repairs what is repairable — missing IDs, dangling parents and
 // dependencies, nesting past two levels — and Validate rejects what is not, so
-// code downstream of an accepted Plan never re-checks its shape. Ordered is the
-// single ordering both Render and ProjectTodos read, which is what makes the
-// list a user approves and the task list the host seeds the same list.
+// code downstream of an accepted Plan never re-checks its shape. Ordered gives
+// Render one deterministic representation of the document's steps.
 package plancontract

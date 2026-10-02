@@ -459,7 +459,7 @@ func TestRemoteMarkdownImageSanitizesValidSVGPrologs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sanitized, ok := sanitizeRemoteMarkdownSVG(tt.body)
+			sanitized, ok := sanitizeMarkdownSVG(tt.body, svgSanitizeLimits{maxBytes: remoteMarkdownImageMaxBytes})
 			if !ok || !bytes.Contains(sanitized, []byte("<svg")) || !bytes.Contains(sanitized, []byte("<rect")) {
 				t.Fatalf("valid SVG rejected: ok=%v body=%q", ok, sanitized)
 			}
@@ -471,7 +471,7 @@ func TestRemoteMarkdownImageSanitizesValidSVGPrologs(t *testing.T) {
 }
 
 func TestRemoteMarkdownImageRejectsNonSVGXML(t *testing.T) {
-	if sanitized, ok := sanitizeRemoteMarkdownSVG([]byte(`<?xml version="1.0"?><html></html>`)); ok {
+	if sanitized, ok := sanitizeMarkdownSVG([]byte(`<?xml version="1.0"?><html></html>`), svgSanitizeLimits{maxBytes: remoteMarkdownImageMaxBytes}); ok {
 		t.Fatalf("non-SVG XML accepted: %q", sanitized)
 	}
 }

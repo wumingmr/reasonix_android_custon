@@ -37,6 +37,18 @@ func TestDescriptorFromShell(t *testing.T) {
 			wantAndAnd: true,
 		},
 		{
+			name:       "macOS zsh fallback",
+			sh:         sandbox.Shell{Kind: sandbox.ShellZsh, Path: "/bin/zsh"},
+			wantShell:  tool.ShellNameZsh,
+			wantAndAnd: true,
+		},
+		{
+			name:       "POSIX sh fallback",
+			sh:         sandbox.Shell{Kind: sandbox.ShellSh, Path: "/bin/sh"},
+			wantShell:  tool.ShellNameSh,
+			wantAndAnd: true,
+		},
+		{
 			name:        "windows powershell 5.1",
 			sh:          sandbox.Shell{Kind: sandbox.ShellPowerShell, Path: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`},
 			wantShell:   tool.ShellNamePowerShell,
@@ -86,7 +98,12 @@ func TestDisplayName(t *testing.T) {
 }
 
 func TestRunForegroundSuccess(t *testing.T) {
-	argv, sh := shellArgv(t, "printf 'ok\\n'")
+	sh := sandbox.ResolveShell("auto", "", nil)
+	command := "printf 'ok\\n'"
+	if sh.Kind == sandbox.ShellPowerShell {
+		command = "Write-Output ok"
+	}
+	argv := shellArgvWith(sh, command)
 	res := RunForeground(context.Background(), Request{
 		Argv:      argv,
 		ShellKind: sh.Kind.String(),

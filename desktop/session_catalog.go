@@ -55,17 +55,23 @@ type SessionCatalogStatus struct {
 	Indexed         int64  `json:"indexed"`
 	Total           int64  `json:"total"`
 	RepairPending   int64  `json:"repairPending"`
+	RepairActive    int64  `json:"repairActive"`
+	RepairDeferred  int64  `json:"repairDeferred"`
+	RepairBlocked   int64  `json:"repairBlocked"`
+	NextRepairAt    int64  `json:"nextRepairAt,omitempty"`
+	CanRebuild      bool   `json:"canRebuild"`
 	LastError       string `json:"lastError,omitempty"`
 	QuarantinedPath string `json:"quarantinedPath,omitempty"`
 }
 
 type ProjectTreeSnapshot struct {
-	Revision     uint64               `json:"revision"`
-	Projects     []ProjectNode        `json:"projects"`
-	Catalog      SessionCatalogStatus `json:"catalog"`
-	Indexed      int64                `json:"indexed"`
-	Total        int64                `json:"total"`
-	IndexingDone bool                 `json:"indexingDone"`
+	Revision            uint64               `json:"revision"`
+	WorkspaceGeneration *uint64              `json:"workspaceGeneration,omitempty"`
+	Projects            []ProjectNode        `json:"projects"`
+	Catalog             SessionCatalogStatus `json:"catalog"`
+	Indexed             int64                `json:"indexed"`
+	Total               int64                `json:"total"`
+	IndexingDone        bool                 `json:"indexingDone"`
 }
 
 type ProjectTopicPageRequest struct {
@@ -76,15 +82,40 @@ type ProjectTopicPageRequest struct {
 	Query         string `json:"query,omitempty"`
 	TimeFilter    string `json:"timeFilter,omitempty"`
 	SortMode      string `json:"sortMode,omitempty"`
+	GroupFilter   string `json:"groupFilter,omitempty"`
+	GroupID       string `json:"groupId,omitempty"`
+	ExcludePinned bool   `json:"excludePinned,omitempty"`
+
+	groupIncludeJSON string
+	groupExcludeJSON string
+	groupCursorBind  string
+	groupInclude     map[string]struct{}
+	groupExclude     map[string]struct{}
+	groupSelected    *desktopGroup
+	groupAll         []desktopGroup
+	pinnedOnly       bool
+	timeCutoff       int64
+	readContext      context.Context
+	metadataSnapshot *[]ProjectNode
+	readAllSources   bool
+	readAvailability *catalogWorkspaceAvailability
 }
 
 type ProjectTopicKey struct {
 	Scope         string `json:"scope"`
 	WorkspaceRoot string `json:"workspaceRoot,omitempty"`
 	TopicID       string `json:"topicId"`
+	// Path optionally binds topic-wide recovery actions to one physical lineage.
+	// Older frontends omit it and remain compatible when the topic has one group.
+	Path string `json:"path,omitempty"`
+	// RecordClassification is set only by the recovery-event coordinator after
+	// a catalog revision. Ordinary History reads remain diagnostic-free.
+	RecordClassification bool `json:"recordClassification,omitempty"`
 }
 
 type ProjectTopicPage struct {
+	SnapshotID         string        `json:"snapshotId,omitempty"`
+	SnapshotExpiresAt  int64         `json:"snapshotExpiresAt,omitempty"`
 	Items              []ProjectNode `json:"items"`
 	NextCursor         string        `json:"nextCursor,omitempty"`
 	Revision           uint64        `json:"revision"`
@@ -136,12 +167,18 @@ func flushDesktopDerivedCatalogs(ctx context.Context) error {
 
 func sessionCatalogStatus(status sessioncatalog.Status) SessionCatalogStatus {
 	return SessionCatalogStatus{
-		State:           string(status.State),
-		Mode:            string(status.Mode),
-		Revision:        status.Revision,
-		Indexed:         status.Indexed,
-		Total:           status.Total,
-		RepairPending:   status.RepairPending,
+		State:          string(status.State),
+		Mode:           string(status.Mode),
+		Revision:       status.Revision,
+		Indexed:        status.Indexed,
+		Total:          status.Total,
+		RepairPending:  status.RepairPending,
+		RepairActive:   status.RepairActive,
+		RepairDeferred: status.RepairDeferred,
+		RepairBlocked:  status.RepairBlocked,
+		NextRepairAt:   status.NextRepairAt,
+		CanRebuild: status.RepairActive == 0 && (status.State == sessioncatalog.StateDegraded ||
+			(status.State == sessioncatalog.StateReady && strings.TrimSpace(status.LastError) != "")),
 		LastError:       status.LastError,
 		QuarantinedPath: status.QuarantinedPath,
 	}
@@ -151,16 +188,21 @@ func (a *App) currentSessionCatalogStatus() SessionCatalogStatus {
 	if a == nil {
 		return SessionCatalogStatus{State: string(sessioncatalog.StateDegraded), Mode: string(sessioncatalog.ModeMemory)}
 	}
+	if catalog := a.sessionCatalog.Load(); catalog != nil {
+		status := sessionCatalogStatus(catalog.Status())
+		if a.catalogRebuilding.Load() {
+			status.State = string(sessioncatalog.StateRebuilding)
+			status.CanRebuild = false
+		}
+		return status
+	}
 	if a.catalogRebuilding.Load() {
 		return SessionCatalogStatus{State: string(sessioncatalog.StateRebuilding)}
-	}
-	if catalog := a.sessionCatalog.Load(); catalog != nil {
-		return sessionCatalogStatus(catalog.Status())
 	}
 	return SessionCatalogStatus{State: string(sessioncatalog.StateOpening)}
 }
 
-func (a *App) startSessionCatalog(rebuild bool) {
+func (a *App) startSessionCatalog() {
 	if a == nil || a.shuttingDown.Load() {
 		return
 	}
@@ -171,34 +213,50 @@ func (a *App) startSessionCatalog(rebuild bool) {
 	}
 	ctx, cancel := context.WithCancel(a.bootContext())
 	done := make(chan struct{})
+	initialReconcileDone := make(chan struct{})
+	metadataRequests := make(chan struct{}, 1)
 	a.catalogCancel = cancel
 	a.catalogDone = done
-	a.catalogRebuilding.Store(rebuild)
+	a.catalogInitialReconcileDone = initialReconcileDone
+	a.catalogMetadataRequests = metadataRequests
 	a.catalogLifecycleMu.Unlock()
 	history.RegisterSessionPersistObserver(desktopSessionCatalogPersistObserverKey, desktopSessionCatalogPersistObserver{app: a})
 
 	go func() {
 		defer close(done)
-		defer a.catalogRebuilding.Store(false)
-		a.runSessionCatalog(ctx, rebuild)
+		a.runSessionCatalog(ctx, initialReconcileDone, metadataRequests)
 	}()
 }
 
-func (a *App) stopSessionCatalog(timeout time.Duration) {
+// sessionCatalogClose is one stop's release of the catalog handles it took.
+type sessionCatalogClose struct {
+	done chan struct{}
+	err  error
+}
+
+// stopSessionCatalog reports whether every catalog handle this App opened is
+// released. A close that outlives its deadline keeps running and stays owed:
+// the next stop waits for it rather than reporting a handle it has forgotten.
+func (a *App) stopSessionCatalog(timeout time.Duration) bool {
 	if a == nil {
-		return
+		return true
 	}
+	deadline := time.Now().Add(timeout)
+	closing := &sessionCatalogClose{done: make(chan struct{})}
 	a.catalogLifecycleMu.Lock()
 	cancel := a.catalogCancel
 	done := a.catalogDone
+	earlier := a.catalogClosing
 	a.catalogCancel = nil
 	a.catalogDone = nil
+	a.catalogInitialReconcileDone = nil
+	a.catalogMetadataRequests = nil
+	a.catalogClosing = closing
 	a.catalogLifecycleMu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
 	catalog := a.sessionCatalog.Swap(nil)
-	deadline := time.Now().Add(timeout)
 	// Pair the nil publication with the request-side locked recheck. Once this
 	// barrier passes, the snapshot contains every reconcile that can use catalog
 	// and no new one can be added.
@@ -208,29 +266,26 @@ func (a *App) stopSessionCatalog(timeout time.Duration) {
 		reconcileDone = append(reconcileDone, job.done)
 	}
 	a.catalogReconcileMu.Unlock()
-	for _, done := range reconcileDone {
-		if !waitChannelBefore(done, deadline) {
-			break
+	go func() {
+		defer close(closing.done)
+		// A reconcile may wait on discovery that stopping has paused, so it
+		// only defers the close until the deadline, never past it.
+		for _, reconciled := range reconcileDone {
+			if !waitChannelBefore(reconciled, deadline) {
+				break
+			}
 		}
-	}
-	if catalog != nil {
-		remaining := max(time.Until(deadline), 0)
-		ctx, closeCancel := context.WithTimeout(context.Background(), remaining)
-		_ = catalog.Close(ctx)
-		closeCancel()
-	}
-	if done != nil {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return
+		if catalog != nil {
+			closing.err = catalog.Close(context.Background())
 		}
-		timer := time.NewTimer(remaining)
-		defer timer.Stop()
-		select {
-		case <-done:
-		case <-timer.C:
+		if done != nil {
+			<-done
 		}
-	}
+		if earlier != nil {
+			<-earlier.done
+		}
+	}()
+	return waitChannelBefore(closing.done, deadline) && closing.err == nil
 }
 
 func waitChannelBefore(done <-chan struct{}, deadline time.Time) bool {
@@ -286,12 +341,13 @@ func listCatalogSessionsForDirectory(ctx context.Context, catalog *sessioncatalo
 	return []sessioncatalog.SessionRecord{}, nil
 }
 
-// syncSessionCatalogMetadataBounded is the only form the long-lived catalog
-// goroutine may use. SyncMetadata runs under the catalog's single-writer mutex,
-// so one transaction that never returns silently wedges every later index,
-// reconcile, and revision bump — and the sidebar then stops updating for the
-// rest of the process lifetime instead of failing loudly.
+// Metadata-only projection bounds each writer slice inside the catalog. A
+// whole-observation timeout would repeatedly restart large registries at their
+// first batch. Older catalog modes retain their whole-transaction deadline.
 func (a *App) syncSessionCatalogMetadataBounded(ctx context.Context, catalog *sessioncatalog.Catalog) error {
+	if catalog.MetadataOnly() {
+		return a.syncSessionCatalogMetadata(ctx, catalog)
+	}
 	ctx, cancel := context.WithTimeout(ctx, sessionCatalogMetadataSyncTimeout)
 	defer cancel()
 	return a.syncSessionCatalogMetadata(ctx, catalog)
@@ -353,7 +409,7 @@ func (a *App) emitProjectTreeChangedV2(revision uint64, roots []string, reason s
 	if roots == nil {
 		roots = []string{}
 	}
-	a.emitRuntimeEvent("project-tree:changed-v2", ProjectTreeChangedV2{Revision: revision, Roots: roots, Reason: reason})
+	a.emitRuntimeEvent("project-tree:changed-v2", ProjectTreeChangedV2{Revision: a.unifiedProjectRevision(revision), Roots: roots, Reason: reason})
 	// One-release compatibility event. Its wrapper is catalog-only, so legacy
 	// frontends refresh without making current frontends rebuild the whole tree
 	// after they already consumed the targeted v2 revision.
@@ -424,32 +480,14 @@ func (a *App) runSessionCatalogReconcile(key string, done chan struct{}) {
 		if a.catalogReconcileHook != nil {
 			a.catalogReconcileHook(target)
 		}
-		// Explicit reconcile bypasses disposable migration markers. Signatures
-		// keep periodic passes cheap, but an old CLI or restored backup must
-		// never be permanently hidden by a timestamp/content collision.
-		migrated, migratedPaths := forceMigrateLegacySessionsIntoGlobalTopicsWithPaths(target.Path)
-		if len(migrated) > 0 {
-			ctx, cancel := context.WithTimeout(a.bootContext(), 30*time.Second)
-			// Publish the exact migrated sessions before the broader metadata
-			// projection. On large stores (and especially Windows), the metadata
-			// pass can take long enough to defeat this interactive fast path.
-			for _, path := range migratedPaths {
-				if err := catalog.IndexSessionPath(ctx, target, path); err != nil && !errors.Is(err, context.Canceled) {
-					slog.Debug("desktop: index migrated session", "path", path, "err", err)
-				}
+		// Discovery projects metadata without rewriting organization sidecars or
+		// proving recovery ancestry through transcript reads.
+		if settled, accepted := catalog.ScheduleReconcile(target); accepted {
+			select {
+			case <-settled:
+			case <-a.bootContext().Done():
 			}
-			_ = a.syncSessionCatalogMetadata(ctx, catalog)
-			cancel()
 		}
-		// Keep the per-directory single-flight slot until the catalog scan ends.
-		// Enqueuing would reopen the pre-scan stampede window while the catalog
-		// worker was still reconciling the same directory.
-		if err := catalog.ReconcileDirectory(a.bootContext(), target); err != nil && !errors.Is(err, context.Canceled) {
-			slog.Debug("desktop: reconcile session catalog", "path", target.Path, "err", err)
-		}
-		// The count sweep rides the reconcile worker; every move re-proves
-		// coverage from disk, so a stale projection after a failed scan is safe.
-		a.sweepExcessRecoveryCopies(catalog, target)
 
 		a.catalogReconcileMu.Lock()
 		job = a.catalogReconcileJobs[key]
@@ -475,7 +513,11 @@ func sessionDirectoryForPath(path string) string {
 	if path == "" {
 		return ""
 	}
-	return filepath.Dir(path)
+	clean := filepath.Clean(path)
+	if clean == "." || filepath.Base(clean) == clean {
+		return ""
+	}
+	return filepath.Dir(clean)
 }
 
 func (a *App) saveTabSessionMetaSnapshotAndIndex(snap tabSessionMetaSnapshot) error {
@@ -484,7 +526,7 @@ func (a *App) saveTabSessionMetaSnapshotAndIndex(snap tabSessionMetaSnapshot) er
 	}
 	// Transcript saves index through the observer; enqueue again after the
 	// sidecar commit so scope and title changes are visible without a full scan.
-	a.requestSessionCatalogIndexPath(snap.scope, snap.workspaceRoot, snap.path)
+	a.requestSessionCatalogIndexPath(snap.scope, snap.workspaceRoot, string(snap.path))
 	return nil
 }
 
@@ -539,18 +581,27 @@ func (a *App) removeSessionCatalogPath(path, reason string) {
 }
 
 func (a *App) requestSessionCatalogMetadataSync() {
-	catalog := a.sessionCatalog.Load()
-	if catalog == nil || a.shuttingDown.Load() {
+	if a.shuttingDown.Load() {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(a.bootContext(), 5*time.Second)
-		defer cancel()
-		_ = a.syncSessionCatalogMetadata(ctx, catalog)
-	}()
+	a.catalogLifecycleMu.Lock()
+	requests := a.catalogMetadataRequests
+	a.catalogLifecycleMu.Unlock()
+	// Every source shares the watcher's worker, including user edits. A nil
+	// channel before startup/after shutdown simply has no receiver to wake.
+	select {
+	case requests <- struct{}{}:
+	default:
+	}
 }
 
-func (a *App) GetProjectTreeSnapshot() ProjectTreeSnapshot {
+func (a *App) GetProjectTreeSnapshot() (ProjectTreeSnapshot, error) {
+	// Membership/visibility and its generation come from one verified registry
+	// snapshot. Never silently replace it with legacy membership on read failure.
+	state, versions, err := a.workspaceRegistry().LoadProjectionWithVersions(a.bootContext())
+	if err != nil {
+		return ProjectTreeSnapshot{Projects: []ProjectNode{}}, err
+	}
 	f := loadProjectsFile()
 	deleted := make(map[string]bool, len(f.DeletedTopics))
 	for _, topicID := range f.DeletedTopics {
@@ -580,13 +631,19 @@ func (a *App) GetProjectTreeSnapshot() ProjectTreeSnapshot {
 			Children: a.pinnedTopicShells("project", project.Root, project.Topics, project.PinnedTopics, project.Color, deleted),
 		})
 	}
+	// Remote projects (pinned via the connection wizard) render as project
+	// groups too; the Remote ref swaps the folder icon for a cloud icon.
+	if remoteNodes, err := a.remoteProjectNodes(); err == nil {
+		projects = append(projects, remoteNodes...)
+	}
+	projects = a.mergeCanonicalWorkspaceShellsFromProjection(projects, state, versions)
 	projects = applyPinnedProjectOrder(applyProjectTreeOrder(projects, f.SidebarOrder), f.PinnedProjects)
 	status := a.currentSessionCatalogStatus()
 	return ProjectTreeSnapshot{
-		Revision: status.Revision, Projects: projects, Catalog: status,
+		Revision: status.Revision + state.Generation, WorkspaceGeneration: &state.Generation, Projects: projects, Catalog: status,
 		Indexed: status.Indexed, Total: status.Total,
 		IndexingDone: a.catalogIndexingDone(status),
-	}
+	}, nil
 }
 
 // pinnedTopicShells keeps pinned conversations available in the metadata-only
@@ -629,7 +686,7 @@ func (a *App) pinnedTopicShells(scope, workspaceRoot string, topicIDs, pinnedIDs
 }
 
 func (a *App) catalogIndexingDone(status SessionCatalogStatus) bool {
-	if status.State != string(sessioncatalog.StateReady) || status.RepairPending > 0 {
+	if status.State != string(sessioncatalog.StateReady) || status.RepairActive > 0 {
 		return false
 	}
 	catalog := a.sessionCatalog.Load()

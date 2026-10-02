@@ -10,14 +10,14 @@ default_model = "deepseek"   # a provider name (→ its default model) or "provi
 [ui]
 theme = "auto"   # auto|dark|light; controls CLI colors only; REASONIX_THEME can override per run
 # theme_style = "graphite"   # graphite|aurora|slate|carbon|nocturne|amber and legacy aliases
-# shortcut_layout = "desktop"   # classic|desktop; compatibility setting; Shift+Tab toggles Plan, Ctrl+Y toggles YOLO
+# shortcut_layout = "desktop"   # classic|desktop; compatibility setting; Shift+Tab cycles read-only/workspace/YOLO/plan; Ctrl+Y toggles YOLO
 # cursor_shape = "bar"   # block|underline|bar; text input cursor shape; slim default avoids covering CJK characters
 show_turn_usage = true   # CLI/TUI: show per-request token and cost receipts in transcript scrollback
 
 [desktop]
 # language = "auto"   # auto|en|zh; auto follows the browser/OS locale
 # currency = "auto"   # legacy display currency; prefer [billing].display_currency
-layout_style = "classic"   # classic|workbench|creation; desktop layout style
+layout_style = "workbench"   # workbench|creation; legacy classic migrates to workbench
 # theme = "auto"   # desktop only: auto|dark|light
 # terminal_theme = "auto"   # integrated terminal: auto|dark|light; auto follows the desktop app
 # theme_style = "graphite"   # graphite|aurora|slate|carbon|nocturne|amber and legacy aliases
@@ -38,7 +38,7 @@ ask_request = true   # notify when a question is waiting
 # system_prompt = "You are ..."   # custom persona/prompt; unset or empty = built-in default
 # system_prompt_file = "prompts/system.md"   # project paths stay in <workspace>; user paths may fall back to <reasonix home>
 temperature       = 0.0
-# recovery_model = ""               # optional reviewer for low-risk automatic recovery; falls back to guardian_model then main model
+# recovery_model = ""               # optional reviewer for low-risk automatic recovery; empty leaves rule-only recovery
 # reasoning_language = "auto"   # visible reasoning text: auto|zh|en
 # plan_mode_read_only_commands = ["gh issue view"]   # legacy compatibility only; Plan bash uses Permissions
 compact_ratio       = 0.80  # sole auto trigger; presets 0.70 (active) / 0.80 (recommended default) / 0.85 (late)
@@ -58,7 +58,7 @@ compact_ratio       = 0.80  # sole auto trigger; presets 0.70 (active) / 0.80 (r
 # and Anthropic/token-plan regions, MiniMax CN/Global API and Anthropic routes,
 # GLM/Z.AI CN/Global API and coding-plan routes, OpenCode Go/Zen, Qwen/DashScope
 # CN/Global API and coding-plan routes, Token Rhythm (基元律动), StepFun,
-# NovitaAI, GMI, Vercel AI Gateway, HuggingFace, NVIDIA, KiloCode, and Ollama Cloud.
+# NovitaAI, GMI, Vercel AI Gateway, HuggingFace, ModelScope, NVIDIA, KiloCode, and Ollama Cloud.
 [[providers]]
 name        = "deepseek"
 kind        = "openai"
@@ -72,8 +72,9 @@ context_window = 1000000
 # max_output_tokens = 32768   # ordinary coding / cost control
 # max_output_tokens = 65536   # heavy reasoning / long tool loops
 # max_output_tokens = 131072  # only after repeated finish_reason=length
-# Optional per-model context budgets. Omitted models inherit context_window.
-# model_overrides = { "deepseek-v4-flash" = { context_window = 1000000 } }
+# Optional per-model budgets. Omitted models inherit context_window and
+# max_output_tokens from the provider above.
+# model_overrides = { "deepseek-v4-flash" = { context_window = 1000000, max_output_tokens = 32768 } }
 # Official list prices are frozen per provider (billing_currency). Display
 # currency ([billing].display_currency) never rewrites these tables.
 # billing_currency = "USD"   # frozen list-price currency: CNY|USD
@@ -177,10 +178,13 @@ stalled_warning_seconds = 900   # heads-up once per background job after this ma
 
 # A custom status line: a command whose first stdout line replaces the built-in
 # data row. It receives {"model","contextUsed","contextWindow"} as JSON on stdin.
+# user/global only: set it in <Reasonix home>/config.toml; ./reasonix.toml cannot.
 # [statusline]
 # command = "my-statusline.sh"
 
 # External stdio plugins (MCP-compatible); each is a standalone executable.
+# Servers declared in ./reasonix.toml or .mcp.json stay off in that project until
+# you enable them there (`reasonix mcp enable <name>`, or the MCP panel).
 # [[plugins]]
 # name    = "example"
 # command = "reasonix-plugin-example"
@@ -266,9 +270,16 @@ stalled_warning_seconds = 900   # heads-up once per background job after this ma
 # token_env = "WEIXIN_BOT_TOKEN"
 # api_base  = "https://ilinkai.weixin.qq.com"   # Tencent iLink Bot API base URL
 
+# Rewind snapshot retention (see docs/CHECKPOINTS.md). Both are optional; omit
+# or leave at 0 to keep the built-in defaults. A protected or current turn may
+# temporarily exceed the byte budget.
+# [checkpoints]
+# retain_turns     = 100          # turns of file payloads to keep
+# blob_quota_bytes = 1073741824   # 1 GiB soft budget
+
 [serve]
 # Authentication for the HTTP serve frontend (reasonix serve).
-# auth_mode = "none"      # none | token | password
+# auth_mode = "none"      # none | token | password (none: changes still need the launch token)
 # token      = ""          # pre-shared token for auth_mode = "token" (auto-generated if empty)
 # password_hash = ""       # bcrypt hash for auth_mode = "password". Generate with: reasonix serve --hash-password <password>
 # behind_proxy = false      # set true when behind a trusted reverse proxy (nginx, Caddy, etc.) that sets X-Forwarded-* headers

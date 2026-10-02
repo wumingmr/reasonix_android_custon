@@ -48,6 +48,9 @@ func SendEvent(sender Sender, cfg config.NotificationsConfig, e event.Event) {
 }
 
 func message(cfg config.NotificationsConfig, e event.Event) (Message, bool) {
+	if e.Replayed {
+		return Message{}, false
+	}
 	switch e.Kind {
 	case event.TurnDone:
 		if cfg.TurnDone {

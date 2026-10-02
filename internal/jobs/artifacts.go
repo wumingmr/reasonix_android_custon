@@ -129,7 +129,7 @@ func persistedArtifactComplete(dir string, meta artifactMeta) bool {
 // review contents. After a restart the parent must re-inspect and re-verify the
 // recovered mutation rather than trusting stale child sign-off evidence.
 type artifactMutationEvidence struct {
-	Risk  string   `json:"risk"`
+	Risk  string   `json:"risk,omitempty"` // historical input only
 	Paths []string `json:"paths,omitempty"`
 }
 

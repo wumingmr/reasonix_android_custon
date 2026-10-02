@@ -110,7 +110,7 @@ func TestWindowsInstallerScriptWaitsBeforeCopyingExecutable(t *testing.T) {
 		`LangString reasonixUpdateSubtitle ${LANG_TRADCHINESE} "正在安裝已驗證的更新，完成後 Reasonix 將自動重新啟動。"`,
 		"Function reasonix.waitForExecutableUnlock",
 		`FileOpen $1 "$INSTDIR\${PRODUCT_EXECUTABLE}" a`,
-		`FileOpen $1 "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}" a`,
+		`FileOpen $1 "$INSTDIR\versions\${REASONIX_VERSION_TAG}\${PRODUCT_EXECUTABLE}" a`,
 		`FileOpen $1 "$INSTDIR\${REASONIX_GUARD}" a`,
 		`FileOpen $1 "$INSTDIR\${REASONIX_LAUNCHER}" a`,
 		`FileOpen $1 "$INSTDIR\${REASONIX_CLI}" a`,
@@ -123,6 +123,14 @@ func TestWindowsInstallerScriptWaitsBeforeCopyingExecutable(t *testing.T) {
 		`nsExec::ExecToLog /OEM`,
 		`Reasonix layout activator output:`,
 		`--activate-staging "$R9" --no-relaunch`,
+		`LangString reasonixActivateBusy ${LANG_ENGLISH}`,
+		`LangString reasonixActivateBusy ${LANG_SIMPCHINESE}`,
+		`LangString reasonixActivateBusy ${LANG_TRADCHINESE}`,
+		`LangString reasonixActivateLocked ${LANG_ENGLISH}`,
+		`LangString reasonixActivateLocked ${LANG_SIMPCHINESE}`,
+		`LangString reasonixActivateLocked ${LANG_TRADCHINESE}`,
+		`MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "$(reasonixActivateBusy)" IDRETRY reasonix_layout_activate`,
+		`MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "$(reasonixActivateLocked)" IDRETRY reasonix_layout_activate`,
 		`File "/oname=${REASONIX_PAYLOAD_MANIFEST}" "${REASONIX_PAYLOAD_MANIFEST}"`,
 		`File "/oname=${REASONIX_PAYLOAD_SIGNATURE}" "${REASONIX_PAYLOAD_SIGNATURE}"`,
 		`Delete "$INSTDIR\${REASONIX_UPDATE_HELPER}"`,
@@ -139,10 +147,20 @@ func TestWindowsInstallerScriptWaitsBeforeCopyingExecutable(t *testing.T) {
 	if finishPageHook < 0 || finishPage < 0 || finishPageHook > finishPage {
 		t.Fatalf("update-only finish page hook must be attached to MUI_PAGE_FINISH (hook=%d page=%d)", finishPageHook, finishPage)
 	}
+	activation := script[strings.Index(script, "Reasonix layout activator output:"):]
+	retryPrompt := strings.Index(activation, `IDRETRY reasonix_layout_activate`)
+	discardStaging := strings.Index(activation, `RMDir /r "$R9"`)
+	silentAbort := strings.Index(activation, "IfSilent reasonix_activation_failed 0")
+	if retryPrompt < 0 || discardStaging < 0 || retryPrompt > discardStaging || silentAbort < 0 || silentAbort > retryPrompt {
+		t.Fatalf("activation failure must offer Retry before discarding the staged files, and silent installs must skip the prompt (retry=%d discard=%d silent=%d)", retryPrompt, discardStaging, silentAbort)
+	}
+	if levelBeforePrompt := strings.Index(activation, "SetErrorLevel"); levelBeforePrompt < retryPrompt {
+		t.Fatalf("SetErrorLevel must follow the Retry prompt so a successful retry exits 0 (level=%d retry=%d)", levelBeforePrompt, retryPrompt)
+	}
 	wait := strings.Index(script, "Call reasonix.waitForExecutableUnlock")
-	copyFiles := strings.Index(script, "!insertmacro wails.files")
+	copyFiles := strings.Index(script, "reasonix_normal_install:")
 	if wait < 0 || copyFiles < 0 || wait > copyFiles {
-		t.Fatalf("installer must wait for the running exe to unlock before wails.files (wait=%d copy=%d)", wait, copyFiles)
+		t.Fatalf("installer must wait for the running exe to unlock before the normal-install payload extraction (wait=%d copy=%d)", wait, copyFiles)
 	}
 	stageBranch := strings.Index(script, "StrCmp $ReasonixStageMode \"1\" reasonix_stage_payload")
 	if stageBranch < 0 || stageBranch > copyFiles {
@@ -212,9 +230,10 @@ func TestDesktopBuildScriptCompilesAndPackagesWindowsUpdateHelper(t *testing.T) 
 		`go build -trimpath -o "$windows_resource_tool" ./cmd/windows-resource`,
 		`GOOS=windows GOARCH="$arch" go build`,
 		`./cmd/update-helper`,
-		`build/windows/installer/$UPDATE_HELPER`,
-		`stamp_windows_executable "build/windows/installer/$UPDATE_HELPER"`,
-		`cp "build/windows/installer/$UPDATE_HELPER" "$payload_dir/$UPDATE_HELPER"`,
+		`"$installer_dir/$UPDATE_HELPER"`,
+		`stamp_windows_executable "$installer_dir/$UPDATE_HELPER" "Reasonix Update Helper"`,
+		`for name in "$BINNAME.exe" "$GUARDNAME.exe" "$LAUNCHERNAME.exe" "$UPDATE_HELPER" "$WINDOWS_CLINAME.exe" "reasonix-uninstall.exe"; do`,
+		`cp "$installer_dir/$name" "$payload_dir/$name"`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("desktop-build.sh missing %q", want)

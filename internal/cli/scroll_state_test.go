@@ -51,7 +51,7 @@ func TestModalOpenDoesNotDisableTailFollow(t *testing.T) {
 	// Opening an approval banner shrinks the transcript viewport. Without an
 	// explicit scroll state machine that used to make AtBottom() flip false and
 	// permanently stop tail-follow (#6430).
-	ctrl := control.New(control.Options{})
+	ctrl := newOwnedTestController(t, control.Options{})
 	adv := func(m chatTUI, msg tea.Msg) chatTUI {
 		n, _ := m.Update(msg)
 		return n.(chatTUI)
@@ -83,7 +83,7 @@ func TestModalOpenDoesNotDisableTailFollow(t *testing.T) {
 }
 
 func TestUserScrollBreaksAndEmptyEnterRestoresFollow(t *testing.T) {
-	ctrl := control.New(control.Options{})
+	ctrl := newOwnedTestController(t, control.Options{})
 	adv := func(m chatTUI, msg tea.Msg) chatTUI {
 		n, _ := m.Update(msg)
 		return n.(chatTUI)
@@ -111,7 +111,7 @@ func TestUserScrollBreaksAndEmptyEnterRestoresFollow(t *testing.T) {
 func TestScrollbarDragMotionSyncsBeforeRelease(t *testing.T) {
 	// Drag motion must leave followTail immediately so an interleaved agent
 	// event cannot GotoBottom before MouseRelease.
-	ctrl := control.New(control.Options{})
+	ctrl := newOwnedTestController(t, control.Options{})
 	adv := func(m chatTUI, msg tea.Msg) chatTUI {
 		n, _ := m.Update(msg)
 		return n.(chatTUI)
@@ -178,7 +178,7 @@ func TestWrapCacheAppendOnlyMatchesFullRebuild(t *testing.T) {
 func TestStreamAnswerSuffixInvalidationNotFullRebuild(t *testing.T) {
 	// Real event.Text → streamAnswer path must only re-wrap from answerIdx,
 	// leaving wrapBlockCount of the prefix intact between flushes.
-	ctrl := control.New(control.Options{})
+	ctrl := newOwnedTestController(t, control.Options{})
 	adv := func(m chatTUI, msg tea.Msg) chatTUI {
 		n, _ := m.Update(msg)
 		return n.(chatTUI)
@@ -307,7 +307,7 @@ func TestMouseReenableRateLimit(t *testing.T) {
 func TestLongTranscriptStreamAnswerScalesSuffixOnly(t *testing.T) {
 	// 1k history + many streaming flushes: wrapBlockCount tracks transcript and
 	// the answer stays a single rewritten block (no full-history force).
-	ctrl := control.New(control.Options{})
+	ctrl := newOwnedTestController(t, control.Options{})
 	adv := func(m chatTUI, msg tea.Msg) chatTUI {
 		n, _ := m.Update(msg)
 		return n.(chatTUI)
@@ -340,7 +340,7 @@ func BenchmarkStreamAnswerSuffixWrap(b *testing.B) {
 	// invalidation should keep per-op cost independent of history length.
 	for _, hist := range []int{500, 1000, 2000} {
 		b.Run(fmt.Sprintf("hist=%d", hist), func(b *testing.B) {
-			ctrl := control.New(control.Options{})
+			ctrl := newOwnedTestController(b, control.Options{})
 			adv := func(m chatTUI, msg tea.Msg) chatTUI {
 				n, _ := m.Update(msg)
 				return n.(chatTUI)

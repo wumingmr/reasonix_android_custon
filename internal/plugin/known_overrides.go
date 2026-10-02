@@ -85,7 +85,7 @@ func isStdioSpecType(typ string) bool {
 }
 
 func mergeDefaultEnv(existing map[string]string, key, value string) map[string]string {
-	out := make(map[string]string, len(existing)+1)
+	out := make(map[string]string, len(existing))
 	maps.Copy(out, existing)
 	if _, ok := out[key]; !ok {
 		out[key] = value

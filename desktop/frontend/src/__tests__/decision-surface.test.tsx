@@ -94,7 +94,7 @@ function installDom(language = "en-US", descriptionOverflows = true) {
 
 console.log("\ndecision surface");
 
-eq(Object.keys(DECISION_SURFACE_MOCK_TRIGGERS).length, 7, "QA stress scenes do not change the seven product decision surfaces");
+eq(Object.keys(DECISION_SURFACE_MOCK_TRIGGERS).length, 8, "all eight product decision surfaces have browser mocks");
 for (const [kind, trigger] of Object.entries(DECISION_SURFACE_MOCK_TRIGGERS)) {
   eq(decisionSurfaceMockFromInput(trigger), kind, `${kind} has a distinct canonical browser mock trigger`);
 }
@@ -102,7 +102,7 @@ eq(decisionSurfaceMockFromInput("mock 工作区冲突"), "workspace_conflict", "
 eq(decisionSurfaceMockFromInput("/approve-preview"), "tool_approval", "legacy approval preview trigger remains compatible");
 eq(isLongDecisionOptionsMockInput(LONG_DECISION_OPTIONS_MOCK_TRIGGER), true, "long-option QA has a canonical browser trigger");
 eq(isLongDecisionOptionsMockInput("mock 长文案选项"), true, "long-option QA has a convenient Chinese trigger");
-eq(decisionSurfaceMockFromInput(LONG_DECISION_OPTIONS_MOCK_TRIGGER), null, "long-option QA is not counted as an eighth product surface");
+eq(decisionSurfaceMockFromInput(LONG_DECISION_OPTIONS_MOCK_TRIGGER), null, "long-option QA is not counted as a ninth product surface");
 
 // Plan exposes start, revise, and leave-without-executing as direct buttons so
 // declining the current plan never traps the user in Plan mode.
@@ -261,7 +261,7 @@ eq(decisionSurfaceMockFromInput(LONG_DECISION_OPTIONS_MOCK_TRIGGER), null, "long
   });
 
   const actions = [...document.querySelectorAll(".prompt-shelf__actions .prompt-action")] as HTMLButtonElement[];
-  eq(actions.length, 4, "ordinary tool approval has four options");
+  eq(actions.length, 3, "ordinary tool approval has once, session-scoped, and deny options");
   ok(actions[0].classList.contains("prompt-action--selected"), "default selection is allow once");
   ok(Boolean(actions[0].title), "tool approval keeps the complete option description in a desktop tooltip");
   const toolDescriptionToggle = document.querySelector(".prompt-shelf__footnote .prompt-action__description-toggle") as HTMLButtonElement | null;
@@ -298,11 +298,11 @@ eq(decisionSurfaceMockFromInput(LONG_DECISION_OPTIONS_MOCK_TRIGGER), null, "long
   eq(toolDescriptionToggle.getAttribute("aria-expanded"), "true", "tool approval disclosure announces its expanded state");
 
   await act(async () => {
-    actions[3].click();
+    actions[2].click();
     await flushTimers();
   });
   eq(answers.length, 0, "clicking deny only selects");
-  ok(actions[3].classList.contains("prompt-action--selected"), "deny becomes selected");
+  ok(actions[2].classList.contains("prompt-action--selected"), "deny becomes selected");
 
   const confirm = document.querySelector(".decision-confirm-bar__confirm") as HTMLButtonElement;
   await act(async () => {
@@ -320,15 +320,14 @@ eq(decisionSurfaceMockFromInput(LONG_DECISION_OPTIONS_MOCK_TRIGGER), null, "long
   dom.window.close();
 }
 
-// Auto reuses the decision shelf with one-click continue or revise. Task
-// cancellation stays on the ordinary Stop control instead of becoming a third
-// recovery-specific branch. Details stay collapsed; no select-then-confirm.
+// Auto Guard recovery decisions are retired. Old payloads remain visible as
+// history, with no confirmation, retry, task grant, or guidance action.
 {
   const dom = installDom();
   const root = createRoot(document.getElementById("root")!);
   const decisions: Array<{ action: string; feedback?: string }> = [];
   const approval: WireApproval = {
-    id: "guard-1",
+    id: "guard-history",
     tool: "bash",
     subject: "git push origin feature",
     kind: "recovery",
@@ -337,6 +336,7 @@ eq(decisionSurfaceMockFromInput(LONG_DECISION_OPTIONS_MOCK_TRIGGER), null, "long
       change_kind: "risk",
       can_grant_task: true,
       task_grant_scope: "git push origin → feature",
+      failed_summary: "The previous result was not recorded.",
     },
   };
 
@@ -354,313 +354,15 @@ eq(decisionSurfaceMockFromInput(LONG_DECISION_OPTIONS_MOCK_TRIGGER), null, "long
     await flushTimers();
   });
 
-  const actions = [...document.querySelectorAll(".prompt-shelf__actions .prompt-action")] as HTMLButtonElement[];
-  eq(actions.length, 2, "Auto recovery has continue and try-another actions");
-  eq(document.querySelector(".prompt-shelf__actions")?.getAttribute("role"), "group", "Auto boundary actions use button-group semantics");
-  ok(actions.every((action) => action.getAttribute("role") === "button"), "Auto boundary actions are announced as buttons");
-  ok(!actions.some((action) => action.textContent?.includes("Stop task")), "Auto recovery does not add a third Stop decision");
-  ok(!document.body.textContent?.includes("Stop task"), "Auto boundary card relies on the global Stop control");
-  ok(!document.querySelector(".decision-confirm-bar__confirm"), "Auto recovery has no select-then-confirm bar");
-  ok(document.body.textContent?.includes("Action needs confirmation"), "Auto boundary uses plain confirmation copy");
-  ok(!document.body.textContent?.includes("Auto needs"), "Auto boundary hides the internal mechanism name");
-  ok(!document.body.textContent?.includes("checkpoint"), "UI hides internal checkpoint terms");
-  ok(!document.body.textContent?.includes("same_strategy"), "UI hides internal reviewer terms");
-  ok(actions[0].textContent?.includes("Try another approach (recommended)"), "safer action is first and explicitly recommended");
-  ok(actions[0].classList.contains("prompt-action--selected"), "recommended recovery action has primary emphasis");
-  ok(actions[1].textContent?.includes("Continue once"), "one-shot override remains available as the secondary action");
-  ok(document.querySelector(".recovery-summary"), "Auto boundary shows one concise summary by default");
-  ok(document.body.textContent?.includes("may affect an external system"), "summary explains the user-visible risk");
-  eq(document.body.textContent?.split("git push origin feature").length, 2, "pending action is shown once by default");
-  ok(!document.querySelector(".recovery-details"), "details stay collapsed by default");
-  const guidanceTrigger = document.querySelector(".recovery-guidance-trigger") as HTMLButtonElement;
-  ok(guidanceTrigger, "custom requirements stay available as a quiet progressive-disclosure link");
-  ok(guidanceTrigger.textContent?.includes("Tell Auto"), "guidance link uses plain user-facing copy");
-  ok(!document.querySelector(".recovery-guidance__input"), "custom requirements editor stays collapsed by default");
-  eq(actions.length, 2, "custom requirements do not become a third decision card");
-  const recoveryDescriptionToggle = document.querySelector(".prompt-action-row .prompt-action__description-toggle") as HTMLButtonElement | null;
-  if (!recoveryDescriptionToggle) throw new Error("recovery description disclosure did not render");
-  const recoveryCard = document.querySelector(".prompt-shelf--recovery-approval .prompt-shelf__card") as HTMLElement | null;
-  const recoveryContent = document.querySelector(".prompt-shelf--recovery-approval .prompt-shelf__content") as HTMLElement | null;
-  const recoveryActions = document.querySelector(".prompt-shelf--recovery-approval .prompt-shelf__actions") as HTMLElement | null;
-  if (!recoveryCard || !recoveryContent || !recoveryActions) throw new Error("recovery height bounds did not render");
-  eq(window.getComputedStyle(recoveryCard).maxHeight, "min(62vh, 560px)", "recovery card stays bounded by the viewport");
-  eq(window.getComputedStyle(recoveryCard).overflow, "hidden", "recovery card clips only at its shared scroll boundary");
-  eq(window.getComputedStyle(recoveryContent).overflow, "auto", "recovery content uses one internal scroller");
-  eq(window.getComputedStyle(recoveryActions).maxHeight, "none", "recovery options avoid a nested height cap");
-  eq(window.getComputedStyle(recoveryActions).overflow, "visible", "recovery option text remains available in the shared scroller");
-  await act(async () => {
-    recoveryDescriptionToggle.click();
-    await flushTimers();
-  });
-  eq(decisions.length, 0, "expanding recovery details never resolves the pending action");
-  const taskGrant = document.querySelector(".recovery-task-grant input") as HTMLInputElement;
-  ok(taskGrant, "bounded recovery offers a current-task semantic grant");
-  ok(!taskGrant.checked, "task grant is opt-in");
-  ok(document.querySelector(".recovery-continue-option .recovery-task-grant"), "task grant is grouped with Continue");
-  ok(document.body.textContent?.includes("git push origin → feature"), "task grant shows the exact host-classified scope");
-
-  await act(async () => {
-    actions[1].click();
-    actions[1].click();
-    await flushTimers(220);
-  });
-  eq(decisions.length, 1, "double click submits only once");
-  eq(decisions[0]?.action, "continue", "continue resolves only the waiting action");
-
-  await act(async () => {
-    root.unmount();
-  });
-  dom.window.close();
-}
-
-// Specific requirements are one-shot guidance for finding another approach.
-// They never inherit a checked task grant or become approval to execute.
-{
-  const dom = installDom();
-  const root = createRoot(document.getElementById("root")!);
-  const decisions: Array<{ action: string; feedback?: string }> = [];
-  const approval: WireApproval = {
-    id: "guard-guidance",
-    tool: "bash",
-    subject: "git push origin feature",
-    kind: "recovery",
-    recovery: {
-      next_action: "git push origin feature",
-      change_kind: "risk",
-      can_grant_task: true,
-    },
-  };
-
-  await act(async () => {
-    root.render(
-      <LocaleProvider>
-        <ApprovalModal
-          approval={approval}
-          onAnswer={() => undefined}
-          onResolveRecovery={(action, feedback) => decisions.push({ action, feedback })}
-          onStop={() => undefined}
-        />
-      </LocaleProvider>,
-    );
-    await flushTimers();
-  });
-
-  const openGuidance = async () => {
-    await act(async () => {
-      (document.querySelector(".recovery-guidance-trigger") as HTMLButtonElement).click();
-      await flushTimers();
-    });
-  };
-  ok(
-    document.body.textContent?.includes("Only the same operation type and target boundary are reused"),
-    "older recovery events without a display scope retain the generic safety explanation",
-  );
-  await openGuidance();
-
-  let input = document.querySelector(".recovery-guidance__input") as HTMLTextAreaElement;
-  ok(input != null, "guidance link expands an inline text area");
-  eq(input.maxLength, 1000, "guidance input exposes the same 1000-character client limit as submission");
-  ok(input.placeholder.includes("only edit the current file"), "placeholder demonstrates a concrete constraint");
-  ok(input === document.activeElement, "expanded guidance receives focus");
-  ok((document.querySelector(".recovery-guidance__actions .btn--primary") as HTMLButtonElement).disabled, "empty guidance cannot submit");
-  eq(document.querySelectorAll(".prompt-shelf__actions .prompt-action").length, 2, "expanded guidance preserves the two primary decisions");
-
-  await act(async () => {
-    input.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await flushTimers(25);
-  });
-  ok(!document.querySelector(".recovery-guidance__input"), "Escape collapses custom guidance");
-  ok(document.querySelector(".recovery-guidance-trigger") === document.activeElement, "Escape restores focus to the guidance link");
-  eq(decisions.length, 0, "collapsing guidance does not answer the confirmation");
-
-  await act(async () => {
-    (document.querySelector(".recovery-task-grant input") as HTMLInputElement).click();
-    await flushTimers();
-  });
-  await openGuidance();
-  ok(!document.querySelector(".recovery-task-grant"), "guidance hides and clears the unrelated Continue task grant");
-  input = document.querySelector(".recovery-guidance__input") as HTMLTextAreaElement;
-  const feedback = "Only edit the current file; do not push.";
-  await act(async () => {
-    const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")?.set;
-    setter?.call(input, `  ${feedback}  `);
-    input.dispatchEvent(new dom.window.InputEvent("input", { bubbles: true, inputType: "insertText", data: feedback }));
-    input.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
-    input.dispatchEvent(new dom.window.KeyboardEvent("keyup", { key: ".", bubbles: true }));
-    await flushTimers();
-  });
-  ok(!(document.querySelector(".recovery-guidance__actions .btn--primary") as HTMLButtonElement).disabled, "non-empty guidance enables submission");
-
-  await act(async () => {
-    input.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }));
-    await flushTimers(220);
-  });
-  eq(decisions.length, 1, "Ctrl+Enter submits custom requirements once");
-  eq(decisions[0]?.action, "revise", "custom requirements always choose another approach");
-  eq(decisions[0]?.feedback, feedback, "custom requirements are trimmed and forwarded exactly once");
+  ok(document.body.textContent?.includes("Historical recovery record"), "old recovery payload is labeled as history");
+  ok(document.body.textContent?.includes("retired recovery mechanism"), "history explains that the recovery gate is retired");
+  ok(document.body.textContent?.includes("git push origin feature"), "historical action remains visible");
+  eq(document.querySelectorAll(".prompt-shelf__actions .prompt-action").length, 0, "history exposes no decision actions");
+  ok(!document.querySelector(".recovery-task-grant"), "history exposes no task grant");
+  ok(!document.querySelector(".recovery-guidance-trigger"), "history exposes no recovery guidance control");
+  eq(decisions.length, 0, "rendering history never resolves or replays the old action");
 
   await act(async () => root.unmount());
-  dom.window.close();
-}
-
-// The optional semantic grant is explicit and maps to a distinct backend
-// action; it is never inferred from a raw command match.
-{
-  const dom = installDom();
-  const root = createRoot(document.getElementById("root")!);
-  const decisions: Array<{ action: string; feedback?: string }> = [];
-  const approval: WireApproval = {
-    id: "guard-task-grant",
-    tool: "bash",
-    subject: "git push origin feature",
-    kind: "recovery",
-    recovery: {
-      next_action: "git push origin feature",
-      change_kind: "risk",
-      can_grant_task: true,
-      task_grant_scope: "git push origin → feature",
-    },
-  };
-
-  await act(async () => {
-    root.render(
-      <LocaleProvider>
-        <ApprovalModal
-          approval={approval}
-          onAnswer={() => undefined}
-          onResolveRecovery={(action, feedback) => decisions.push({ action, feedback })}
-          onStop={() => undefined}
-        />
-      </LocaleProvider>,
-    );
-    await flushTimers();
-  });
-
-  const taskGrant = document.querySelector(".recovery-task-grant input") as HTMLInputElement;
-  const continueButton = [...document.querySelectorAll(".prompt-shelf__actions .prompt-action")]
-    .find((action) => action.textContent?.includes("Continue once")) as HTMLButtonElement;
-  await act(async () => {
-    taskGrant.click();
-    await flushTimers();
-  });
-  ok(continueButton.textContent?.includes("Continue and remember for this task"), "checked grant updates the action label before consent");
-  ok(!continueButton.textContent?.includes("Continue once"), "checked grant no longer looks like a one-shot action");
-  await act(async () => {
-    continueButton.click();
-    await flushTimers(220);
-  });
-  eq(decisions[0]?.action, "continue_task", "checked semantic grant uses the task-scoped recovery action");
-
-  await act(async () => root.unmount());
-  dom.window.close();
-}
-
-// A reviewer-confirmed scope/strategy transition is presented as a plan-level
-// choice rather than another low-level tool warning.
-{
-  const dom = installDom();
-  const root = createRoot(document.getElementById("root")!);
-  const decisions: Array<{ action: string; feedback?: string }> = [];
-  const approval: WireApproval = {
-    id: "guard-2",
-    tool: "todo_write",
-    subject: "Update the active execution plan",
-    kind: "recovery",
-    recovery: {
-      next_action: "Update the active execution plan",
-      change_kind: "scope",
-      change_rationale: "Publishing the migration changes the product scope.",
-      plan_before: "1. Keep the public API [in_progress]\n2. Update the implementation [pending]",
-      plan_after: "1. Replace the public API [in_progress]\n2. Update the implementation [pending]\n3. Update the migration guide [pending]",
-    },
-  };
-
-  await act(async () => {
-    root.render(
-      <LocaleProvider>
-        <ApprovalModal
-          approval={approval}
-          onAnswer={() => undefined}
-          onResolveRecovery={(action, feedback) => decisions.push({ action, feedback })}
-          onStop={() => undefined}
-        />
-      </LocaleProvider>,
-    );
-    await flushTimers();
-  });
-
-  let actions = [...document.querySelectorAll(".prompt-shelf__actions .prompt-action")] as HTMLButtonElement[];
-  ok(document.body.textContent?.includes("The execution plan needs your decision"), "material scope change uses a neutral plan-level title");
-  ok(document.body.textContent?.includes("Scope choice"), "plan card names the user-owned decision class");
-  ok(document.body.textContent?.includes("Removed from the previous plan"), "plan card identifies removed steps");
-  ok(document.body.textContent?.includes("Keep the public API"), "plan card shows the removed step");
-  ok(document.body.textContent?.includes("Added to the new plan"), "plan card identifies added steps");
-  ok(document.body.textContent?.includes("Replace the public API"), "plan card shows the replacement step");
-  ok(document.body.textContent?.includes("Update the migration guide"), "plan card shows newly added scope");
-  ok(!document.body.textContent?.includes("[in_progress]"), "plan delta omits progress-only status noise");
-  ok(actions[0].textContent?.includes("Adopt the new plan and continue"), "plan adoption remains explicit");
-  ok(actions[1].textContent?.includes("Do not adopt; tell Auto how to adjust"), "plan rejection opens a guided revision path");
-  ok(!actions[0].classList.contains("prompt-action--selected"), "plan adoption is not visually preselected");
-  ok(!actions[1].classList.contains("prompt-action--selected"), "plan adjustment is not visually preselected");
-  ok(!document.querySelector(".recovery-task-grant"), "unbounded scope change does not offer a task grant");
-  const detailsButton = document.querySelector(".prompt-shelf__header-button") as HTMLButtonElement;
-  ok(detailsButton.textContent?.includes("Technical details"), "technical diagnostics are available on demand");
-  await act(async () => {
-    detailsButton.click();
-    await flushTimers();
-  });
-  ok(document.querySelector(".recovery-details"), "technical details expand on request");
-  ok(document.querySelector(".recovery-details .recovery-detail-row"), "expanded diagnostics use restrained detail rows");
-  ok(!document.querySelector(".recovery-details .approval-reason"), "expanded diagnostics do not render an alert wall");
-  await act(async () => {
-    actions[1].click();
-    await flushTimers();
-  });
-  eq(decisions.length, 0, "opening plan adjustment does not reject or adopt the proposal");
-  const guidance = document.querySelector(".recovery-guidance__input") as HTMLTextAreaElement;
-  ok(guidance === document.activeElement, "plan adjustment opens and focuses the guidance field");
-  const feedback = "Keep the public API and update only the migration guide.";
-  await act(async () => {
-    const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")?.set;
-    setter?.call(guidance, feedback);
-    guidance.dispatchEvent(new dom.window.InputEvent("input", { bubbles: true, inputType: "insertText", data: feedback }));
-    guidance.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
-    guidance.dispatchEvent(new dom.window.KeyboardEvent("keyup", { key: ".", bubbles: true }));
-    await flushTimers();
-  });
-  const submitGuidance = document.querySelector(".recovery-guidance__actions .btn--primary") as HTMLButtonElement;
-  ok(submitGuidance.textContent?.includes("Submit adjustment guidance"), "plan guidance uses an explicit submit action");
-  ok(!submitGuidance.disabled, "non-empty plan guidance enables submission");
-  await act(async () => {
-    submitGuidance.click();
-    await flushTimers(220);
-  });
-  eq(decisions[0]?.action, "revise", "submitted plan guidance rejects the proposed transition");
-  eq(decisions[0]?.feedback, feedback, "plan adjustment forwards the user's exact guidance");
-
-  await act(async () => {
-    root.render(
-      <LocaleProvider>
-        <ApprovalModal
-          approval={{ ...approval, id: "guard-3" }}
-          onAnswer={() => undefined}
-          onResolveRecovery={(action, nextFeedback) => decisions.push({ action, feedback: nextFeedback })}
-          onStop={() => undefined}
-        />
-      </LocaleProvider>,
-    );
-    await flushTimers();
-  });
-  actions = [...document.querySelectorAll(".prompt-shelf__actions .prompt-action")] as HTMLButtonElement[];
-  await act(async () => {
-    actions[0].click();
-    await flushTimers(220);
-  });
-  eq(decisions[1]?.action, "continue", "adopting the plan approves the waiting transition once");
-
-  await act(async () => {
-    root.unmount();
-  });
   dom.window.close();
 }
 
@@ -1031,10 +733,10 @@ eq(decisionSurfaceMockFromInput(LONG_DECISION_OPTIONS_MOCK_TRIGGER), null, "long
   await paint(approval);
   const actions = () => [...document.querySelectorAll(".prompt-shelf__actions .prompt-action")] as HTMLButtonElement[];
   await act(async () => {
-    actions()[3].click();
+    actions()[2].click();
     await flushTimers();
   });
-  ok(actions()[3].classList.contains("prompt-action--selected"), "deny selected on first prompt");
+  ok(actions()[2].classList.contains("prompt-action--selected"), "deny selected on first prompt");
 
   await paint({ id: "a2", tool: "bash", subject: "echo 2" });
   ok(actions()[0].classList.contains("prompt-action--selected"), "new prompt id resets selection to allow once");

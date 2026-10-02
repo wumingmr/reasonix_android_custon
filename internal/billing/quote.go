@@ -242,7 +242,7 @@ func newQuoteBuildState(in QuoteInput) *quoteBuildState {
 	providerKind, modelID := resolveCatalogIdentity(in)
 	resolvedBand := ""
 	resolvedSchedule := false
-	if MatchesScheduleAnchor(providerKind, modelID, in.ScheduleID, in.Rates) {
+	if MatchesOfficialPeakAnchor(providerKind, modelID, in.Rates.Currency, mode, in.Rates) {
 		if resolved, ok := ResolveScheduledRate(providerKind, modelID, in.Rates.Currency, mode, in.ScheduleID, occurred); ok {
 			in.Rates = resolved.Card
 			resolvedBand = resolved.RateBand

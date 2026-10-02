@@ -12,6 +12,7 @@ import (
 // goalMachineSnapshot is an in-memory rollback point for durable Goal updates.
 // Persistence paths and mutexes are deliberately excluded.
 type goalMachineSnapshot struct {
+	disarmed               bool
 	goal                   string
 	status                 string
 	scopeID                string
@@ -43,7 +44,8 @@ func (g *goalMachine) capture() goalMachineSnapshot {
 
 func (g *goalMachine) captureLocked() goalMachineSnapshot {
 	return goalMachineSnapshot{
-		goal: g.goal, status: g.status,
+		disarmed: g.disarmed,
+		goal:     g.goal, status: g.status,
 		scopeID: g.scopeID, deliveryCheckpoint: g.deliveryCheckpoint,
 		block: g.block, strict: g.strict,
 		budgetClass: g.budgetClass, turnsUsed: g.turnsUsed,
@@ -63,6 +65,7 @@ func (g *goalMachine) captureLocked() goalMachineSnapshot {
 func (g *goalMachine) restore(snapshot goalMachineSnapshot) {
 	g.mu.Lock()
 	g.goal, g.status = snapshot.goal, snapshot.status
+	g.disarmed = snapshot.disarmed
 	g.scopeID = snapshot.scopeID
 	g.deliveryCheckpoint, g.block = snapshot.deliveryCheckpoint, snapshot.block
 	g.strict = snapshot.strict
@@ -91,7 +94,7 @@ func (g *goalMachine) writeStateErr(path string, data []byte) error {
 	return writeGoalStateData(path, data)
 }
 
-func (g *goalMachine) writeStateAtEpoch(epoch uint64, todos []evidence.TodoItem) (bool, error) {
+func (g *goalMachine) writeStateAtEpoch(epoch uint64) (bool, error) {
 	g.writeMu.Lock()
 	defer g.writeMu.Unlock()
 	g.mu.Lock()
@@ -99,7 +102,7 @@ func (g *goalMachine) writeStateAtEpoch(epoch uint64, todos []evidence.TodoItem)
 		g.mu.Unlock()
 		return false, nil
 	}
-	path, data, ok := g.buildStateLocked(todos)
+	path, data, ok := g.buildStateLocked()
 	g.mu.Unlock()
 	if !ok {
 		return true, nil

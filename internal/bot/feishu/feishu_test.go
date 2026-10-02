@@ -225,6 +225,47 @@ func TestHandleCardActionDoesNotTrustCardRequesterAsOperator(t *testing.T) {
 	}
 }
 
+// Allowlists record open_id and handleSDKMessage resolves open_id first, so a
+// card callback carrying both ids must resolve the same way.
+func TestHandleCardActionPrefersOpenIDOverUnionID(t *testing.T) {
+	a := &adapter{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		msgCh:  make(chan bot.InboundMessage, 1),
+	}
+	raw := []byte(`{
+		"event": {
+			"operator": {
+				"operator_id": {
+					"union_id": "on_union-user",
+					"open_id": "ou_open-user"
+				}
+			},
+			"context": {
+				"open_message_id": "msg-1",
+				"open_chat_id": "chat-1"
+			},
+			"action": {
+				"value": {
+					"command": "/approve approval-1",
+					"chat_type": "dm"
+				}
+			}
+		}
+	}`)
+
+	if !a.handleCardAction(raw) {
+		t.Fatal("handleCardAction returned false")
+	}
+
+	msg := <-a.msgCh
+	if msg.OperatorID != "ou_open-user" {
+		t.Fatalf("operator id = %q, want ou_open-user (open_id must win over union_id)", msg.OperatorID)
+	}
+	if msg.UserID != "ou_open-user" {
+		t.Fatalf("user id = %q, want ou_open-user", msg.UserID)
+	}
+}
+
 func TestHandleMessageTreatsTopicGroupAsGroup(t *testing.T) {
 	a := &adapter{
 		cfg:    config.FeishuBotConfig{RequireMention: true},

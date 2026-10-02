@@ -22,7 +22,9 @@ import {
   useController,
 } from "../lib/useController";
 import type { AppBindings } from "../lib/bridge";
+import { interactionTargetFromState } from "../lib/interactionOwnership";
 import type { ContextInfo, EffortInfo, Meta, TabMeta, WireEvent } from "../lib/types";
+import { installDesktopHostStub } from "./desktopHostStub";
 
 let passed = 0;
 let failed = 0;
@@ -48,6 +50,17 @@ console.log("\npending prompt vs stale runtime snapshots");
 const planApprovalEvent = { kind: "approval_request", approval: { id: "plan-1", tool: "exit_plan_mode", subject: "Approve plan" } } as WireEvent;
 const askEvent = { kind: "ask_request", ask: { id: "ask-1", question: "Which option?" } } as WireEvent;
 const idleStatus = { type: "backend_status", running: false, pendingPrompt: false, backgroundJobs: 0, cancelRequested: false, cancellable: false } as const;
+const promptOwnerState = {
+  ...initialState,
+  meta: {
+    label: "test",
+    ready: true,
+    eventChannel: "agent:event",
+    cwd: "/workspace",
+    session: { hostId: "local", sessionId: "prompt-owner" },
+    sessionGeneration: 1,
+  } satisfies Meta,
+};
 
 const beforePrompt = promptEventClock();
 const withApproval = reducer({ ...initialState }, { type: "event", e: planApprovalEvent });
@@ -155,20 +168,22 @@ eq(replayed.promptArrivedId, "plan-1", "same-id replay keeps the anchor id");
 // actually fails — the prompt is still genuinely pending server-side, and a
 // later replay must be able to recover it instead of being swallowed forever.
 {
-  const armed = reducer({ ...initialState }, { type: "event", e: planApprovalEvent });
-  const answeredOptimistically = reducer(armed, { type: "clearApproval" });
+  const armed = reducer(promptOwnerState, { type: "event", e: planApprovalEvent });
+  const target = interactionTargetFromState("tab-prompt-owner", armed, "plan", "plan-1");
+  const answeredOptimistically = reducer(armed, { type: "clearApproval", target });
   eq(answeredOptimistically.resolvedPromptId, "plan-1", "the optimistic answer records a tombstone before the backend call resolves");
-  const submitFailed = reducer(answeredOptimistically, { type: "submit_prompt_failed", id: "plan-1", epoch: answeredOptimistically.promptEpoch });
+  const submitFailed = reducer(answeredOptimistically, { type: "submit_prompt_failed", target, epoch: answeredOptimistically.promptEpoch });
   eq(submitFailed.resolvedPromptId, undefined, "a failed submit undoes the tombstone for that id");
   const recovered = reducer(submitFailed, { type: "event", e: planApprovalEvent });
   eq(recovered.approval?.id, "plan-1", "a replay after a failed submit can recover the still-pending prompt");
 
   // A failure report for an id that is no longer the current tombstone (e.g.
   // a stale/duplicate failure callback) must not clobber a newer one.
-  const armed2 = reducer({ ...initialState }, { type: "event", e: { kind: "approval_request", approval: { id: "plan-2", tool: "exit_plan_mode", subject: "Approve plan" } } as WireEvent });
-  const answered2 = reducer(armed2, { type: "clearApproval" });
+  const armed2 = reducer(promptOwnerState, { type: "event", e: { kind: "approval_request", approval: { id: "plan-2", tool: "exit_plan_mode", subject: "Approve plan" } } as WireEvent });
+  const target2 = interactionTargetFromState("tab-prompt-owner", armed2, "plan", "plan-2");
+  const answered2 = reducer(armed2, { type: "clearApproval", target: target2 });
   eq(answered2.resolvedPromptId, "plan-2", "answering the second prompt records its own tombstone");
-  const staleFailure = reducer(answered2, { type: "submit_prompt_failed", id: "plan-1", epoch: answered2.promptEpoch });
+  const staleFailure = reducer(answered2, { type: "submit_prompt_failed", target, epoch: answered2.promptEpoch });
   eq(staleFailure.resolvedPromptId, "plan-2", "a stale failure for an older id does not clobber the current tombstone");
 }
 
@@ -208,23 +223,25 @@ eq(replayed.promptArrivedId, "plan-1", "same-id replay keeps the anchor id");
 // wrote for the same numeric id — approval ids restart from "1" per
 // controller, so the old failure names a different prompt.
 {
-  const armed = reducer({ ...initialState }, { type: "event", e: planApprovalEvent });
+  const armed = reducer(promptOwnerState, { type: "event", e: planApprovalEvent });
   const epochA = armed.promptEpoch;
-  const answeredA = reducer(armed, { type: "clearApproval" });
+  const targetA = interactionTargetFromState("tab-prompt-owner", armed, "plan", "plan-1");
+  const answeredA = reducer(armed, { type: "clearApproval", target: targetA });
   // Controller rebuild lands while the epoch-A RPC is still in flight.
   const rebuilt = reducer(answeredA, { type: "controller_rebuilt" });
   eq(rebuilt.promptEpoch, epochA + 1, "a controller rebuild advances the prompt epoch");
   // The rebuilt controller reissues id "plan-1"; the user answers it too.
   const armedB = reducer(rebuilt, { type: "event", e: planApprovalEvent });
-  const answeredB = reducer(armedB, { type: "clearApproval" });
+  const targetB = interactionTargetFromState("tab-prompt-owner", armedB, "plan", "plan-1");
+  const answeredB = reducer(armedB, { type: "clearApproval", target: targetB });
   eq(answeredB.resolvedPromptId, "plan-1", "the new controller's answer records its own tombstone");
   // The old controller's RPC failure finally lands, carrying the old epoch.
-  const staleEpochFailure = reducer(answeredB, { type: "submit_prompt_failed", id: "plan-1", epoch: epochA });
+  const staleEpochFailure = reducer(answeredB, { type: "submit_prompt_failed", target: targetA, epoch: epochA });
   eq(staleEpochFailure.resolvedPromptId, "plan-1", "a failure from a pre-rebuild epoch cannot erase the new controller's tombstone");
   const zombie = reducer(staleEpochFailure, { type: "event", e: planApprovalEvent });
   eq(zombie.approval, undefined, "the answered prompt's delayed replay stays suppressed after the stale failure");
   // Same-epoch failures still recover the genuinely-unresolved prompt.
-  const currentEpochFailure = reducer(answeredB, { type: "submit_prompt_failed", id: "plan-1", epoch: answeredB.promptEpoch });
+  const currentEpochFailure = reducer(answeredB, { type: "submit_prompt_failed", target: targetB, epoch: answeredB.promptEpoch });
   eq(currentEpochFailure.resolvedPromptId, undefined, "a same-epoch failure still undoes the tombstone");
   // reset() starts a new session (new controller, ids restart) — the epoch
   // advances there too so pre-reset failures cannot touch post-reset state.
@@ -402,26 +419,17 @@ function metaForTab(): Meta {
 
 const context: ContextInfo = { used: 0, window: 100, sessionTokens: 0 };
 const effortInfo: EffortInfo = { supported: true, current: "auto", default: "auto", levels: ["auto"] };
-const eventHandlers: Array<(e: WireEvent) => void> = [];
-const rebuiltHandlers: Array<(tabId?: string, runtimeEpoch?: string) => void> = [];
 let holdNextListTabs: Promise<void> | undefined;
 let modeDrain: ReturnType<typeof deferred<string[]>> | undefined;
-let toolApprovalModeDrain: ReturnType<typeof deferred<string[]>> | undefined;
+let permissionPresetDrain: ReturnType<typeof deferred<void>> | undefined;
 let composerProfileDrain: ReturnType<typeof deferred<string[]>> | undefined;
 let composerProfileCalls = 0;
 let rejectNextComposerProfile = false;
 
-window.runtime = {
-  EventsOn: (name: string, cb: (payload: unknown) => void) => {
-    if (name === "agent:event") eventHandlers.push(cb as (e: WireEvent) => void);
-    if (name === "runtime:rebuilt") rebuiltHandlers.push(cb as (tabId?: string, runtimeEpoch?: string) => void);
-    return () => {};
-  },
-  BrowserOpenURL: () => {},
-};
-window.go = {
+const desktopStub = installDesktopHostStub(({
   main: {
     App: {
+      RegisterNavigationIntent: async () => {},
       ListTabs: async () => {
         if (holdNextListTabs) {
           const gatePromise = holdNextListTabs;
@@ -436,13 +444,42 @@ window.go = {
       BalanceForTab: async () => ({ available: false, display: "" }),
       JobsForTab: async () => [],
       CheckpointsForTab: async () => [],
+      ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
       HistoryForTab: async () => [],
       HistoryPageForTab: async () => ({ messages: [], startTurn: 0, endTurn: 0, totalTurns: 0, hasOlder: false }),
       HistoryCheckpointTurnsForTab: async () => [],
       ReplayPendingPrompts: async () => {},
       SetActiveTab: async () => {},
       SetModeForTab: async () => modeDrain?.promise ?? [],
-      SetToolApprovalModeForTab: async () => toolApprovalModeDrain?.promise ?? [],
+      PermissionSnapshotForTab: async () => ({
+        sessionId: "session-a",
+        generation: 1,
+        revision: 1,
+        preset: "workspace-write",
+        workspaceRoot: "/repo",
+        grants: [],
+        capabilities: {
+          backend: "seatbelt",
+          enforcement: "full",
+          supportedPresets: ["read-only", "workspace-write", "danger-full-access"],
+        },
+      }),
+      SetPermissionPresetForTab: async () => {
+        await (permissionPresetDrain?.promise ?? Promise.resolve());
+        return {
+          sessionId: "session-a",
+          generation: 1,
+          revision: 2,
+          preset: "workspace-write",
+          workspaceRoot: "/repo",
+          grants: [],
+          capabilities: {
+            backend: "seatbelt",
+            enforcement: "full",
+            supportedPresets: ["read-only", "workspace-write", "danger-full-access"],
+          },
+        };
+      },
       SetComposerProfileForTab: async () => {
         composerProfileCalls += 1;
         if (rejectNextComposerProfile) {
@@ -453,7 +490,7 @@ window.go = {
       },
     } as Partial<AppBindings> as AppBindings,
   },
-};
+}).main.App);
 
 type Controller = ReturnType<typeof useController>;
 let controller: Controller | undefined;
@@ -488,19 +525,19 @@ const remoteEpochApproval = {
   approval: { id: "remote-epoch-1", tool: "bash", subject: "Remote epoch prompt" },
 } as WireEvent;
 await act(async () => {
-  for (const handler of eventHandlers) handler(remoteEpochApproval);
+  desktopStub.emit("agent:event", remoteEpochApproval);
   await flushPromises();
 });
 eq(controller?.state.approval, undefined, "a Remote event is fenced while the Local epoch is still authoritative");
 await act(async () => {
   projectedRuntimeEpoch = "runtime-remote";
-  for (const handler of rebuiltHandlers) handler("tab-a", "runtime-remote");
-  for (const handler of eventHandlers) handler(remoteEpochApproval);
+  desktopStub.emit("runtime:rebuilt", "tab-a", "runtime-remote");
+  desktopStub.emit("agent:event", remoteEpochApproval);
   await flushPromises();
 });
 eq(controller?.state.approval?.id, "remote-epoch-1", "the projected Remote epoch admits tagged Host events");
 await act(async () => {
-  for (const handler of eventHandlers) handler({ kind: "turn_done", tabId: "tab-a", runtimeEpoch: "runtime-remote" } as WireEvent);
+  desktopStub.emit("agent:event", { kind: "turn_done", tabId: "tab-a", runtimeEpoch: "runtime-remote" } as WireEvent);
   await flushPromises();
 });
 eq(controller?.state.approval, undefined, "the Remote epoch regression fixture resets cleanly");
@@ -515,9 +552,7 @@ await act(async () => {
   await flushPromises();
 });
 await act(async () => {
-  for (const handler of eventHandlers) {
-    handler({ kind: "approval_request", tabId: "tab-a", approval: { id: "plan-live", tool: "exit_plan_mode", subject: "Approve plan" } } as WireEvent);
-  }
+  desktopStub.emit("agent:event", { kind: "approval_request", tabId: "tab-a", approval: { id: "plan-live", tool: "exit_plan_mode", subject: "Approve plan" } } as WireEvent);
   await flushPromises();
 });
 eq(controller?.state.approval?.id, "plan-live", "replayed plan approval renders while a snapshot fetch is in flight");
@@ -531,9 +566,9 @@ eq(controller?.state.approval?.id, "plan-live", "a snapshot fetched before the p
 eq(controller?.state.pendingPrompt, true, "the prompt gate survives the stale reconciliation");
 eq(controller?.state.running, true, "the tab stays blocked on the user after the stale reconciliation");
 
-// A snapshot fetched after the event still reconciles: if the backend truly
-// has no pending prompt anymore, the zombie prompt is cleared.
+// Only an ordered backend terminal event can release the prompt gate.
 await act(async () => {
+  desktopStub.emit("agent:event", { kind: "turn_done", tabId: "tab-a" });
   await controller?.syncActiveTab(false);
   await flushPromises();
 });
@@ -557,9 +592,7 @@ eq(controller?.state.running, false, "fresh idle snapshot releases the blocked s
     await flushPromises();
   });
   await act(async () => {
-    for (const handler of eventHandlers) {
-      handler({ kind: "approval_request", tabId: "tab-a", approval: { id: "plan-zombie", tool: "exit_plan_mode", subject: "Approve plan" } } as WireEvent);
-    }
+    desktopStub.emit("agent:event", { kind: "approval_request", tabId: "tab-a", approval: { id: "plan-zombie", tool: "exit_plan_mode", subject: "Approve plan" } } as WireEvent);
     await flushPromises();
   });
   eq(controller?.state.approval?.id, "plan-zombie", "zombie approval is armed after the snapshot fetch started");
@@ -569,10 +602,9 @@ eq(controller?.state.running, false, "fresh idle snapshot releases the blocked s
     await flushPromises();
   });
   eq(controller?.state.approval?.id, "plan-zombie", "the stale idle snapshot is rejected, the prompt survives for now");
-  // The backend reports idle (the prompt was resolved); the scheduled fresh
-  // reconcile refetches that truth and clears the zombie, unlocking input.
+  // Metadata cannot clear a prompt. Its resolution arrives on Follow.
   await act(async () => {
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 300));
+    desktopStub.emit("agent:event", { kind: "turn_done", tabId: "tab-a" });
     await flushPromises();
   });
   eq(controller?.state.approval?.id, undefined, "the scheduled fresh reconcile clears the zombie the stale rejection preserved");
@@ -585,9 +617,7 @@ eq(controller?.state.running, false, "fresh idle snapshot releases the blocked s
 {
   const approvalID = "mode-drain-1";
   await act(async () => {
-    for (const handler of eventHandlers) {
-      handler({ kind: "approval_request", tabId: "tab-a", approval: { id: approvalID, tool: "bash", subject: "old controller mode prompt" } } as WireEvent);
-    }
+    desktopStub.emit("agent:event", { kind: "approval_request", tabId: "tab-a", approval: { id: approvalID, tool: "bash", subject: "old controller mode prompt" } } as WireEvent);
     await flushPromises();
   });
   modeDrain = deferred<string[]>();
@@ -597,10 +627,8 @@ eq(controller?.state.running, false, "fresh idle snapshot releases the blocked s
     await flushPromises();
   });
   await act(async () => {
-    for (const handler of rebuiltHandlers) handler("tab-a");
-    for (const handler of eventHandlers) {
-      handler({ kind: "approval_request", tabId: "tab-a", approval: { id: approvalID, tool: "bash", subject: "new controller mode prompt" } } as WireEvent);
-    }
+    desktopStub.emit("runtime:rebuilt", "tab-a");
+    desktopStub.emit("agent:event", { kind: "approval_request", tabId: "tab-a", approval: { id: approvalID, tool: "bash", subject: "new controller mode prompt" } } as WireEvent);
     await flushPromises();
   });
   await act(async () => {
@@ -612,36 +640,30 @@ eq(controller?.state.running, false, "fresh idle snapshot releases the blocked s
 
   const toolApprovalID = "tool-mode-drain-1";
   await act(async () => {
-    for (const handler of eventHandlers) {
-      handler({ kind: "approval_request", tabId: "tab-a", approval: { id: toolApprovalID, tool: "bash", subject: "old tool-approval prompt" } } as WireEvent);
-    }
+    desktopStub.emit("agent:event", { kind: "approval_request", tabId: "tab-a", approval: { id: toolApprovalID, tool: "bash", subject: "old tool-approval prompt" } } as WireEvent);
     await flushPromises();
   });
-  toolApprovalModeDrain = deferred<string[]>();
+  permissionPresetDrain = deferred<void>();
   let toolSwitchPromise: Promise<void> | undefined;
   await act(async () => {
-    toolSwitchPromise = controller?.setToolApprovalModeForTab("tab-a", "auto");
+    toolSwitchPromise = controller?.setToolApprovalModeForTab("tab-a", "workspace-write");
     await flushPromises();
   });
   await act(async () => {
-    for (const handler of rebuiltHandlers) handler("tab-a");
-    for (const handler of eventHandlers) {
-      handler({ kind: "approval_request", tabId: "tab-a", approval: { id: toolApprovalID, tool: "bash", subject: "new tool-approval prompt" } } as WireEvent);
-    }
+    desktopStub.emit("runtime:rebuilt", "tab-a");
+    desktopStub.emit("agent:event", { kind: "approval_request", tabId: "tab-a", approval: { id: toolApprovalID, tool: "bash", subject: "new tool-approval prompt" } } as WireEvent);
     await flushPromises();
   });
   await act(async () => {
-    toolApprovalModeDrain?.resolve([toolApprovalID]);
+    permissionPresetDrain?.resolve();
     await toolSwitchPromise;
     await flushPromises();
   });
-  eq(controller?.state.approval?.subject, "new tool-approval prompt", "a late SetToolApprovalModeForTab drain cannot dismiss a new same-id prompt");
+  eq(controller?.state.approval?.subject, "new tool-approval prompt", "a late SetPermissionPresetForTab drain cannot dismiss a new same-id prompt");
 
   const profileApprovalID = "profile-drain-1";
   await act(async () => {
-    for (const handler of eventHandlers) {
-      handler({ kind: "approval_request", tabId: "tab-a", approval: { id: profileApprovalID, tool: "bash", subject: "old composer-profile prompt" } } as WireEvent);
-    }
+    desktopStub.emit("agent:event", { kind: "approval_request", tabId: "tab-a", approval: { id: profileApprovalID, tool: "bash", subject: "old composer-profile prompt" } } as WireEvent);
     await flushPromises();
   });
   composerProfileDrain = deferred<string[]>();
@@ -653,10 +675,8 @@ eq(controller?.state.running, false, "fresh idle snapshot releases the blocked s
   });
   eq(composerProfileCalls, profileCallsBefore + 1, "one composer-profile sync uses one atomic backend call");
   await act(async () => {
-    for (const handler of rebuiltHandlers) handler("tab-a");
-    for (const handler of eventHandlers) {
-      handler({ kind: "approval_request", tabId: "tab-a", approval: { id: profileApprovalID, tool: "bash", subject: "new composer-profile prompt" } } as WireEvent);
-    }
+    desktopStub.emit("runtime:rebuilt", "tab-a");
+    desktopStub.emit("agent:event", { kind: "approval_request", tabId: "tab-a", approval: { id: profileApprovalID, tool: "bash", subject: "new composer-profile prompt" } } as WireEvent);
     await flushPromises();
   });
   await act(async () => {
@@ -678,7 +698,7 @@ eq(controller?.state.running, false, "fresh idle snapshot releases the blocked s
   const rebuiltProfileCallsBefore = composerProfileCalls;
   await act(async () => {
     projectedRuntimeEpoch = "runtime-next";
-    for (const handler of rebuiltHandlers) handler("tab-a", "runtime-next");
+    desktopStub.emit("runtime:rebuilt", "tab-a", "runtime-next");
     await controller?.setComposerProfileForTab("tab-a", "plan", "auto", "");
     await controller?.setComposerProfileForTab("tab-a", "plan", "auto", "");
     await flushPromises();

@@ -22,8 +22,8 @@ func submitCompleteSubtask(t *testing.T, led *evidence.Ledger, args string) stri
 	return out
 }
 
-// The child may claim anything; the status the parent sees is the host's.
-func TestCompleteSubtaskHostLowersUnbackedClaim(t *testing.T) {
+// The model's report is preserved; execution facts are a separate projection.
+func TestCompleteSubtaskPreservesModelReport(t *testing.T) {
 	led := evidence.NewLedger()
 	led.Record(evidence.Receipt{ToolName: "bash", Command: "go test ./parser", Success: true, OutputBytes: 12})
 
@@ -34,8 +34,8 @@ func TestCompleteSubtaskHostLowersUnbackedClaim(t *testing.T) {
 			{"id":"AC1","status":"satisfied","evidence":[{"kind":"verification","summary":"unit tests","command":"go test ./parser"}]},
 			{"id":"AC2","status":"satisfied","evidence":[{"kind":"verification","summary":"integration suite","command":"go test ./integration"}]}
 		]}`
-	if out := submitCompleteSubtask(t, led, args); !strings.Contains(out, "status=partial") {
-		t.Fatalf("tool result = %q, want the host-lowered status", out)
+	if out := submitCompleteSubtask(t, led, args); !strings.Contains(out, "status=complete") {
+		t.Fatalf("tool result = %q, want the model's status", out)
 	}
 
 	// The agent host, not the tool, records the call; replay that receipt so the
@@ -45,18 +45,8 @@ func TestCompleteSubtaskHostLowersUnbackedClaim(t *testing.T) {
 	if !ok {
 		t.Fatal("a recorded complete_subtask call must be recoverable from the ledger")
 	}
-	adjudicated, reasons := led.AdjudicateCompletion(report)
-	if adjudicated.Status != evidence.CompletionPartial {
-		t.Fatalf("status = %q, want partial", adjudicated.Status)
-	}
-	if adjudicated.Criteria[0].Status != evidence.CriterionSatisfied {
-		t.Fatal("AC1 was backed by a real command receipt and must survive")
-	}
-	if adjudicated.Criteria[1].Status != evidence.CriterionUnsatisfied {
-		t.Fatal("AC2 cited a command that never ran and must be lowered")
-	}
-	if len(reasons) != 1 || !strings.HasPrefix(reasons[0], "AC2:") {
-		t.Fatalf("reasons = %v, want one naming AC2", reasons)
+	if report.Status != evidence.CompletionComplete || report.Criteria[1].Status != evidence.CriterionSatisfied {
+		t.Fatalf("host rewrote the model report: %+v", report)
 	}
 }
 
@@ -77,10 +67,8 @@ func TestCompleteSubtaskKeepsFullyBackedClaim(t *testing.T) {
 	}
 }
 
-// A satisfied criterion resting only on the model's word is not host-backed.
-func TestCompleteSubtaskLowersManualOnlyAndEvidenceFreeClaims(t *testing.T) {
-	led := evidence.NewLedger()
-	report, err := evidence.ParseCompletionReport(json.RawMessage(`{
+func TestCompleteSubtaskAcceptsReportWithoutHostEvidence(t *testing.T) {
+	out, err := NewCompleteSubtaskTool().Execute(context.Background(), json.RawMessage(`{
 		"status":"complete","summary":"done",
 		"acceptance_criteria":[
 			{"id":"AC1","status":"satisfied","evidence":[{"kind":"manual","summary":"I checked it"}]},
@@ -89,9 +77,8 @@ func TestCompleteSubtaskLowersManualOnlyAndEvidenceFreeClaims(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adjudicated, reasons := led.AdjudicateCompletion(report)
-	if adjudicated.Status != evidence.CompletionPartial || len(reasons) != 2 {
-		t.Fatalf("status = %q reasons = %v, want partial with both lowered", adjudicated.Status, reasons)
+	if !strings.Contains(out, "status=complete") || strings.Contains(out, "lowered") {
+		t.Fatalf("report was adjudicated: %s", out)
 	}
 }
 
@@ -110,8 +97,7 @@ func TestParseCompletionReportRejectsMalformedClaims(t *testing.T) {
 	}
 }
 
-// End to end: the parent's view leads with the adjudicated status, not prose.
-func TestSubAgentAnswerLeadsWithAdjudicatedStatus(t *testing.T) {
+func TestSubAgentAnswerSeparatesModelReportFromExecutionFacts(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Add(fakeWriteFileTool{})
 	AttachCompleteSubtaskTool(reg)
@@ -126,18 +112,33 @@ func TestSubAgentAnswerLeadsWithAdjudicatedStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunSubAgentWithSession: %v", err)
 	}
-	if !strings.HasPrefix(answer, "status: partial") {
-		t.Fatalf("answer must lead with the host-adjudicated status:\n%s", answer)
+	if !strings.HasPrefix(answer, "Model-reported status: complete") {
+		t.Fatalf("answer must label the model's assessment:\n%s", answer)
 	}
 	for _, want := range []string{
 		"AC1 satisfied",
-		"AC2 unsatisfied",
-		"host lowered AC2",
+		"AC2 satisfied",
 		"unresolved: integration suite not executed",
 		hostReceiptsHeader,
 	} {
 		if !strings.Contains(answer, want) {
 			t.Fatalf("answer missing %q:\n%s", want, answer)
 		}
+	}
+	if strings.Contains(answer, "host lowered") {
+		t.Fatalf("host adjudication survived: %s", answer)
+	}
+}
+
+func TestSubAgentMayFinishWithoutCompletionReport(t *testing.T) {
+	reg := tool.NewRegistry()
+	AttachCompleteSubtaskTool(reg)
+	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+		{{Type: provider.ChunkText, Text: "Analysis complete."}, {Type: provider.ChunkDone}},
+	}}
+	answer, err := RunSubAgentWithSession(context.Background(), prov, reg, NewSession("sys"),
+		completeSubtaskContract, Options{}, event.Discard)
+	if err != nil || answer != "Analysis complete." {
+		t.Fatalf("plain completion = %q, %v", answer, err)
 	}
 }

@@ -1,35 +1,43 @@
-# Collaboration modes and fact-driven execution
+# Collaboration modes and execution facts
 
-The desktop composer menu has two independent collaboration axes:
+The composer offers Plan and Goal. There is no selectable quality floor.
+Ordinary requests end when the model ends normally; pending todos and missing
+checks do not cause host-generated continuation.
 
-- **Plan mode**: draft a plan, then implement after approval.
-- **Goal mode**: pursue one objective until it is complete, blocked, or stopped.
+## Plan
 
-There is no automatic task mode. The one session role is the quality floor: standard (default) or delivery; facts can still raise it. Ordinary requests always
-enter the executor. The dedicated planner runs only for an explicit Plan, an
-approval boundary, or Goal start. Todos and sub-agents are model-chosen. The
-host builds verification obligations from real tool actions.
+Plan previews work for approval. Before approval, the host blocks writes,
+including Yolo, proxy tools and subagents. After approval, the model implements
+the plan and feedback, updates todos, and judges completion. Acceptance notes
+are task instructions; no sequential evidence signoff is required.
 
-The host evaluates cumulative effects, not just one tool call at a time. A
-second production target upgrades sequential edits to multi-file preconditions.
-Full verification requires every repository-declared check, or an unmistakably
-project-wide verifier when no checks are declared. Reviews are accepted only
-when their type, target coverage, and non-blocking verdict match the outstanding
-obligation.
+## Goal
+
+An active, armed Goal is continued by the runtime idle driver after every
+normally completed top-level turn. No per-turn `continue` vote exists.
+`update_goal(complete)` commits the model's completion declaration and
+`update_goal(blocked)` stops continuation after the automatic-round minimum.
+There is no independent completion evaluator. Restored and forked Goals are
+always disarmed. Cancellation, queued user input, pending interaction,
+persistence errors and explicit budgets retain their boundaries.
 
 Plan, Goal, permission, sandbox, and the task contract are independent states.
-Ask / Auto / Yolo keep their public meanings. The tool catalog stays stable so
-the prompt cache stays warm. The Harness minimal preset is not a task
-complexity mode.
+Read only, Workspace write, and Full access keep their public meanings. The tool
+catalog stays stable so the prompt cache stays warm. The Harness minimal preset
+is not a task complexity mode.
 
-## Plan mode
+## Permissions and results
+
+Read only / Workspace write / Full access, sandbox restrictions and explicit
+prohibitions remain action controls. They do not certify task quality. Tool results retain actual failures,
+exit codes and interruptions. Checks that precede later edits are stale.
+Model completion declarations and execution facts are distinct; unfinished
+todos are not automatically marked complete.
 
 Plan mode is a workflow instruction, not a permission boundary. Writes stay
-hard-blocked until the plan is approved, even under YOLO. `complete_step` waits
+hard-blocked until the plan is approved, even under Full access. `complete_step` waits
 for approval.
 
-## Goal mode
-
-Goal mode keeps working inside the stated objective. Blocked Goals write into
-the existing Goal state. Ordinary tasks that cannot satisfy a strict obligation
-return a blocked explanation and must not look successful.
+See [execution semantics and migration](EXECUTION_MODEL_SIMPLIFICATION.md) and
+[task instructions](TASK_CONTRACT.md). Tool ordering and serialization stay
+stable within a version; historical provider-visible messages are not rewritten.

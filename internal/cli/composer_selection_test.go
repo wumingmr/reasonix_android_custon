@@ -16,7 +16,7 @@ import (
 
 func newComposerMouseTestTUI(t *testing.T, width, height int) chatTUI {
 	t.Helper()
-	m := newChatTUI(control.New(control.Options{}), "", make(chan event.Event, 1), width)
+	m := newChatTUI(newOwnedTestController(t, control.Options{}), "", make(chan event.Event, 1), width)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: height})
 	return next.(chatTUI)
 }
@@ -348,6 +348,9 @@ func TestComposerSelectionDoesNotTurnCommandShortcutIntoText(t *testing.T) {
 	m = updateComposerMouseTestTUI(t, m, tea.KeyPressMsg{Code: 'y', Mod: tea.ModCtrl})
 	if got := m.input.Value(); got != "keep this" {
 		t.Fatalf("Ctrl+Y changed selected composer text to %q", got)
+	}
+	if got := m.ctrl.ToolApprovalMode(); got != control.ToolApprovalDangerFullAccess {
+		t.Fatalf("Ctrl+Y permission mode = %q, want danger-full-access", got)
 	}
 }
 

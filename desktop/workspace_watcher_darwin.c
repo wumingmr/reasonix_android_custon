@@ -142,3 +142,11 @@ void reasonix_fsevents_stop(reasonix_fsevents_subscription *subscription) {
 #endif
     free(subscription);
 }
+
+void reasonix_fsevents_catch_up(reasonix_fsevents_subscription *subscription) {
+    if (subscription == NULL) {
+        return;
+    }
+    FSEventStreamFlushSync(subscription->stream);
+    dispatch_sync_f(subscription->queue, NULL, reasonix_fsevents_barrier);
+}

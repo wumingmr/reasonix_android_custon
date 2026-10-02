@@ -34,12 +34,47 @@ type Tool interface {
 	ReadOnly() bool
 }
 
+// IsShellToolName reports current and compatibility names for the built-in
+// command shell. It keeps policy, evidence, and UI routing stable while Windows
+// exposes pwsh and older sessions continue to contain bash calls.
+func IsShellToolName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "bash", "pwsh", "powershell", "shell":
+		return true
+	default:
+		return false
+	}
+}
+
+// CallClass is a pure, argument-aware dispatch classification. Generation is a
+// target schema/lifecycle fingerprint checked again by the execution adapter;
+// an empty generation keeps the call on the serial path.
+type CallClass struct {
+	Known        bool
+	ReadOnly     bool
+	ParallelSafe bool
+	ResourceKey  string
+	Generation   string
+}
+
+// BatchClassifier lets a fixed proxy classify its resolved target without
+// executing discovery, starting a process, or making a network request.
+type BatchClassifier interface {
+	ClassifyCall(json.RawMessage) CallClass
+}
+
 // ContextualTool is an execution-time availability contract for tools whose
 // ownership depends on the active workflow context. Provider schemas remain
 // static for cache stability; the host must still consult this contract before
 // permissions, hooks, leases, or Execute so stale transcripts fail closed.
 type ContextualTool interface {
 	ProviderVisible(context.Context) bool
+}
+
+// CapabilityCatalogHidden marks compatibility-only routes that remain
+// executable for replay but must not be suggested to new model turns.
+type CapabilityCatalogHidden interface {
+	HiddenFromCapabilityCatalog() bool
 }
 
 // Previewer is an optional capability a writer Tool may implement: given the
@@ -84,11 +119,39 @@ type ImageTool interface {
 	ExecuteWithImages(ctx context.Context, args json.RawMessage) (text string, images []string, err error)
 }
 
+// PresentedFile is host-only metadata emitted by the built-in present tool.
+// Path is the exact stable resource reference recorded in the conversation; it
+// may be relative to the session workspace or an authorized absolute path.
+// File bytes never travel through this structure or provider requests.
+type PresentedFile struct {
+	Path        string `json:"path"`
+	Description string `json:"description,omitempty"`
+}
+
+type presentedFilesCollectorKey struct{}
+
+// WithPresentedFilesCollector installs the per-call collector consumed by the
+// agent after a successful execution. Keeping this out of the model-visible
+// result lets presentation metadata share the tool-result commit boundary.
+func WithPresentedFilesCollector(ctx context.Context) (context.Context, func() []PresentedFile) {
+	var files []PresentedFile
+	ctx = context.WithValue(ctx, presentedFilesCollectorKey{}, &files)
+	return ctx, func() []PresentedFile { return append([]PresentedFile(nil), files...) }
+}
+
+// RecordPresentedFiles publishes a validated, successful present result to the
+// current call collector. It is intentionally a no-op outside an agent call.
+func RecordPresentedFiles(ctx context.Context, files []PresentedFile) {
+	target, _ := ctx.Value(presentedFilesCollectorKey{}).(*[]PresentedFile)
+	if target == nil {
+		return
+	}
+	*target = append((*target)[:0], files...)
+}
+
 // PlanModeClassifier is an optional capability a Tool may implement to declare
 // its stance on running during the planning phase. It is deliberately distinct
-// from ReadOnly(): a tool can be side-effect-free yet belong only to the
-// post-approval execution phase (complete_step reports ReadOnly()==true but must
-// not run while planning), or be a delegation that is safe only in a read-only
+// from ReadOnly(): a tool can be a delegation that is safe only in a read-only
 // variant (read_only_task). A false result is an explicit phase opt-out; tools
 // without this interface continue to the ordinary Permissions/Sandbox path.
 type PlanModeClassifier interface {
@@ -171,12 +234,6 @@ type readerExecutionIntentKey struct{}
 // drift returns a retryable error with zero execution.
 type nonDestructiveMCPExecutionIntentKey struct{}
 
-// planReplacementAuthorizationKey carries a one-call authorization from the
-// host's Auto plan gate. It lets todo_write replace the current in_progress
-// step after the plan transition has been reviewed, without weakening ordinary
-// todo continuity or exposing an authorization bit in the model-visible schema.
-type planReplacementAuthorizationKey struct{}
-
 // WithReaderExecutionIntent marks ctx as a reader-authorized MCP invocation.
 func WithReaderExecutionIntent(ctx context.Context) context.Context {
 	return context.WithValue(ctx, readerExecutionIntentKey{}, true)
@@ -201,20 +258,6 @@ func WithNonDestructiveMCPExecutionIntent(ctx context.Context) context.Context {
 func HasNonDestructiveMCPExecutionIntent(ctx context.Context) bool {
 	intent, _ := ctx.Value(nonDestructiveMCPExecutionIntentKey{}).(bool)
 	return intent
-}
-
-// WithPlanReplacementAuthorization marks one reviewed todo_write invocation as
-// allowed to replace its current step. Callers must not reuse the returned
-// context for unrelated tool calls.
-func WithPlanReplacementAuthorization(ctx context.Context) context.Context {
-	return context.WithValue(ctx, planReplacementAuthorizationKey{}, true)
-}
-
-// HasPlanReplacementAuthorization reports whether the host approved replacing
-// the active step for this exact tool invocation.
-func HasPlanReplacementAuthorization(ctx context.Context) bool {
-	authorized, _ := ctx.Value(planReplacementAuthorizationKey{}).(bool)
-	return authorized
 }
 
 // SnipHint describes how context maintenance should shorten a stale, oversized
@@ -260,6 +303,9 @@ func RegisterBuiltin(t Tool) {
 func Builtins() []Tool {
 	names := make([]string, 0, len(builtins))
 	for n := range builtins {
+		if n == "complete_step" || n == "session_read_strategy_receipt" {
+			continue
+		}
 		names = append(names, n)
 	}
 	sort.Strings(names)
@@ -272,6 +318,9 @@ func Builtins() []Tool {
 
 // LookupBuiltin returns a registered built-in by name.
 func LookupBuiltin(name string) (Tool, bool) {
+	if name == "complete_step" || name == "session_read_strategy_receipt" {
+		return nil, false
+	}
 	t, ok := builtins[name]
 	return t, ok
 }
@@ -376,6 +425,28 @@ func (r *Registry) Add(t Tool) {
 	r.tools[name] = t
 	r.canon[name] = provider.CanonicalizeSchema(t.Schema())
 	r.schemaRev.Add(1)
+}
+
+// Remove unregisters one exact tool name. Compatibility routing remains the
+// responsibility of ResolveCall, so an old name can stay executable without
+// appearing in schemas or capability catalogs.
+func (r *Registry) Remove(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.tools[name]; !ok {
+		return false
+	}
+	delete(r.tools, name)
+	delete(r.canon, name)
+	for i, registered := range r.order {
+		if registered == name {
+			r.order = append(r.order[:i], r.order[i+1:]...)
+			break
+		}
+	}
+	delete(r.providerVisible, name)
+	r.schemaRev.Add(1)
+	return true
 }
 
 // MCPNamePrefix is the namespace every MCP tool name carries: the
@@ -490,6 +561,14 @@ func (r *Registry) ResolveCall(name string) (resolved Tool, canonical string, ca
 	if t, ok := r.tools[name]; ok {
 		return t, name, nil
 	}
+	if IsShellToolName(name) {
+		if t, ok := r.tools["pwsh"]; ok {
+			return t, "pwsh", nil
+		}
+		if t, ok := r.tools["bash"]; ok {
+			return t, "bash", nil
+		}
+	}
 	matches := map[string]Tool{}
 	for canonicalName, t := range r.tools {
 		b, ok := mcpBinding(t)
@@ -513,6 +592,12 @@ func (r *Registry) ResolveCall(name string) (resolved Tool, canonical string, ca
 		sort.Strings(candidates)
 	}
 	return nil, "", candidates
+}
+
+// MCPBindingOf snapshots the canonical identity metadata of an MCP adapter.
+// It does not call the tool or connect to its server.
+func MCPBindingOf(t Tool) (MCPBinding, bool) {
+	return mcpBinding(t)
 }
 
 func mcpBinding(t Tool) (MCPBinding, bool) {

@@ -20,7 +20,7 @@ func (s *recallAuditSink) RecordMemoryRecall(a event.MemoryRecallAudit) {
 func TestComposeEmitsMemoryRecallAudit(t *testing.T) {
 	ag := agent.New(nil, tool.NewRegistry(), agent.NewSession("sys"), agent.Options{}, event.Discard)
 	sink := &recallAuditSink{Sink: event.Discard}
-	c := New(Options{Runner: ag, Executor: ag, Sink: sink})
+	c := newOwnedTestController(t, Options{Runner: ag, Executor: ag, Sink: sink})
 	_ = c.Compose("what is the canonical fast check command")
 	if len(sink.audits) != 1 {
 		t.Fatalf("audits = %d, want exactly one recall audit per composed user turn", len(sink.audits))

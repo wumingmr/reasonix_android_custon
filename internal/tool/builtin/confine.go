@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"reasonix/internal/netclient"
+	"reasonix/internal/persistentshell"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/secrets"
 	"reasonix/internal/sessiontemp"
@@ -31,10 +32,24 @@ func ConfineBash(spec sandbox.Spec, guard SessionDataGuard, timeout ...time.Dura
 		shell = sandbox.ResolveShell("", "", nil)
 	}
 	b := bash{sb: spec, shell: shell, guard: guard}
+	if shell.Kind == sandbox.ShellPowerShell {
+		b.name = "pwsh"
+	}
 	if len(timeout) > 0 {
 		b.timeout = timeout[0]
 	}
 	return b
+}
+
+// AliasBash returns the same confined shell executor under a compatibility
+// name. The alias shares every policy and sandbox binding with the primary tool.
+func AliasBash(tl tool.Tool, name string) (tool.Tool, bool) {
+	b, ok := tl.(bash)
+	if !ok || strings.TrimSpace(name) == "" {
+		return nil, false
+	}
+	b.name = strings.TrimSpace(name)
+	return b, true
 }
 
 // BindSessionTemp attaches a session-private temporary directory manager to a
@@ -51,6 +66,17 @@ func BindSessionTemp(tl tool.Tool, m *sessiontemp.Manager) (tool.Tool, bool) {
 	default:
 		return nil, false
 	}
+}
+
+// BindPersistentShell attaches a session-scoped PTY manager to a bash tool.
+// ok is false when tl is not a bash value (including wrappers that do not unwrap).
+func BindPersistentShell(tl tool.Tool, m *persistentshell.Manager) (tool.Tool, bool) {
+	b, ok := tl.(bash)
+	if !ok {
+		return nil, false
+	}
+	b.persistent = m
+	return b, true
 }
 
 // RebindBashWriteRoots returns a copy of bash with its complete write surface
@@ -72,9 +98,6 @@ func RebindBashWriteRoots(tl tool.Tool, roots []string) (tool.Tool, bool) {
 	// Sub-agent claims are strict capability boundaries. Do not add the normal
 	// build-cache and temporary-directory allowances outside the claimed roots.
 	spec.MinimalWrites = true
-	// Do not inherit a wider AppContainer write lane from the parent workspace
-	// confinement — the claim roots are the only allowed write surface.
-	spec.AppContainerWriteRoots = append([]string(nil), rs...)
 	b.sb = spec
 	// rootSet is preserved so later session grants still apply inside the claim.
 	// sessionTemp is preserved: sub-agent write-root rebinding must not drop
@@ -120,6 +143,7 @@ func ConfineReaders(forbidRoots []string) []tool.Tool {
 	rs := realRoots(forbidRoots)
 	return []tool.Tool{
 		readFile{forbidRoots: rs},
+		viewImage{forbidRoots: rs},
 		listDir{forbidRoots: rs},
 		globTool{forbidRoots: rs},
 		codeIndex{forbidRoots: rs},
@@ -152,6 +176,14 @@ func confineRead(forbidRoots []string, target string) bool {
 		}
 	}
 	return false
+}
+
+// ReadPathForbidden applies the same resolved-path deny policy used by the
+// built-in readers. Host-side viewers call this when they re-open a resource
+// recorded by a trusted tool result so a later configuration or sensitive-file
+// policy change cannot be bypassed by an old presentation card.
+func ReadPathForbidden(forbidRoots []string, target string) bool {
+	return confineRead(realRoots(forbidRoots), target)
 }
 
 func sensitiveReadPath(abs string) bool {
@@ -213,34 +245,32 @@ func confine(roots []string, target string) error {
 // confineWrite is the write-tool boundary check: workspace confinement first,
 // then the session-data guard, so a write can be inside the roots (e.g. a
 // home-directory workspace covering the state root) and still be refused when
-// it targets Reasonix's own session stores. A target outside every root that
-// matches a Reasonix-managed config file (see ManagedConfigPaths) may proceed
-// after a fresh per-write human approval carried on ctx; without an approver it
-// fails closed with the original confinement error semantics.
+// it targets Reasonix's own session stores. A target that matches a
+// Reasonix-managed config file (see ManagedConfigPaths) is always gated by a
+// fresh per-write human approval carried on ctx, even when the roots already
+// cover it: those files configure providers, sandbox rules, and permissions
+// for future sessions, so no posture (YOLO included) and no widened root may
+// write them silently. Without an approver the write fails closed.
 func confineWrite(ctx context.Context, roots []string, guard SessionDataGuard, managed ManagedConfigPaths, target string) error {
-	confineErr := confine(roots, target)
-	if confineErr == nil {
-		return guard.Check(target)
+	if managed.Match(target) {
+		if err := guard.Check(target); err != nil {
+			return err
+		}
+		return managed.approve(ctx, target)
 	}
-	if !managed.Match(target) {
-		return confineErr
-	}
-	if err := guard.Check(target); err != nil {
+	if err := confine(roots, target); err != nil {
 		return err
 	}
-	return managed.approve(ctx, target)
+	return guard.Check(target)
 }
 
-// confinePreview mirrors confineWrite for ctx-less diff previews: they read the
-// target to render a diff but never write, so a managed config file passes
-// without the per-write approval — Execute still gates the actual write.
-func confinePreview(roots []string, guard SessionDataGuard, managed ManagedConfigPaths, target string) error {
-	confineErr := confine(roots, target)
-	if confineErr == nil {
-		return guard.Check(target)
-	}
-	if !managed.Match(target) {
-		return confineErr
+// confinePreview is stricter than confineWrite because Preview runs before the
+// permission gate and reads old content into the approval card and session.
+// Managed config files outside the roots therefore stay unreadable here; only
+// Execute may use their explicit, per-write approval escape hatch.
+func confinePreview(roots []string, guard SessionDataGuard, _ ManagedConfigPaths, target string) error {
+	if err := confine(roots, target); err != nil {
+		return err
 	}
 	return guard.Check(target)
 }

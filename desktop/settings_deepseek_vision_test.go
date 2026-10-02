@@ -67,8 +67,8 @@ func TestSaveProviderPersistsOfficialDeepSeekVisionModels(t *testing.T) {
 	}
 	flash := *got
 	flash.Model = "deepseek-v4-flash"
-	if config.EffectiveVision(&flash) {
-		t.Fatal("saved Flash must stay text-only on the official DeepSeek endpoint")
+	if !config.EffectiveVision(&flash) {
+		t.Fatal("saved Flash must accept images on the official DeepSeek endpoint")
 	}
 	sku := *got
 	sku.Model = openai.OfficialDeepSeekVisionModel

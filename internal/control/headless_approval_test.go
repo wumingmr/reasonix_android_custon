@@ -32,7 +32,7 @@ func runHeadlessWriteOnce(t *testing.T, mode string, askRules []string) (prompts
 	}}
 	ag := agent.New(prov, reg, agent.NewSession(""), agent.Options{}, event.Discard)
 
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Runner:   ag,
 		Executor: ag,
 		Policy:   permission.New("ask", nil, askRules, nil),
@@ -124,7 +124,7 @@ func TestApplyHeadlessApprovalModeDontAskDeniesWithoutPrompting(t *testing.T) {
 	ag := agent.New(prov, reg, agent.NewSession(""), agent.Options{}, event.Discard)
 
 	prompts := 0
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Runner:   ag,
 		Executor: ag,
 		Policy:   permission.New("ask", nil, []string{"write_file"}, nil),
@@ -179,7 +179,7 @@ func TestApplyHeadlessApprovalModeAllowsOnlyLowRiskProjectMemoryCreate(t *testin
 			}}
 			ag := agent.New(prov, reg, agent.NewSession(""), agent.Options{}, event.Discard)
 			prompts := 0
-			c := New(Options{
+			c := newOwnedTestController(t, Options{
 				Runner:   ag,
 				Executor: ag,
 				Memory:   &memory.Set{Store: store},
@@ -284,7 +284,7 @@ func TestBuildHeadlessApprovalGateMatchesParentExecutorContract(t *testing.T) {
 func TestSetToolApprovalModePropagatesToSubagentGate(t *testing.T) {
 	policy := permission.New("ask", nil, []string{"write_file"}, nil)
 	subagentGate := NewSharedHeadlessGate(policy, ToolApprovalAsk)
-	c := New(Options{Policy: policy, SubagentGate: subagentGate})
+	c := newOwnedTestController(t, Options{Policy: policy, SubagentGate: subagentGate})
 
 	runSubagentWriteOnce := func(t *testing.T) []string {
 		t.Helper()
@@ -335,7 +335,7 @@ func TestSetToolApprovalModePropagatesToSubagentGate(t *testing.T) {
 func TestInteractiveGateIgnoresSessionAllowForFreshHumanTools(t *testing.T) {
 	policy := permission.New("ask", nil, nil, nil).
 		WithSessionAllow([]string{"remember", "forget", "write_file"})
-	c := New(Options{Policy: policy})
+	c := newOwnedTestController(t, Options{Policy: policy})
 
 	gate := c.newInteractiveGate()
 	for _, name := range []string{memoryRememberTool, memoryForgetTool} {
@@ -349,12 +349,10 @@ func TestInteractiveGateIgnoresSessionAllowForFreshHumanTools(t *testing.T) {
 	}
 }
 
-// A blocked inline interpreter must tell a headless agent what it CAN do in
-// this session. The old message only offered "interactive session or YOLO
-// mode", which a non-interactive run cannot act on — benchmark agents burned
-// dozens of calls retrying python -c variants before stumbling onto the
-// script-file workaround on their own.
-func TestHeadlessAutoDynamicShellBlockNamesTheAuditableWorkaround(t *testing.T) {
+// Inline interpreters and shell composition are ordinary commands in the
+// workspace preset. Filesystem containment is enforced by the sandbox rather
+// than by fragile command-string heuristics.
+func TestHeadlessWorkspaceWriteAllowsInlineInterpreter(t *testing.T) {
 	gate := BuildHeadlessApprovalGate(permission.New("ask", nil, nil, nil), ToolApprovalAuto)
 
 	allow, reason, err := gate.Check(context.Background(), "bash",
@@ -362,19 +360,14 @@ func TestHeadlessAutoDynamicShellBlockNamesTheAuditableWorkaround(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
-	if allow {
-		t.Fatal("python -c must stay blocked in headless auto (inline code is not auditable)")
-	}
-	for _, want := range []string{"write_file", "python repro.py", "read_file"} {
-		if !strings.Contains(reason, want) {
-			t.Errorf("block reason must name the in-session workaround %q: %s", want, reason)
-		}
+	if !allow || reason != "" {
+		t.Fatalf("python -c in workspace-write = allow %v reason %q, want direct execution", allow, reason)
 	}
 
 	// The workaround the message advertises must actually pass the same gate.
 	allow, reason, err = gate.Check(context.Background(), "bash",
 		json.RawMessage(`{"command":"cd /testbed && python repro.py"}`), false)
 	if err != nil || !allow {
-		t.Fatalf("script-file execution must be allowed in auto: allow=%v reason=%q err=%v", allow, reason, err)
+		t.Fatalf("script-file execution must be allowed in workspace-write: allow=%v reason=%q err=%v", allow, reason, err)
 	}
 }

@@ -16,7 +16,7 @@ import (
 )
 
 type failureAtomicBotController struct {
-	botController
+	stubBotController
 	workspaceRoot string
 	sessionPath   string
 	closed        bool

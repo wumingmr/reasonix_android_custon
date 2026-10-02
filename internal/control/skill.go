@@ -49,6 +49,21 @@ func (s *skillSet) listAll() []skill.Skill {
 	return s.enabled
 }
 
+func (s *skillSet) load(name string) (skill.Skill, bool) {
+	if s.allStore != nil {
+		return s.allStore.Read(name)
+	}
+	if s.store != nil {
+		return s.store.Read(name)
+	}
+	for _, candidate := range s.listAll() {
+		if candidate.Name == name {
+			return candidate, true
+		}
+	}
+	return skill.Skill{}, false
+}
+
 func (s *skillSet) bySlashName(name string) (skill.Skill, bool) {
 	if s.store != nil {
 		return s.store.ReadSlash(name)
@@ -63,17 +78,8 @@ func (s *skillSet) prepare(sk skill.Skill) skill.Skill {
 	return sk
 }
 
-func (s *skillSet) render(sk skill.Skill, args string) string {
-	if s.store != nil {
-		return s.store.Render(sk, args)
-	}
-	return skill.Render(sk, args)
-}
-
-// discovered returns the construction-time enabled snapshot (not the live store),
-// for the /skills listing which reflects what was discovered at boot.
-func (s *skillSet) discovered() []skill.Skill {
-	return s.enabled
+func (s *skillSet) renderInvocation(sk skill.Skill, args string) string {
+	return skill.RenderInvocation(s.prepare(sk), args)
 }
 
 // writer returns the live store to use for authoring (create/delete), preferring

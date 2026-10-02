@@ -1,5 +1,3 @@
-// Run: tsx src/__tests__/composer-goal-toggle.test.tsx
-
 import { JSDOM } from "jsdom";
 import React from "react";
 import { act } from "react";
@@ -12,6 +10,7 @@ import { ToastProvider } from "../lib/toast";
 import type { AppBindings } from "../lib/bridge";
 import type { ComposerInvocation, StructuredInvocationSubmit } from "../lib/invocationDisplay";
 import type { CollaborationMode, CommandInfo, DirEntry, ToolApprovalMode } from "../lib/types";
+import { dispatchNativeFileDrop, installDesktopHostStub, type DesktopHostStubOptions } from "./desktopHostStub";
 
 let passed = 0;
 let failed = 0;
@@ -126,10 +125,8 @@ async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {
     onSetMode: () => {},
     onSetCollaborationMode: (mode) => calls.setCollaborationMode.push(mode),
     onSetToolApprovalMode: () => {},
-    onToggleYoloApprovalMode: () => {},
-    onClearGoal: () => {
-      calls.clearGoal += 1;
-    },
+    onClearGoal: () => { calls.clearGoal += 1; },
+    onEditGoal: () => {}, onPauseGoal: () => {}, onResumeGoal: () => {},
     onSwitchModel: () => {},
     onSetEffort: () => {},
 
@@ -153,18 +150,19 @@ async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {
   return { root, calls, rerender: paint };
 }
 
-function mockApp(methods: Partial<AppBindings>) {
-  window.go = {
+function mockApp(methods: Partial<AppBindings>, stubOptions?: DesktopHostStubOptions) {
+  installDesktopHostStub(({
     main: {
       App: {
         Commands: async () => [],
         Models: async () => [],
         ModelsForTab: async () => [],
         SlashArgs: async () => ({ items: [], from: 0 }),
+        CaptureAttachmentTarget: async () => ({ token: "goal-attachment-target", capabilities: ["attachments-v2"] }), ReleaseAttachmentTarget: async () => {},
         ...methods,
       } as Partial<AppBindings> as AppBindings,
     },
-  };
+  }).main.App, stubOptions ?? { getPathForFile: (file) => file.name });
 }
 
 function dispatchPasteFile(textarea: HTMLTextAreaElement, file: File) {
@@ -284,39 +282,21 @@ console.log("\ncomposer goal toggle");
   eq(textarea.value, "/reviewer ship the release notes", "prefix insert preserves the draft as a subagent task");
   eq(calls.send.length, 0, "prefix insert does not send the subagent task");
 
-  const intentButton = document.querySelector(".composer-task-mode-trigger") as HTMLButtonElement | null;
-  if (!intentButton) throw new Error("composer intent button did not render");
-  eq(intentButton.textContent?.trim(), "Standard", "execution method trigger shows only the current method");
-  eq(intentButton.getAttribute("aria-label"), "Execution method · Standard", "execution method trigger keeps its full accessible name");
-  const intentTooltipTrigger = intentButton.closest(".tooltip-trigger");
-  if (!intentTooltipTrigger) throw new Error("composer intent tooltip trigger did not render");
-  await act(async () => {
-    intentTooltipTrigger.dispatchEvent(new Event("focusin", { bubbles: true }));
-    await flushTimers();
-  });
-  await waitFor("execution method tooltip", () => document.querySelector('[role="tooltip"]') !== null);
-  eq(document.querySelector('[role="tooltip"]')?.textContent, "Execution method · Standard: Analyze and act as you go", "execution method tooltip combines category, value, and summary");
-  await act(async () => {
-    intentTooltipTrigger.dispatchEvent(new Event("focusout", { bubbles: true }));
-    await flushTimers();
-  });
-
+  eq(document.querySelector(".composer-task-mode-trigger"), null, "default execution has no mode chip");
+  const intentButton = document.querySelector(".composer-content-trigger") as HTMLButtonElement;
   await act(async () => {
     intentButton.click();
     await flushTimers();
   });
 
   const taskModeItems = document.querySelectorAll(".composer-intent-menu__item");
-  eq(taskModeItems.length, 3, "task method menu exposes three mutually exclusive choices");
+  eq(taskModeItems.length, 2, "task method menu exposes only Plan and Goal");
   eq(document.querySelectorAll(".composer-intent-switch").length, 0, "task method menu does not present independent switches");
-  const planButton = taskModeItems[1] as HTMLButtonElement | undefined;
+  const planButton = taskModeItems[0] as HTMLButtonElement | undefined;
   if (!planButton) throw new Error("composer Plan menu item did not render");
-  ok(planButton.textContent?.includes("tool use follows current permissions and sandbox settings") === true, "Plan menu explains that permissions and sandbox still govern tools");
+  eq(planButton.querySelector(".composer-access-menu__desc"), null, "Plan menu keeps a single-line label");
   ok(planButton.textContent?.toLowerCase().includes("read-only") === false, "Plan menu does not present Plan as a read-only permission mode");
-  const askApprovalButton = document.querySelector(".composer-modebar__item--ask") as HTMLButtonElement | null;
-  if (!askApprovalButton) throw new Error("composer Ask approval button did not render");
-  ok(askApprovalButton.title.includes("Ask is not read-only"), "Ask tooltip distinguishes approval policy from read-only sandboxing");
-  const goalButton = taskModeItems[2] as HTMLButtonElement | undefined;
+  const goalButton = taskModeItems[1] as HTMLButtonElement | undefined;
   if (!goalButton) throw new Error("composer goal menu item did not render");
 
   await act(async () => {
@@ -327,6 +307,25 @@ console.log("\ncomposer goal toggle");
   eq(calls.send.length, 0, "enabling goal mode with a draft does not send");
   eq(calls.setCollaborationMode.join(","), "goal", "enabling goal mode switches only the collaboration axis");
   eq(textarea.value, "/reviewer ship the release notes", "enabling goal mode preserves the prefixed draft text");
+
+  await rerender({ collaborationMode: "plan" });
+  ok(document.querySelector(".composer-task-mode-trigger") !== null, "Plan exposes its active mode chip");
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>(".composer-content-trigger")?.click();
+    await flushTimers();
+  });
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>(".composer-intent-menu__item")?.click();
+    await flushTimers();
+  });
+  eq(calls.setCollaborationMode.at(-1), "normal", "selecting active Plan exits to the implicit default");
+  eq(textarea.value, "/reviewer ship the release notes", "exiting Plan preserves the draft");
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>(".composer-task-mode-trigger")?.click();
+    await flushTimers();
+  });
+  eq(calls.setCollaborationMode.at(-1), "normal", "clicking the mode chip exits Plan directly");
+  eq(textarea.value, "/reviewer ship the release notes", "dismissing the chip preserves the draft");
 
   await act(async () => {
     root.unmount();
@@ -340,8 +339,8 @@ console.log("\ncomposer goal toggle");
     Commands: async () => [
       { name: "ui-ux-pro-max", description: "Review the interface", kind: "skill" },
     ],
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => [],
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => [],
   });
   const { root, calls, rerender } = await renderComposer({ collaborationMode: "goal", goal: "" });
   await replaceComposerDraft(rerender, 4199, "/ui-ux-pro-max");
@@ -396,7 +395,7 @@ console.log("\ncomposer goal toggle");
   // Attachment-only first Goal: no text, no skill — attachment refs are valid task context.
   const dom = installDom();
   mockApp({
-    SavePastedFile: async () => ".reasonix/attachments/notes.txt",
+    SavePastedFileForTarget: async () => ".reasonix/attachments/notes.txt",
   });
   const { root, calls } = await renderComposer({ collaborationMode: "goal", goal: "" });
   const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
@@ -429,17 +428,8 @@ console.log("\ncomposer goal toggle");
 {
   // Workspace-ref-only first Goal: no text, no skill — workspace refs remain valid task context.
   const dom = installDom();
-  let droppedCallback: ((x: number, y: number, paths: string[]) => void) | undefined;
-  window.runtime = {
-    EventsOn: () => () => {},
-    BrowserOpenURL: () => {},
-    OnFileDrop: (cb) => {
-      droppedCallback = cb;
-    },
-    OnFileDropOff: () => {},
-  };
   mockApp({
-    AttachDropped: async () => ({
+    AttachDroppedForTarget: async () => ({
       kind: "workspace",
       path: "src/App.tsx",
       isDir: false,
@@ -447,9 +437,10 @@ console.log("\ncomposer goal toggle");
     }),
   });
   const { root, calls } = await renderComposer({ collaborationMode: "goal", goal: "" });
-  if (!droppedCallback) throw new Error("native file drop handler did not register for workspace-ref goal");
+  const wrap = document.querySelector(".composer-wrap");
+  if (!wrap) throw new Error("composer drop target did not render for workspace-ref goal");
   await act(async () => {
-    droppedCallback?.(0, 0, ["/repo/src/App.tsx"]);
+    dispatchNativeFileDrop(wrap, [new File([""], "/repo/src/App.tsx")]);
     await flushTimers();
   });
   await waitFor("workspace-ref-only initial goal card", () => document.body.textContent?.includes("App.tsx") === true);
@@ -477,8 +468,8 @@ console.log("\ncomposer goal toggle");
       { name: "writing-plans", description: "Write a plan", kind: "skill" },
       { name: "review", description: "Review the result", kind: "skill" },
     ],
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => [],
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => [],
   });
   const { root, calls, rerender } = await renderComposer();
   await replaceComposerDraft(rerender, 4200, "/writing-plans");
@@ -582,8 +573,8 @@ console.log("\ncomposer goal toggle");
   };
   mockApp({
     Commands: async () => [command],
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => [],
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => [],
   });
   const { root, rerender } = await renderComposer();
   await replaceComposerDraft(rerender, 4201, "/writing-plans");
@@ -706,20 +697,24 @@ console.log("\ncomposer goal toggle");
   ok(intentButton.textContent?.includes("Goal") === true, "task method trigger exposes an active goal");
 
   await act(async () => {
-    intentButton.click();
+    (document.querySelector(".composer-content-trigger") as HTMLButtonElement).click();
     await flushTimers();
   });
 
   const goalActions = Array.from(document.querySelectorAll(".composer-intent-menu__stop")) as HTMLButtonElement[];
   const stopGoal = goalActions.find((b) => b.textContent === "End goal");
   if (!stopGoal) throw new Error("explicit end-goal action did not render");
-  ok(goalActions.some((b) => b.textContent === "Pause goal"), "running goal offers a pause action");
   await act(async () => {
     stopGoal.click();
     await flushTimers();
   });
   eq(calls.clearGoal, 1, "explicit stop action clears the active goal");
   eq(calls.setCollaborationMode.length, 0, "stopping a goal does not race a second mode update");
+  await act(async () => {
+    intentButton.click();
+    await flushTimers();
+  });
+  eq(calls.clearGoal, 2, "dismissing an active goal chip uses the existing clear-goal action");
 
   await act(async () => {
     root.unmount();
@@ -756,7 +751,7 @@ console.log("\ncomposer goal toggle");
 {
   const dom = installDom();
   mockApp({
-    SavePastedFile: async () => {
+    SavePastedFileForTarget: async () => {
       throw new Error("/Users/example/private.pdf: permission denied");
     },
   });
@@ -788,7 +783,7 @@ console.log("\ncomposer goal toggle");
 {
   const dom = installDom();
   mockApp({
-    SavePastedFile: async () => ".reasonix/attachments/notes.txt",
+    SavePastedFileForTarget: async () => ".reasonix/attachments/notes.txt",
   });
   const { root } = await renderComposer();
 
@@ -811,17 +806,8 @@ console.log("\ncomposer goal toggle");
 
 {
   const dom = installDom();
-  let droppedCallback: ((x: number, y: number, paths: string[]) => void) | undefined;
-  window.runtime = {
-    EventsOn: () => () => {},
-    BrowserOpenURL: () => {},
-    OnFileDrop: (cb) => {
-      droppedCallback = cb;
-    },
-    OnFileDropOff: () => {},
-  };
   mockApp({
-    AttachDropped: async () => {
+    AttachDroppedForTarget: async () => {
       throw new Error("/Users/example/secret.pdf: permission denied");
     },
   });
@@ -832,10 +818,11 @@ console.log("\ncomposer goal toggle");
   if (!textarea) throw new Error("composer textarea did not render");
   const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
   if (!sendButton) throw new Error("composer send button did not render");
-  if (!droppedCallback) throw new Error("native file drop handler did not register");
+  const wrapSecret = document.querySelector(".composer-wrap");
+  if (!wrapSecret) throw new Error("composer drop target did not render");
 
   await act(async () => {
-    droppedCallback?.(0, 0, ["/Users/example/secret.pdf"]);
+    dispatchNativeFileDrop(wrapSecret, [new File([""], "/Users/example/secret.pdf")]);
     await flushTimers();
   });
   await waitFor("dropped file failure toast", () => document.body.textContent?.includes("Dropped file attach failed") === true);
@@ -853,26 +840,18 @@ console.log("\ncomposer goal toggle");
 
 {
   const dom = installDom();
-  let droppedCallback: ((x: number, y: number, paths: string[]) => void) | undefined;
-  window.runtime = {
-    EventsOn: () => () => {},
-    BrowserOpenURL: () => {},
-    OnFileDrop: (cb) => {
-      droppedCallback = cb;
-    },
-    OnFileDropOff: () => {},
-  };
   mockApp({
-    AttachDropped: async () => ({
+    AttachDroppedForTarget: async () => ({
       kind: "attachment",
       path: ".reasonix/attachments/report.pdf",
     }),
   });
   const { root } = await renderComposer();
-  if (!droppedCallback) throw new Error("native file drop handler did not register");
+  const wrapReport = document.querySelector(".composer-wrap");
+  if (!wrapReport) throw new Error("composer drop target did not render");
 
   await act(async () => {
-    droppedCallback?.(0, 0, ["/Users/example/report.pdf"]);
+    dispatchNativeFileDrop(wrapReport, [new File([""], "/Users/example/report.pdf")]);
     await flushTimers();
   });
   await waitFor("dropped file attachment", () => document.body.textContent?.includes("report.pdf") === true);
@@ -887,17 +866,8 @@ console.log("\ncomposer goal toggle");
 
 {
   const dom = installDom();
-  let droppedCallback: ((x: number, y: number, paths: string[]) => void) | undefined;
-  window.runtime = {
-    EventsOn: () => () => {},
-    BrowserOpenURL: () => {},
-    OnFileDrop: (cb) => {
-      droppedCallback = cb;
-    },
-    OnFileDropOff: () => {},
-  };
   mockApp({
-    AttachDropped: async () => ({
+    AttachDroppedForTarget: async () => ({
       kind: "workspace",
       path: "__reasonix_external_folder/mock/Folder-With-Spaces",
       isDir: true,
@@ -906,10 +876,11 @@ console.log("\ncomposer goal toggle");
   });
   const { root, calls, rerender } = await renderComposer();
   await rerender({ insertRequest: { id: 4, text: "inspect", mode: "replace" } });
-  if (!droppedCallback) throw new Error("native file drop handler did not register");
+  const wrapFolderwithspaces = document.querySelector(".composer-wrap");
+  if (!wrapFolderwithspaces) throw new Error("composer drop target did not render");
 
   await act(async () => {
-    droppedCallback?.(0, 0, ["/Users/example/Folder With Spaces"]);
+    dispatchNativeFileDrop(wrapFolderwithspaces, [new File([""], "/Users/example/Folder With Spaces")]);
     await flushTimers();
   });
   await waitFor("dropped external folder chip", () => document.body.textContent?.includes("Folder With Spaces/") === true);
@@ -1112,27 +1083,29 @@ console.log("\ncomposer goal toggle");
 
 {
   const dom = installDom();
-  let nextInboxID = 0;
-  const steerItemIDs: string[] = [];
-  const deletedItemIDs: string[] = [];
+  let nextInboxID = 0, revision = 0;
+  let queued: { id: string; preview: string; state: string; intent: string; byteSize: number; position: number }[] = [];
+  const steerItemIDs: string[] = [], deletedItemIDs: string[] = [];
   mockApp({
-    InboxSnapshot: async () => ({
-      revision: 0, paused: false, recovered: false, items: [], itemsCount: 0,
-      bytes: 0, maxItems: 64, maxBytes: 64 * 1024 * 1024,
-    }),
-    EnqueueInboxFollowup: async () => ({
-      itemId: `durable-${++nextInboxID}`, disposition: "queued_followup", position: nextInboxID, paused: false,
-    }),
+    InboxSnapshot: async () => ({ revision, paused: false, recovered: false, items: queued,
+      itemsCount: queued.length, bytes: 0, maxItems: 64, maxBytes: 64 * 1024 * 1024 }),
+    EnqueueInboxFollowup: async (_tabID, display) => {
+      const id = `durable-${++nextInboxID}`;
+      queued.push({ id, preview: display, state: "queued", intent: "followup", byteSize: display.length, position: queued.length + 1 }); revision++;
+      return { itemId: id, disposition: "queued_followup", position: queued.length, paused: false };
+    },
     SteerInboxItem: async (_tabID, itemID) => {
       steerItemIDs.push(itemID);
+      queued = queued.filter(item => item.id !== itemID); revision++;
       return { itemId: itemID, disposition: "steer_accepted", position: 1, paused: false };
     },
     DeleteInboxItem: async (_tabID, itemID) => {
       deletedItemIDs.push(itemID);
+      queued = queued.filter(item => item.id !== itemID); revision++;
     },
   });
   const { root, calls, rerender } = await renderComposer({
-    running: true,
+    running: true, inboxSessionPath: "/repo/session.jsonl",
     onSend: (displayText, submitText) => {
       calls.send.push(displayText);
       calls.submit.push(submitText);
@@ -1196,6 +1169,7 @@ console.log("\ncomposer goal toggle");
   });
   ok(document.querySelector(".composer-guidance-item") !== null, "running guidance chip renders again after another queued item");
 
+  queued = []; revision++; // The controller consumed and acknowledged the item.
   await rerender({ guidanceConsumedKey: "s1", guidanceConsumedText: "prefer the smaller diff" });
   ok(document.querySelector(".composer-guidance-item") === null, "running guidance chip clears when steer is consumed");
 
@@ -1207,7 +1181,7 @@ console.log("\ncomposer goal toggle");
   ok(document.querySelector(".composer-guidance-item") !== null, "running guidance chip renders before turn stop");
 
   await rerender({ running: false });
-  ok(document.querySelector(".composer-guidance-item") === null, "running guidance chip clears when the turn stops");
+  ok(document.querySelector(".composer-guidance-item") !== null, "pending guidance remains after the current turn stops");
 
   await act(async () => {
     root.unmount();
@@ -1218,21 +1192,21 @@ console.log("\ncomposer goal toggle");
 {
   const dom = installDom();
   const steerItemIDs: string[] = [];
+  let queued = false, revision = 0;
   mockApp({
-    InboxSnapshot: async () => ({
-      revision: 0, paused: false, recovered: false, items: [], itemsCount: 0,
+    InboxSnapshot: async () => ({ revision, paused: false, recovered: false,
+      items: queued ? [{ id: "durable-activating", preview: "steer while activating", state: "queued", intent: "followup", byteSize: 22, position: 1 }] : [], itemsCount: queued ? 1 : 0,
       bytes: 0, maxItems: 64, maxBytes: 64 * 1024 * 1024,
     }),
-    EnqueueInboxFollowup: async () => ({
-      itemId: "durable-activating", disposition: "queued_followup", position: 1, paused: false,
-    }),
+    EnqueueInboxFollowup: async () => { queued = true; revision++; return { itemId: "durable-activating", disposition: "queued_followup", position: 1, paused: false }; },
     SteerInboxItem: async (_tabID, itemID) => {
       steerItemIDs.push(itemID);
+      queued = false; revision++;
       return { itemId: itemID, disposition: "steer_accepted", position: 1, paused: false };
     },
   });
   const { root, calls, rerender } = await renderComposer({
-    running: true,
+    running: true, inboxSessionPath: "/repo/activating.jsonl",
     submitDisabled: true,
     onSend: (displayText) => {
       calls.send.push(displayText);
@@ -1273,10 +1247,10 @@ console.log("\ncomposer goal toggle");
   // the browser, owns its later FIFO dispatch and ack.
   const dom = installDom();
   let steerAttempts = 0;
-  let backendQueued = false;
+  let backendQueued = false, backendRevision = 0;
   mockApp({
     InboxSnapshot: async () => ({
-      revision: backendQueued ? 1 : 2,
+      revision: backendRevision,
       paused: false,
       recovered: false,
       items: backendQueued ? [{
@@ -1287,17 +1261,15 @@ console.log("\ncomposer goal toggle");
       maxItems: 64,
       maxBytes: 64 * 1024 * 1024,
     }),
-    EnqueueInboxFollowup: async () => {
-      backendQueued = true;
-      return { itemId: "durable-late", disposition: "queued_followup", position: 1, paused: false };
-    },
+    EnqueueInboxFollowup: async () => { backendQueued = true; backendRevision++;
+      return { itemId: "durable-late", disposition: "queued_followup", position: 1, paused: false }; },
     SteerInboxItem: async (_tabID, itemID) => {
       steerAttempts += 1;
       return { itemId: itemID, disposition: "queued_followup", position: 1, paused: false };
     },
   });
   const { root, calls, rerender } = await renderComposer({
-    running: true,
+    running: true, inboxSessionPath: "/repo/late.jsonl",
     onSend: (displayText, submitText) => {
       calls.send.push(displayText);
       calls.submit.push(submitText);
@@ -1324,7 +1296,7 @@ console.log("\ncomposer goal toggle");
   eq(calls.send.length, 0, "rejected steer does not open a provider turn");
   ok(document.querySelector(".composer-guidance-item") !== null, "rejected steer remains queued");
 
-  backendQueued = false; // Controller dispatched and durably acked after TurnDone.
+  backendQueued = false; backendRevision++; // Controller dispatched and durably acked after TurnDone.
   await rerender({ running: false });
   await waitFor("acked durable follow-up removed from shelf", () => document.querySelector(".composer-guidance-item") === null);
   eq(calls.send.length, 0, "late durable follow-up is never resubmitted by the frontend");
@@ -1340,10 +1312,10 @@ console.log("\ncomposer goal toggle");
   // completion is dispatched by the Controller, so the frontend must only
   // reconcile the eventual durable ack and never call onSend itself.
   const dom = installDom();
-  let backendQueued = false;
+  let backendQueued = false, backendRevision = 0;
   mockApp({
     InboxSnapshot: async () => ({
-      revision: backendQueued ? 1 : 2,
+      revision: backendRevision,
       paused: false,
       recovered: false,
       items: backendQueued ? [{
@@ -1354,13 +1326,11 @@ console.log("\ncomposer goal toggle");
       maxItems: 64,
       maxBytes: 64 * 1024 * 1024,
     }),
-    EnqueueInboxFollowup: async () => {
-      backendQueued = true;
-      return { itemId: "durable-natural", disposition: "queued_followup", position: 1, paused: false };
-    },
+    EnqueueInboxFollowup: async () => { backendQueued = true; backendRevision++;
+      return { itemId: "durable-natural", disposition: "queued_followup", position: 1, paused: false }; },
   });
   const { root, calls, rerender } = await renderComposer({
-    running: true,
+    running: true, inboxSessionPath: "/repo/natural.jsonl",
     onSend: (displayText, submitText) => {
       calls.send.push(displayText);
       calls.submit.push(submitText);
@@ -1380,7 +1350,7 @@ console.log("\ncomposer goal toggle");
   eq(calls.send.length, 0, "queuing while running does not send immediately");
   ok(document.querySelector(".composer-guidance-item") !== null, "queued message shows in the guidance shelf");
 
-  backendQueued = false; // Controller completed and acked the next FIFO turn.
+  backendQueued = false; backendRevision++; // Controller completed and acked the next FIFO turn.
   await rerender({ running: false });
   await waitFor("durable guidance ack reconciled", () => document.querySelector(".composer-guidance-item") === null);
 
@@ -1399,17 +1369,17 @@ console.log("\ncomposer goal toggle");
   // that could run after cancellation.
   const dom = installDom();
   let cancelledItemIDs: string[] = [];
+  let queued = false;
   mockApp({
     InboxSnapshot: async () => ({
-      revision: 0, paused: false, recovered: false, items: [], itemsCount: 0,
+      revision: queued ? 1 : 0, paused: false, recovered: false,
+      items: queued ? [{ id: "durable-cancel", preview: "keep cancelled follow-up", state: "queued", intent: "followup", source: "desktop", byteSize: 24, position: 1 }] : [], itemsCount: queued ? 1 : 0,
       bytes: 0, maxItems: 64, maxBytes: 64 * 1024 * 1024,
     }),
-    EnqueueInboxFollowup: async () => ({
-      itemId: "durable-cancel", disposition: "queued_followup", position: 1, paused: false,
-    }),
+    EnqueueInboxFollowup: async () => { queued = true; return { itemId: "durable-cancel", disposition: "queued_followup", position: 1, paused: false }; },
   });
   const { root, rerender } = await renderComposer({
-    running: true,
+    running: true, inboxSessionPath: "/repo/cancel.jsonl",
     onCancel: async (itemIDs = []) => {
       cancelledItemIDs = itemIDs;
       return { discardedItemIds: [...itemIDs] };
@@ -1445,10 +1415,10 @@ console.log("\ncomposer goal toggle");
   // Controller activation state is irrelevant to browser-side dispatch now:
   // the durable item remains visible until an authoritative consume/ack event.
   const dom = installDom();
-  let backendReadyQueued = false;
+  let backendReadyQueued = false, backendRevision = 0;
   mockApp({
     InboxSnapshot: async () => ({
-      revision: backendReadyQueued ? 1 : 0,
+      revision: backendRevision,
       paused: false,
       recovered: false,
       items: backendReadyQueued ? [{
@@ -1459,13 +1429,11 @@ console.log("\ncomposer goal toggle");
       maxItems: 64,
       maxBytes: 64 * 1024 * 1024,
     }),
-    EnqueueInboxFollowup: async () => {
-      backendReadyQueued = true;
-      return { itemId: "durable-ready", disposition: "queued_followup", position: 1, paused: false };
-    },
+    EnqueueInboxFollowup: async () => { backendReadyQueued = true; backendRevision++;
+      return { itemId: "durable-ready", disposition: "queued_followup", position: 1, paused: false }; },
   });
   const { root, calls, rerender } = await renderComposer({
-    running: true,
+    running: true, inboxSessionPath: "/repo/ready.jsonl",
     submitDisabled: false,
     onSend: (displayText, submitText) => {
       calls.send.push(displayText);
@@ -1500,6 +1468,7 @@ console.log("\ncomposer goal toggle");
   eq(calls.send.length, 0, "controller readiness never triggers frontend auto-submit");
   ok(document.querySelector(".composer-guidance-item") !== null, "durable item remains until backend consume/ack");
 
+  backendReadyQueued = false; backendRevision++;
   await rerender({ guidanceConsumedKey: "durable-ready-acked", guidanceConsumedText: "keep going once ready" });
   ok(document.querySelector(".composer-guidance-item") === null, "backend consume event clears the acknowledged item");
 
@@ -1514,12 +1483,12 @@ console.log("\ncomposer goal toggle");
   let listDirCalls = 0;
   const listDirTabs: string[] = [];
   mockApp({
-    ListDirForTab: async (tabId) => {
-      listDirTabs.push(tabId);
+    ListDirForTarget: async (target) => {
+      listDirTabs.push(target.tabId);
       listDirCalls += 1;
       return listDirCalls === 1 ? [fileEntry("cached-dir.txt")] : [fileEntry("fresh-dir.txt")];
     },
-    SearchFileRefsForTab: async () => [],
+    SearchFileRefsForTarget: async () => [],
   });
   const { root, rerender } = await renderComposer();
 
@@ -1543,11 +1512,11 @@ console.log("\ncomposer goal toggle");
   const dom = installDom();
   let listDirCalls = 0;
   mockApp({
-    ListDirForTab: async () => {
+    ListDirForTarget: async () => {
       listDirCalls += 1;
       return listDirCalls === 1 ? [fileEntry("manual-refresh-stale.txt")] : [fileEntry("manual-refresh-fresh.txt")];
     },
-    SearchFileRefsForTab: async () => [],
+    SearchFileRefsForTarget: async () => [],
   });
   const { root, rerender } = await renderComposer({ fileRefRefreshKey: "0" });
 
@@ -1572,8 +1541,8 @@ console.log("\ncomposer goal toggle");
   let searchCalls = 0;
   Date.now = () => now;
   mockApp({
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => {
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => {
       searchCalls += 1;
       return searchCalls === 1 ? [fileEntry("alpha-old.ts")] : [fileEntry("alpha-new.ts")];
     },
@@ -1614,7 +1583,7 @@ console.log("\ncomposer goal toggle");
   let thirdListDirResolve: ((entries: DirEntry[]) => void) | undefined;
   let listDirCalls = 0;
   mockApp({
-    ListDirForTab: async () => {
+    ListDirForTarget: async () => {
       listDirCalls += 1;
       if (listDirCalls === 1) {
         return new Promise<DirEntry[]>((resolve) => {
@@ -1626,7 +1595,7 @@ console.log("\ncomposer goal toggle");
         thirdListDirResolve = resolve;
       });
     },
-    SearchFileRefsForTab: async () => [],
+    SearchFileRefsForTarget: async () => [],
   });
   const { root, rerender } = await renderComposer({ fileRefRefreshKey: "0" });
 
@@ -1667,8 +1636,8 @@ console.log("\ncomposer goal toggle");
   const dom = installDom();
   const pending: Array<(entries: DirEntry[]) => void> = [];
   mockApp({
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => new Promise<DirEntry[]>((resolve) => pending.push(resolve)),
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => new Promise<DirEntry[]>((resolve) => pending.push(resolve)),
   });
   const { root, rerender } = await renderComposer({ workspaceScopeKey: "session-a" });
   const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
@@ -1710,8 +1679,8 @@ console.log("\ncomposer goal toggle");
       { name: "review", description: "Review the result", kind: "skill" },
       { name: "mcp", description: "Manage MCP servers", kind: "builtin", group: "integrations" },
     ],
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => [],
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => [],
   });
   const { root, calls, rerender } = await renderComposer();
 
@@ -1831,8 +1800,8 @@ console.log("\ncomposer goal toggle");
       commandsCalls += 1;
       return availableCommands;
     },
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => [],
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => [],
     SlashArgs: async (input) => {
       slashArgInputs.push(input);
       return input === "/mcp "
@@ -2132,10 +2101,10 @@ console.log("\ncomposer goal toggle");
   let savedFiles = 0;
   mockApp({
     Commands: async () => [{ name: "skill", description: "Manage skills", kind: "builtin" }],
-    ListDirForTab: async () => [fileEntry("README.md")],
-    SearchFileRefsForTab: async () => [],
+    ListDirForTarget: async () => [fileEntry("README.md")],
+    SearchFileRefsForTarget: async () => [],
     ListSessions: async () => [{ path: "/sessions/recent.jsonl", title: "Recent session", current: false }],
-    SavePastedFile: async () => {
+    SavePastedFileForTarget: async () => {
       savedFiles += 1;
       return ".reasonix/attachments/notes.txt";
     },
@@ -2294,22 +2263,25 @@ console.log("\ncomposer goal toggle");
   // Entity-only input must remain structured while queued during a run.
   const dom = installDom();
   let queued: { submit?: string; invocations?: StructuredInvocationSubmit["invocations"] } = {};
+  let queuedDisplay = "";
   mockApp({
     Commands: async () => [
       { name: "superpowers:writing-plans", description: "Write a plan", kind: "skill", plugin: "superpowers" },
     ],
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => [],
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => [],
     InboxSnapshot: async () => ({
-      revision: 0, paused: false, recovered: false, items: [], itemsCount: 0,
+      revision: queuedDisplay ? 1 : 0, paused: false, recovered: false,
+      items: queuedDisplay ? [{ id: "durable-entity", preview: queuedDisplay, state: "queued", intent: "followup", source: "desktop", byteSize: queuedDisplay.length, position: 1 }] : [], itemsCount: queuedDisplay ? 1 : 0,
       bytes: 0, maxItems: 64, maxBytes: 64 * 1024 * 1024,
     }),
-    EnqueueInboxFollowupWithInvocations: async (_tabId, _display, input, invocations) => {
+    EnqueueInboxFollowupWithInvocations: async (_tabId, display, input, invocations) => {
       queued = { submit: input, invocations };
+      queuedDisplay = display;
       return { itemId: "durable-entity", disposition: "queued_followup", position: 1, paused: false };
     },
   });
-  const { root, calls, rerender } = await renderComposer();
+  const { root, calls, rerender } = await renderComposer({ inboxSessionPath: "/repo/entity.jsonl" });
   await replaceComposerDraft(rerender, 4000, "/writing-plans");
   await waitFor("skill menu for the running-queue entity", () => Boolean(document.querySelector(".slashmenu")));
   const queueTextarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
@@ -2349,8 +2321,8 @@ console.log("\ncomposer goal toggle");
     Commands: async () => [
       { name: "superpowers:writing-plans", description: "Write a plan", kind: "skill", plugin: "superpowers" },
     ],
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => [],
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => [],
   });
   const { root, calls, rerender } = await renderComposer();
   await replaceComposerDraft(rerender, 4100, "/writing-plans");
@@ -2412,8 +2384,8 @@ console.log("\ncomposer goal toggle");
     Commands: async () => [
       { name: "review", description: "Review the current task", kind: "skill" },
     ],
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => [],
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => [],
   });
   const sessionA = "session:project:/repo:topic-a:session-a";
   const sessionB = "session:project:/repo:topic-b:session-b";
@@ -2460,8 +2432,8 @@ console.log("\ncomposer goal toggle");
     Commands: async () => [
       { name: "review", description: "Review the current task", kind: "skill" },
     ],
-    ListDirForTab: async () => [],
-    SearchFileRefsForTab: async () => [],
+    ListDirForTarget: async () => [],
+    SearchFileRefsForTarget: async () => [],
   });
   const sessionA = "session:project:/repo:rich-topic-a:rich-session-a";
   const sessionB = "session:project:/repo:rich-topic-b:rich-session-b";

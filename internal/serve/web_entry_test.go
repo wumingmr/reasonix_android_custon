@@ -13,7 +13,7 @@ import (
 func TestServeIndexPageAndSessionDeepLink(t *testing.T) {
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(operatorHandler(New(ctrl, bc, config.ServeConfig{})))
 	defer srv.Close()
 
 	for _, path := range []string{"/", "/sessions/reserved-session"} {
@@ -51,5 +51,13 @@ func TestServeWebPagesBootstrapFragmentTokenBeforeRequests(t *testing.T) {
 	}
 	if !strings.Contains(string(indexHTML), "__authReady.then(connectEvents)") {
 		t.Fatal("serve index must delay SSE until fragment authentication completes")
+	}
+}
+
+func TestServeIndexExplainsLaunchTokenRefusal(t *testing.T) {
+	for _, want := range []string{"body?.code!=='launch_token_required'", "__('launch_token_required')", "then(noticeLaunchTokenRefusal)"} {
+		if !strings.Contains(string(indexHTML), want) {
+			t.Fatalf("serve index does not surface a launch-token refusal: missing %q", want)
+		}
 	}
 }

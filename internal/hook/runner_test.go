@@ -43,6 +43,49 @@ func TestNewRunnerWithHooks(t *testing.T) {
 	}
 }
 
+func TestForRoleDerivesSessionFromParentAtFireTime(t *testing.T) {
+	parent := NewRunner(nil, "/tmp", nil, nil)
+	planner := parent.ForRole("planner")
+	if got := planner.payload(PreToolUse).SessionID; got != "planner" {
+		t.Fatalf("role session with no parent session = %q, want planner", got)
+	}
+	parent.SetSessionID("first")
+	if got := planner.payload(PreToolUse).SessionID; got != "first:planner" {
+		t.Fatalf("role session = %q, want first:planner", got)
+	}
+	parent.SetSessionID("second")
+	if got := planner.payload(PreToolUse).SessionID; got != "second:planner" {
+		t.Fatalf("role session after rotation = %q, want second:planner", got)
+	}
+}
+
+func TestWithoutCwdCommandSearchReachesEverySpawnOfItsChildren(t *testing.T) {
+	var got []SpawnInput
+	record := func(_ context.Context, in SpawnInput) SpawnResult {
+		got = append(got, in)
+		return SpawnResult{}
+	}
+	hooks := []ResolvedHook{{
+		HookConfig: HookConfig{Command: "python guard.py", Env: map[string]string{NoCwdCommandSearchEnv: "", "KEEP": "yes"}},
+		Event:      PreToolUse, Scope: ScopeGlobal,
+	}}
+	guarded := NewRunner(hooks, "/checkout", record, nil).WithoutCwdCommandSearch()
+	for _, r := range []*Runner{guarded, guarded.ForSession("s"), guarded.ForRole("planner")} {
+		r.PreToolUse(context.Background(), "read_file", json.RawMessage(`{}`))
+	}
+	if len(got) != 3 {
+		t.Fatalf("spawned %d hooks, want 3", len(got))
+	}
+	for _, in := range got {
+		if in.Env[NoCwdCommandSearchEnv] != "1" || in.Env["KEEP"] != "yes" || in.Cwd != "/checkout" {
+			t.Fatalf("spawn input = %+v, want the checkout cwd, the hook env and %s=1", in, NoCwdCommandSearchEnv)
+		}
+	}
+	if _, set := hooks[0].Env[NoCwdCommandSearchEnv]; !set || hooks[0].Env[NoCwdCommandSearchEnv] != "" {
+		t.Fatal("WithoutCwdCommandSearch mutated the configured hook env")
+	}
+}
+
 func TestToolMutationHooksEnabled(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -6,7 +6,22 @@ import (
 	"reasonix/internal/provider"
 )
 
-const summaryOutputReserve = summaryOutputMaxTokens
+const minSummaryOutputTokens = 512
+
+// summaryOutputBudget scales only shared/unknown-window summaries. Providers
+// with an independent completion window keep the full digest cap; smaller
+// shared windows reserve one quarter for a useful briefing without crowding
+// every fold out of the prompt budget.
+func (a *Agent) summaryOutputBudget() int {
+	if contextBudgetPolicyOf(a.svc.prov).WindowMode == provider.ContextWindowIndependent {
+		return summaryOutputMaxTokens
+	}
+	window := a.effectiveContextWindow()
+	if window <= 0 {
+		return summaryOutputMaxTokens
+	}
+	return min(summaryOutputMaxTokens, max(window/4, minSummaryOutputTokens))
+}
 
 // foldSummary is what compaction reports about turning a fold into a digest.
 // It is populated even when the call fails, so telemetry still records how
@@ -37,7 +52,7 @@ func (a *Agent) summaryInputBudget(instructions string) int {
 	if window <= 0 {
 		return 0
 	}
-	return max(0, window-summaryOutputReserve-estimateTextTokens(compactionInstruction)-estimateTextTokens(instructions)-protocolReserveTokens)
+	return max(0, window-a.summaryOutputBudget()-estimateTextTokens(compactionInstruction)-estimateTextTokens(instructions)-protocolReserveTokens)
 }
 
 // foldToSummary turns a fold region into one digest with exactly one provider
@@ -49,6 +64,11 @@ func (a *Agent) foldToSummary(ctx context.Context, fold []provider.Message, inst
 
 func (a *Agent) foldToSummaryMode(ctx context.Context, fold []provider.Message, instructions, inputMode string) (foldSummary, error) {
 	res := foldSummary{Mode: CompactionModeSummarized, Spans: 1, FoldTokens: summaryInputTokens(fold), InputMode: inputMode}
+	if inputMode == SummaryInputSlim {
+		summary, usage, err := a.summarizeTranscript(ctx, fold, instructions)
+		res.Text, res.Usage = summary, usage
+		return res, err
+	}
 	return a.singleCallSummary(ctx, res, fold, instructions)
 }
 

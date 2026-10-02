@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"syscall"
@@ -43,15 +44,25 @@ func TestRetryableStatus(t *testing.T) {
 	}
 }
 
-func TestTransientErr(t *testing.T) {
-	if transientErr(nil) {
-		t.Error("nil should not be transient")
+func TestSendWithRetryCarriesDisplayIdentityAndSanitizedRequestPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	_, err := SendWithRetry(context.Background(), server.Client(), SendOptions{
+		Provider: "deepseek-anthropic", ProviderDisplayName: "Deepseek2", Protocol: "openai",
+	}, func(ctx context.Context) (*http.Request, error) {
+		return http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/anthropic/v1/chat/completions?token=secret", nil)
+	})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error = %T %v", err, err)
 	}
-	if transientErr(context.Canceled) || transientErr(context.DeadlineExceeded) {
-		t.Error("ctx cancel/deadline should not be transient")
+	if apiErr.Provider != "deepseek-anthropic" || apiErr.ProviderDisplayName != "Deepseek2" || apiErr.Protocol != "openai" || apiErr.RequestPath != "/anthropic/v1/chat/completions" {
+		t.Fatalf("API error identity = %+v", apiErr)
 	}
-	if !transientErr(errors.New("connection reset")) {
-		t.Error("network-ish error should be transient")
+	if strings.Contains(apiErr.RequestPath, "secret") {
+		t.Fatalf("query leaked into request path: %q", apiErr.RequestPath)
 	}
 }
 
@@ -73,24 +84,6 @@ func TestIsConnReset(t *testing.T) {
 		if !IsConnReset(err) {
 			t.Errorf("want conn reset for %v", err)
 		}
-	}
-}
-
-func TestBackoffDelay(t *testing.T) {
-	if d := backoffDelay(1, 0); d < 500*time.Millisecond || d >= 750*time.Millisecond {
-		t.Errorf("attempt 1 base delay = %v, want [500ms,750ms)", d)
-	}
-	if d := backoffDelay(20, 0); d > maxBackoff+250*time.Millisecond {
-		t.Errorf("delay %v exceeds cap+jitter", d)
-	}
-	if d := backoffDelay(5, 3*time.Second); d != 3*time.Second {
-		t.Errorf("Retry-After should win: %v", d)
-	}
-	if d := backoffDelay(1, 45*time.Second); d != 45*time.Second {
-		t.Errorf("Retry-After beyond the backoff cap should still be honored: %v", d)
-	}
-	if d := backoffDelay(1, time.Hour); d != maxRetryAfter {
-		t.Errorf("Retry-After should be capped to %v, got %v", maxRetryAfter, d)
 	}
 }
 
@@ -158,39 +151,15 @@ func TestSendWithRetryAuthError(t *testing.T) {
 	}
 }
 
-func TestSendWithRetryRetriesTransientAuthForKnownKey(t *testing.T) {
-	calls := 0
-	cl := &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
-		calls++
-		if calls <= 2 {
-			return statusResp(401, nil), nil
+func TestSendWithRetryKnownKeyFailsWithoutRetry(t *testing.T) {
+	for _, status := range []int{401, 403} {
+		calls := 0
+		cl := &http.Client{Transport: rtFunc(func(*http.Request) (*http.Response, error) { calls++; return statusResp(status, nil), nil })}
+		_, err := SendWithRetry(t.Context(), cl, SendOptions{Provider: "mimo", KeyPresent: true, RetryAuth: true}, newDummyReq)
+		var auth *AuthError
+		if calls != 1 || !errors.As(err, &auth) || auth.Status != status || !auth.HasKey {
+			t.Fatalf("calls=%d err=%v", calls, err)
 		}
-		return statusResp(200, nil), nil
-	})}
-	resp, err := SendWithRetry(context.Background(), cl,
-		SendOptions{Provider: "mimo", KeyEnv: "MIMO_API_KEY", KeyPresent: true, RetryAuth: true}, newDummyReq)
-	if err != nil {
-		t.Fatalf("a previously-good key should recover from a transient 401: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK || calls != 3 {
-		t.Fatalf("status=%d calls=%d, want 200 after 3 calls", resp.StatusCode, calls)
-	}
-}
-
-func TestSendWithRetryAuthGivesUpAfterMaxAuthRetries(t *testing.T) {
-	calls := 0
-	cl := &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
-		calls++
-		return statusResp(401, nil), nil
-	})}
-	_, err := SendWithRetry(context.Background(), cl,
-		SendOptions{Provider: "mimo", KeyEnv: "MIMO_API_KEY", KeyPresent: true, RetryAuth: true}, newDummyReq)
-	if calls != 1+maxAuthRetries {
-		t.Errorf("persistent 401 made %d calls, want %d (initial + maxAuthRetries)", calls, 1+maxAuthRetries)
-	}
-	var authErr *AuthError
-	if !errors.As(err, &authErr) || !authErr.HasKey {
-		t.Fatalf("want *AuthError with HasKey=true, got %v", err)
 	}
 }
 
@@ -215,9 +184,9 @@ func (b *stallingBody) Close() error {
 }
 
 // TestSendWithRetryUnblocksStalledErrorBody locks in the #6607 freeze fix: a
-// retryable status whose body never arrives must not wedge the retry loop —
-// the deadline closes the body, the attempt is retried, and the eventual OK
-// response is returned. Without the timer in readErrorBody this test hangs on
+// failed response whose body never arrives must not wedge error reporting —
+// the deadline closes the body and the original HTTP failure is returned.
+// Without the timer in readErrorBody this test hangs on
 // the first 502 body and fails via the watchdog below.
 func TestSendWithRetryUnblocksStalledErrorBody(t *testing.T) {
 	prev := errorBodyReadTimeout
@@ -245,46 +214,37 @@ func TestSendWithRetryUnblocksStalledErrorBody(t *testing.T) {
 
 	select {
 	case r := <-done:
-		if r.err != nil {
-			t.Fatalf("should recover after the stalled 502: %v", r.err)
-		}
-		if r.resp.StatusCode != http.StatusOK || calls != 2 {
-			t.Fatalf("status=%d calls=%d, want 200 after 2 calls", r.resp.StatusCode, calls)
+		var api *APIError
+		if r.resp != nil || !errors.As(r.err, &api) || api.Status != http.StatusBadGateway || calls != 1 {
+			t.Fatalf("calls=%d err=%v, want original 502 without retry", calls, r.err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("SendWithRetry wedged on a stalled error body — read deadline did not fire")
 	}
 }
 
-func TestSendWithRetryRecoversAndNotifies(t *testing.T) {
-	calls := 0
-	cl := &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
-		calls++
-		if calls == 1 {
-			return statusResp(503, nil), nil
+func TestSendWithRetryReturnsUpstreamFailureWithoutNotification(t *testing.T) {
+	for _, status := range []int{408, 409, 429, 500, 503, 529} {
+		calls, notifications := 0, 0
+		cl := &http.Client{Transport: rtFunc(func(*http.Request) (*http.Response, error) {
+			calls++
+			return statusResp(status, map[string]string{"Retry-After": "120"}), nil
+		})}
+		ctx, cancel := context.WithCancel(t.Context())
+		ctx = WithRequestAttemptCounter(WithRetryNotify(ctx, func(RetryInfo) { notifications++; cancel() }))
+		_, err := SendWithRetry(ctx, cl, SendOptions{}, newDummyReq)
+		cancel()
+		var api *APIError
+		if !errors.As(err, &api) || api.Status != status || calls != 1 || notifications != 0 || RequestAttemptCount(ctx) != 1 {
+			t.Fatalf("status=%d calls=%d notifications=%d err=%v", status, calls, notifications, err)
 		}
-		return statusResp(200, nil), nil
-	})}
-	var infos []RetryInfo
-	ctx := WithRequestAttemptCounter(context.Background())
-	ctx = WithRetryNotify(ctx, func(i RetryInfo) { infos = append(infos, i) })
-
-	resp, err := SendWithRetry(ctx, cl, SendOptions{Provider: "p", KeyEnv: "KEY"}, newDummyReq)
-	if err != nil {
-		t.Fatalf("should recover after one retry: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK || calls != 2 {
-		t.Fatalf("status=%d calls=%d, want 200 after 2 calls", resp.StatusCode, calls)
-	}
-	if len(infos) != 1 || infos[0].Attempt != 1 || infos[0].Max != MaxRetries {
-		t.Fatalf("retry notify = %#v, want one Attempt 1/%d", infos, MaxRetries)
-	}
-	if got := RequestAttemptCount(ctx); got != 2 {
-		t.Fatalf("request attempt count = %d, want 2", got)
+		if api.RetryAfter != 2*time.Minute {
+			t.Fatalf("lost upstream diagnostic: %+v", api)
+		}
 	}
 }
 
-func TestRequestAttemptCountSurvivesRetriesThenTerminalFailure(t *testing.T) {
+func TestRequestAttemptCountTracksExplicitRequests(t *testing.T) {
 	calls := 0
 	cl := &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
 		calls++
@@ -296,8 +256,13 @@ func TestRequestAttemptCountSurvivesRetriesThenTerminalFailure(t *testing.T) {
 	ctx := WithRequestAttemptCounter(context.Background())
 	providerCtx := WithRequestAttemptCounter(ctx)
 
-	if _, err := SendWithRetry(providerCtx, cl, SendOptions{Provider: "p"}, newDummyReq); err == nil {
-		t.Fatal("expected terminal provider error")
+	for range 3 {
+		if _, err := SendWithRetry(providerCtx, cl, SendOptions{Provider: "p"}, newDummyReq); err == nil {
+			t.Fatal("expected terminal provider error")
+		}
+	}
+	if calls != 3 {
+		t.Fatalf("calls=%d, want one per explicit request", calls)
 	}
 	if got := RequestAttemptCount(ctx); got != 3 {
 		t.Fatalf("request attempt count = %d, want 3", got)
@@ -305,5 +270,16 @@ func TestRequestAttemptCountSurvivesRetriesThenTerminalFailure(t *testing.T) {
 	usage := UsageWithRequestAttemptCount(ctx, nil)
 	if usage == nil || usage.TotalTokens != 0 || usage.RequestCount != 3 {
 		t.Fatalf("failed request usage = %+v, want tokens=0 requests=3", usage)
+	}
+}
+
+func TestIndependentRequestAttemptCounter(t *testing.T) {
+	parent := WithRequestAttemptCounter(context.Background())
+	recordRequestAttempt(parent)
+	child := WithIndependentRequestAttemptCounter(parent)
+	recordRequestAttempt(child)
+	recordRequestAttempt(child)
+	if RequestAttemptCount(parent) != 1 || RequestAttemptCount(child) != 2 {
+		t.Fatalf("auxiliary and main request counts leaked: parent=%d child=%d", RequestAttemptCount(parent), RequestAttemptCount(child))
 	}
 }

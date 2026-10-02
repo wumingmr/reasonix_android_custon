@@ -16,7 +16,7 @@ import (
 )
 
 func TestPlanApprovedMessageStatesAutoSemantics(t *testing.T) {
-	for _, want := range []string{"ordinary writer fallback", "explicit ask/deny rules", "forced fresh reviews"} {
+	for _, want := range []string{"plan mode is off", "permission and sandbox restrictions", "Update todos"} {
 		if !strings.Contains(planApprovedMessage, want) {
 			t.Fatalf("planApprovedMessage missing %q: %s", want, planApprovedMessage)
 		}
@@ -74,7 +74,7 @@ func TestApprovalToolWideEndToEnd(t *testing.T) {
 
 	approvalID := make(chan string, 4)
 	prompts := 0
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Runner:   ag,
 		Executor: ag,
 		Policy:   permission.New("ask", nil, nil, nil), // writers ask by default
@@ -133,7 +133,7 @@ func TestPlanModeApprovalPostureMatrix(t *testing.T) {
 			}}
 			ag := agent.New(prov, reg, agent.NewSession(""), agent.Options{}, event.Discard)
 
-			c := New(Options{
+			c := newOwnedTestController(t, Options{
 				Runner:   ag,
 				Executor: ag,
 				Policy:   permission.New("ask", nil, tc.askRules, tc.denyRules),
@@ -164,7 +164,7 @@ func TestApprovedPlanExecutionUsesAutoSemantics(t *testing.T) {
 	policy := permission.New("ask", nil, []string{"sensitive_writer"}, nil)
 	approvalTools := make(chan string, 3)
 	var c *Controller
-	c = New(Options{
+	c = newOwnedTestController(t, Options{
 		Policy: policy,
 		Sink: event.FuncSink(func(e event.Event) {
 			if e.Kind != event.ApprovalRequest {
@@ -227,7 +227,7 @@ func TestApprovedPlanExecutionUsesAutoSemantics(t *testing.T) {
 // turns an unanswered prompt into a denial (error) instead of blocking forever
 // (#4626, #4402). Ask shares the same wait context as tool-approval prompts.
 func TestApprovalTimeoutDeniesWhenUnanswered(t *testing.T) {
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Policy:          permission.New("ask", nil, nil, nil),
 		Sink:            event.Discard,
 		ApprovalTimeout: 40 * time.Millisecond,
@@ -251,7 +251,7 @@ func TestApprovalTimeoutDeniesWhenUnanswered(t *testing.T) {
 // interactive behavior: an unanswered Ask blocks rather than timing out, so a
 // human at a terminal is never cut off.
 func TestApprovalTimeoutZeroWaitsIndefinitely(t *testing.T) {
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Policy: permission.New("ask", nil, nil, nil),
 		Sink:   event.Discard,
 		// ApprovalTimeout intentionally zero (default).

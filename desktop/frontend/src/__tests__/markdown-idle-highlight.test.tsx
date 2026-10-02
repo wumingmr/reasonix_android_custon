@@ -134,6 +134,51 @@ console.log("\nmarkdown idle highlight");
   await act(async () => root.unmount());
 }
 
+// Appending a stream retains completed line hosts and the user's selection.
+{
+  const root = createRoot(rootEl);
+  const prefix = 'const message = "你好";\n/* first\nsecond */\n';
+  const render = async (value: string, language = "javascript") => act(async () => {
+    root.render(<LocaleProvider><HljsCode value={value} language={language} showHeader /></LocaleProvider>);
+  });
+  await render(prefix + "const count =");
+  const line = pre()!.querySelector(".code-block__line")!;
+  const token = line.querySelector(".hljs-string");
+  const range = document.createRange(); range.selectNodeContents(line);
+  window.getSelection()!.addRange(range);
+  const selected = window.getSelection()!.toString();
+  await render(prefix + "const count = 42;");
+  eq(pre()!.querySelector(".code-block__line"), line, "completed streaming line keeps its DOM host");
+  eq(line.querySelector(".hljs-string"), token, "unchanged token is retained");
+  eq(window.getSelection()!.toString(), selected, "appending preserves native selection");
+  eq(pre()!.textContent, prefix + "const count = 42;", "balanced multiline spans preserve source text");
+  ok(pre()!.querySelectorAll(".hljs-comment").length === 2, "multiline comment colors continue across retained lines");
+  await render("<script>alert(1)</script>", "unknown");
+  eq(pre()!.getAttribute("data-highlight-mode"), "plain", "unsupported languages report plain mode");
+  ok(!pre()!.querySelector("script"), "source HTML is escaped");
+  await act(async () => root.unmount());
+}
+
+// Idle highlighting keeps a valid prefix colored while appended text is pending.
+{
+  const root = createRoot(rootEl);
+  const value = 'const item = "value"; // comment\n'.repeat(1600);
+  const render = async (source: string, language = "javascript") => act(async () => {
+    root.render(<LocaleProvider><HljsCode value={source} language={language} showHeader /></LocaleProvider>);
+  });
+  await render(value); await runIdle();
+  const first = pre()!.querySelector(".hljs-keyword");
+  ok(first, "large streaming fixture has highlighted prefix");
+  await render(value + "const tail = 1;");
+  eq(pre()!.querySelector(".hljs-keyword"), first, "pending append does not erase earlier colors");
+  eq(pre()!.textContent, value + "const tail = 1;", "pending append displays all new text immediately");
+  await render("x".repeat(value.length), "python");
+  ok(!pre()!.querySelector(".hljs-keyword"), "replacement language never borrows stale prefix colors");
+  await runIdle();
+  eq(pre()!.textContent, "x".repeat(value.length), "late cancelled idle work cannot restore old source");
+  await act(async () => root.unmount());
+}
+
 dom.window.close();
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

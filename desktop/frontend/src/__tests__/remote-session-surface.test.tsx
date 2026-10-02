@@ -1,0 +1,789 @@
+import { verifyRemoteSubmissionLifecycle, verifyRemoteSubmissionTabIsolation } from "./helpers/remoteSubmissionLifecycle";
+import React, { act } from "react";
+import { RemoteNavigationHarness } from "./helpers/RemoteNavigationHarness";
+import { installRemoteSurfaceDom } from "./helpers/remoteSurfaceDom";
+import type { AppBindings } from "../lib/bridge";
+import type { TabMeta } from "../lib/types";
+import type { RemoteSessionApi } from "../lib/useRemoteSession";
+import { installDesktopHostStub } from "./desktopHostStub";
+import { makeExactRemoteInteractionBindings, runLegacyRemoteCapabilityScenario, runRemoteExtensionFormScenarios } from "../test-support/remoteInteractionScenarios";
+import { installRemoteTranscriptFixture } from "./helpers/remoteTranscriptFixture";
+
+let passed = 0, failed = 0;
+function ok(value: boolean, label: string) {
+  process.stdout.write(`  ${value ? "PASS" : "FAIL"}  ${label}\n`);
+  if (value) passed += 1;
+  else failed += 1;
+}
+console.log("\nRemote session surface + hook");
+const dom = installRemoteSurfaceDom();
+
+const tape: string[] = [];
+let failApproval = false;
+let failOpen = false;
+let submitError: Error | undefined;
+let failHydration = true;
+let statusGoalStatus: "stopped" | "complete" = "stopped";
+let statusQualityFloor: "standard" | "delivery" = "standard";
+let statusModelLabel = "DeepSeek · Mock";
+let statusEffort = "high";
+let statusPendingPrompt = false, replayedPrompts: unknown[] = [];
+let snapshotHistory: unknown[] = [];
+let blockApproval = false;
+let releaseApproval: (() => void) | undefined;
+let blockAnswer = false, failAnswer = false;
+let releaseAnswer: (() => void) | undefined;
+let blockExtensionForm = false;
+let releaseExtensionForm: (() => void) | undefined;
+let resolveRaceSnapshot: ((value: { history: unknown[]; status: unknown }) => void) | undefined;
+const resolveStateRaceSnapshots: Array<(value: { history: unknown[]; status: unknown }) => void> = [];
+let rotationSnapshotCalls = 0;
+let resolveRotationReconcile: ((value: { history: unknown[]; status: unknown }) => void) | undefined;
+const desktopStub = installDesktopHostStub(({ main: { App: {
+  async RegisterNavigationIntent(token: string) { tape.push(`navigation:${token}`); },
+  async RemoteTabSnapshot(tabId: string) {
+    tape.push(`snapshot:${tabId}`);
+		if (tabId === "tab-hydration-failure" && failHydration) throw new Error("history exceeds bridge limit");
+		if (tabId === "tab-pending-model") return new Promise(() => {});
+		if (tabId === "tab-race") return new Promise<{ history: unknown[]; status: unknown }>((resolve) => { resolveRaceSnapshot = resolve; });
+		if (tabId === "tab-state-race") return new Promise<{ history: unknown[]; status: unknown }>((resolve) => { resolveStateRaceSnapshots.push(resolve); });
+		if (tabId === "tab-reconcile-rotation") {
+			rotationSnapshotCalls += 1;
+			if (rotationSnapshotCalls === 2) {
+				return new Promise<{ history: unknown[]; status: unknown }>((resolve) => { resolveRotationReconcile = resolve; });
+			}
+			return {
+				history: [{ role: "assistant", content: rotationSnapshotCalls === 1 ? "initial session" : rotationSnapshotCalls === 3 ? "fresh rotated session" : "fresh reconciled turn" }],
+				status: { running: false, label: "Rotation", plan: false, toolApprovalMode: "ask", goal: "" },
+			};
+		}
+		if (tabId === "tab-tool-history") return {
+			history: [
+				{ role: "assistant", content: "", toolCalls: [{ id: "remote-tool", name: "bash", arguments: "{\"command\":\"go test ./...\"}" }] },
+				{ role: "tool", content: "remote tool output", toolCallId: "remote-tool", toolName: "bash" },
+			],
+			status: { running: false, label: "Tools", plan: false, toolApprovalMode: "ask", goal: "" },
+		};
+		if (tabId === "tab-replay") return {
+			history: [], status: { label: "Replay", plan: false, toolApprovalMode: "ask", goal: "" },
+			pendingEvents: [
+				{ kind: "approval_request", approval: { id: "replayed-approval", tool: "bash", subject: "pending while inactive" } },
+				{ kind: "extension_surface", extension: { pluginId: "replayed-plugin", surfaceId: "replayed-form", kind: "form", form: { title: "Pending form", fields: [{ key: "region", label: "Region", kind: "input" }] } } },
+			],
+		};
+    if (tabId === "tab-status-fallback") return { history: [] };
+    return {
+      history: snapshotHistory,
+      checkpoints: [{
+        turn: 3,
+        prompt: "checkpoint",
+        files: ["src/main.ts"],
+        fileCount: 2,
+        time: 1,
+        canCode: true,
+        canConversation: true,
+      }],
+      commands: [{ name: "remote-review", description: "Review remotely", kind: "custom", group: "skills" }],
+      status: {
+        label: statusModelLabel,
+        plan: true,
+        toolApprovalMode: "auto",
+        goal: "",
+        goalStatus: statusGoalStatus,
+        goalRuntime: { turnsUsed: 2, turnsLimit: 0, tokensUsed: 321, requestsUsed: 3, workDurationMs: 4000, tokensLimit: 0, noProgressTurns: 0, noProgressLimit: 0, budgetExtensions: 0 },
+        qualityFloor: statusQualityFloor,
+        effort: { supported: true, current: statusEffort, default: "auto", levels: ["auto", "high", "max"] },
+        used: 1200,
+        window: 64000,
+        cacheHit: 800,
+        cacheMiss: 400,
+        lastUsage: { promptTokens: 1000, completionTokens: 200, totalTokens: 1200, cacheHitTokens: 800, cacheMissTokens: 200 },
+        balance: { available: true, display: "¥88.00" },
+        sessionCostQuote: { original: { amount: "0.12", currency: "CNY" }, selected: { amount: "0.12", currency: "CNY" }, estimated: false, costComplete: true, displayComplete: true, complete: true },
+        jobs: [{ id: "job-remote", kind: "bash", label: "tests", status: "running", startedAt: 1 }],
+      },
+    };
+  },
+	async RemoteTabStatus(tabId: string) {
+		tape.push(`status:${tabId}`);
+		if (tabId === "tab-status-fallback") {
+			return { running: false, plan: true, toolApprovalMode: "yolo", goal: "", qualityFloor: "standard" };
+		}
+		return {
+			running: false, pendingPrompt: statusPendingPrompt, backgroundJobs: 0,
+			label: statusModelLabel, plan: true, toolApprovalMode: "auto", goal: "",
+			goalStatus: statusGoalStatus, qualityFloor: statusQualityFloor,
+			goalRuntime: { turnsUsed: 2, turnsLimit: 0, tokensUsed: 321, requestsUsed: 3, workDurationMs: 4000, tokensLimit: 0, noProgressTurns: 0, noProgressLimit: 0, budgetExtensions: 0 },
+			effort: { supported: true, current: statusEffort, default: "auto", levels: ["auto", "high", "max"] },
+		};
+	},
+  async ReplayRemoteTabPrompts(tabId: string) { tape.push(`replay-prompts:${tabId}`); return replayedPrompts; },
+  async SubmitRemoteTab(tabId: string, text: string) {
+    tape.push(`submit:${tabId}:${text}`);
+    if (submitError) throw submitError;
+  },
+  async CancelRemoteTab(tabId: string) {
+    tape.push(`cancel:${tabId}`);
+  },
+  async RewindRemoteTab(tabId: string, checkpointId: string, scope: string) {
+    tape.push(`rewind:${tabId}:${checkpointId}:${scope}`);
+  },
+  async ForkRemoteTab(tabId: string, turn: number, name: string) {
+    tape.push(`fork:${tabId}:${turn}:${name}`);
+  },
+  async SummarizeRemoteTab(tabId: string, turn: number, mode: string) {
+    tape.push(`summarize:${tabId}:${turn}:${mode}`);
+  },
+  async CompactRemoteTab(tabId: string, instructions: string) { tape.push(`compact:${tabId}:${instructions}`); },
+  async SetRemoteTabEffort(tabId: string, level: string) {
+    tape.push(`effort:${tabId}:${level}`);
+    statusEffort = level;
+  },
+  async SetRemoteTabModel(tabId: string, ref: string) {
+    tape.push(`model:${tabId}:${ref}`);
+    statusModelLabel = `Model · ${ref}`;
+    statusEffort = "max";
+  },
+  async SetRemoteTabQualityFloor(tabId: string, floor: string) {
+    tape.push(`quality-floor:${tabId}:${floor}`);
+  },
+  async PauseRemoteTabGoal(tabId: string) {
+    tape.push(`pause-goal:${tabId}`);
+  },
+  async ResumeRemoteTabGoal(tabId: string) {
+    tape.push(`resume-goal:${tabId}`);
+  },
+  async SteerRemoteTab(tabId: string, input: string) {
+    tape.push(`steer:${tabId}:${input}`);
+  },
+  async CancelRemoteTabJobs(tabId: string, jobIds: string[]) {
+    tape.push(`cancel-jobs:${tabId}:${jobIds.join(",")}`);
+  },
+  ...makeExactRemoteInteractionBindings({ tape, failApproval: () => failApproval, failAnswer: () => failAnswer,
+    waitApproval: () => blockApproval ? new Promise<void>((resolve) => { releaseApproval = resolve; }) : Promise.resolve(),
+    waitAnswer: () => blockAnswer ? new Promise<void>((resolve) => { releaseAnswer = resolve; }) : Promise.resolve(),
+    waitForm: () => blockExtensionForm ? new Promise<void>((resolve) => { releaseExtensionForm = resolve; }) : Promise.resolve(),
+    resolved: (tabId, promptId, turnId) => desktopStub.emit(`remote-tab:${tabId}:event`, { kind: "prompt_answered", itemId: promptId, turnId }) }),
+  async ApproveRemoteTab(tabId: string, callId: string, decision: string) {
+    tape.push(`approve:${tabId}:${callId}:${decision}`);
+		if (failApproval) throw new Error("tunnel write failed");
+		if (blockApproval) await new Promise<void>((resolve) => { releaseApproval = resolve; });
+  },
+	async ResolveRemoteTabPlanDecision(tabId: string, callId: string, action: string, feedback: string) {
+		tape.push(`plan-decision:${tabId}:${callId}:${action}:${feedback}`);
+	},
+	async AnswerRemoteTab(tabId: string, callId: string, answers: Array<{ QuestionID: string; Selected: string[] }>) {
+		tape.push(`answer:${tabId}:${callId}:${JSON.stringify(answers)}`); if (failAnswer) throw new Error("remote answer failed");
+		if (blockAnswer) await new Promise<void>((resolve) => { releaseAnswer = resolve; });
+	},
+  async SubmitRemoteTabExtensionForm(tabId: string, pluginId: string, surfaceId: string, values: Record<string, unknown>) {
+    tape.push(`extension-form:${tabId}:${pluginId}:${surfaceId}:${JSON.stringify(values)}`);
+  },
+  async OpenRemoteProjectTab(hostId: string, workspace: string, opts?: { newSession?: boolean }) {
+    tape.push(`open:${hostId}:${workspace}:${opts?.newSession ? "new" : ""}`);
+    if (failOpen) throw new Error("reconnect failed");
+    return { ...remoteTab, remote: { hostId, workspace } };
+  },
+  async ForkTargetsRemoteTab(tabId: string) {
+    tape.push(`fork-targets:${tabId}`);
+    return { targets: [], verifiable: false };
+  },
+  async CreateForkRemoteTab(tabId: string, target: { turnId: string; sourceSessionId: string; boundarySequence: number }) {
+    tape.push(`fork-create:${tabId}:${target.turnId}:${target.sourceSessionId}:${target.boundarySequence}`);
+    return { opened: true, sessionId: "child-remote-1", operationId: "operation-remote-1" };
+  },
+  async AcknowledgeForkOperation(tabId: string, operationId: string) { tape.push(`fork-ack:${tabId}:${operationId}`); },
+  async SetActiveTab(tabID: string) {
+    tape.push(`setActive:${tabID}`);
+  },
+  // The pre-activation history prime reads the canonical window through the
+  // remote binding. Answer like a serve whose tab has not attached yet, so
+  // the prime stays inert here and cannot consume the RemoteTabSnapshot
+  // deferreds the hydration race and rotation scenarios count.
+  async RemoteSessionHistoryWindowForTab(tabID: string) {
+    tape.push(`window:${tabID}`);
+    throw new Error("remote tab is not attached");
+  },
+} as Partial<AppBindings> as AppBindings } }).main.App);
+
+const __emitMockRemoteTab = (tabId: string, channel: "state" | "event", payload: unknown) => desktopStub.emit(`remote-tab:${tabId}:${channel}`, payload);
+installRemoteTranscriptFixture(desktopStub.commands);
+const [{ createRoot }, { RemoteSessionSurface }, { LocaleProvider }, { useRemoteSession }, { remoteRuntimeCommand }, { setTranscriptBindingIdentity }] = await Promise.all([
+  import("react-dom/client"),
+  import("../components/RemoteSessionSurface"),
+  import("../lib/i18n"),
+  import("../lib/useRemoteSession"),
+  import("../lib/useRemoteComposerIntegration"),
+  import("../lib/canonicalTranscriptBackend"),
+]);
+// Production resolves remote tabs through the controller's meta; this harness
+// mounts the hook without a controller, so bind canonical reads to the remote
+// bridge the way the app does for every remote tab.
+setTranscriptBindingIdentity(() => "remote");
+
+const remoteTab: TabMeta = {
+  id: "tab-remote-1",
+  scope: "project",
+  workspaceRoot: "~/app",
+  workspaceName: "app",
+  topicId: "",
+  topicTitle: "app",
+  label: "gpu-box",
+  ready: true,
+  running: false,
+  mode: "normal",
+  active: true,
+  cwd: "~/app",
+  sessionId: "remote-session-1",
+  sessionGeneration: 0,
+  interactionTargetSupported: true,
+  extensionFormInstanceSupported: true,
+  remote: { hostId: "gpu-box", workspace: "~/app" },
+};
+
+async function flush(ticks = 4) {
+  for (let i = 0; i < ticks; i++) await Promise.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 40));
+}
+
+// The surface takes its session from the hook — the same wiring the app
+// shell uses (the shared Transcript renders the content, the composer lives
+// in the shell).
+function RemoteSurfaceHarness({ tab }: { tab: TabMeta }) {
+  const session = useRemoteSession(tab.id);
+  return <RemoteNavigationHarness><RemoteSessionSurface tab={tab} session={session} /></RemoteNavigationHarness>;
+}
+
+// ── Surface: shared Transcript renders reducer-driven items ──
+const root = createRoot(document.getElementById("root")!);
+await act(async () => {
+  root.render(
+    <LocaleProvider>
+      <RemoteSurfaceHarness tab={remoteTab} />
+    </LocaleProvider>,
+  );
+});
+await act(async () => flush());
+
+ok(document.querySelector(".remote-surface__log") === null, "no bespoke log rows — the shared Transcript owns rendering");
+ok(!document.querySelector(".remote-surface__composer"), "the surface renders no composer of its own");
+
+await act(async () => {
+  __emitMockRemoteTab("tab-remote-1", "event", { kind: "turn_started" });
+  __emitMockRemoteTab("tab-remote-1", "event", { kind: "reasoning", reasoning: "thinking hard" });
+  __emitMockRemoteTab("tab-remote-1", "event", { kind: "text", text: "streaming answer" });
+  await flush();
+});
+ok(document.body.textContent?.includes("streaming answer") === true, "serve text frames render through the local transcript pipeline");
+ok(document.body.textContent?.includes("thinking hard") === true, "reasoning renders through the local pipeline");
+{
+  const snapshotsBefore = tape.filter((entry) => entry.startsWith("snapshot:")).length;
+  await act(async () => {
+    __emitMockRemoteTab("tab-remote-1", "state", { state: "ready" });
+    await flush();
+  });
+  ok(tape.filter((entry) => entry.startsWith("snapshot:")).length > snapshotsBefore, "a ready transition re-syncs the snapshot (session reset / reconnect path)");
+}
+ok(document.body.textContent?.includes("streaming answer") === true, "same-session reconnect restores the active prefix")
+
+await act(async () => {
+  const statusBefore = tape.filter((entry) => entry === "status:tab-remote-1").length;
+  __emitMockRemoteTab("tab-remote-1", "event", { kind: "turn_done" });
+  await flush();
+  ok(tape.filter((entry) => entry === "status:tab-remote-1").length > statusBefore, "turn_done refreshes remote goal/runtime status");
+});
+
+await act(async () => {
+  __emitMockRemoteTab("tab-remote-1", "event", { kind: "approval_request", turnId: "turn-main", runtimeEpoch: "runtime-main", approval: { id: "call-9", tool: "bash", subject: "rm -rf /tmp/junk" } });
+  await flush();
+});
+{
+  const dialog = document.querySelector(".remote-surface__approval");
+  ok(Boolean(dialog), "approval card renders");
+  ok(dialog?.textContent?.includes("rm -rf /tmp/junk") === true, "approval subject renders");
+  ok(dialog?.textContent?.includes("Allow matching for this session") === true
+    && dialog?.textContent?.includes("Always allow matching operations") !== true,
+  "remote approval exposes only once and session scopes");
+  await act(async () => {
+    [...dialog!.querySelectorAll<HTMLButtonElement>(".prompt-action")].find((b) => b.textContent?.includes("Allow matching for this session"))?.click();
+    await flush();
+  });
+  await act(async () => {
+    dialog?.querySelector<HTMLButtonElement>(".decision-confirm-bar__confirm")?.click();
+    await new Promise((resolve) => setTimeout(resolve, 220));
+  });
+  ok(tape.includes("approve:tab-remote-1:call-9:session"), "session grant forwards its approval scope");
+	ok(!document.querySelector(".remote-surface__approval"), "approval card clears after deciding");
+}
+
+await act(async () => {
+	__emitMockRemoteTab("tab-remote-1", "event", {
+		kind: "approval_request", turnId: "turn-main", runtimeEpoch: "runtime-main",
+		approval: { id: "plan-remote", tool: "exit_plan_mode", subject: "Plan ready" },
+	});
+	await flush();
+});
+{
+	const planDialog = document.querySelector(".remote-surface__approval");
+	await act(async () => {
+		[...planDialog!.querySelectorAll<HTMLButtonElement>(".prompt-action")]
+			.find((button) => button.textContent?.includes("Revise plan"))?.click();
+		await flush();
+	});
+	await act(async () => {
+		const input = planDialog?.querySelector<HTMLTextAreaElement>(".plan-revision__input");
+		if (input) {
+			const propsKey = Object.keys(input).find((key) => key.startsWith("__reactProps"));
+			const props = propsKey ? (input as unknown as Record<string, { onChange?: (event: { target: { value: string } }) => void }>)[propsKey] : undefined;
+			props?.onChange?.({ target: { value: "cover the rollback path" } });
+		}
+		await flush();
+	});
+	await act(async () => {
+		planDialog?.querySelector<HTMLButtonElement>(".plan-revision__actions .btn--primary")?.click();
+		await new Promise((resolve) => setTimeout(resolve, 220));
+	});
+	ok(tape.includes("plan-decision:tab-remote-1:plan-remote:revise_plan:cover the rollback path"),
+		"remote plan revision uses the specialized decision endpoint and preserves feedback");
+	ok(!tape.some((entry) => entry.startsWith("approve:tab-remote-1:plan-remote")),
+		"remote plan decisions never collapse into generic approval booleans");
+}
+
+await act(async () => {
+	failApproval = true;
+	__emitMockRemoteTab("tab-remote-1", "event", { kind: "approval_request", turnId: "turn-main", runtimeEpoch: "runtime-main", approval: { id: "call-fail", tool: "bash", subject: "keep this prompt" } });
+	await flush();
+});
+{
+	await act(async () => {
+		const failedDialog = document.querySelector(".remote-surface__approval");
+		[...failedDialog!.querySelectorAll<HTMLButtonElement>(".prompt-action")].find((b) => b.textContent?.includes("Allow once"))?.click();
+		await flush();
+	});
+	await act(async () => {
+		const failedDialog = document.querySelector(".remote-surface__approval");
+		failedDialog?.querySelector<HTMLButtonElement>(".decision-confirm-bar__confirm")?.click();
+		await new Promise((resolve) => setTimeout(resolve, 220));
+		await flush();
+	});
+	ok(Boolean(document.querySelector(".remote-surface__approval")), "a failed approval command preserves the decision card");
+	ok(document.body.textContent?.includes("tunnel write failed") === true, "a failed approval command surfaces an actionable error");
+	failApproval = false;
+}
+
+await act(async () => {
+  __emitMockRemoteTab("tab-remote-1", "event", { kind: "ask_request", turnId: "turn-main", runtimeEpoch: "runtime-main", ask: { id: "ask-7", questions: [{ id: "q1", prompt: "Deploy now?", options: [{ label: "yes" }, { label: "no" }] }] } });
+  await flush();
+});
+{
+  const dialog = document.querySelector(".prompt-shelf--ask");
+  ok(Boolean(dialog), "ask card renders");
+  ok(dialog?.textContent?.includes("Deploy now?") === true, "ask prompt renders");
+	await act(async () => {
+		[...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "yes")?.click();
+		await flush();
+	});
+	ok(!tape.some((entry) => entry.startsWith("answer:tab-remote-1:ask-7")), "selecting an option keeps the ask open until explicit submit");
+	failAnswer = true; await act(async () => {
+		[...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Submit")?.click();
+		await flush();
+	});
+	ok(Boolean(document.querySelector(".prompt-shelf--ask")) && document.body.textContent?.includes("remote answer failed") === true && document.querySelector<HTMLButtonElement>(".prompt-shelf--ask .decision-confirm-bar__confirm")?.disabled === false, "a failed remote Ask answer preserves the card, surfaces the error, and re-enables retry"); failAnswer = false; await act(async () => { document.querySelector<HTMLButtonElement>(".prompt-shelf--ask .decision-confirm-bar__confirm")?.click(); await flush(); }); ok(tape.filter((entry) => entry.startsWith("answer:tab-remote-1:ask-7:")).length === 2 && !document.querySelector(".prompt-shelf--ask"), "a successful remote Ask retry resubmits the complete answer and clears the card");
+}
+
+// A CLI serve never binds desktop routing metadata, so its prompts carry no
+// runtimeEpoch; the serve fences on the epoch only when it has one.
+await act(async () => {
+  __emitMockRemoteTab("tab-remote-1", "event", { kind: "ask_request", turnId: "turn-main", ask: { id: "ask-serve", questions: [{ id: "q1", prompt: "Ship it?", options: [{ label: "ship" }, { label: "wait" }] }] } });
+  await flush();
+});
+{
+  ok(Boolean(document.querySelector(".prompt-shelf--ask")) && !document.body.textContent?.includes("exact request identity is unavailable"), "an ask without a runtime epoch is answerable, not refused as unidentified");
+  await act(async () => {
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "ship")?.click();
+    await flush();
+  });
+  await act(async () => { document.querySelector<HTMLButtonElement>(".prompt-shelf--ask .decision-confirm-bar__confirm")?.click(); await flush(); });
+  ok(tape.some((entry) => entry.startsWith("answer:tab-remote-1:ask-serve:")) && !document.querySelector(".prompt-shelf--ask"), "the answer reaches the serve and the card clears");
+}
+
+await act(async () => {
+  __emitMockRemoteTab("tab-remote-1", "event", { kind: "ask_request", turnId: "turn-main", runtimeEpoch: "runtime-main", ask: { id: "ask-custom", questions: [{ id: "q-custom", prompt: "Where?", options: [{ label: "staging" }] }] } });
+  await flush();
+});
+await act(async () => {
+  document.querySelector<HTMLElement>(".ask-shelf__custom-row")?.click();
+  await flush();
+});
+await act(async () => {
+  const input = document.querySelector<HTMLInputElement>(".ask-shelf__custom");
+  if (input) {
+    const propsKey = Object.keys(input).find((key) => key.startsWith("__reactProps")); const props = propsKey ? (input as unknown as Record<string, { onChange?: (event: { target: { value: string } }) => void }>)[propsKey] : undefined;
+    props?.onChange?.({ target: { value: "canary" } });
+  }
+  await flush();
+});
+await act(async () => {
+  [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Submit")?.click();
+  await flush();
+});
+ok(tape.includes('answer:tab-remote-1:ask-custom:[{"questionId":"q-custom","selected":["canary"]}]'),
+  "custom AskCard text serializes as the exact remote question selection");
+
+await runRemoteExtensionFormScenarios({ emit: __emitMockRemoteTab, flush, ok, tape,
+  blockForm: (blocked) => { blockExtensionForm = blocked; }, releaseForm: () => releaseExtensionForm?.() });
+
+await act(async () => {
+  __emitMockRemoteTab("tab-remote-1", "event", { kind: "text", text: "retain this partial answer across disconnect" });
+  await flush();
+});
+ok(document.querySelector("main .transcript")?.textContent?.includes("retain this partial answer across disconnect") === true,
+  "disconnect fixture has visible transcript content before connection loss");
+await act(async () => {
+  __emitMockRemoteTab("tab-remote-1", "state", { state: "serve_down", error: "tunnel closed" });
+  await flush();
+});
+{
+  const warning = document.querySelector(".session-recovery[role=alert]");
+  ok(Boolean(warning), "serve_down renders the warning state");
+  ok(!warning?.closest("main"), "recovery controls are outside the collapsible transcript main");
+  ok(document.querySelector("main .transcript")?.textContent?.includes("retain this partial answer across disconnect") === true,
+    "disconnect retains the already loaded transcript");
+  await act(async () => { warning?.querySelector<HTMLButtonElement>("button[aria-controls]")?.click(); });
+  ok(warning?.textContent?.includes("tunnel closed") === true, "serve error detail renders");
+  await act(async () => {
+    warning?.querySelector<HTMLButtonElement>("button")?.click();
+    await flush();
+  });
+  ok(tape.includes("open:gpu-box:~/app:"), "serve_down retry preserves the backend's parked session target");
+  const reconnectNavigation = tape.findIndex((entry) => entry.startsWith("navigation:nav-")); ok(reconnectNavigation >= 0 && reconnectNavigation < tape.indexOf("open:gpu-box:~/app:"), "serve_down retry registers navigation before reopening the remote tab");
+  failOpen = true;
+  await act(async () => {
+    warning?.querySelector<HTMLButtonElement>("button")?.click();
+    await flush();
+  });
+  ok(warning?.textContent?.includes("reconnect failed") === true, "serve_down retry failures render on the surface");
+  failOpen = false;
+}
+// Mid-flight disconnected events also refuse the placeholder.
+await act(async () => { __emitMockRemoteTab("tab-remote-1", "state", { state: "disconnected" }); await flush(); });
+{
+  ok(!document.querySelector(".remote-surface--disconnected"), "live disconnected events do not render the placeholder");
+  ok(document.body.textContent?.includes("retain this partial answer across disconnect") === true, "live disconnection preserves the transcript");
+  ok(!tape.includes("setActive:tab-remote-1"), "live disconnection does not automatically revive or resubmit work");
+}
+
+await act(async () => root.unmount());
+
+await runLegacyRemoteCapabilityScenario({ baseTab: remoteTab, emit: __emitMockRemoteTab, flush, ok, tape,
+  render: (targetRoot, tab) => targetRoot.render(<LocaleProvider><RemoteSurfaceHarness tab={tab} /></LocaleProvider>) });
+
+let restoredShellProbe: RemoteSessionApi | undefined;
+function RestoredShellProbe() { restoredShellProbe = useRemoteSession("tab-restored-shell", "disconnected"); return null; }
+const restoredShellRoot = createRoot(document.getElementById("root")!);
+await act(async () => { restoredShellRoot.render(<RestoredShellProbe />); await flush(); });
+ok(restoredShellProbe?.state === "ready" && restoredShellProbe.hydrated, "restored shells recover through the authoritative snapshot when the ready event is missed");
+ok(tape.includes("setActive:tab-restored-shell"), "restored disconnected shells trigger backend revival");
+await act(async () => restoredShellRoot.unmount());
+
+// ── Hook: optimistic user bubble + command forwarding ──
+let probe: RemoteSessionApi | undefined;
+function HookProbe({ tabId = "tab-remote-2" }: { tabId?: string }) { probe = useRemoteSession(tabId); return null; }
+const probeRoot = createRoot(document.createElement("div"));
+await act(async () => { probeRoot.render(<LocaleProvider><HookProbe /></LocaleProvider>); await flush(); });
+ok(probe?.state === "ready", "a successful fenced snapshot recovers a ready event missed before listener mount");
+ok(probe?.composerProfile?.collaborationMode === "plan" && probe?.composerProfile?.toolApprovalMode === "workspace-write" && probe.goalRuntime?.tokensUsed === 321,
+  "snapshot status hydrates the authoritative remote composer profile");
+ok(probe?.effort?.current === "high" && probe?.transcript.checkpoints[0]?.turn === 3
+  && probe?.transcript.checkpoints[0]?.fileCount === 2 && probe?.transcript.checkpoints[0]?.files.length === 1,
+  "snapshot status hydrates effort and rewind checkpoints");
+ok(probe?.commands.length === 1 && probe.commands[0]?.name === "remote-review",
+  "remote hydration exposes the Serve command catalog instead of local commands");
+ok(probe?.transcript.context.used === 1200 && probe.transcript.context.window === 64000
+  && probe.transcript.balance?.display === "¥88.00" && probe.transcript.sessionCost === 0.12
+  && probe.transcript.jobs[0]?.id === "job-remote" && probe.transcript.lastTurnOutputTokens === 200,
+  "snapshot status hydrates remote context, usage, balance, cost, and jobs");
+ok(remoteRuntimeCommand("/goal write regression tests") === undefined && remoteRuntimeCommand("/goal --strict write regression tests") === undefined, "goal-setting commands remain conversational turns");
+ok(remoteRuntimeCommand("/goal")?.method === "runManagementCommand" && remoteRuntimeCommand("/goal status")?.method === "runManagementCommand"
+  && remoteRuntimeCommand("/goal --strict pause")?.method === "runManagementCommand",
+  "goal status and lifecycle actions remain synchronous management commands");
+ok(remoteRuntimeCommand("/branch experiment")?.rehydrate === true && remoteRuntimeCommand("/switch main")?.rehydrate === true
+  && remoteRuntimeCommand("/rewind 3 conversation")?.rehydrate === true && remoteRuntimeCommand("/context")?.rehydrate !== true
+  && remoteRuntimeCommand("/compact preserve tests")?.method === "compact",
+  "session-changing management commands request authoritative rehydration");
+statusPendingPrompt = true; replayedPrompts = [{ kind: "approval_request", approval: { id: "recovered-prompt", tool: "bash", subject: "replayed after drop" } }];
+await act(async () => {
+  __emitMockRemoteTab("tab-remote-2", "event", replayedPrompts[0]);
+  await probe?.runManagementCommand("/context"); await flush();
+});
+ok(!tape.includes("replay-prompts:tab-remote-2") && probe?.transcript.approval?.id === "recovered-prompt", "Follow delivers pending prompts without legacy replay");
+await act(async () => { await probe?.approve("recovered-prompt", "deny"); await flush(); }); statusPendingPrompt = false; replayedPrompts = [];
+let remoteLiveNotifications = 0;
+const unsubscribeRemoteLive = probe?.liveStore.subscribe("tab-remote-2", () => { remoteLiveNotifications += 1; });
+await act(async () => {
+	__emitMockRemoteTab("tab-remote-2", "event", { kind: "turn_started", turnStartedAt: 1234 });
+	__emitMockRemoteTab("tab-remote-2", "event", { kind: "text", messageId: "remote-answer", text: "remote live ticker" });
+	await flush();
+});
+ok(probe?.liveStore.getSnapshot("tab-remote-2")?.text === "remote live ticker" && remoteLiveNotifications > 0,
+	"remote live-store notifications drive the shared composer ticker");
+unsubscribeRemoteLive?.();
+const turnDoneGeneration = probe?.surfaceGeneration;
+statusGoalStatus = "complete";
+snapshotHistory = [{ role: "user", content: "server-side prompt" }, { role: "assistant", content: "reconciled final answer" }];
+await act(async () => {
+  __emitMockRemoteTab("tab-remote-2", "event", { kind: "message", messageId: "remote-answer", text: "reconciled final answer" });
+  __emitMockRemoteTab("tab-remote-2", "event", { kind: "turn_done" });
+  await flush();
+});
+ok(probe?.composerProfile?.goalStatus === "complete" && probe.surfaceGeneration === turnDoneGeneration,
+  "turn_done refreshes goal status without replacing the transcript surface");
+ok(probe?.transcript.items.some((item) => item.kind === "assistant" && item.text === "reconciled final answer") === true,
+  "committed result survives turn_done without a history rebase");
+
+await act(async () => {
+  __emitMockRemoteTab("tab-remote-2", "event", { kind: "approval_request", approval: { id: "approval-old", tool: "bash", subject: "old" } });
+  await flush();
+});
+blockApproval = true;
+let oldApproval: Promise<void> | undefined;
+await act(async () => {
+  oldApproval = probe?.approve("approval-old", "allow");
+  await flush();
+  __emitMockRemoteTab("tab-remote-2", "event", { kind: "approval_request", approval: { id: "approval-next", tool: "bash", subject: "next" } });
+  releaseApproval?.();
+  await oldApproval;
+  await flush();
+});
+blockApproval = false;
+ok(probe?.transcript.approval?.id === "approval-next", "an answered approval cannot clear the next prompt");
+
+await act(async () => {
+  __emitMockRemoteTab("tab-remote-2", "event", { kind: "ask_request", ask: { id: "ask-old", questions: [] } });
+  await flush();
+});
+blockAnswer = true;
+let oldAnswer: Promise<void> | undefined;
+await act(async () => {
+  oldAnswer = probe?.answer("ask-old", []);
+  await flush();
+  __emitMockRemoteTab("tab-remote-2", "event", { kind: "ask_request", ask: { id: "ask-next", questions: [] } });
+  releaseAnswer?.();
+  await oldAnswer;
+  await flush();
+});
+blockAnswer = false;
+ok(probe?.transcript.ask?.id === "ask-next", "an answered ask cannot clear the next prompt");
+await act(async () => { await probe?.submit("run tests"); await flush(); });
+ok(Boolean(Object.values(probe?.transcript.localSubmissions ?? {}).some((submission) => submission.text === "run tests")), "submit adds the optimistic user bubble through the shared reducer");
+await verifyRemoteSubmissionLifecycle(() => probe, error => { submitError = error; }, tape, flush, ok);
+await act(async () => { await probe?.runManagementCommand("/context"); await flush(); });
+ok(tape.includes("submit:tab-remote-2:/context") && tape.includes("status:tab-remote-2"),
+  "management commands dispatch without conversational admission and refresh status");
+ok(!probe?.transcript.items.some((item) => item.kind === "user" && item.text === "/context"),
+  "management commands do not add an optimistic user turn");
+const beforeCompactGeneration = probe?.surfaceGeneration;
+snapshotHistory = [{ role: "assistant", content: "compacted remote history" }];
+await act(async () => { await probe?.compact("preserve tests"); await flush(); });
+ok(tape.includes("compact:tab-remote-2:preserve tests") && probe?.surfaceGeneration === (beforeCompactGeneration ?? 0) + 1 && probe.transcript.items.some((item) => item.kind === "assistant" && item.text === "compacted remote history"), "remote compact waits for the dedicated endpoint and rehydrates history");
+const beforeSwitchGeneration = probe?.surfaceGeneration;
+snapshotHistory = [{ role: "assistant", content: "adopted switched session" }];
+await act(async () => { await probe?.runManagementCommand("/switch feature", true); await flush(); });
+ok(tape.includes("submit:tab-remote-2:/switch feature") && probe?.surfaceGeneration === (beforeSwitchGeneration ?? 0) + 1
+  && probe.transcript.items.some((item) => item.kind === "assistant" && item.text === "adopted switched session"),
+  "session-changing management commands replace history from an authoritative snapshot");
+ok(!probe?.transcript.items.some((item) => item.kind === "user" && item.text === "/switch feature"),
+  "session-changing management commands still avoid an optimistic user turn");
+await act(async () => {
+  await probe?.cancelTurn();
+  await probe?.approve("call-1", "allow");
+  await probe?.answer("ask-1", [{ QuestionID: "q1", Selected: ["yes"] }]);
+  await probe?.rewind(3, "code");
+  await probe?.forkTurn({ sourceSessionId: "parent-remote-1", sessionGeneration: 1, turnId: "turn-3", boundarySequence: 9,
+    turnNumber: 3, status: "committed", available: true });
+  await probe?.rewind(3, "summ-from");
+  await probe?.rewind(3, "summ-upto");
+  await flush();
+});
+const metadataGeneration = probe?.surfaceGeneration;
+statusGoalStatus = "complete";
+statusQualityFloor = "delivery"; // Simulate an older server that still reports its real policy.
+await act(async () => {
+  await probe?.setModel("remote/new-model");
+  await probe?.setEffort("high");
+  await probe?.setQualityFloor("delivery");
+  await probe?.pauseGoal();
+  await probe?.resumeGoal();
+  await probe?.steer("narrow the change");
+  await probe?.cancelJob("job-remote");
+  await flush();
+});
+ok(probe?.surfaceGeneration === metadataGeneration, "metadata-only remote commands preserve the transcript generation and viewport");
+ok(probe?.composerProfile?.goalStatus === "complete" && probe.composerProfile.qualityFloor === "delivery",
+  "status-only refresh preserves an older server's reported policy");
+ok(probe?.modelLabel === "Model · remote/new-model" && probe.effort?.current === "high",
+  "model switching refreshes the authoritative remote profile before the next turn");
+for (const want of [
+  "submit:tab-remote-2:run tests",
+  "cancel:tab-remote-2",
+  "approve:tab-remote-2:call-1:allow",
+	'answer:tab-remote-2:ask-1:[{"QuestionID":"q1","Selected":["yes"]}]',
+  "rewind:tab-remote-2:3:code",
+  "summarize:tab-remote-2:3:from",
+  "summarize:tab-remote-2:3:upto",
+  "model:tab-remote-2:remote/new-model",
+  "effort:tab-remote-2:high",
+  "quality-floor:tab-remote-2:delivery",
+  "pause-goal:tab-remote-2",
+  "resume-goal:tab-remote-2",
+  "steer:tab-remote-2:narrow the change",
+	"cancel-jobs:tab-remote-2:job-remote",
+]) {
+  ok(tape.includes(want), `command forwarded: ${want}`);
+}
+ok(tape.some((entry) => entry.startsWith("fork-create:tab-remote-2:turn-3:")),
+  "remote forking creates the child through the create-only endpoint");
+ok(!tape.some((entry) => entry.startsWith("fork:tab-remote-2")),
+  "remote forking never reaches the route that switches the parent session");
+await verifyRemoteSubmissionTabIsolation(() => probe, tabId => probeRoot.render(<LocaleProvider><HookProbe tabId={tabId} /></LocaleProvider>), flush, ok);
+await act(async () => {
+  probeRoot.render(<LocaleProvider><HookProbe tabId="tab-pending-model" /></LocaleProvider>);
+  await Promise.resolve();
+});
+ok(probe?.modelLabel === "", "switching remote tabs clears the previous model label before hydration");
+
+await act(async () => probeRoot.unmount());
+
+let fallbackProbe: RemoteSessionApi | undefined;
+function FallbackProbe() {
+  fallbackProbe = useRemoteSession("tab-status-fallback");
+  return null;
+}
+const fallbackRoot = createRoot(document.createElement("div"));
+await act(async () => {
+  fallbackRoot.render(<LocaleProvider><FallbackProbe /></LocaleProvider>);
+  await flush();
+});
+ok(fallbackProbe?.hydrated === true && fallbackProbe.composerProfile?.collaborationMode === "plan"
+  && fallbackProbe.composerProfile.toolApprovalMode === "workspace-write"
+  && tape.includes("status:tab-status-fallback"),
+  "missing aggregate status is fetched before the remote composer becomes ready");
+await act(async () => fallbackRoot.unmount());
+
+await (await import("./helpers/remoteHistoryProjectionCases")).runRemoteToolHistoryCase({ ok, flush });
+
+let failureProbe: RemoteSessionApi | undefined;
+function FailureProbe() {
+  failureProbe = useRemoteSession("tab-hydration-failure", "ready");
+  return null;
+}
+const failureRoot = createRoot(document.createElement("div"));
+await act(async () => {
+  failureRoot.render(<LocaleProvider><FailureProbe /></LocaleProvider>);
+});
+await act(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 2200));
+});
+ok(failureProbe?.hydrated === false && failureProbe.error.includes("history exceeds bridge limit"),
+  "exhausted ready-session hydration exposes a retryable error");
+failHydration = false;
+await act(async () => {
+  await failureProbe?.retryHydration();
+  await flush();
+});
+ok(failureProbe?.hydrated === true && failureProbe.error === "", "explicit hydration retry recovers the surface");
+await act(async () => failureRoot.unmount());
+
+// ── Hydration fence: an SSE event delivered while the snapshot is in flight
+// is replayed after history instead of being overwritten by it. ──
+let raceProbe: RemoteSessionApi | undefined;
+function RaceProbe() {
+	raceProbe = useRemoteSession("tab-race");
+	return null;
+}
+const raceRoot = createRoot(document.createElement("div"));
+await act(async () => {
+	raceRoot.render(<LocaleProvider><RaceProbe /></LocaleProvider>);
+	await Promise.resolve();
+});
+await act(async () => {
+	__emitMockRemoteTab("tab-race", "event", { kind: "turn_started" });
+	__emitMockRemoteTab("tab-race", "event", { kind: "text", text: "arrived during hydration" });
+	resolveRaceSnapshot?.({
+		history: [],
+		status: { running: true, label: "Race", plan: false, toolApprovalMode: "ask", goal: "" },
+	});
+	await flush();
+});
+ok(raceProbe?.transcript.live.text === "arrived during hydration", "hydration replays concurrently delivered remote events");
+await act(async () => raceRoot.unmount());
+
+let stateRaceProbe: RemoteSessionApi | undefined;
+function StateRaceProbe() {
+	stateRaceProbe = useRemoteSession("tab-state-race");
+	return null;
+}
+const stateRaceRoot = createRoot(document.createElement("div"));
+await act(async () => {
+	stateRaceRoot.render(<LocaleProvider><StateRaceProbe /></LocaleProvider>);
+	await Promise.resolve();
+});
+await act(async () => {
+	__emitMockRemoteTab("tab-state-race", "state", { state: "reconnecting" });
+	__emitMockRemoteTab("tab-state-race", "state", { state: "ready" });
+	resolveStateRaceSnapshots[0]?.({
+		history: [],
+		status: { running: false, label: "Stale", plan: false, toolApprovalMode: "ask", goal: "" },
+	});
+	await flush();
+});
+await act(async () => {
+	resolveStateRaceSnapshots[1]?.({
+		history: [{ role: "assistant", content: "fresh generation" }],
+		status: { running: false, label: "Fresh", plan: false, toolApprovalMode: "ask", goal: "" },
+	});
+	await flush();
+});
+ok(stateRaceProbe?.state === "ready" && stateRaceProbe.hydrated === true
+	&& stateRaceProbe.modelLabel === "Fresh"
+	&& stateRaceProbe.transcript.items.some((item) => item.kind === "assistant" && item.text === "fresh generation"),
+	"a ready generation re-hydrates after discarding the stale in-flight snapshot");
+await act(async () => stateRaceRoot.unmount());
+
+// Post-turn reconciliation can overlap a ready-to-ready /new, /clear, or
+// resume. The old history response must not replace the newly adopted session.
+let rotationProbe: RemoteSessionApi | undefined;
+function RotationProbe() { rotationProbe = useRemoteSession("tab-reconcile-rotation"); return null; }
+const rotationRoot = createRoot(document.createElement("div"));
+await act(async () => { rotationRoot.render(<LocaleProvider><RotationProbe /></LocaleProvider>); await flush(); });
+await act(async () => {
+	__emitMockRemoteTab("tab-reconcile-rotation", "event", { kind: "turn_started" });
+	__emitMockRemoteTab("tab-reconcile-rotation", "event", { kind: "turn_done" });
+	await Promise.resolve();
+	__emitMockRemoteTab("tab-reconcile-rotation", "state", { state: "ready" });
+	await flush();
+});
+await act(async () => {
+  __emitMockRemoteTab("tab-reconcile-rotation", "state", { state: "ready" });
+  await flush();
+});
+ok(rotationProbe?.transcript.items.some((item) => item.kind === "assistant" && item.text === "fresh rotated session") === true,
+	"ready-to-ready rotation hydrates the adopted session while old reconciliation is pending");
+await act(async () => { __emitMockRemoteTab("tab-reconcile-rotation", "event", { kind: "turn_started" }); __emitMockRemoteTab("tab-reconcile-rotation", "event", { kind: "turn_done" }); await Promise.resolve(); });
+await act(async () => {
+	resolveRotationReconcile?.({
+		history: [{ role: "assistant", content: "stale previous session" }],
+		status: { running: false, label: "Stale", plan: false, toolApprovalMode: "ask", goal: "" },
+	});
+	await flush();
+});
+ok(rotationProbe?.transcript.items.some((item) => item.kind === "assistant" && item.text === "fresh rotated session") === true
+	&& !rotationProbe.transcript.items.some((item) => item.kind === "assistant" && item.text === "stale previous session"),
+	"session generation fence rejects stale history and hands reconciliation to the new generation");
+await act(async () => rotationRoot.unmount());
+
+await (await import("./helpers/remoteHistoryProjectionCases")).runRemotePendingPromptReplayCase({ ok, flush });
+await (await import("./helpers/remoteRuntimeReconciliationCases")).runRemoteRuntimeCases({ commands: desktopStub.commands as unknown as AppBindings, emitRemote: __emitMockRemoteTab, remoteTab, ok, tape, flush, setSnapshotHistory: value => { snapshotHistory = value; } });
+dom.window.close();
+process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
+if (failed > 0) process.exit(1);

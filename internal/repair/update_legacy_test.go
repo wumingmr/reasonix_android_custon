@@ -136,8 +136,30 @@ func TestArchiveSupersededPendingAppBundleUpdateHealsMissingBackup(t *testing.T)
 	}
 }
 
+// recordHandoff gives tx the metadata PrepareAppBundleUpdateHandoff writes, so
+// ReadPendingUpdate accepts it.
+func recordHandoff(t *testing.T, tx *UpdateTransaction, ownerPID int, appTreeID string) {
+	t.Helper()
+	tx.HandoffOwnerPID = ownerPID
+	tx.HandoffStagingPath = filepath.Join(os.TempDir(), "reasonix-mac-update-legacy-test")
+	tx.HandoffAppPath = filepath.Join(tx.HandoffStagingPath, "Reasonix.app")
+	tx.HandoffAppTreeID = appTreeID
+	tx.HandoffStagingTreeID = strings.Repeat("c", 64)
+	if err := overwritePendingUpdateForTest(tx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadPendingUpdate(); err != nil {
+		t.Fatalf("recorded handoff is not readable: %v", err)
+	}
+}
+
 func TestArchiveSupersededPendingAppBundleUpdateLeavesModernRollbackForHealthCommit(t *testing.T) {
-	prepareSupersededAppUpdateFixture(t, true, true)
+	fixture := prepareSupersededAppUpdateFixture(t, true, true)
+	installed, err := repairPlanTreeContentStateID(fixture.target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordHandoff(t, fixture.transaction, 1<<30, installed)
 	archived, err := ArchiveSupersededPendingAppBundleUpdate("v1.19.7")
 	if err != nil || archived {
 		t.Fatalf("modern transaction archived=%v err=%v", archived, err)
@@ -149,20 +171,63 @@ func TestArchiveSupersededPendingAppBundleUpdateLeavesModernRollbackForHealthCom
 
 func TestArchiveSupersededPendingAppBundleUpdateLeavesCurrentProcessHandoff(t *testing.T) {
 	fixture := prepareSupersededAppUpdateFixture(t, false, false)
-	fixture.transaction.HandoffOwnerPID = os.Getpid()
-	fixture.transaction.HandoffStagingPath = filepath.Join(filepath.Dir(fixture.target), "handoff-stage")
-	fixture.transaction.HandoffAppPath = filepath.Join(fixture.transaction.HandoffStagingPath, "Reasonix.app")
-	fixture.transaction.HandoffAppTreeID = strings.Repeat("b", 64)
-	fixture.transaction.HandoffStagingTreeID = strings.Repeat("c", 64)
-	if err := overwritePendingUpdateForTest(fixture.transaction); err != nil {
-		t.Fatal(err)
-	}
+	recordHandoff(t, fixture.transaction, os.Getpid(), strings.Repeat("b", 64))
 	archived, err := ArchiveSupersededPendingAppBundleUpdate("v1.19.5")
 	if err != nil || archived {
 		t.Fatalf("current handoff archived=%v err=%v", archived, err)
 	}
-	if _, err := readPendingUpdateUnchecked(); err != nil {
+	if _, err := ReadPendingUpdate(); err != nil {
 		t.Fatalf("current handoff transaction changed: %v", err)
+	}
+}
+
+// In host mode the recorded owner is the Electron parent, not the service
+// process that runs the shutdown archival (#10732).
+func TestArchiveSupersededPendingAppBundleUpdateLeavesHostParentHandoff(t *testing.T) {
+	fixture := prepareSupersededAppUpdateFixture(t, false, false)
+	recordHandoff(t, fixture.transaction, os.Getppid(), strings.Repeat("b", 64))
+	eligible, err := validateSupersededPendingAppBundleUpdate(fixture.transaction, "v1.19.5")
+	if err != nil || eligible {
+		t.Fatalf("host-parent handoff eligible=%v err=%v", eligible, err)
+	}
+	archived, err := ArchiveSupersededPendingAppBundleUpdate("v1.19.5")
+	if err != nil || archived {
+		t.Fatalf("host-parent handoff archived=%v err=%v", archived, err)
+	}
+	if _, err := ReadPendingUpdate(); err != nil {
+		t.Fatalf("host-parent handoff transaction changed: %v", err)
+	}
+}
+
+func TestArchiveSupersededPendingAppBundleUpdateRetiresUnverifiableBackupAtTarget(t *testing.T) {
+	fixture := prepareSupersededAppUpdateFixture(t, true, true)
+	if err := os.WriteFile(filepath.Join(fixture.backup, ".DS_Store"), []byte("finder"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	archived, err := ArchiveSupersededPendingAppBundleUpdate("v1.19.7")
+	if err != nil || !archived {
+		t.Fatalf("archived=%v err=%v", archived, err)
+	}
+	if _, err := os.Lstat(PendingUpdatePath()); !os.IsNotExist(err) {
+		t.Fatalf("pending transaction survived: %v", err)
+	}
+	backups, err := filepath.Glob(fixture.backup + ".reasonix-retired-*")
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("archived backups=%v err=%v", backups, err)
+	}
+	if _, err := os.Stat(filepath.Join(backups[0], ".DS_Store")); err != nil {
+		t.Fatalf("archived backup lost its contents: %v", err)
+	}
+}
+
+func TestArchiveSupersededPendingAppBundleUpdateRetiresSurvivingBackupPastTarget(t *testing.T) {
+	prepareSupersededAppUpdateFixture(t, true, true)
+	archived, err := ArchiveSupersededPendingAppBundleUpdate("v1.20.0")
+	if err != nil || !archived {
+		t.Fatalf("archived=%v err=%v", archived, err)
+	}
+	if _, err := os.Lstat(PendingUpdatePath()); !os.IsNotExist(err) {
+		t.Fatalf("pending transaction survived: %v", err)
 	}
 }
 

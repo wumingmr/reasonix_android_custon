@@ -7,7 +7,7 @@ import (
 	"reasonix/internal/provider"
 )
 
-func TestHistoryMessagesReplayCompleteStepsIntoTodoWrite(t *testing.T) {
+func TestHistoryMessagesKeepRetiredCompleteStepsReadOnly(t *testing.T) {
 	msgs := []provider.Message{
 		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{
 			ID: "todo-1", Name: "todo_write",
@@ -22,11 +22,11 @@ func TestHistoryMessagesReplayCompleteStepsIntoTodoWrite(t *testing.T) {
 	}
 
 	payload := restoredTodoPayload(t, msgs, "todo-1")
-	if got := payload.Todos[0].Status; got != "completed" {
-		t.Fatalf("first todo status = %q, want completed", got)
+	if got := payload.Todos[0].Status; got != "in_progress" {
+		t.Fatalf("retired complete_step changed first todo to %q", got)
 	}
-	if got := payload.Todos[1].Status; got != "in_progress" {
-		t.Fatalf("second todo status = %q, want in_progress", got)
+	if got := payload.Todos[1].Status; got != "pending" {
+		t.Fatalf("retired complete_step changed second todo to %q", got)
 	}
 }
 
@@ -93,7 +93,7 @@ func TestHistoryMessagesIgnoreHistoricalPendingSignoff(t *testing.T) {
 	}
 }
 
-func TestHistoryMessagesNormalizeLegacyOutOfOrderTodoState(t *testing.T) {
+func TestHistoryMessagesPreserveModelReportedTodoState(t *testing.T) {
 	msgs := []provider.Message{
 		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{
 			ID: "todo-1", Name: "todo_write",
@@ -106,8 +106,8 @@ func TestHistoryMessagesNormalizeLegacyOutOfOrderTodoState(t *testing.T) {
 	if got := payload.Todos[0].Status; got != "in_progress" {
 		t.Fatalf("legacy current todo status = %q, want in_progress", got)
 	}
-	if got := payload.Todos[1].Status; got != "pending" {
-		t.Fatalf("legacy out-of-order completion normalized to %q, want pending", got)
+	if got := payload.Todos[1].Status; got != "completed" {
+		t.Fatalf("model-reported completion changed to %q", got)
 	}
 }
 
@@ -130,8 +130,8 @@ func TestHistoryMessagesIgnoreFailedTodoWriteAsReplayBase(t *testing.T) {
 	}
 
 	good := restoredTodoPayload(t, msgs, "todo-1")
-	if got := good.Todos[0].Status; got != "completed" {
-		t.Fatalf("successful base was not replayed: %q", got)
+	if got := good.Todos[0].Status; got != "in_progress" {
+		t.Fatalf("retired complete_step changed successful base: %q", got)
 	}
 
 	bad := restoredTodoPayload(t, msgs, "todo-2")
@@ -174,7 +174,7 @@ func restoredTodoPayload(t *testing.T, msgs []provider.Message, todoID string) s
 	return payload
 }
 
-func TestHistoryMessagesGatePhaseSignoffOnSubSteps(t *testing.T) {
+func TestHistoryMessagesDoNotDerivePhaseProgressFromRetiredSignoffs(t *testing.T) {
 	msgs := []provider.Message{
 		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{
 			ID: "todo-1", Name: "todo_write",
@@ -195,11 +195,11 @@ func TestHistoryMessagesGatePhaseSignoffOnSubSteps(t *testing.T) {
 	if got := payload.Todos[0].Status; got != "pending" {
 		t.Fatalf("phase sign-off with unfinished sub-steps replayed to %q, want pending", got)
 	}
-	if got := payload.Todos[1].Status; got != "completed" {
-		t.Fatalf("signed-off sub-step replayed to %q, want completed", got)
+	if got := payload.Todos[1].Status; got != "in_progress" {
+		t.Fatalf("retired signoff changed sub-step to %q", got)
 	}
-	if got := payload.Todos[2].Status; got != "in_progress" {
-		t.Fatalf("next sub-step should be promoted, got %q", got)
+	if got := payload.Todos[2].Status; got != "pending" {
+		t.Fatalf("retired signoff promoted next sub-step to %q", got)
 	}
 
 	msgs = append(msgs,
@@ -209,7 +209,7 @@ func TestHistoryMessagesGatePhaseSignoffOnSubSteps(t *testing.T) {
 		provider.Message{Role: provider.RoleTool, ToolCallID: "step-3", Name: "complete_step", Content: "signed off"},
 	)
 	payload = restoredTodoPayload(t, msgs, "todo-1")
-	if got := payload.Todos[0].Status; got != "in_progress" {
-		t.Fatalf("phase should become signable after its sub-steps, got %q", got)
+	if got := payload.Todos[0].Status; got != "pending" {
+		t.Fatalf("retired signoffs changed phase to %q", got)
 	}
 }

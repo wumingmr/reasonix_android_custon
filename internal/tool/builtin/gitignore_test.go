@@ -122,7 +122,7 @@ func TestGrepSkipsGitignored(t *testing.T) {
 
 func TestGrepDecodesGB18030Gitignore(t *testing.T) {
 	dir := mkRepo(t)
-	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), fileencoding.Encode("秘密.txt\n", fileencoding.GB18030), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), fileencoding.MustEncode("秘密.txt\n", fileencoding.GB18030), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	writeFileT(t, filepath.Join(dir, "秘密.txt"), "NEEDLE ignored\n")
@@ -142,7 +142,7 @@ func TestScanGitConfigExcludesDecodesGB18030Path(t *testing.T) {
 	path := filepath.Join(dir, ".gitconfig")
 	want := filepath.Join(dir, "中文忽略规则.txt")
 	body := "[core]\n\texcludesFile = " + want + "\n"
-	if err := os.WriteFile(path, fileencoding.Encode(body, fileencoding.GB18030), 0o644); err != nil {
+	if err := os.WriteFile(path, fileencoding.MustEncode(body, fileencoding.GB18030), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

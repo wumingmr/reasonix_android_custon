@@ -2,8 +2,7 @@ package plancontract
 
 // Ordered returns the steps in projection order: each phase in
 // dependency-respecting declared order, followed by its own sub-steps in the
-// same order. Render and ProjectTodos both read it, which is what keeps the list
-// a user approves and the task list the host seeds from ever disagreeing.
+// same order. Render reads it to keep the approved document deterministic.
 func (p Plan) Ordered() []Step {
 	if len(p.Steps) == 0 {
 		return nil
@@ -31,7 +30,7 @@ func (p Plan) Ordered() []Step {
 // phaseIDs resolves each step to the id of the top-level phase it belongs to,
 // or "" when the step is a phase itself. No parent, an unknown parent, and a
 // parent chain that loops all mean the same thing, and nesting deeper than two
-// levels flattens onto the top ancestor — the shape the task list can hold.
+// levels flattens onto the top ancestor.
 func phaseIDs(steps []Step) []string {
 	index := make(map[string]int, len(steps))
 	for i, s := range steps {

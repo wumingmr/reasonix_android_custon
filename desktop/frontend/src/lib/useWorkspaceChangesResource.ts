@@ -31,6 +31,9 @@ export function useWorkspaceChangesResource(tabId: string, scopeKey: string, rev
         gitAvailable: result?.gitAvailable !== false,
         gitErr: result?.gitErr,
         gitBranch: result?.gitBranch,
+        added: result?.added,
+        removed: result?.removed,
+        incomplete: result?.incomplete,
       };
       setResource((current) => resolveKeyedResourceRequest(current, requestKey, requestId, next, revision));
     } catch (error) {

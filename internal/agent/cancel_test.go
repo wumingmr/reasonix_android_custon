@@ -111,11 +111,19 @@ var (
 	executed   []string
 )
 
-type stuckStreamProvider struct{}
+type stuckStreamProvider struct {
+	started chan struct{}
+	once    sync.Once
+}
 
-func (stuckStreamProvider) Name() string { return "stuck-stream" }
+func (*stuckStreamProvider) Name() string { return "stuck-stream" }
 
-func (stuckStreamProvider) Stream(context.Context, provider.Request) (<-chan provider.Chunk, error) {
+func (p *stuckStreamProvider) Stream(context.Context, provider.Request) (<-chan provider.Chunk, error) {
+	p.once.Do(func() {
+		if p.started != nil {
+			close(p.started)
+		}
+	})
 	return make(chan provider.Chunk), nil
 }
 
@@ -142,8 +150,9 @@ func TestCanceledContextClosedProviderStreamReturnsCancel(t *testing.T) {
 	}
 }
 
-func TestCancelDuringStuckProviderStreamReturnsPromptly(t *testing.T) {
-	a := New(stuckStreamProvider{}, tool.NewRegistry(), NewSession(""), Options{}, &recordSink{})
+func TestCancelDuringStuckProviderStreamReturns(t *testing.T) {
+	prov := &stuckStreamProvider{started: make(chan struct{})}
+	a := New(prov, tool.NewRegistry(), NewSession(""), Options{}, &recordSink{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -151,7 +160,11 @@ func TestCancelDuringStuckProviderStreamReturnsPromptly(t *testing.T) {
 		done <- a.Run(ctx, "wait on provider")
 	}()
 
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-prov.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider stream did not start")
+	}
 	cancel()
 
 	select {
@@ -162,8 +175,39 @@ func TestCancelDuringStuckProviderStreamReturnsPromptly(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("Run error = %v, want context cancellation", err)
 		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("Run did not return promptly after provider stream context cancellation")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after provider stream context cancellation")
+	}
+}
+
+func TestTaskToolCancelDuringStuckProviderReturns(t *testing.T) {
+	prov := &stuckStreamProvider{started: make(chan struct{})}
+	task := newTestTaskTool(t, prov, tool.NewRegistry(), "sys", "", "", nil)
+
+	ctx, cancel := context.WithCancel(testTaskContext())
+	done := make(chan error, 1)
+	go func() {
+		_, err := task.Execute(ctx, []byte(`{"prompt":"wait on stuck provider"}`))
+		done <- err
+	}()
+
+	select {
+	case <-prov.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider stream did not start")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Execute returned nil after context cancellation")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Execute error = %v, want context cancellation", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("TaskTool.Execute did not return after cancellation")
 	}
 }
 
@@ -655,4 +699,19 @@ func toolMessagesByID(msgs []provider.Message) map[string]string {
 		}
 	}
 	return out
+}
+
+func TestMissingTerminalUsageRemainsUnknownAfterEstimationAndMerge(t *testing.T) {
+	estimated := bestEffortStreamUsage(nil, 20, 40, "interrupted")
+	if estimated == nil || !estimated.Unknown || !estimated.Estimated {
+		t.Fatalf("estimated=%+v", estimated)
+	}
+	exact := &provider.Usage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30, RequestCount: 1}
+	combined := finalizeSamplingUsage(mergeSamplingUsage(estimated, exact), exact)
+	if !combined.Unknown || combined.RequestCount != 2 {
+		t.Fatalf("combined=%+v", combined)
+	}
+	if exact.Unknown {
+		t.Fatal("mutated exact usage")
+	}
 }

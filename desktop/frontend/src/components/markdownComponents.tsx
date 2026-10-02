@@ -5,17 +5,35 @@
 //
 // Fenced code blocks go through CodeViewer for syntax highlighting; inline
 // code is a styled <code>. Mermaid fences lazy-load the diagram renderer.
-// Links open in the system browser via RichMarkdownLink. Oversized tables
-// virtualize their body rows.
+// Links open in the system browser via RichMarkdownLink. Tables use natural
+// document flow; large code fences have an explicit disclosure.
 
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Components } from "react-markdown";
 import { CodeViewer } from "./CodeViewer";
 import { RichMarkdownLink } from "./githubLink";
 import { MarkdownTable } from "./MarkdownTable";
 import { MarkdownImage } from "./MarkdownImage";
+import { t } from "../lib/i18n";
+import { useChatFileLink } from "./ChatFileLinkContext";
+import { ChatFileReferenceAnchor, ChatFileReferenceCode } from "./ChatFileLink";
+import { localPathFromHref } from "../lib/localFileUrl";
+import { looksLikeSvgDocument } from "../lib/svgDocument";
 
 const MermaidDiagram = lazy(() => import("./MermaidDiagram"));
+const MarkdownSvgBlock = lazy(() => import("./MarkdownSvgBlock"));
+
+/** Fences that may hold an SVG document; the body still has to prove it. */
+const SVG_FENCES = new Set(["svg", "xml", "html"]);
+
+export function MarkdownCode({ value, language }: { value: string; language?: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const lines = useMemo(() => value.split("\n"), [value]);
+  const large = lines.length > 200;
+  return <><CodeViewer value={large && !expanded ? lines.slice(0, 200).join("\n") : value} copyValue={value} language={language} scrollMode="expand" showHeader />
+    {large && <div className="chat-code-fold"><button className="btn" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{t(expanded ? "chat.collapseCode" : "chat.expandCode")}</button></div>}
+  </>;
+}
 
 const STATUS_MARKER_RE = /(?:✅|☑|☒|✔️?|✓|\[[xX ]\])/;
 const STATUS_MARKER_GLOBAL_RE = /(?:✅|☑|☒|✔️?|✓|\[[xX ]\])/g;
@@ -59,6 +77,7 @@ function splitPlainBlock(text: string): { preText: string; statusItems: string[]
 }
 
 function PlainMarkdownBlock({ text }: { text: string }) {
+  if (text.trim() === "") return null;
   const { preText, statusItems } = splitPlainBlock(text);
   const asList = statusItems.length >= 2;
   return (
@@ -97,6 +116,9 @@ export function createComponents(plainStatusBlocks: boolean): Components {
       const isBlock = match !== null || text.includes("\n");
       if (isBlock) {
         const value = text.replace(/\n$/, "");
+        // An empty fence is a formatting placeholder; a bordered one-line
+        // CodeViewer would otherwise become a phantom row in every surface.
+        if (value.trim() === "") return null;
         if (lang === "mermaid") {
           return (
             <Suspense fallback={<CodeViewer value={value} language="mermaid" scrollMode="bounded" maxHeight="min(60vh, 28rem)" />}>
@@ -105,11 +127,56 @@ export function createComponents(plainStatusBlocks: boolean): Components {
           );
         }
         if (!match && plainStatusBlocks) return <PlainMarkdownBlock text={text.replace(/\n$/, "")} />;
-        return <CodeViewer value={value} language={lang} scrollMode="bounded" maxHeight="min(60vh, 28rem)" />;
+        // An `svg` fence is always a candidate; `xml`, `html`, and a
+        // language-less fence are candidates only when the body starts like a
+        // single SVG document. The host's strict parse has the final word, and
+        // anything it refuses renders as the ordinary code block.
+        if (looksLikeSvgDocument(value) && (lang === undefined || SVG_FENCES.has(lang))) {
+          return (
+            <Suspense fallback={<MarkdownCode value={value} language={lang} />}>
+              <MarkdownSvgBlock value={value} />
+            </Suspense>
+          );
+        }
+        return <MarkdownCode value={value} language={lang} />;
       }
-      return <code className="md-code">{children}</code>;
+      return <InlineMarkdownCode text={text}>{children}</InlineMarkdownCode>;
     },
-    a: ({ href, children }) => <RichMarkdownLink href={href}>{children}</RichMarkdownLink>,
+    a: (props) => <MarkdownFileLink href={props.href} scanned={(props as Record<string, unknown>)["data-scanned-path"] !== undefined}>{props.children}</MarkdownFileLink>,
     img: ({ src, alt, title }) => <MarkdownImage src={src} alt={alt} title={title} />,
   };
+}
+
+/**
+ * A local-path link is upgraded to a chat file reference when the host verified
+ * it. A path that was only *scanned* out of prose stays ordinary text until it
+ * is verified — a command, a URL path, or a directory that merely looks like a
+ * file must not become a link. Every other link keeps its existing behavior.
+ */
+function MarkdownFileLink({ href, scanned, children }: { href?: string; scanned: boolean; children: ReactNode }) {
+  const path = href ? localPathFromHref(href) : null;
+  const link = useChatFileLink(path ?? "");
+  const pendingOpen = useRef(false);
+  useEffect(() => {
+    if (!pendingOpen.current || !link) return;
+    pendingOpen.current = false;
+    void import("../lib/fileNavigationCommands")
+      .then(({ openResource }) => openResource(link.ref, { view: "preview" }))
+      .catch(() => undefined);
+  }, [link]);
+  if (path && link) return <ChatFileReferenceAnchor link={link} href={href!}>{children}</ChatFileReferenceAnchor>;
+  if (path && scanned) return <span className="md-rich-link__plain">{children}</span>;
+  if (path) {
+    return <a href={href} aria-label={String(path)} onClick={(event) => {
+      event.preventDefault();
+      pendingOpen.current = true;
+    }}>{children}</a>;
+  }
+  return <RichMarkdownLink href={href}>{children}</RichMarkdownLink>;
+}
+
+function InlineMarkdownCode({ text, children }: { text: string; children: ReactNode }) {
+  const file = useChatFileLink(text);
+  if (!file) return <code className="md-code">{children}</code>;
+  return <ChatFileReferenceCode link={file}>{children}</ChatFileReferenceCode>;
 }

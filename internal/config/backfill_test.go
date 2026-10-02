@@ -11,6 +11,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"reasonix/internal/provider"
+	"reasonix/internal/provider/openai"
 )
 
 func hasModel(c *Config, model string) *ProviderEntry {
@@ -1034,8 +1035,8 @@ func TestNormalizeOfficialDeepSeekModelsRepairsCanonicalProvider(t *testing.T) {
 	if !ok {
 		t.Fatal("deepseek provider missing")
 	}
-	if !p.HasModel("deepseek-v4-flash") || !p.HasModel("deepseek-v4-pro") || !p.HasModel("glm-5") {
-		t.Fatalf("deepseek models = %+v, want official models plus existing model", p.ModelList())
+	if !p.HasModel("deepseek-flash") || !p.HasModel("deepseek-v4-pro") || !p.HasModel("glm-5") {
+		t.Fatalf("deepseek models = %+v, want current official models plus existing model", p.ModelList())
 	}
 	if c.DefaultModel != "deepseek/deepseek-v4-flash" {
 		t.Fatalf("default_model = %q, want retargeted official ref", c.DefaultModel)
@@ -1141,7 +1142,7 @@ func TestBackfillDeepSeekOfficialPrices(t *testing.T) {
 	if !ok {
 		t.Fatal("deepseek provider missing")
 	}
-	if p.Prices["deepseek-v4-flash"].Output != 1.32 || p.Prices["deepseek-v4-flash"].Currency != "$" || p.Prices["deepseek-v4-pro"].Output != 3.96 || p.Prices["deepseek-v4-pro"].Currency != "$" {
+	if p.Prices["deepseek-v4-flash"].Output != 1.2 || p.Prices["deepseek-v4-flash"].Currency != "$" || p.Prices["deepseek-v4-pro"].Output != 3.96 || p.Prices["deepseek-v4-pro"].Currency != "$" {
 		t.Fatalf("deepseek prices = %+v, want default USD flash/pro prices", p.Prices)
 	}
 }
@@ -1160,7 +1161,7 @@ func TestBackfillDeepSeekOfficialPricesUsesConfiguredLanguage(t *testing.T) {
 	if !ok {
 		t.Fatal("deepseek provider missing")
 	}
-	if p.Prices["deepseek-v4-flash"].Output != 1.32 || p.Prices["deepseek-v4-flash"].Currency != "$" || p.Prices["deepseek-v4-pro"].Output != 3.96 || p.Prices["deepseek-v4-pro"].Currency != "$" {
+	if p.Prices["deepseek-v4-flash"].Output != 1.2 || p.Prices["deepseek-v4-flash"].Currency != "$" || p.Prices["deepseek-v4-pro"].Output != 3.96 || p.Prices["deepseek-v4-pro"].Currency != "$" {
 		t.Fatalf("deepseek prices = %+v, want USD official flash/pro prices", p.Prices)
 	}
 }
@@ -1211,7 +1212,7 @@ func TestApplyDeepSeekOfficialDefaultPricingUsesConfiguredLanguage(t *testing.T)
 	if !ok {
 		t.Fatal("deepseek-flash provider missing")
 	}
-	if flash.Price == nil || flash.Price.Output != 1.32 || flash.Price.Currency != "$" {
+	if flash.Price == nil || flash.Price.Output != 1.2 || flash.Price.Currency != "$" {
 		t.Fatalf("flash price = %+v, want frozen USD default table", flash.Price)
 	}
 	pro, ok := c.Provider("deepseek-pro")
@@ -1429,7 +1430,7 @@ func TestApplyDeepSeekOfficialDefaultPricingExplicitCurrencyWins(t *testing.T) {
 	flash, _ := c.Provider("deepseek-flash")
 	flash.BillingCurrency = "USD"
 	applyDeepSeekOfficialDefaultPricing(c)
-	if flash.Price == nil || flash.Price.Output != 1.32 || flash.Price.Currency != "$" {
+	if flash.Price == nil || flash.Price.Output != 1.2 || flash.Price.Currency != "$" {
 		t.Fatalf("flash price = %+v, want USD billing_currency table", flash.Price)
 	}
 
@@ -1440,7 +1441,7 @@ func TestApplyDeepSeekOfficialDefaultPricingExplicitCurrencyWins(t *testing.T) {
 	// billing currency — force official CNY rates for this assertion.
 	flash.Price = deepSeekV4FlashPriceCNY()
 	applyDeepSeekOfficialDefaultPricing(c)
-	if flash.Price == nil || flash.Price.Output != 9 || flash.Price.Currency != "¥" {
+	if flash.Price == nil || flash.Price.Output != 8 || flash.Price.Currency != "¥" {
 		t.Fatalf("flash price = %+v, want CNY billing_currency table", flash.Price)
 	}
 }
@@ -1496,7 +1497,7 @@ func TestResetOfficialProviderPricingOnUpgradeRunsOnce(t *testing.T) {
 	if deepseek.Price != nil {
 		t.Fatalf("deepseek provider-wide price = %+v, want nil after reset", deepseek.Price)
 	}
-	if p := deepseek.Prices["deepseek-v4-flash"]; p == nil || p.Currency != "$" || p.Output != 1.32 {
+	if p := deepseek.Prices["deepseek-v4-flash"]; p == nil || p.Currency != "$" || p.Output != 1.2 {
 		t.Fatalf("deepseek flash price = %+v, want USD default", p)
 	}
 	if p := deepseek.Prices["deepseek-v4-pro"]; p == nil || p.Currency != "$" || p.Output != 3.96 {
@@ -1918,5 +1919,30 @@ func TestNormalizeOfficialDeepSeekModelsSkipsExplicitModelList(t *testing.T) {
 	}
 	if p.HasModel("deepseek-v4-pro") {
 		t.Fatal("normalizeOfficialDeepSeekModels must not add pro when Models is explicitly set")
+	}
+}
+
+func TestNormalizeLegacyOpenCodeGoVisionCatalogMigratesOnlyUntouchedPreset(t *testing.T) {
+	base := ProviderEntry{
+		Name: "opencode-go", Kind: "openai", BaseURL: "https://opencode.ai/zen/go/v1",
+		Models: append([]string(nil), preVisionOpenCodeGoModels...), VisionModels: []string{"kimi-k3"},
+		Default: "glm-5.2", PresetID: "opencode-go",
+	}
+	custom := base
+	custom.Models = append(custom.Models, "private-model")
+	explicit := base
+	explicit.VisionModels = []string{}
+	c := &Config{Providers: []ProviderEntry{base, custom, explicit}}
+	if !normalizeLegacyOpenCodeGoVisionCatalog(c) {
+		t.Fatal("untouched OpenCode Go catalog was not migrated")
+	}
+	if !c.Providers[0].HasModel(openai.OfficialDeepSeekVisionModel) || !c.Providers[0].HasVisionModel(openai.OfficialDeepSeekVisionModel) {
+		t.Fatalf("migrated catalog = %+v", c.Providers[0])
+	}
+	if c.Providers[1].HasModel(openai.OfficialDeepSeekVisionModel) {
+		t.Fatal("custom model catalog was unexpectedly migrated")
+	}
+	if !c.Providers[2].HasModel(openai.OfficialDeepSeekVisionModel) || len(c.Providers[2].VisionModels) != 0 {
+		t.Fatalf("explicit no-vision catalog = %+v", c.Providers[2])
 	}
 }

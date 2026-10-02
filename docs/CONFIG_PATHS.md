@@ -32,6 +32,8 @@ non-destructively when `<Reasonix home>/.env` is missing them.
 | --- | --- |
 | Global config | `<Reasonix home>/config.toml` |
 | Global provider credentials | `<Reasonix home>/.env` |
+| In-progress model credential commits | `<Reasonix home>/transactions/model-credentials/` |
+| Completed model settings receipts | `<Reasonix home>/transactions/model-settings-receipts/` |
 | Legacy credentials import source | `<Reasonix home>/credentials` |
 | Global slash commands | `<Reasonix home>/commands/` |
 | Global skills | `<Reasonix home>/skills/` |
@@ -40,13 +42,40 @@ non-destructively when `<Reasonix home>/.env` is missing them.
 | Sessions | `<state root>/sessions/` |
 | Archives | `<state root>/archive/` |
 | Memory | `<state root>/memory/` and `<state root>/projects/` |
-| Disposable session catalog | `<cache root>/session-catalog/v5.sqlite` |
+| Global Desktop topic metadata | `<state root>/desktop/topic-state-v1.sqlite` |
+| Project Desktop topic metadata | `<state root>/projects/<workspace slug>/desktop/topic-state-v1.sqlite` |
+| Disposable session catalog | `<cache root>/session-catalog/v6.sqlite` |
 | Disposable history search catalog | `<cache root>/history-search/v1.sqlite` |
 | Disposable usage catalog | `<cache root>/usage-catalog/v1.sqlite` |
 | Disposable task catalog | `<cache root>/task-catalog/v1.sqlite` |
 
 `<state root>` defaults to `<Reasonix home>`. It only differs when
 `REASONIX_STATE_HOME` is set.
+
+Desktop detects a project-directory name collision when it saves a newly added
+project in `desktop-projects.json`. A new assignment is made only when another
+recorded project still resolves to the same legacy directory. Existing projects
+and projects imported from older workspace records keep their current
+`<state root>/projects/<workspace slug>/` directory. Re-adding the original
+project after its colliding peer was assigned elsewhere also keeps that legacy
+directory. Only a newly added project that meets the collision rule uses
+`<state root>/projects/@<SHA-256 of its absolute root>/`; its `.workspace-root`
+file records the assignment. Session, topic, and project-memory paths follow
+that assignment. Listing a project never creates or changes an assignment, and
+existing files are never moved. If two projects were already recorded with the
+same slug before this fix, their historical shared files remain in place: the
+old directory does not identify which project owns each file.
+Studio currently resolves only `<state root>/projects/<workspace slug>/` and does
+not read `.workspace-root`; a newly assigned project's state is therefore not
+shared with Studio until Studio supports these assignments.
+
+Desktop topic titles, title sources, creation times, and automatic-title state
+are authoritative in these SQLite files. On first access, Desktop imports the
+legacy `desktop-topic-*.json` files from a project's `.reasonix/` directory (or
+the global Reasonix directory). A scope with legacy files continues mirroring
+them for downgrade compatibility; a fresh scope does not create them. Legacy
+files are retained, and project-local settings, skills, commands, attachments,
+and `reasonix.toml` are unaffected.
 
 The session catalog is a rebuildable query projection, not user data. Session
 JSONL, event logs, metadata sidecars, and `desktop-projects.json` remain
@@ -70,17 +99,28 @@ Provider entries store the name of the credential variable in `api_key_env`, not
 the secret value.
 
 Saved provider and bot credential variables are removed from every
-model-controlled child-process environment. The global credential `.env` is
-also hidden from Reasonix's file readers, sandboxed shell commands, and MCP
-servers; this does not change the visibility of a project's ordinary `.env`.
-On Windows, shell commands remain outside an OS sandbox as documented in the
-Guide, so approve shell access only for trusted tasks.
+model-controlled child-process environment. On macOS and Linux, the global
+credential `.env` is also hidden from Reasonix's file readers, sandboxed shell
+commands, and MCP servers; this does not change the visibility of a project's
+ordinary `.env`. Windows has no OS-level shell sandbox: shell commands and
+local tools run as the same OS user and can deliberately read user-readable
+files, including the credential store, so treat restricted permissions there
+as a tool-layer write boundary rather than a credential vault.
+
+If a deny entry left behind by the retired Windows sandbox (v1.38.8 to
+v1.38.10) blocks the credential store, Reasonix removes it automatically when
+a marker from that sandbox run proves the entry came from Reasonix. Saving a
+key works even without that proof: the save resets the file's ACL to the
+current user without reading it, and if that is also denied it moves the
+locked file aside as `.env.locked-<timestamp>` (a read deny does not block
+the move) and writes a new store, so re-entering a key always succeeds. Plain reads never rewrite ACLs; they report
+the original access error together with the repair outcome.
 
 Example:
 
 ```toml
-config_version = 1
-default_model = "deepseek/deepseek-v4-flash"
+config_version = 11
+default_model = "deepseek/deepseek-flash"
 language = "zh"
 credentials_store = "auto"   # legacy compatibility; provider keys are in .env
 
@@ -94,10 +134,10 @@ provider_access = ["deepseek"]
 
 [[providers]]
 name        = "deepseek"
-kind        = "anthropic"
-base_url    = "https://api.deepseek.com/anthropic"
-models      = ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]
-default     = "deepseek-v4-flash"
+kind        = "openai"
+base_url    = "https://api.deepseek.com"
+models      = ["deepseek-flash", "deepseek-v4-pro"]
+default     = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 web_search  = true
 
@@ -120,12 +160,15 @@ remain active. The default is `true`.
 
 ### Custom provider `api_key_env` names
 
-When a custom provider is added from the desktop settings or `reasonix setup`,
-Reasonix stores a generated `api_key_env` in `config.toml` and writes the secret
-value to the matching key in the global `.env`. The generated name is stable, so
-the same provider keeps using the same credential slot after restart.
+When a provider credential is added, replaced, or explicitly cleared from
+desktop settings, TUI `/setup`, or `reasonix setup`, Reasonix allocates a fresh
+`REASONIX_CONNECTION_*_KEY` slot. It writes that slot first and atomically
+publishes the selected provider's new `api_key_env` reference second. Other
+providers keep their current references, even when they previously shared a
+fixed variable. Existing fixed names remain readable and are not migrated at
+startup.
 
-Reasonix derives the default from the provider name. Names that normalize to
+Legacy and manually authored provider entries may derive a default from the provider name. Names that normalize to
 ASCII keep readable env names such as `LOCAL_GATEWAY_API_KEY`; names made
 entirely of non-ASCII characters get a stable hash suffix such as
 `CUSTOM_d39b9067_API_KEY` so two Chinese provider names do not share
@@ -133,18 +176,37 @@ entirely of non-ASCII characters get a stable hash suffix such as
 generated environment variable remains valid; for example, `9router` becomes
 `CUSTOM_9ROUTER_API_KEY`.
 
-In the CLI custom-provider wizard, the provider name is generated from the base
-URL first, then the same provider-name rule is applied. For example
+The CLI custom-provider wizard uses this rule for its draft name. For example
 `https://token.sensenova.cn/v1` creates provider name
-`custom-token-sensenova-cn`, whose default key env is
-`CUSTOM_TOKEN_SENSENOVA_CN_API_KEY`. Press Enter to accept that default, or type
-an explicit env name such as `CUSTOM_API_KEY` if you intentionally want to share
-one credential across providers.
+`custom-token-sensenova-cn`, whose draft key env is
+`CUSTOM_TOKEN_SENSENOVA_CN_API_KEY`. Pressing Enter at the variable-name
+prompt keeps that draft only until the key is saved; the saved connection then
+uses a newly allocated private slot.
+
+A variable name you type at that prompt in `reasonix setup` is kept, so scripts
+can refer to a stable name, as long as saving under it changes nothing another
+connection reads: no other provider, bot or remote-host setting in the config
+reads it, the global `.env` holds no value (or cleared marker) for it, and the
+environment Reasonix runs in does not already set it. Otherwise the wizard says
+what holds the name and asks again; Enter falls back to a
+private slot. If the name is claimed between the prompt and saving, the save is
+refused and nothing is written.
+
+Saving a new key later for a provider in the user config rewrites its
+variable in place when that provider (or the set of providers the key is saved
+for) is the only reader of it in the user config, both before and after the
+edit, and the global `.env` already holds its value. A project that reads the
+same name sees the new key, as it saw the old one. Providers declared in a
+project `reasonix.toml` always get a private slot. The previous value is kept in the global `.env` under
+a temporary variable until the config is published: a save that fails or is
+interrupted puts it back, unless something else has written the variable since.
+When another provider or setting also reads the variable, the new key goes to a
+private slot as before and the shared variable is left unchanged.
 
 Existing configs are not rewritten on upgrade. If an old custom provider already
 uses `CUSTOM_API_KEY`, it will keep working with that key. If several old custom
-providers accidentally share `CUSTOM_API_KEY`, edit each provider's
-`api_key_env` to a distinct name and save the corresponding API key again.
+providers accidentally share `CUSTOM_API_KEY`, save each provider's API key
+again to rotate that connection to a private slot.
 
 ### Custom provider endpoint URLs
 

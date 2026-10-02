@@ -1,0 +1,20 @@
+{
+  "id": "interrupted",
+  "created_at": "2026-09-22T04:47:05.697086Z",
+  "updated_at": "2026-09-22T04:47:05.697086Z",
+  "scope": "global",
+  "topic_id": "topic-interrupted",
+  "topic_title": "Historical interrupted",
+  "custom_title": "User title interrupted",
+  "model": "fixture/model",
+  "tool_approval_mode": "ask",
+  "goal": "Retained goal",
+  "revision": 1,
+  "content_digest": "02655f81d8834a57085aa75a92f5b65dde87a7557e26b96806ec855051625ad3",
+  "writer_id": "historical-fixture-writer",
+  "schema_version": 2,
+  "turns": 71,
+  "preview": "中文历史问题 # %20",
+  "listing_revision": 1,
+  "listing_content_digest": "02655f81d8834a57085aa75a92f5b65dde87a7557e26b96806ec855051625ad3"
+}

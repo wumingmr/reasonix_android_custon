@@ -35,11 +35,15 @@ assert.doesNotMatch(
   "history refresh does not replace an already-painted list with a loading branch",
 );
 
-const cwdReset = panel.match(/useEffect\(\(\) => \{[\s\S]*?\}, \[cwd, loadDir, open\]\);/)?.[0] ?? "";
+const cwdReset = panel.match(/useEffect\(\(\) => \{[\s\S]*?\}, \[cwd, fileNavigation, fileScope, loadDir, open, workspaceMemoryKey\]\);/)?.[0] ?? "";
 assert.ok(cwdReset, "workspace cwd reset effect is present");
 assert.doesNotMatch(cwdReset, /setSelected(?:File|Change)Path\(null\)/, "cwd reset does not erase restored per-project selections");
+// The preview key already carries its scope, path, mode and access context, so
+// clearing it here would only discard the read another effect just started when
+// this effect reconnects.
+assert.doesNotMatch(cwdReset, /setPreviewResource\(emptyKeyedResource\(\)\)/, "cwd reset does not discard the preview a read just started");
 
-const scopeReset = panel.match(/useEffect\(\(\) => \{[\s\S]*?\}, \[open, resetWorkspaceChanges, viewMode, workspaceScopeKey\]\);/)?.[0] ?? "";
+const scopeReset = panel.match(/useEffect\(\(\) => \{[\s\S]*?\}, \[fileNavigation, fileScope, open, resetWorkspaceChanges, viewMode, workspaceScopeKey\]\);/)?.[0] ?? "";
 assert.ok(scopeReset, "workspace scope reset effect is present");
 assert.doesNotMatch(scopeReset, /setSelectedChangePath\(null\)/, "scope reset does not erase the restored change selection");
 

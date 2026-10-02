@@ -61,7 +61,6 @@ func deliveryLeaseTestAgent(t *testing.T, owner *workspacelease.Owner, tools ...
 		reg.Add(candidate)
 	}
 	a := New(nil, reg, NewSession(""), Options{WorkspaceLease: owner}, event.Discard)
-	a.turn.deliveryCriteriaEstablished = true
 	a.setTodoState([]evidence.TodoItem{{Content: "mutate", Status: "in_progress"}})
 	return a
 }
@@ -183,12 +182,10 @@ func TestPathWriteReleasesLeaseAfterToolReturns(t *testing.T) {
 	reg1 := tool.NewRegistry()
 	reg1.Add(w1)
 	a1 := New(nil, reg1, NewSession(""), Options{WorkspaceLease: first, WriteWorkspaceRoot: repo}, event.Discard)
-	a1.turn.deliveryCriteriaEstablished = true
 	a1.setTodoState([]evidence.TodoItem{{Content: "mutate", Status: "in_progress"}})
 	reg2 := tool.NewRegistry()
 	reg2.Add(w2)
 	a2 := New(nil, reg2, NewSession(""), Options{WorkspaceLease: second, WriteWorkspaceRoot: repo}, event.Discard)
-	a2.turn.deliveryCriteriaEstablished = true
 	a2.setTodoState([]evidence.TodoItem{{Content: "mutate", Status: "in_progress"}})
 	first.BeginRun()
 	second.BeginRun()
@@ -238,14 +235,12 @@ func TestNestedRepoWriteFileLeasesDoNotBlock(t *testing.T) {
 	a1 := New(nil, reg1, NewSession(""), Options{
 		WorkspaceLease: first, WriteWorkspaceRoot: parent,
 	}, event.Discard)
-	a1.turn.deliveryCriteriaEstablished = true
 	a1.setTodoState([]evidence.TodoItem{{Content: "mutate", Status: "in_progress"}})
 	reg2 := tool.NewRegistry()
 	reg2.Add(w2)
 	a2 := New(nil, reg2, NewSession(""), Options{
 		WorkspaceLease: second, WriteWorkspaceRoot: parent,
 	}, event.Discard)
-	a2.turn.deliveryCriteriaEstablished = true
 	a2.setTodoState([]evidence.TodoItem{{Content: "mutate", Status: "in_progress"}})
 	first.BeginRun()
 	second.BeginRun()

@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"reasonix/internal/event"
 	"reasonix/internal/sessioninbox"
+	"reasonix/internal/sessiontemp"
+	"reasonix/internal/store"
 )
 
 // TurnAdmission is the exported classification of TrySubmitInboxItem /
@@ -30,17 +33,19 @@ const (
 
 // InboxRequest is the frontend-facing enqueue payload.
 type InboxRequest struct {
-	Intent      sessioninbox.InboxIntent
-	Display     string
-	Raw         string
-	Submit      string
-	Format      string
-	Source      string
-	Idempotency string
-	Invocations []InvocationRequest
-	Extra       map[string]string
+	ExpectedSessionPath string // optional exact-session fence; never persisted
+	Intent              sessioninbox.InboxIntent
+	Display             string
+	Raw                 string
+	Submit              string
+	Format              string
+	Source              string
+	Idempotency         string
+	Invocations         []InvocationRequest
+	Extra               map[string]string
 	// FreezeRefs lists workspace-relative paths to freeze at enqueue time.
-	FreezeRefs []string
+	FreezeRefs  []string
+	Attachments []SubmissionAttachment
 }
 
 // Inbox port on SessionAPI.
@@ -69,11 +74,19 @@ var _ Inbox = (*Controller)(nil)
 
 // inboxState is controller-owned inbox wiring (disk store + active items).
 type inboxState struct {
+	prepareMu sync.Mutex
 	// admissionMu serializes competing admission state machines. Snapshot
 	// recovery and completion never hold it across Store I/O.
 	admissionMu sync.Mutex
-	mu          sync.Mutex
-	store       *sessioninbox.Store
+	// scanMu joins autonomous sidecar reads at shutdown without waiting for a
+	// dispatcher that may itself retire this controller during host admission.
+	scanMu sync.Mutex
+	mu     sync.Mutex
+	store  *sessioninbox.Store
+	// tempLease pins the process-local inbox used by an exclusive v3 Runtime.
+	// It is not recovery state and is deleted with the session temp generation.
+	tempLease *sessiontemp.Lease
+	closed    bool // seals new sidecar opens when controller teardown starts
 	// activeItemIDs includes the running follow-up and every accepted steer.
 	// TurnDone durable-acks the set so multi-steer rounds leave no orphans.
 	activeItemIDs map[string]struct{}
@@ -192,21 +205,57 @@ func (c *Controller) bindInboxStoreNotifications(st *sessioninbox.Store) {
 	})
 }
 
-func (c *Controller) ensureInbox() (*sessioninbox.Store, error) {
-	path := c.SessionPath()
-	if path == "" {
-		return nil, fmt.Errorf("inbox requires a persisted session path")
+// inboxBinding selects identity and storage ownership from the same runtime.
+// An import/display path can coexist with a canonical binding during startup;
+// it must not turn the canonical locator into a filesystem path.
+func (c *Controller) inboxBinding() (locator string, temporary bool) {
+	if _, runtime, exclusive := c.v3Binding(); exclusive {
+		if runtime == nil {
+			return "", true
+		}
+		return "session-id:" + runtime.Ref().SessionID, true
 	}
+	return c.SessionPath(), false
+}
+
+// inboxDirectoryLocked retains the existing process-local storage lifetime.
+// c.inbox.mu must be held by the caller.
+func (c *Controller) inboxDirectoryLocked(path string, temporary bool) (string, error) {
+	if temporary {
+		if c.inbox.tempLease == nil {
+			lease, err := c.sessionTemp.Acquire()
+			if err != nil {
+				return "", fmt.Errorf("open runtime inbox: %w", err)
+			}
+			c.inbox.tempLease = lease
+		}
+		return store.SessionInboxDir(filepath.Join(c.inbox.tempLease.Dir(), "runtime-inbox.jsonl")), nil
+	}
+	return store.SessionInboxDir(path), nil
+}
+
+func (c *Controller) ensureInbox() (*sessioninbox.Store, error) {
+	path, temporary := c.inboxBinding()
 	c.inbox.mu.Lock()
 	defer c.inbox.mu.Unlock()
+	if path == "" {
+		return nil, fmt.Errorf("inbox requires a session identity")
+	}
 	if c.inbox.store != nil && c.inbox.store.SessionPath() == path {
 		return c.inbox.store, nil
+	}
+	if c.inbox.closed {
+		return nil, fmt.Errorf("controller inbox is closed")
 	}
 	if c.inbox.store != nil {
 		c.inbox.store.Close()
 		c.inbox.store = nil
 	}
-	st, err := sessioninbox.Open(path, sessioninbox.Limits{})
+	dir, err := c.inboxDirectoryLocked(path, temporary)
+	if err != nil {
+		return nil, err
+	}
+	st, err := sessioninbox.OpenAt(path, dir, sessioninbox.Limits{})
 	if err != nil {
 		return nil, err
 	}
@@ -228,9 +277,12 @@ func (c *Controller) ensureInbox() (*sessioninbox.Store, error) {
 // rebindInbox opens the inbox for the current session path. Safe across
 // NewSession/Resume/SetSessionPath; does not copy items on fork.
 func (c *Controller) rebindInbox() {
-	path := c.SessionPath()
+	path, temporary := c.inboxBinding()
 	c.inbox.mu.Lock()
 	defer c.inbox.mu.Unlock()
+	if c.inbox.closed {
+		return
+	}
 	if c.inbox.store != nil {
 		if path != "" && c.inbox.store.SessionPath() == path {
 			return
@@ -241,10 +293,19 @@ func (c *Controller) rebindInbox() {
 		c.inbox.store = nil
 		c.inbox.clearActive()
 	}
+	if c.inbox.tempLease != nil {
+		c.inbox.tempLease.Release()
+		c.inbox.tempLease = nil
+	}
 	if path == "" {
 		return
 	}
-	st, err := sessioninbox.Open(path, sessioninbox.Limits{})
+	dir, err := c.inboxDirectoryLocked(path, temporary)
+	if err != nil {
+		slog.Warn("controller: open runtime inbox", "err", err)
+		return
+	}
+	st, err := sessioninbox.OpenAt(path, dir, sessioninbox.Limits{})
 	if err != nil {
 		slog.Warn("controller: open session inbox", "err", err, "path", path)
 		return
@@ -273,67 +334,6 @@ func (c *Controller) pauseInboxOnRotate() {
 	if st != nil {
 		_ = st.PauseIfPending()
 	}
-}
-
-// EnqueueInbox durably queues an instruction. Only returns a receipt after
-// blob+manifest commit. Does not auto-start a turn (call TrySubmit / dispatcher).
-func (c *Controller) EnqueueInbox(req InboxRequest) (sessioninbox.InboxReceipt, error) {
-	st, err := c.ensureInbox()
-	if err != nil {
-		return sessioninbox.InboxReceipt{}, err
-	}
-	submit := strings.TrimSpace(firstNonEmptyStr(req.Submit, req.Raw))
-	if submit == "" && len(req.Invocations) == 0 {
-		submit = strings.TrimSpace(req.Display)
-	}
-	if submit == "" && len(req.Invocations) == 0 {
-		return sessioninbox.InboxReceipt{}, sessioninbox.ErrEmpty
-	}
-	display := firstNonEmptyStr(req.Display, submit)
-	raw := firstNonEmptyStr(req.Raw, submit)
-	env := sessioninbox.PromptEnvelope{
-		DisplayText:  display,
-		RawText:      raw,
-		SubmitText:   submit,
-		Format:       req.Format,
-		Source:       req.Source,
-		Idempotency:  req.Idempotency,
-		ExplicitRefs: append([]string(nil), req.FreezeRefs...),
-		Invocations:  sessionInboxInvocations(req.Invocations),
-		Extra:        maps.Clone(req.Extra),
-	}
-	env.FrozenRefBlock, env.FrozenImages, env.ReferenceErrors = c.freezeInboxReferences(context.Background(), submit, req.FreezeRefs)
-	intent := req.Intent
-	if intent != sessioninbox.IntentSteer {
-		intent = sessioninbox.IntentFollowup
-	}
-	rec, err := st.Enqueue(sessioninbox.EnqueueRequest{
-		Intent:      intent,
-		Envelope:    env,
-		Source:      req.Source,
-		Idempotency: req.Idempotency,
-		SessionID:   c.parentSessionID(),
-	})
-	if err != nil {
-		if errors.Is(err, sessioninbox.ErrCapacityItems) || errors.Is(err, sessioninbox.ErrCapacityBytes) || errors.Is(err, sessioninbox.ErrItemTooLarge) {
-			sessioninbox.NoteCapacityReject()
-		} else {
-			sessioninbox.NoteTxFail()
-		}
-		return sessioninbox.InboxReceipt{}, err
-	}
-	if !rec.Idempotent && len(env.ReferenceErrors) > 0 {
-		reason := strings.Join(env.ReferenceErrors, "; ")
-		if stateErr := st.SetState(rec.ItemID, sessioninbox.StateBlocked, reason); stateErr != nil {
-			return sessioninbox.InboxReceipt{}, stateErr
-		}
-		if pauseErr := st.SetPaused(true); pauseErr != nil {
-			return sessioninbox.InboxReceipt{}, pauseErr
-		}
-		rec.Paused = true
-	}
-	sessioninbox.NoteEnqueue(int64(len(env.SubmitText)))
-	return rec, nil
 }
 
 func (c *Controller) InboxSnapshot() sessioninbox.InboxSnapshot {
@@ -371,35 +371,18 @@ func (c *Controller) UpdateInboxItem(id, display, raw, submit string) (sessionin
 	submit = strings.TrimSpace(firstNonEmptyStr(submit, raw, display))
 	display = firstNonEmptyStr(display, submit)
 	raw = firstNonEmptyStr(raw, submit)
-	_, previous, err := st.ReadItem(id)
+	meta, previous, err := st.ReadItem(id)
 	if err != nil {
 		return sessioninbox.InboxItemMeta{}, err
 	}
-	env := sessioninbox.PromptEnvelope{
-		DisplayText:  display,
-		RawText:      raw,
-		SubmitText:   submit,
-		Format:       previous.Format,
-		Source:       previous.Source,
-		ExplicitRefs: append([]string(nil), previous.ExplicitRefs...),
-		Invocation:   previous.Invocation,
-		Invocations:  append([]sessioninbox.StructuredInvocation(nil), previous.Invocations...),
-		Attachments:  append([]string(nil), previous.Attachments...),
-		Extra:        maps.Clone(previous.Extra),
-	}
-	env.FrozenRefBlock, env.FrozenImages, env.ReferenceErrors = c.freezeInboxReferences(context.Background(), submit, env.ExplicitRefs)
-	updated, err := st.UpdateItem(id, env)
-	if err != nil {
+	env := previous
+	env.DisplayText, env.RawText, env.SubmitText = display, raw, submit
+	if err := c.freezeInboxEnvelopeReferences(context.Background(), &env, submit, env.ExplicitRefs); err != nil {
 		return sessioninbox.InboxItemMeta{}, err
 	}
-	if len(env.ReferenceErrors) > 0 {
-		reason := strings.Join(env.ReferenceErrors, "; ")
-		if err := st.SetState(id, sessioninbox.StateBlocked, reason); err != nil {
-			return sessioninbox.InboxItemMeta{}, err
-		}
-		_ = st.SetPaused(true)
-		updated.State = sessioninbox.StateBlocked
-		updated.BlockReason = reason
+	updated, err := st.UpdateItemIfVersion(id, env, sessioninbox.ContentVersion(meta))
+	if err != nil {
+		return sessioninbox.InboxItemMeta{}, err
 	}
 	return updated, nil
 }
@@ -411,7 +394,7 @@ func (c *Controller) AppendInboxItem(id, text, idempotency string, extra map[str
 	if err != nil {
 		return sessioninbox.InboxItemMeta{}, err
 	}
-	_, previous, err := st.ReadItem(id)
+	meta, previous, err := st.ReadItem(id)
 	if err != nil {
 		return sessioninbox.InboxItemMeta{}, err
 	}
@@ -432,7 +415,9 @@ func (c *Controller) AppendInboxItem(id, text, idempotency string, extra map[str
 	if len(extra) > 0 {
 		env.Extra = maps.Clone(extra)
 	}
-	env.FrozenRefBlock, env.FrozenImages, env.ReferenceErrors = c.freezeInboxReferences(context.Background(), merged, env.ExplicitRefs)
+	if err := c.freezeInboxEnvelopeReferences(context.Background(), &env, merged, env.ExplicitRefs); err != nil {
+		return sessioninbox.InboxItemMeta{}, err
+	}
 	aliasEnv := sessioninbox.PromptEnvelope{
 		DisplayText: text,
 		RawText:     text,
@@ -440,20 +425,7 @@ func (c *Controller) AppendInboxItem(id, text, idempotency string, extra map[str
 		Source:      previous.Source,
 		Extra:       maps.Clone(extra),
 	}
-	updated, err := st.UpdateItemWithIdempotency(id, env, idempotency, aliasEnv)
-	if err != nil {
-		return sessioninbox.InboxItemMeta{}, err
-	}
-	if len(env.ReferenceErrors) > 0 {
-		reason := strings.Join(env.ReferenceErrors, "; ")
-		if err := st.SetState(id, sessioninbox.StateBlocked, reason); err != nil {
-			return sessioninbox.InboxItemMeta{}, err
-		}
-		_ = st.SetPaused(true)
-		updated.State = sessioninbox.StateBlocked
-		updated.BlockReason = reason
-	}
-	return updated, nil
+	return st.UpdateItemWithIdempotencyIfVersion(id, env, idempotency, aliasEnv, sessioninbox.ContentVersion(meta))
 }
 
 func (c *Controller) DeleteInboxItem(id string) error {
@@ -531,29 +503,20 @@ func (c *Controller) retryInboxItem(id string, dispatch bool) error {
 	return nil
 }
 
-func (c *Controller) RefreshInboxReferences(id string) error {
-	st, err := c.ensureInbox()
-	if err != nil {
-		return err
-	}
-	meta, env, err := st.ReadItem(id)
-	if err != nil {
-		return err
-	}
-	_ = meta
-	env.Refs = nil
-	env.FrozenRefBlock, env.FrozenImages, env.ReferenceErrors = c.freezeInboxReferences(context.Background(), env.SubmitText, env.ExplicitRefs)
-	_, err = st.UpdateItem(id, env)
-	if err == nil && len(env.ReferenceErrors) > 0 {
-		reason := strings.Join(env.ReferenceErrors, "; ")
-		err = st.SetState(id, sessioninbox.StateBlocked, reason)
-		_ = st.SetPaused(true)
-	}
-	return err
-}
-
 // TrySubmitInboxItem admits a queued item as a new turn when the session is idle.
 func (c *Controller) TrySubmitInboxItem(id string) (sessioninbox.InboxReceipt, error) {
+	c.mu.Lock()
+	beforeDispatch := c.modelSettings.beforeInboxDispatch
+	c.mu.Unlock()
+	if beforeDispatch != nil {
+		release, err := beforeDispatch(c)
+		if err != nil {
+			return sessioninbox.InboxReceipt{}, err
+		}
+		if release != nil {
+			defer release()
+		}
+	}
 	c.inbox.admissionMu.Lock()
 	defer c.inbox.admissionMu.Unlock()
 	st, err := c.ensureInbox()
@@ -575,15 +538,16 @@ func (c *Controller) TrySubmitInboxItem(id string) (sessioninbox.InboxReceipt, e
 		return sessioninbox.InboxReceipt{}, materializeErr
 	}
 	if block != "" {
-		_ = st.SetState(id, sessioninbox.StateBlocked, block)
-		_ = st.SetPaused(true)
+		if err := st.TransitionPrepared(id, sessioninbox.ContentVersion(meta), sessioninbox.StateBlocked, block, true); err != nil {
+			return sessioninbox.InboxReceipt{}, err
+		}
 		return sessioninbox.InboxReceipt{}, fmt.Errorf("%w: %s", sessioninbox.ErrInvalidState, block)
 	}
 	// Persist the in-flight state before admission. Active tracking is installed
 	// only after Controller admission is reserved and before the turn can finish.
 	c.inbox.trackAdmission(id)
 	defer c.inbox.untrackAdmission(id)
-	if err := st.ClaimItem(id); err != nil {
+	if err := st.TransitionPrepared(id, sessioninbox.ContentVersion(meta), sessioninbox.StateRunning, "", true); err != nil {
 		return sessioninbox.InboxReceipt{}, err
 	}
 	c.inbox.mu.Lock()
@@ -705,12 +669,28 @@ func (c *Controller) onInboxUnappliedSteer(itemID string) {
 
 // TryEnqueueAndSteer is a convenience for frontends: durable steer then TrySteer.
 func (c *Controller) TryEnqueueAndSteer(req InboxRequest) (sessioninbox.InboxReceipt, error) {
+	return c.tryEnqueueAndSteerForTurn("", req)
+}
+
+// TryEnqueueAndSteerForTurn preserves the durable fallback semantics while
+// fencing the mid-turn steer against the exact lifecycle turn observed by the
+// caller. If that turn has already ended, the instruction remains a queued
+// follow-up and is never injected into a replacement turn.
+func (c *Controller) TryEnqueueAndSteerForTurn(turnID string, req InboxRequest) (sessioninbox.InboxReceipt, error) {
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		return sessioninbox.InboxReceipt{}, fmt.Errorf("turnId is required")
+	}
+	return c.tryEnqueueAndSteerForTurn(turnID, req)
+}
+
+func (c *Controller) tryEnqueueAndSteerForTurn(turnID string, req InboxRequest) (sessioninbox.InboxReceipt, error) {
 	req.Intent = sessioninbox.IntentSteer
 	rec, err := c.EnqueueInbox(req)
 	if err != nil {
 		return rec, err
 	}
-	steered, err := c.TrySteerInboxItem(rec.ItemID)
+	steered, err := c.trySteerInboxItem(rec.ItemID, turnID)
 	if errors.Is(err, sessioninbox.ErrPaused) {
 		rec.Disposition = sessioninbox.DispositionQueuedFollowup
 		rec.Paused = true
@@ -724,8 +704,12 @@ func (c *Controller) TryEnqueueAndSteer(req InboxRequest) (sessioninbox.InboxRec
 
 // TryEnqueueFollowup durably queues a follow-up and may dispatch if idle.
 func (c *Controller) TryEnqueueFollowup(req InboxRequest) (sessioninbox.InboxReceipt, error) {
+	return c.TryEnqueueFollowupContext(c.attachmentContext(), req)
+}
+
+func (c *Controller) TryEnqueueFollowupContext(ctx context.Context, req InboxRequest) (sessioninbox.InboxReceipt, error) {
 	req.Intent = sessioninbox.IntentFollowup
-	rec, err := c.EnqueueInbox(req)
+	rec, err := c.EnqueueInboxContext(ctx, req)
 	if err != nil {
 		return rec, err
 	}

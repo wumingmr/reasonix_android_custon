@@ -14,6 +14,19 @@ func (t *restrictedCapabilityProxy) bindToolResultSession(session func() *Sessio
 	}
 }
 
+func (t *restrictedCapabilityProxy) bindMCPListObserver(observer func(mcpListObservation)) {
+	if binder, ok := t.Tool.(mcpListObserverBinder); ok {
+		binder.bindMCPListObserver(observer)
+	}
+}
+
+func (t *restrictedCapabilityProxy) activateMCPListObserver() func() {
+	if activator, ok := t.Tool.(mcpListObserverActivator); ok {
+		return activator.activateMCPListObserver()
+	}
+	return func() {}
+}
+
 // cloneCapabilityFrontend creates an Agent-owned frontend whenever binding a
 // session reader could otherwise mutate a parent Agent's tool. Unknown tools
 // remain shareable only when they cannot participate in session binding.
@@ -129,6 +142,35 @@ func filterCapabilityListResult(raw string, servers map[string]bool) string {
 	b, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return emptyCapabilityListResult(baseNote + " Failed to encode filtered list (fail-closed).")
+	}
+	return string(b)
+}
+
+func filterCapabilitySearchResult(raw string, allowed map[string]bool) string {
+	var payload struct {
+		Query   string            `json:"query"`
+		Results []json.RawMessage `json:"results"`
+		Note    string            `json:"note"`
+	}
+	if json.Unmarshal([]byte(raw), &payload) != nil {
+		return `{"query":"","results":[],"note":"search result was unreadable; filtered fail-closed"}`
+	}
+	filtered := make([]json.RawMessage, 0, len(payload.Results))
+	for _, rawResult := range payload.Results {
+		var result struct {
+			CapabilityID string `json:"capability_id"`
+		}
+		if json.Unmarshal(rawResult, &result) == nil && allowed[strings.TrimSpace(result.CapabilityID)] {
+			filtered = append(filtered, rawResult)
+		}
+	}
+	payload.Results = filtered
+	if payload.Note != "" {
+		payload.Note += " Filtered to this subagent's allowed capabilities."
+	}
+	b, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return `{"query":"","results":[],"note":"search result filtering failed closed"}`
 	}
 	return string(b)
 }

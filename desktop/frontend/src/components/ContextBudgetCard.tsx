@@ -4,7 +4,9 @@ import type { ContextInfo, ContextPanelInfo } from "../lib/types";
 import { formatTokens } from "../lib/format";
 
 export function resolveContextBudget(context?: ContextInfo | null, info?: ContextPanelInfo | null): ContextBudgetInfo | undefined {
-  return info?.contextBudget ?? context?.contextBudget ?? context?.maintenance?.contextBudget;
+  // A live snapshot's missing budget also matters (for example after a model
+  // rebuild); do not resurrect the old request from the private panel snapshot.
+  return context ? context.contextBudget ?? context.maintenance?.contextBudget : info?.contextBudget;
 }
 
 export function contextBudgetSourceKey(source?: string): "context.budgetSourceExplicit" | "context.budgetSourceOfficial" | "context.budgetSourceOpencode" | "context.budgetSourceLearned" | "context.budgetSourceUnknown" {

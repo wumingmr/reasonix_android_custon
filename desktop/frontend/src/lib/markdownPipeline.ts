@@ -46,6 +46,16 @@ export interface MarkdownBlock {
   children: HastRootContent[];
   /** Lightweight representation for a large table with plain-text cells. */
   virtualTable?: VirtualMarkdownTableData;
+  /**
+   * Content identity of this block, computed by the parse that produced it.
+   * Two blocks from two parses are the same block when their keys and
+   * fingerprints match, which lets the render path keep the previous AST
+   * object (and therefore native selection and disclosure state) without
+   * serializing either tree. The value is opaque: never interpret it.
+   */
+  fingerprint: number;
+  /** Parsed HAST element count used to bound progressive DOM publication. */
+  elementCount?: number;
 }
 
 export interface MarkdownParseResult {
@@ -192,8 +202,11 @@ function injectVirtualTablePlaceholders(
  * definitions, and remark-rehype's footnote section arrives as a trailing
  * top-level element, so it becomes its own trailing block.
  */
-export function sliceHastBlocks(root: HastRoot): MarkdownBlock[] {
-  const blocks: MarkdownBlock[] = [];
+/** A block before its parse has stamped a fingerprint. */
+export type UnfingerprintedBlock = Omit<MarkdownBlock, "fingerprint">;
+
+export function sliceHastBlocks(root: HastRoot): UnfingerprintedBlock[] {
+  const blocks: UnfingerprintedBlock[] = [];
   let pending: HastRootContent[] = [];
   for (const child of root.children) {
     if (child.type === "element") {
@@ -216,7 +229,7 @@ export function sliceHastBlocks(root: HastRoot): MarkdownBlock[] {
 export function parseMarkdownToBlocks(text: string): MarkdownBlock[] {
   const normalized = normalizeMath(text);
   const extracted = extractLargePlainMarkdownTables(normalized);
-  if (extracted.tables.length === 0) return sliceHastBlocks(parseNormalizedMarkdownToHast(normalized));
+  if (extracted.tables.length === 0) return fingerprintBlocks(sliceHastBlocks(parseNormalizedMarkdownToHast(normalized)));
 
   const processor = unified()
     .use(remarkParse)
@@ -228,7 +241,7 @@ export function parseMarkdownToBlocks(text: string): MarkdownBlock[] {
   applyReactMarkdownTransforms(tree);
   injectVirtualTablePlaceholders(tree, extracted.markerPrefix, extracted.tables.length);
 
-  return sliceHastBlocks(tree).map((block) => {
+  return fingerprintBlocks(sliceHastBlocks(tree).map((block) => {
     const placeholder = block.children.find(
       (child): child is HastElement => child.type === "element" && child.tagName === VIRTUAL_TABLE_TAG,
     );
@@ -239,7 +252,77 @@ export function parseMarkdownToBlocks(text: string): MarkdownBlock[] {
       children: block.children.filter((child) => child !== placeholder),
       virtualTable: extracted.tables[index],
     };
-  });
+  }));
+}
+
+// 32-bit FNV-1a over a value's JSON-visible shape. Property order is sorted
+// rather than preserved: both sides of every comparison come from this
+// function, so what matters is that equal shapes hash equal and different
+// shapes almost never collide — not that the walk matches JSON.stringify
+// byte for byte. Values JSON.stringify would drop (`undefined`, functions)
+// are skipped here for the same reason.
+function hashValue(hash: number, value: unknown, depth: number): number {
+  if (depth > 64) return hash;
+  if (value === null) return hashText(hash, "null");
+  switch (typeof value) {
+    case "string": return hashText(hash, value);
+    case "number": return hashText(hash, String(value));
+    case "boolean": return hashText(hash, value ? "t" : "f");
+    case "undefined":
+    case "function":
+      return hash;
+    case "object": {
+      if (Array.isArray(value)) {
+        let next = hashText(hash, "[");
+        for (const item of value) next = hashValue(next, item, depth + 1);
+        return hashText(next, "]");
+      }
+      let next = hashText(hash, "{");
+      const record = value as Record<string, unknown>;
+      for (const key of Object.keys(record).sort()) {
+        next = hashValue(hashText(next, key), record[key], depth + 1);
+      }
+      return hashText(next, "}");
+    }
+    default:
+      return hash;
+  }
+}
+
+function hashText(hash: number, text: string): number {
+  let next = hash;
+  for (let index = 0; index < text.length; index += 1) {
+    next ^= text.charCodeAt(index);
+    next = Math.imul(next, 0x01000193) >>> 0;
+  }
+  // A separator so `["ab"]` and `["a","b"]` cannot hash alike.
+  next ^= 0x1f;
+  return Math.imul(next, 0x01000193) >>> 0;
+}
+
+/** Stamps every block with its content fingerprint. Call once, on final blocks. */
+export function fingerprintBlocks(blocks: UnfingerprintedBlock[]): MarkdownBlock[] {
+  for (const block of blocks) {
+    let hash = hashText(0x811c9dc5, block.key);
+    for (const child of block.children) hash = hashValue(hash, child, 0);
+    if (block.virtualTable) hash = hashValue(hash, block.virtualTable, 0);
+    (block as MarkdownBlock).fingerprint = hash;
+    (block as MarkdownBlock).elementCount = countHastElements(block.children);
+  }
+  return blocks as MarkdownBlock[];
+}
+
+function countHastElements(children: HastRootContent[]): number {
+  let count = 0;
+  const visitChildren = (nodes: HastRootContent[]): void => {
+    for (const node of nodes) {
+      if (node.type !== "element") continue;
+      count += 1;
+      visitChildren(node.children as HastRootContent[]);
+    }
+  };
+  visitChildren(children);
+  return count;
 }
 
 /** Parse once and derive both the render tree and copy projection. */

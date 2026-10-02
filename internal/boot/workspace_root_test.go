@@ -20,22 +20,22 @@ func TestResolveWorkspaceRootExplicitAndGitFallback(t *testing.T) {
 	}
 
 	// Explicit --dir pins the workspace root, not the git root of the repo.
-	if got := resolveWorkspaceRoot(sub); got != sub {
-		t.Fatalf("resolveWorkspaceRoot(%q) = %q, want the explicit dir", sub, got)
+	if got := ResolveWorkspaceRoot(sub); got != sub {
+		t.Fatalf("ResolveWorkspaceRoot(%q) = %q, want the explicit dir", sub, got)
 	}
 
 	// No explicit root: fall back to the nearest git root from the CWD.
 	t.Chdir(sub)
-	got := resolveWorkspaceRoot("")
+	got := ResolveWorkspaceRoot("")
 	wantRoot, err := filepath.EvalSymlinks(repo)
 	if err != nil {
 		t.Fatal(err)
 	}
 	gotResolved, err := filepath.EvalSymlinks(got)
 	if err != nil {
-		t.Fatalf("resolveWorkspaceRoot(%q) returned unusable path %q: %v", "", got, err)
+		t.Fatalf("ResolveWorkspaceRoot(%q) returned unusable path %q: %v", "", got, err)
 	}
 	if gotResolved != wantRoot {
-		t.Fatalf("resolveWorkspaceRoot(\"\") = %q, want git root %q", got, repo)
+		t.Fatalf("ResolveWorkspaceRoot(\"\") = %q, want git root %q", got, repo)
 	}
 }

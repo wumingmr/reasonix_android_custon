@@ -12,8 +12,8 @@ func TestNormalizeTwoValueVocabulary(t *testing.T) {
 	}
 	for _, raw := range []string{"delivery", "deliver", "quality", " DELIVERY "} {
 		got, err := Normalize(raw)
-		if err != nil || got != Delivery {
-			t.Errorf("Normalize(%q) = %q, %v; want delivery, nil", raw, got, err)
+		if err != nil || got != Standard {
+			t.Errorf("Normalize(%q) = %q, %v; want retired value to fold to standard", raw, got, err)
 		}
 	}
 	for _, raw := range []string{"turbo", "fuller"} {
@@ -24,8 +24,8 @@ func TestNormalizeTwoValueVocabulary(t *testing.T) {
 }
 
 func TestLegacyTokenModeRoundTrip(t *testing.T) {
-	if got := LegacyTokenMode(Delivery); got != "delivery" {
-		t.Fatalf("LegacyTokenMode(delivery) = %q", got)
+	if got := LegacyTokenMode(Delivery); got != "full" {
+		t.Fatalf("LegacyTokenMode(delivery) = %q, want full compatibility value", got)
 	}
 	if got := LegacyTokenMode(Standard); got != "full" {
 		t.Fatalf("LegacyTokenMode(standard) = %q", got)
@@ -33,7 +33,7 @@ func TestLegacyTokenModeRoundTrip(t *testing.T) {
 	if got := FromLegacyTokenMode("economy"); got != Standard {
 		t.Fatalf("FromLegacyTokenMode(economy) = %q, want standard (light folds)", got)
 	}
-	if got := FromLegacyTokenMode("delivery"); got != Delivery {
-		t.Fatalf("FromLegacyTokenMode(delivery) = %q", got)
+	if got := FromLegacyTokenMode("delivery"); got != Standard {
+		t.Fatalf("FromLegacyTokenMode(delivery) = %q, want standard", got)
 	}
 }

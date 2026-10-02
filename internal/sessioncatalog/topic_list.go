@@ -2,12 +2,11 @@ package sessioncatalog
 
 import (
 	"context"
-	"database/sql"
 	"strings"
 )
 
 func (c *Catalog) ListTopics(ctx context.Context, req TopicPageRequest) (TopicPage, error) {
-	out := TopicPage{Items: []TopicRecord{}, Revision: c.revision.Load()}
+	out := TopicPage{Items: []TopicRecord{}, Revision: c.readRevision(ctx)}
 	req.Scope, req.WorkspaceRoot = normalizeScope(req.Scope, req.WorkspaceRoot)
 	if req.Limit <= 0 {
 		req.Limit = DefaultLimit
@@ -22,21 +21,33 @@ func (c *Catalog) ListTopics(ctx context.Context, req TopicPageRequest) (TopicPa
 	if cursor != nil && cursor.ManualOrder != req.ManualOrder {
 		return out, errCursorSortModeChanged
 	}
-	args := []any{req.Scope, req.WorkspaceRoot}
-	where := `scope=? AND workspace_root=?`
+	if cursor != nil && cursor.Binding != req.CursorBinding {
+		return out, errCursorSortModeChanged
+	}
+	rootKey := c.workspaceRootKey(req.Scope, req.WorkspaceRoot)
+	args := []any{req.Scope, rootKey}
+	where := `scope=? AND workspace_root_key=?`
+	if req.PinnedOnly {
+		where += ` AND pinned=1`
+	}
 	if query := strings.TrimSpace(req.Query); query != "" {
 		where += ` AND lower(title) LIKE ?`
 		args = append(args, "%"+strings.ToLower(query)+"%")
 	}
-	if cutoff := timeFilterCutoff(req.TimeFilter, c.opts.Now()); cutoff > 0 {
+	if cutoff := timeFilterCutoff(req.TimeFilter, c.readTime(ctx)); cutoff > 0 {
 		where += ` AND last_activity_at>=?`
 		args = append(args, cutoff)
 	}
+	where += ` AND (?='' OR topic_id IN (SELECT value FROM json_each(COALESCE(NULLIF(?,''),'[]'))))` +
+		` AND (?='' OR topic_id NOT IN (SELECT value FROM json_each(COALESCE(NULLIF(?,''),'[]'))))` +
+		` AND (?=0 OR pinned=0)`
+	args = append(args, req.IncludeTopicIDsJSON, req.IncludeTopicIDsJSON,
+		req.ExcludeTopicIDsJSON, req.ExcludeTopicIDsJSON, req.ExcludePinned)
 	scanCursor := cursor
 	scanLimit := max(req.Limit+1, 64)
 	for len(out.Items) <= req.Limit {
 		query, pageArgs := topicPageQuery(req, where, args, scanCursor, scanLimit)
-		rows, queryErr := c.db.QueryContext(ctx, query, pageArgs...)
+		rows, queryErr := c.readDB(ctx).QueryContext(ctx, query, pageArgs...)
 		if queryErr != nil {
 			return out, queryErr
 		}
@@ -47,9 +58,9 @@ func (c *Catalog) ListTopics(ctx context.Context, req TopicPageRequest) (TopicPa
 		rawCount := len(scanned)
 		overflow := false
 		for _, item := range scanned {
-			sessions, listErr := c.listTopicSessions(ctx, TopicKey{
+			sessions, listErr := c.listTopicSessionsByRootKey(ctx, TopicKey{
 				Scope: item.Scope, WorkspaceRoot: item.WorkspaceRoot, TopicID: item.TopicID,
-			})
+			}, rootKey)
 			if listErr != nil {
 				return TopicPage{Items: []TopicRecord{}, Revision: out.Revision}, listErr
 			}
@@ -122,7 +133,12 @@ func topicPageQuery(req TopicPageRequest, where string, args []any, cursor *page
 		FROM catalog_topics WHERE ` + where + ` ORDER BY ` + orderBy + ` LIMIT ?`, pageArgs
 }
 
-func scanTopicRows(rows *sql.Rows, capacity int) ([]TopicRecord, error) {
+func scanTopicRows(rows interface {
+	Next() bool
+	Scan(...any) error
+	Err() error
+	Close() error
+}, capacity int) ([]TopicRecord, error) {
 	defer rows.Close()
 	// Drain before hydrating sessions: the nested read needs another connection
 	// and an open cursor deadlocks when the in-memory pool is saturated.
@@ -152,5 +168,6 @@ func cursorForTopic(topic TopicRecord, req TopicPageRequest) *pageCursor {
 		Pinned: pinned, ManualOrder: req.ManualOrder,
 		SortOrder: topicPageManualSortValue(topic),
 		Activity:  topicPageSortValue(topic, req.SortMode), TopicID: topic.TopicID,
+		Binding: req.CursorBinding,
 	}
 }

@@ -1,9 +1,10 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, Clipboard, Loader2, RefreshCw } from "lucide-react";
 import { app } from "../lib/bridge";
 import { asArray } from "../lib/array";
 import { useI18n, useT, type Locale } from "../lib/i18n";
-import type { CapabilityDiagnosticsReport, CapabilityIssue, RuntimeDoctorReport, SettingsTab } from "../lib/types";
+import type { CapabilityDiagnosticsReport, CapabilityIssue, CredentialDiagnosticReport, RuntimeDoctorReport, SettingsTab } from "../lib/types";
 import { FrontendDiagnosticsControl } from "./FrontendDiagnosticsControl";
 
 const FRONTEND_COPY: Record<Locale, { title: string; hint: string }> = {
@@ -21,6 +22,12 @@ const FRONTEND_COPY: Record<Locale, { title: string; hint: string }> = {
   },
 };
 
+const CREDENTIAL_COPY: Record<Locale, { title: string; probe: string; preview: string; repair: string }> = {
+  en: { title: "Credential diagnostics", probe: "Check write access", preview: "Preview repair", repair: "Repair credential access" },
+  zh: { title: "凭据诊断", probe: "检查写入能力", preview: "预览修复", repair: "修复凭据访问" },
+  "zh-TW": { title: "憑據診斷", probe: "檢查寫入能力", preview: "預覽修復", repair: "修復憑據存取" },
+};
+
 export function DiagnosticsSettingsPage({
   onNavigate,
 }: {
@@ -29,8 +36,11 @@ export function DiagnosticsSettingsPage({
   const t = useT();
   const { locale } = useI18n();
   const frontendCopy = FRONTEND_COPY[locale];
+  const credentialCopy = CREDENTIAL_COPY[locale];
   const [report, setReport] = useState<CapabilityDiagnosticsReport | null>(null);
   const [runtimeDoctor, setRuntimeDoctor] = useState<RuntimeDoctorReport | null>(null);
+  const [credentialReport, setCredentialReport] = useState<CredentialDiagnosticReport | null>(null);
+  const [credentialBusy, setCredentialBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [includeRuntime, setIncludeRuntime] = useState(false);
@@ -64,6 +74,11 @@ export function DiagnosticsSettingsPage({
       if (seq !== loadSeq.current) return;
       setReport(next);
       setRuntimeDoctor(doctor);
+      try {
+        setCredentialReport(await app.CredentialDiagnostics(false));
+      } catch {
+        setCredentialReport(null);
+      }
     } catch (err) {
       if (seq !== loadSeq.current) return;
       setError(err instanceof Error ? err.message : String(err));
@@ -102,6 +117,18 @@ export function DiagnosticsSettingsPage({
 
   const toggle = (key: string) => setOpen((prev) => ({ ...prev, [key]: !prev[key] }));
 
+  const runCredentialAction = async (kind: "probe" | "preview" | "repair") => {
+    setCredentialBusy(true);
+    setError(null);
+    try {
+      setCredentialReport(kind === "probe" ? await app.CredentialDiagnostics(true) : await app.RepairCredentials(kind === "preview"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCredentialBusy(false);
+    }
+  };
+
   const goSettings = (tab?: string) => {
     if (!tab || !onNavigate) return;
     const allowed: SettingsTab[] = ["mcp", "skills", "plugins", "hooks"];
@@ -112,7 +139,7 @@ export function DiagnosticsSettingsPage({
 
   return (
     <div className="diag-page">
-      <div className="diag-page__toolbar">
+      <div className="diag-page__toolbar settings-toolbar">
         <label className="diag-page__runtime">
           <input
             type="checkbox"
@@ -135,6 +162,27 @@ export function DiagnosticsSettingsPage({
 
       <p className="diag-page__hint">{t("diag.hint")}</p>
 
+      <section className="diag-section" data-testid="credential-diagnostics-settings">
+        <div className="diag-section__header">
+          <span>{credentialCopy.title}</span>
+        </div>
+        <div className="diag-section__body">
+          <p className="diag-path">{credentialReport?.credentialPath}</p>
+          {(credentialReport?.checks ?? []).map((check) => (
+            <div key={check.id} className={`diag-issue diag-issue--${check.status === "failed" ? "error" : "info"}`}>
+              <header><code>{check.id}</code><span>{check.status}</span></header>
+              {check.message && <p className="diag-issue__msg">{check.status === "failed" ? <ErrorMessage error={check.message} /> : check.message}</p>}
+            </div>
+          ))}
+          {(credentialReport?.actions ?? []).map((action) => <p key={action} className="diag-issue__fix">{action}</p>)}
+          <div className="diag-page__actions">
+            <button type="button" className="btn btn--ghost" disabled={credentialBusy} onClick={() => void runCredentialAction("probe")}>{credentialCopy.probe}</button>
+            <button type="button" className="btn btn--ghost" disabled={credentialBusy} onClick={() => void runCredentialAction("preview")}>{credentialCopy.preview}</button>
+            <button type="button" className="btn btn--secondary" disabled={credentialBusy} onClick={() => void runCredentialAction("repair")}>{credentialCopy.repair}</button>
+          </div>
+        </div>
+      </section>
+
       <section className="diag-section diag-section--frontend" data-testid="frontend-diagnostics-settings">
         <div className="diag-section__body diag-section__body--frontend">
           <div className="diag-frontend-recording__copy">
@@ -146,7 +194,7 @@ export function DiagnosticsSettingsPage({
       </section>
 
       {loading && !report && <div className="empty">{t("settings.loading")}</div>}
-      {error && <div className="settings-error" role="alert">{error}</div>}
+      {error && <div className="settings-error" role="alert"><ErrorMessage error={error} /></div>}
 
       {report && (
         <>
@@ -208,6 +256,17 @@ export function DiagnosticsSettingsPage({
                   <pre className="diag-path" style={{ whiteSpace: "pre-wrap", marginTop: 8 }}>
                     {runtimeDoctor.text}
                   </pre>
+                  {runtimeDoctor.skillWatch && (
+                    <div className="diag-summary" data-testid="skill-watch-diagnostics">
+                      <div className="diag-summary__item"><strong>{runtimeDoctor.skillWatch.physicalWatches}</strong><span>physical watches</span></div>
+                      <div className="diag-summary__item"><strong>{runtimeDoctor.skillWatch.logicalSubscriptions}</strong><span>subscriptions</span></div>
+                      <div className="diag-summary__item"><strong>{runtimeDoctor.skillWatch.scans}</strong><span>fallback scans</span></div>
+                      <div className="diag-summary__item"><strong>{runtimeDoctor.skillWatch.degradedRoots}</strong><span>degraded roots</span></div>
+                      <div className="diag-summary__meta">
+                        <span>entries={runtimeDoctor.skillWatch.scannedEntries} events={runtimeDoctor.skillWatch.eventsReceived} notifications={runtimeDoctor.skillWatch.notifications} helperRestarts={runtimeDoctor.skillWatch.helperRestarts}</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </section>
@@ -231,7 +290,7 @@ export function DiagnosticsSettingsPage({
                             <code>{issue.code}</code>
                             {issue.name ? <span className="diag-issue__name">{issue.name}</span> : null}
                           </header>
-                          <p className="diag-issue__msg">{issue.message}</p>
+                          <p className="diag-issue__msg"><ErrorMessage error={issue.message} /></p>
                           {issue.source ? <p className="diag-path">{issue.source}</p> : null}
                           {issue.remediation ? <p className="diag-issue__fix">{issue.remediation}</p> : null}
                           {issue.settings_tab && onNavigate ? (

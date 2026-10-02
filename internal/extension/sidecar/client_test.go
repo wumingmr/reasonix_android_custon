@@ -293,10 +293,21 @@ func TestShutdownBounded(t *testing.T) {
 // calls fail fast with provider_interrupted.
 func TestCrashFailsPendingAndFastAfter(t *testing.T) {
 	var crashes atomic.Int32
+	releaseCrash := make(chan struct{})
+	defer func() {
+		select {
+		case <-releaseCrash:
+		default:
+			close(releaseCrash)
+		}
+	}()
 	client := startFakeClient(t, func(rt *pluginpkg.RuntimeSpec) {
 		rt.Env[fakeEnvMode] = "stall_intercept"
 	}, func(opts *ClientOptions) {
-		opts.OnCrash = func(error) { crashes.Add(1) }
+		opts.OnCrash = func(error) {
+			<-releaseCrash
+			crashes.Add(1)
+		}
 	})
 
 	pending := make(chan error, 1)
@@ -321,6 +332,17 @@ func TestCrashFailsPendingAndFastAfter(t *testing.T) {
 	}
 	waitFor(t, "crash detection", 5*time.Second, client.Crashed)
 	waitFor(t, "process reaping", 5*time.Second, client.Exited)
+	// Detection and reaping precede callback completion. Force that ordering
+	// rather than relying on the supervisor winning a scheduler race.
+	if got := crashes.Load(); got != 0 {
+		t.Fatalf("OnCrash completed before release: %d", got)
+	}
+	close(releaseCrash)
+	select {
+	case <-client.serveExited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("crash supervisor did not finish its notification")
+	}
 	if got := crashes.Load(); got != 1 {
 		t.Fatalf("OnCrash fired %d times, want exactly 1", got)
 	}

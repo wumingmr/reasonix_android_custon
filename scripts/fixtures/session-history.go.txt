@@ -1,0 +1,83 @@
+// Compiled inside each historical tag, never against the current module.
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "os"
+    "path/filepath"
+    "strings"
+    "reasonix/internal/agent"
+    "reasonix/internal/provider"
+    // CANONICAL_IMPORT
+)
+
+func must(err error) { if err != nil { panic(err) } }
+func body(value any) []byte { b, err := json.Marshal(value); must(err); return b }
+func save(path string, value any) { must(os.WriteFile(path, append(body(value), '\n'), 0600)) }
+
+func main() {
+    // CONTINUE_CALL
+    output := os.Args[1]
+    messages := []provider.Message{
+        {ID:"system", Role:provider.RoleSystem, Content:"Synthetic historical system prompt"},
+        {ID:"question", Role:provider.RoleUser, Content:"中文历史问题 # %20", Images:[]string{"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="}},
+        {ID:"call", Role:provider.RoleAssistant, Content:"Inspecting file", ReasoningContent:"Synthetic reasoning", ReasoningSignature:"synthetic-signature", ToolCalls:[]provider.ToolCall{{ID:"call-original",Name:"read_file",Arguments:`{"path":"中文 # %.txt"}`}}},
+        {ID:"result",Role:provider.RoleTool,ToolCallID:"call-original",Name:"read_file",Content:strings.Repeat("large persisted tool result 中文\n",2048)},
+        {ID:"answer",Role:provider.RoleAssistant,Content:"Historical final answer"},
+    }
+    for n:=0;n<70;n++ {
+        messages=append(messages,provider.Message{ID:fmt.Sprintf("u-%d",n),Role:provider.RoleUser,Content:fmt.Sprintf("Question %d",n)},provider.Message{ID:fmt.Sprintf("a-%d",n),Role:provider.RoleAssistant,Content:fmt.Sprintf("Answer %d",n)})
+    }
+    legacy := filepath.Join(output,"legacy")
+    must(os.MkdirAll(legacy,0700))
+    for _,name:=range []string{"complete","branch","interrupted"} {
+        s:=agent.NewSession("")
+        selected:=messages
+        if name=="branch" { selected=append(append([]provider.Message{},messages[:5]...),provider.Message{ID:"branch-question",Role:provider.RoleUser,Content:"Independent branch work"}) }
+        for _,m:=range selected {s.Add(m)}
+        if name=="interrupted" {s.Add(provider.Message{ID:"partial",Role:provider.RoleAssistant,Content:"Partial visible response",LocalOnly:true})}
+        path:=filepath.Join(legacy,name+".jsonl")
+        must(s.Save(path))
+        metadata:=agent.BranchMeta{ID:name,Scope:"global",TopicID:"topic-"+name,TopicTitle:"Historical "+name,CustomTitle:"User title "+name,Model:"fixture/model",ToolApprovalMode:"ask",Goal:"Retained goal"}
+        if name=="branch" { metadata.ParentID="complete";metadata.ForkTurn=1 }
+        must(agent.SaveBranchMeta(path,metadata))
+        loaded,err:=agent.LoadSession(path);must(err)
+        save(filepath.Join(output,name+"-expected.json"),loaded.Snapshot())
+    }
+    // CANONICAL_CALL
+}
+
+// CANONICAL_START
+func continueCanonical(directory, id string) {
+    ctx:=context.Background()
+    service,err:=session.NewService("desktop",session.NewFilesystemPersistence(filepath.Dir(directory)));must(err)
+    ref:=session.SessionRef{HostID:"desktop",SessionID:id}
+    snapshot,err:=service.Query().Snapshot(ctx,ref)
+    if errors.Is(err,session.ErrUnsupportedVersion) {fmt.Println(`{"status":"unsupported_version"}`);return};must(err)
+    // The old public query replays the history; a cold runtime's snapshot can
+    // deliberately omit history until hydration and is not a read result.
+    if len(snapshot.Projection.Messages)==0 {panic("new-version history was not readable")}
+    binding,err:=service.Open(ctx,ref);must(err)
+    _,err=binding.Runtime().Session().Append(ctx,session.Batch{OperationID:"continued-in-old-version",Events:[]session.Event{{Kind:"message/complete",Payload:body(map[string]any{"message":provider.Message{ID:"old-version-user",Role:provider.RoleUser,Content:"Continued in the actual old writer"}})}}});must(err)
+    must(binding.Release(ctx));must(service.Close(ctx,ref))
+    fmt.Println(`{"status":"continued"}`)
+}
+
+func writeCanonical(output string, messages []provider.Message) {
+    ctx:=context.Background()
+    for _,name:=range []string{"complete","compacted","interrupted"} {
+        id:="canonical-"+name
+        writer,err:=session.CreateStore(filepath.Join(output,"canonical",id),id);must(err)
+        events:=[]session.Event{{Kind:"turn/start"}}
+        for _,message:=range messages {events=append(events,session.Event{Kind:"message/complete",Payload:body(map[string]any{"message":message})})}
+        events=append(events,session.Event{Kind:"goal/state",Payload:json.RawMessage(`{"goal":"Retained canonical goal","status":"paused","futureGoal":{"keep":true}}`)})
+        if name=="compacted" {events=append(events,session.Event{Kind:"compaction",Payload:body(map[string]any{"messages":[]provider.Message{{ID:"summary",Role:provider.RoleSystem,Content:"Persisted compaction summary"}},"trigger":"manual"})})}
+        if name!="interrupted" {events=append(events,session.Event{Kind:"turn/end",Payload:json.RawMessage(`{"status":"completed"}`)})}
+        _,err=writer.Append(ctx,session.Batch{OperationID:"historical-operation",TurnID:"historical-turn",Events:events});must(err)
+        must(writer.Close(ctx))
+    }
+    save(filepath.Join(output,"canonical-expected.json"),messages)
+    // FORMAL_CALL
+}
+// CANONICAL_END

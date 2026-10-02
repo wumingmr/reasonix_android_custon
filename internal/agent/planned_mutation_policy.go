@@ -7,7 +7,7 @@ import (
 )
 
 // applyExecutionPreflight classifies the resolved call and applies the
-// monotonic guard pipeline before recovery, Auto Guard, and permission.
+// remaining runtime policy before the ordinary permission decision.
 func (a *Agent) applyExecutionPreflight(_ *turnRuntime, plan *toolCallPlan) (toolOutcome, bool) {
 	plan.classifyEffects()
 	decision := a.pipelineDecision(plan)

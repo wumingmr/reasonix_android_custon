@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
 	"flag"
 	"fmt"
 	"os"
@@ -11,7 +12,10 @@ import (
 	"reasonix/internal/boot"
 	"reasonix/internal/config"
 	"reasonix/internal/event"
+	"reasonix/internal/gitcmd"
+	"reasonix/internal/hook"
 	"reasonix/internal/sandbox"
+	"reasonix/internal/secrets"
 	"reasonix/internal/skill"
 	"reasonix/internal/tool"
 	"reasonix/internal/tool/builtin"
@@ -70,9 +74,10 @@ func reviewCommand(args []string) int {
 		return 1
 	}
 
-	// 4. Get the built-in review skill.
+	// 4. Get the review skill. The checkout under review is untrusted, so the
+	// store has no project scope: only built-in and user-level skills resolve.
 	root, _ := os.Getwd()
-	skillStore := skill.New(skill.Options{ProjectRoot: root, Stderr: os.Stderr})
+	skillStore := skill.New(skill.Options{Stderr: os.Stderr})
 	reviewSk, ok := skillStore.Read("review")
 	if !ok {
 		fmt.Fprintln(os.Stderr, "error: built-in review skill not found")
@@ -83,8 +88,10 @@ func reviewCommand(args []string) int {
 		return 1
 	}
 
-	// 5. Build a review-scoped sub-agent registry.
-	reg := buildReviewSubagentRegistry(reviewSk, cfg, root)
+	// 5. Build a review-scoped sub-agent registry from the user's own config:
+	// the checkout's reasonix.toml may not choose a binary or a sandbox here.
+	secrets.RegisterCredentialEnvKeys(cfg.CredentialEnvNames())
+	reg := buildReviewSubagentRegistry(reviewSk, reviewToolConfig(), root)
 
 	// 6. Prepare the review prompt.
 	task := buildReviewTask(diff, *instructions)
@@ -98,6 +105,7 @@ func reviewCommand(args []string) int {
 	// whether this path needs it too.
 	result, err := agent.RunReadOnlySubAgentWithSession(ctx, prov, reg, agent.NewSession(reviewSk.Body), task, agent.Options{
 		MaxSteps:      12,
+		Hooks:         reviewHookRunner(root),
 		Temperature:   cfg.Agent.Temperature,
 		Pricing:       entry.Price,
 		ContextWindow: entry.ContextWindow,
@@ -155,6 +163,15 @@ func buildReviewSubagentRegistry(reviewSk skill.Skill, cfg *config.Config, root 
 	return agent.SubagentToolRegistry(parentReg, reviewSk.AllowedTools)
 }
 
+func reviewToolConfig() *config.Config {
+	userCfg, err := config.LoadUserConfigReadOnly()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: review tools use built-in defaults:", err)
+		return config.Default()
+	}
+	return userCfg
+}
+
 // getReviewDiff runs the appropriate git diff command and returns its output.
 // - commit="abc": shows diff of abc^..abc
 // - base="main": shows diff of main...HEAD
@@ -162,20 +179,25 @@ func buildReviewSubagentRegistry(reviewSk skill.Skill, cfg *config.Config, root 
 func getReviewDiff(base, commit string) (string, error) {
 	cwd, _ := os.Getwd()
 	ctx := context.Background()
+	// Resolved before the review agent runs, and only once.
+	repo, err := gitcmd.Open(ctx, cwd)
+	if err != nil {
+		return "", err
+	}
 	switch {
 	case commit != "":
-		return runGit(ctx, cwd, "diff", commit+"^.."+commit)
+		return runGit(ctx, repo, "diff", commit+"^.."+commit)
 	case base != "":
-		return runGit(ctx, cwd, "diff", base+"...HEAD")
+		return runGit(ctx, repo, "diff", base+"...HEAD")
 	default:
 		// Working tree changes: staged + unstaged.
-		out, err := runGit(ctx, cwd, "diff", "HEAD")
+		out, err := runGit(ctx, repo, "diff", "HEAD")
 		if err != nil {
 			return "", err
 		}
 		if out == "" {
 			// No working-tree changes; check for staged-only.
-			out, err = runGit(ctx, cwd, "diff", "--cached")
+			out, err = runGit(ctx, repo, "diff", "--cached")
 		}
 		return out, err
 	}
@@ -202,3 +224,22 @@ func buildReviewTask(diff string, extra string) string {
 	}
 	return b.String()
 }
+
+// reviewHookRunner takes hooks and their shell from user-level sources only: a
+// review usually runs in a checkout under review, and neither its
+// .reasonix/settings.json nor its reasonix.toml may choose a process this host
+// executes, not even by a bare command name resolving against the checkout
+// cwd. Each run is its own hook session.
+func reviewHookRunner(root string) *hook.Runner {
+	userCfg, err := config.LoadUserConfigReadOnly()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: review hooks use the default shell:", err)
+		userCfg = config.Default()
+	}
+	load := hook.LoadOptions{ProjectRoot: root, SkipProject: true}
+	return newCommandHookRunner(userCfg.Tools.Shell, load, os.Stderr).
+		WithoutCwdCommandSearch().
+		ForSession("review:" + rand.Text())
+}
+
+var newCommandHookRunner = boot.NewCommandHookRunner

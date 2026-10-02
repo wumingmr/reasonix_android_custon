@@ -1,0 +1,62 @@
+package agent
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
+
+// capabilityInputError distinguishes repairable envelope errors from target
+// availability and authorization failures without changing their error text.
+type capabilityInputError struct{ error }
+
+func (e *capabilityInputError) Unwrap() error { return e.error }
+func capabilityInputErrorf(format string, args ...any) error {
+	return &capabilityInputError{fmt.Errorf(format, args...)}
+}
+
+type useCapabilityArgs struct {
+	Action       string          `json:"action"`
+	CapabilityID string          `json:"capability_id"`
+	Query        string          `json:"query"`
+	Limit        int             `json:"limit"`
+	Cursor       string          `json:"cursor"`
+	Arguments    json.RawMessage `json:"arguments"`
+	Reason       string          `json:"reason"`
+}
+
+func parseUseCapabilityArgs(raw json.RawMessage) (useCapabilityArgs, string, string, error) {
+	var args useCapabilityArgs
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return args, "", "", fmt.Errorf("invalid args: %w", err)
+	}
+	action := strings.ToLower(strings.TrimSpace(args.Action))
+	id := strings.TrimSpace(args.CapabilityID)
+	if args.Limit < 0 || action == "search" && args.Limit > 8 || action == "list" && args.Limit > 100 {
+		return args, "", "", fmt.Errorf("limit must be 1..8 for search or 1..100 for list when provided")
+	}
+	if action == "call" && strings.HasPrefix(id, "mcp-tool:") {
+		normalized, err := normalizeMCPToolArguments(args.Arguments)
+		if err != nil {
+			return args, "", "", err
+		}
+		args.Arguments = normalized
+	}
+	return args, action, id, nil
+}
+
+// normalizeMCPToolArguments accepts only an object. It deliberately does not
+// unwrap JSON strings, rename fields, coerce values, or guess enums: schema
+// mistakes must produce one precise repair contract instead of hidden behavior
+// that differs between direct and proxied MCP calls.
+func normalizeMCPToolArguments(raw json.RawMessage) (json.RawMessage, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return json.RawMessage(`{}`), nil
+	}
+	var object map[string]any
+	if !strings.HasPrefix(trimmed, "{") || json.Unmarshal([]byte(trimmed), &object) != nil || object == nil {
+		return nil, fmt.Errorf("arguments for an MCP tool must be a JSON object; arrays, scalars, malformed JSON, and nested JSON strings are not supported")
+	}
+	return json.RawMessage(append([]byte(nil), trimmed...)), nil
+}

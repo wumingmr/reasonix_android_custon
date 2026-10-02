@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -26,11 +25,13 @@ type gitStatus struct {
 	Untracked int
 }
 
-func fetchGitStatus() tea.Cmd {
+// fetchGitStatus reads the status line through repo, the identity the session
+// resolved when it opened.
+func fetchGitStatus(repo gitcmd.Repo) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), gitStatusTimeout)
 		defer cancel()
-		status, err := loadGitStatus(ctx, "")
+		status, err := loadGitStatus(ctx, repo)
 		if err != nil {
 			return gitStatusMsg{}
 		}
@@ -38,23 +39,23 @@ func fetchGitStatus() tea.Cmd {
 	}
 }
 
-func loadGitStatus(ctx context.Context, cwd string) (gitStatus, error) {
-	root, err := runGit(ctx, cwd, "rev-parse", "--show-toplevel")
-	if err != nil {
-		return gitStatus{}, err
-	}
-	root = strings.TrimSpace(root)
-	if root == "" {
-		return gitStatus{}, errors.New("empty git root")
-	}
+func loadGitStatus(ctx context.Context, repo gitcmd.Repo) (gitStatus, error) {
+	return loadGitStatusWithRunner(ctx, repo, runGit)
+}
 
-	status := gitStatus{Repo: filepath.Base(root)}
-	if branch, err := runGit(ctx, root, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil && strings.TrimSpace(branch) != "" {
+func loadGitStatusWithRunner(ctx context.Context, repo gitcmd.Repo, run func(context.Context, gitcmd.Repo, ...string) (string, error)) (gitStatus, error) {
+	if !repo.Valid() {
+		return gitStatus{}, gitcmd.ErrNotRepository
+	}
+	root := repo.Top()
+
+	status := gitStatus{Repo: filepath.Base(root.WorkTree)}
+	if branch, err := run(ctx, root, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil && strings.TrimSpace(branch) != "" {
 		status.Branch = strings.TrimSpace(branch)
-	} else if sha, err := runGit(ctx, root, "rev-parse", "--short", "HEAD"); err == nil && strings.TrimSpace(sha) != "" {
+	} else if sha, err := run(ctx, root, "rev-parse", "--short", "HEAD"); err == nil && strings.TrimSpace(sha) != "" {
 		status.Branch = strings.TrimSpace(sha)
 		status.Detached = true
-	} else if ref, err := runGit(ctx, root, "symbolic-ref", "--short", "HEAD"); err == nil && strings.TrimSpace(ref) != "" {
+	} else if ref, err := run(ctx, root, "symbolic-ref", "--short", "HEAD"); err == nil && strings.TrimSpace(ref) != "" {
 		status.Branch = strings.TrimSpace(ref)
 	}
 	if status.Branch == "" {
@@ -62,20 +63,20 @@ func loadGitStatus(ctx context.Context, cwd string) (gitStatus, error) {
 		status.Detached = true
 	}
 
-	if out, err := runGit(ctx, root, "diff", "--numstat", "HEAD", "--"); err == nil {
+	if out, err := run(ctx, root, "diff", "--numstat", "HEAD", "--"); err == nil {
 		status.Added, status.Removed = parseGitNumstat(out)
 	}
-	if out, err := runGit(ctx, root, "status", "--porcelain=v1", "--untracked-files=normal"); err == nil {
+	if out, err := run(ctx, root, "status", "--porcelain=v1", "--untracked-files=normal"); err == nil {
 		status.Untracked = countUntracked(out)
+	}
+	if err := ctx.Err(); err != nil {
+		return gitStatus{}, err
 	}
 	return status, nil
 }
 
-func runGit(ctx context.Context, cwd string, args ...string) (string, error) {
-	cmd := gitcmd.Command(ctx, "", args...)
-	if cwd != "" {
-		cmd.Dir = cwd
-	}
+func runGit(ctx context.Context, repo gitcmd.Repo, args ...string) (string, error) {
+	cmd := repo.Command(ctx, args...)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err

@@ -1,3 +1,5 @@
+import { sameSessionIdentity, sessionIdentityStableKey, type SessionIdentity } from "./sessionIdentity";
+
 /** Live-turn markers that a lagging history snapshot must not replace. */
 export type HydrateLiveState = {
   running?: boolean;
@@ -19,61 +21,9 @@ export type HydrateProjection = {
   digest?: string;
 };
 
-export type SessionHydrateIdentity = {
-  sessionPath?: string;
-  sessionGeneration?: number;
-};
+export type SessionHydrateIdentity = SessionIdentity;
 
 export type HydrateSurfacePolicy = "preserve-current" | "replace-surface";
-
-type ActiveTabHydrationTarget = SessionHydrateIdentity & {
-  sessionRevision?: number;
-  sessionDigest?: string;
-};
-
-export type ActiveTabHydrationLoadOptions = ActiveTabHydrationTarget & {
-  preserveCachedHistory: boolean;
-  surfacePolicy?: HydrateSurfacePolicy;
-};
-
-export function activeTabHydrationPlan(
-  target: ActiveTabHydrationTarget,
-  current: SessionHydrateIdentity | undefined,
-  reset: boolean,
-  requestedPolicy?: HydrateSurfacePolicy,
-  requestedCache?: boolean,
-): {
-  sameSession: boolean;
-  surfacePolicy: HydrateSurfacePolicy;
-  loadOptions: ActiveTabHydrationLoadOptions;
-} {
-  const sameSession = sameSessionHydrateIdentity(target, current);
-  const surfacePolicy = requestedPolicy ?? (sameSession ? "preserve-current" : "replace-surface");
-  if (surfacePolicy === "replace-surface") {
-    return {
-      sameSession,
-      surfacePolicy,
-      loadOptions: {
-        preserveCachedHistory: false,
-        surfacePolicy,
-        sessionPath: target.sessionPath,
-        sessionRevision: target.sessionRevision,
-        sessionDigest: target.sessionDigest,
-        sessionGeneration: target.sessionGeneration,
-      },
-    };
-  }
-  return {
-    sameSession,
-    surfacePolicy,
-    loadOptions: {
-      preserveCachedHistory: sameSession && (requestedCache ?? !reset),
-      sessionPath: target.sessionPath,
-      sessionRevision: target.sessionRevision,
-      sessionDigest: target.sessionDigest,
-    },
-  };
-}
 
 type UnboundLiveSurfaceState = HydrateLiveState & {
   hydrateHistoryLoaded?: boolean;
@@ -84,15 +34,7 @@ export function sameSessionHydrateIdentity(
   target: SessionHydrateIdentity | undefined,
   current: SessionHydrateIdentity | undefined,
 ): boolean {
-  const targetPath = (target?.sessionPath ?? "").trim();
-  const currentPath = (current?.sessionPath ?? "").trim();
-  if (!targetPath || !currentPath || targetPath !== currentPath) return false;
-  if (
-    target?.sessionGeneration !== undefined &&
-    current?.sessionGeneration !== undefined &&
-    target.sessionGeneration !== current.sessionGeneration
-  ) return false;
-  return true;
+  return sameSessionIdentity(target, current);
 }
 
 /**
@@ -110,8 +52,7 @@ export function canAdoptUnboundLiveSurface(
   currentRuntimeEpoch?: string,
 ): boolean {
   if (!backendRunning || !state) return false;
-  if (!(target?.sessionPath ?? "").trim()) return false;
-  if ((current?.sessionPath ?? "").trim()) return false;
+  if (!sessionIdentityStableKey(target) || sessionIdentityStableKey(current)) return false;
   if (state.hydrateHistoryLoaded || (state.historyTotalTurns ?? 0) > 0) return false;
   if (state.historyRevision !== undefined || (state.historyDigest ?? "").trim()) return false;
   if (!state.running && !state.turnActive) return false;
@@ -164,14 +105,12 @@ export function hasCachedLiveTurn(state: HydrateLiveState | undefined): boolean 
 
 export function hasReusableCachedTranscript(
   state: (HydrateLiveState & { meta?: SessionHydrateIdentity }) | undefined,
-  sessionPath?: string,
+  target: SessionHydrateIdentity,
   revision?: number,
   digest?: string,
 ): boolean {
   if (!state || state.items.length === 0 || state.historyTotalTurns === 0) return false;
-  const expectedSessionPath = (sessionPath ?? "").trim();
-  if (!expectedSessionPath) return true;
-  if ((state.meta?.sessionPath ?? "").trim() !== expectedSessionPath) return false;
+  if (sessionIdentityStableKey(target) && !sameSessionHydrateIdentity(target, state.meta)) return false;
   if (typeof revision === "number" && revision > 0) {
     return state.historyRevision === revision && (digest ?? "") === (state.historyDigest ?? "");
   }
@@ -203,6 +142,7 @@ export function hydratedHistoryApplyMode(
 type SignatureItem = {
   kind: string;
   id: string;
+  messageId?: string;
   text?: string;
   reasoning?: string;
   name?: string;
@@ -229,6 +169,14 @@ export function duplicateLiveItemIds(
   pageItems: readonly SignatureItem[],
   liveItems: readonly SignatureItem[],
 ): string[] {
+  // Stable backend identities are independent of where a page cuts the live
+  // turn. In particular page [A,B,C] already covers live [A,B]. Content equality
+  // cannot establish this relation: two messages may intentionally be equal.
+  const identity = (item: SignatureItem) => item.messageId ? `m:${item.messageId}` : item.id;
+  const isIdentified = (item: SignatureItem) => !!item.messageId || item.id.startsWith("m:");
+  const canonicalIds = new Set(pageItems.filter((item) => isIdentified(item) || item.kind === "tool").map(identity));
+  const identified = liveItems.filter((item) => canonicalIds.has(identity(item))).map((item) => item.id);
+  if (pageItems.some(isIdentified) || liveItems.some(isIdentified)) return identified;
   for (let k = Math.min(pageItems.length, liveItems.length); k > 0; k -= 1) {
     let same = true;
     for (let i = 0; i < k && same; i += 1) {

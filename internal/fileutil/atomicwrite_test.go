@@ -232,6 +232,15 @@ func TestAtomicWriteFileDoesNotRequireParentDirSync(t *testing.T) {
 }
 
 func TestAtomicWriteFileStrictCrossDeviceKeepsExistingDestination(t *testing.T) {
+	testStrictCrossDeviceKeepsExistingDestination(t, AtomicWriteFileStrict)
+}
+
+func TestAtomicOverwriteFileStrictCrossDeviceKeepsExistingDestination(t *testing.T) {
+	testStrictCrossDeviceKeepsExistingDestination(t, AtomicOverwriteFileStrict)
+}
+
+func testStrictCrossDeviceKeepsExistingDestination(t *testing.T, write func(string, []byte, os.FileMode) error) {
+	t.Helper()
 	oldRename := renameFile
 	renameFile = func(oldpath, newpath string) error {
 		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: syscall.EXDEV}
@@ -243,7 +252,7 @@ func TestAtomicWriteFileStrictCrossDeviceKeepsExistingDestination(t *testing.T) 
 	if err := os.WriteFile(dest, []byte("old-pointer"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := AtomicWriteFileStrict(dest, []byte("new-pointer"), 0o644); err == nil {
+	if err := write(dest, []byte("new-pointer"), 0o644); err == nil {
 		t.Fatal("strict atomic write accepted a cross-device rename")
 	}
 	if got, err := os.ReadFile(dest); err != nil || string(got) != "old-pointer" {

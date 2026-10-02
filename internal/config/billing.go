@@ -157,10 +157,14 @@ func (e *ProviderEntry) PricingContextForModel(model string) billing.PricingCont
 	if entry, ok := billing.MatchesCatalog(kind, model, card); ok {
 		ctx.CatalogSource = entry.DocURL
 	}
-	if kind == "deepseek" && scheduledProtocol && isOfficialDeepSeekBillingEndpoint(e) && ctx.BillingMode == billing.BillingModePAYG &&
-		billing.MatchesScheduleAnchor(kind, model, billing.ScheduleDeepSeekV4August2026, card) {
-		ctx.ScheduleID = billing.ScheduleDeepSeekV4August2026
-		ctx.CatalogSource = billing.DocDeepSeekPricing
+	if kind == "deepseek" && scheduledProtocol && isOfficialDeepSeekBillingEndpoint(e) && ctx.BillingMode == billing.BillingModePAYG {
+		// An anchor from an earlier price generation still proves an unedited
+		// official row, so binding the live schedule keeps such a config quoted at
+		// today's rate instead of the one it was saved with.
+		if billing.MatchesOfficialPeakAnchor(kind, model, card.Currency, ctx.BillingMode, card) {
+			ctx.ScheduleID = billing.DeepSeekScheduledIDs()[0]
+			ctx.CatalogSource = billing.DocDeepSeekPricing
+		}
 	}
 	return ctx
 }

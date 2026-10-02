@@ -47,17 +47,32 @@ const UNC_RE = new RegExp(
   "g",
 );
 
+// POSIX absolute paths. Claiming every absolute path would turn `/api/v1` or
+// `/usr/bin/env` inside prose into a file link, so a candidate must end in a
+// file extension and must start a token. The host still verifies it before it
+// becomes clickable, and an unverified one renders as its original text.
+const POSIX_RE = new RegExp(
+  String.raw`/(?:(?:\\[ \t])|[^\s<>"|?*:：${SENT_PUNCT}])*\.[A-Za-z0-9]{1,12}(?![A-Za-z0-9])`,
+  "g",
+);
+
 const DRIVE_PREFIX_RE = /[:/A-Za-z]/;
 const UNC_PREFIX_RE = /[\\/\w:；：，。、！？（）]/;
+// A scanned POSIX path must start a token: `a/b.png` is relative, and the `/y`
+// of `https://x/y` belongs to a URL.
+const POSIX_PREFIX_RE = /[A-Za-z0-9_./\\~:@%+-]/;
 // A file URL must start a URI-like token. Without this guard, the matcher can
 // start in the middle of `profile://...` or `http://file://...` and produce a
 // clickable suffix that was never a local path.
 const FILE_PREFIX_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./\\:+-?#&=";
 
-function hasValidPrefixBoundary(text: string, start: number, kind: "file" | "drive" | "unc"): boolean {
+type LocalPathKind = "file" | "drive" | "unc" | "posix";
+
+function hasValidPrefixBoundary(text: string, start: number, kind: LocalPathKind): boolean {
   if (start === 0) return true;
   const previous = text[start - 1];
   if (kind === "file") return !FILE_PREFIX_CHARS.includes(previous);
+  if (kind === "posix") return !POSIX_PREFIX_RE.test(previous);
   return kind === "drive" ? !DRIVE_PREFIX_RE.test(previous) : !UNC_PREFIX_RE.test(previous);
 }
 
@@ -85,6 +100,8 @@ export interface LocalPathSegment {
   text: string;
   /** When present, this segment is a clickable local path. */
   path?: string;
+  /** Recognition rule that produced the segment, for the renderer's policy. */
+  kind?: LocalPathKind;
 }
 
 /**
@@ -92,11 +109,12 @@ export interface LocalPathSegment {
  * Pure function — unit tests cover the full recognition matrix here.
  */
 export function linkifyLocalPaths(text: string): LocalPathSegment[] {
-  const matches: Array<{ start: number; end: number; raw: string; kind: "file" | "drive" | "unc" }> = [];
-  const patterns: Array<[RegExp, "file" | "drive" | "unc"]> = [
+  const matches: Array<{ start: number; end: number; raw: string; kind: LocalPathKind }> = [];
+  const patterns: Array<[RegExp, LocalPathKind]> = [
     [FILE_RE, "file"],
     [DRIVE_RE, "drive"],
     [UNC_RE, "unc"],
+    [POSIX_RE, "posix"],
   ];
   for (const [re, kind] of patterns) {
     re.lastIndex = 0;
@@ -140,7 +158,7 @@ export function linkifyLocalPaths(text: string): LocalPathSegment[] {
     const path = m.kind === "unc" ? "\\" + stripTrailingClosers(m.raw) : stripTrailingClosers(m.raw);
     const decodedPath = unescapeRefPath(path);
     if (path && !hasDisallowedWindowsPathSyntax(decodedPath)) {
-      segments.push({ text: m.raw, path: decodedPath });
+      segments.push({ text: m.raw, path: decodedPath, kind: m.kind });
     } else {
       segments.push({ text: m.raw });
     }
@@ -165,7 +183,11 @@ export function localPathHref(path: string): string {
       // Malformed escapes: keep the literal text rather than failing.
     }
   }
-  return "file:///" + encodeURI(path.replace(/\\/g, "/")).replace(/#/g, "%23");
+  const slash = path.replace(/\\/g, "/");
+  const encoded = encodeURI(slash).replace(/#/g, "%23");
+  // A POSIX path already starts with the separator the URL needs; adding
+  // another would turn `/tmp/a.svg` into the UNC-looking `//tmp/a.svg`.
+  return slash.startsWith("/") ? `file://${encoded}` : `file:///${encoded}`;
 }
 
 /**
@@ -196,6 +218,10 @@ export function remarkLocalPathLinks() {
                 url: localPathHref(seg.path),
                 title: null,
                 children: [{ type: "text", value: seg.text }],
+                // A scanned POSIX path is only a guess: the renderer keeps it
+                // as ordinary text unless the host confirms the file exists.
+                // Drive, UNC and file:// links keep their established behavior.
+                ...(seg.kind === "posix" ? { data: { hProperties: { "data-scanned-path": "posix" } } } : {}),
               }
             : { type: "text", value: seg.text },
         ),

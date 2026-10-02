@@ -1,43 +1,65 @@
 # Desktop agent notes
 
-## Transcript scroll discipline
+Desktop Go is a separate module; root Go tests do not cover it.
 
-The transcript (`frontend/src/components/Transcript.tsx`, react-virtuoso) has
-one structural rule set, earned across #8657/#8688 and the follow-up refactors.
-Keep to it when touching anything that can move the transcript viewport.
+For changes affecting transcript viewport, scrolling, loaded history, or
+delayed geometry work, read the
+[transcript scroll and history contract](../docs/TRANSCRIPT_SCROLL_CONTRACT.md)
+([中文](../docs/TRANSCRIPT_SCROLL_CONTRACT.zh-CN.md)).
+It preserves single-writer ownership, generation isolation, reader intent,
+bounded rendering, the bounded reading window, and deterministic regression
+requirements.
 
-- **Single writer**: only the scroll arbiter — `frontend/src/lib/useTranscriptScrollArbiter.ts`
-  and its extracted controllers (`transcriptTailSettle.ts`,
-  `transcriptAnchorCompensation.ts`) — may call
-  `virtuosoRef.current.scrollTo/scrollBy/scrollToIndex`, and raw
-  `scroller.scrollTop` assignments on transcript surfaces are equally
-  off-limits (route through the arbiter's `SCROLL_TO_OFFSET` channel, e.g.
-  owner `"anchor-compensation"` / `"block-window-prepend"`). Everything else
-  (jumps, tail-follow, selection edge scrolls, layout recovery) submits
-  requests to the arbiter. `frontend/scripts/check-single-scroll-writer.mjs`
-  enforces it statically; `lib/transcriptScrollProbe.ts` observes it at
-  runtime. Never add a second writer — extend the arbiter's reducer
-  (`lib/transcriptScrollArbiter.ts`) with an explicit transition instead.
-- **Preemption is explicit**: user intent (wheel/touch/key/pointer), selection,
-  and programmatic writers preempt an in-flight recovery through reducer
-  events that end it in a terminal state (done / cancelled / expired), each
-  reported to `noteTranscriptRecoveryTerminal`. No silent exits.
-- **Native geometry is authoritative**: Virtuoso's `atBottomStateChange` is a
-  delivery signal, not the bottom truth. Derive bottom ownership from the live
-  scroller's `scrollHeight - scrollTop - clientHeight`. Browser clamps may not
-  leave manual reading; only a delivered scroll with explicit reader intent
-  may re-enter tail-follow. Tail-follow persists across later measurements and
-  layout growth until explicit user intent releases it.
-- **No keyed remounts on content patches**: patches flow through `data` only;
-  Virtuoso re-measures mounted rows itself. Remounts happen only on surface
-  switches and blank-watchdog rebuilds, and restore from the measured-size
-  cache (`lib/transcriptMeasuredSizes.ts`) plus a state snapshot
-  (`lib/transcriptStateSnapshot.ts`) instead of static estimates.
-- **Deterministic clocks**: new scroll logic must go through the same
-  injectable patterns as the existing code (global `requestAnimationFrame`,
-  `Date.now`, `window.setTimeout`) so the fake-clock harness can drive it —
-  no `performance.now`-only budgets or ad-hoc timers.
-- **Race tests are mandatory**: any scroll-behavior change ships with a
-  deterministic case in `frontend/src/__tests__/transcript-recovery-race.test.tsx`
-  (JSDOM + fake rAF/clock harness, stubbed `VirtuosoHandle`). Run
-  `pnpm test:transcript` before committing transcript changes.
+Other Desktop work does not require the scroll-specific procedure.
+
+## Natural-flow chat
+
+The transcript uses ChatSource and ChatScrollController. It has one natural-flow
+implementation for local and remote sessions. Do not restore the retired
+window adapter, measurement ledger, geometry revision loop or logical selection.
+
+- Stable node keys derive from message/call identities, never array positions.
+  Streaming and settlement update the same assistant host; unchanged node and
+  order snapshots retain their references.
+- Business state remains in the controller/history owners. ChatSource is a
+  reconstructable view projection. Structural changes batch in microtasks;
+  existing controller frame batching owns stream publication.
+- Only frontend/src/lib/transcriptViewportWriter.ts writes the chat viewport.
+  ChatScrollController owns programmatic follow, reader anchoring and navigation.
+  Native input is never synthesized or prevented to keep the tail pinned.
+- A small upward reader movement releases follow even inside the 24px bottom
+  threshold. Prepend and resize preserve a stable node plus viewport offset.
+  Old observers, requests and callbacks cannot act on a replaced session.
+- Markdown, tables and loaded history use document flow. Parsing may be lazy,
+  but must not create a nested virtual vertical scroller. Collapsed
+  process/tool bodies are mounted on demand.
+- History is a bounded reading window, not an ever-growing list. The resident
+  store keeps a small number of adjacent pages (`windowMaxPages`, default 3 of
+  32-message pages) per session, including the active one: paging past that
+  reclaims a page from the end the reader is moving away from and re-fetches
+  it on demand. Nothing is deleted — the persisted session is authoritative —
+  and the reclaimed direction stays reachable through its cursor. Do not add a
+  path that holds every loaded page resident, and do not treat "all history is
+  mounted" as a correctness property; assert reachability and bounded
+  residency instead.
+- Paging is bidirectional. `loadOlder`/`loadNewer` reclaim from the opposite
+  end and hand the caller the ids to drop; a caller that ignores them will
+  render rows the store has already released. Window cursors pin a fixed
+  snapshot: appends keep them valid, a storage replacement answers
+  `stale_cursor`, and a cursor the server cannot read is that same typed
+  answer rather than a transport error.
+- History reads route by the tab's binding identity, never by the result of a
+  failed call: a local error must not be answered by a remote service holding
+  a different session. A remote service that never negotiated
+  `history-window-v1` answers with the typed `unsupported` status and keeps
+  its protocol-7 pages.
+- No geometry snapshots are stored in React state. Layout observers must
+  converge without a render/measurement feedback loop.
+- Native selection is browser-owned. No cross-window selection overlay or
+  clipboard interception belongs to the chat.
+- Keep draft input, approvals, questions, model controls and the session bridge
+  outside the presentation refactor. Do not change persisted/provider bytes.
+- Run pnpm test:transcript and the applicable browser suite. The primary cases
+  are small reader gestures, stream growth, prepend, disclosure, session change,
+  stale callbacks and unchanged-node render isolation. Do not weaken performance
+  gates to hide regressions.

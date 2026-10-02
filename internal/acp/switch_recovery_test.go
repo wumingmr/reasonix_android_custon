@@ -37,7 +37,7 @@ func divergedACPSession(t *testing.T, path string) *agent.Session {
 }
 
 // primaryRecoveryFiles filters a recovery-branch glob down to primary session
-// transcripts, dropping the .events.jsonl / .guardian.jsonl sidecars that the
+// transcripts, dropping lifecycle/diagnostic sidecars that the broad
 // *-recovery-*.jsonl pattern also matches.
 func primaryRecoveryFiles(t *testing.T, dir string) []string {
 	t.Helper()
@@ -48,7 +48,9 @@ func primaryRecoveryFiles(t *testing.T, dir string) []string {
 	primary := matches[:0]
 	for _, path := range matches {
 		base := filepath.Base(path)
-		if strings.HasSuffix(base, ".events.jsonl") || strings.HasSuffix(base, ".guardian.jsonl") {
+		if strings.HasSuffix(base, ".events.jsonl") ||
+			strings.HasSuffix(base, ".guardian.jsonl") ||
+			strings.HasSuffix(base, ".turns.jsonl") {
 			continue
 		}
 		primary = append(primary, path)
@@ -93,6 +95,7 @@ func assertACPSessionOnRecoveryPath(t *testing.T, sess *acpSession, originalPath
 // just-recovered transcript back to the original file, so every later save
 // re-conflicted and derived yet another recovery branch.
 func TestACPRebuildSessionContinuesRecoveryPathAfterSnapshotConflict(t *testing.T) {
+	t.Setenv(agent.SessionLogSchemaEnv, "v1")
 	dir := t.TempDir()
 	originalPath := filepath.Join(dir, "acp-switch-conflict.jsonl")
 	stale := divergedACPSession(t, originalPath)
@@ -111,6 +114,11 @@ func TestACPRebuildSessionContinuesRecoveryPathAfterSnapshotConflict(t *testing.
 	}
 	sess.lease = lease
 	t.Cleanup(sess.releaseSessionLease)
+	t.Cleanup(func() {
+		if ctrl := sess.currentCtrl(); ctrl != nil {
+			ctrl.Close()
+		}
+	})
 
 	svc := &service{
 		factory:  &configurableFactory{dir: dir},
@@ -151,6 +159,7 @@ func TestACPRebuildSessionContinuesRecoveryPathAfterSnapshotConflict(t *testing.
 // so session/prompt reports the live file, session/delete destroys it, and the
 // recovery transcript stays lease-guarded against other runtimes.
 func TestACPPersistAfterTurnMovesBookkeepingToRecoveryPath(t *testing.T) {
+	t.Setenv(agent.SessionLogSchemaEnv, "v1")
 	dir := t.TempDir()
 	originalPath := filepath.Join(dir, "acp-autosave-conflict.jsonl")
 	stale := divergedACPSession(t, originalPath)
@@ -258,6 +267,7 @@ func recoverACPSessionAndRestart(t *testing.T, dir, id string) (originalPath, re
 // a restart reopened the pre-recovery file and the user's recovered work
 // silently vanished from ACP's view.
 func TestACPLoadAfterRestartFollowsRecoveryTranscript(t *testing.T) {
+	t.Setenv(agent.SessionLogSchemaEnv, "v1")
 	dir := t.TempDir()
 	id := "sess-restart"
 	originalPath, recoveryPath, svc := recoverACPSessionAndRestart(t, dir, id)
@@ -299,7 +309,7 @@ func TestACPLoadAfterRestartFollowsRecoveryTranscript(t *testing.T) {
 // correctly, but session/load after restart falls back to the stale id-keyed
 // parent transcript.
 func TestACPLoadAfterRestartFollowsIntentionalBranch(t *testing.T) {
-	dir := t.TempDir()
+	dir := schemaOneTempDir(t)
 	id := "sess-branch-restart"
 	originalPath := transcriptPath(dir, id)
 	original := agent.NewSession("sys prompt")
@@ -391,6 +401,7 @@ func TestACPLoadAfterRestartFollowsIntentionalBranch(t *testing.T) {
 // session's live file) and the id-keyed original, or the survivor resurfaces
 // in session/list as a ghost that can never be deleted by id.
 func TestACPDeleteAfterRestartRemovesRecoveryAndIDKeyedFiles(t *testing.T) {
+	t.Setenv(agent.SessionLogSchemaEnv, "v1")
 	dir := t.TempDir()
 	id := "sess-del"
 	originalPath, recoveryPath, svc := recoverACPSessionAndRestart(t, dir, id)
@@ -421,6 +432,7 @@ func TestACPDeleteAfterRestartRemovesRecoveryAndIDKeyedFiles(t *testing.T) {
 // one entry for the id, backed by the active recovery transcript's metadata
 // (the live title), never the stale pre-recovery sidecar.
 func TestACPSessionListAfterRecoveryShowsSingleActiveEntry(t *testing.T) {
+	t.Setenv(agent.SessionLogSchemaEnv, "v1")
 	dir := t.TempDir()
 	id := "sess-list"
 	_, _, svc := recoverACPSessionAndRestart(t, dir, id)
@@ -487,6 +499,11 @@ func TestACPRebuildSessionRefreshesLeadingSystemPromptForNewModel(t *testing.T) 
 	}
 	sess.lease = lease
 	t.Cleanup(sess.releaseSessionLease)
+	t.Cleanup(func() {
+		if ctrl := sess.currentCtrl(); ctrl != nil {
+			ctrl.Close()
+		}
+	})
 
 	sess.ctrl = control.New(control.Options{
 		Executor:    agent.New(nil, nil, oldSession, agent.Options{}, event.Discard),

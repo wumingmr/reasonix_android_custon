@@ -1224,8 +1224,8 @@ func TestWorkspaceChangesUsesRequestedTabCheckpoints(t *testing.T) {
 		})
 	}
 
-	ctrlA := control.New(control.Options{SessionDir: sessionDir, SessionPath: sessionA, Label: "a"})
-	ctrlB := control.New(control.Options{SessionDir: sessionDir, SessionPath: sessionB, Label: "b"})
+	ctrlA := newFixtureController(t, control.Options{SessionDir: sessionDir, SessionPath: sessionA, Label: "a"})
+	ctrlB := newFixtureController(t, control.Options{SessionDir: sessionDir, SessionPath: sessionB, Label: "b"})
 	app := &App{
 		tabs: map[string]*WorkspaceTab{
 			"a": {ID: "a", Scope: "project", WorkspaceRoot: workspace, Ctrl: ctrlA, Ready: true},
@@ -1539,7 +1539,7 @@ func TestWorkspaceChangeDetailBoundsCheckpointSnapshot(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "large.txt"), []byte("after\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ctrl := control.New(control.Options{
+	ctrl := newFixtureController(t, control.Options{
 		SessionDir: sessionDir, SessionPath: sessionPath, WorkspaceRoot: workspace, Label: "session",
 	})
 	app := &App{tabs: map[string]*WorkspaceTab{"tab": {ID: "tab", WorkspaceRoot: workspace, Ctrl: ctrl}}}
@@ -1569,7 +1569,7 @@ func TestWorkspaceChangeDetailFallsBackToRequestedTabCheckpoint(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "file.txt"), []byte("after\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ctrl := control.New(control.Options{
+	ctrl := newFixtureController(t, control.Options{
 		SessionDir: sessionDir, SessionPath: sessionPath, WorkspaceRoot: workspace, Label: "session",
 	})
 	app := &App{tabs: map[string]*WorkspaceTab{"tab": {ID: "tab", WorkspaceRoot: workspace, Ctrl: ctrl}}}

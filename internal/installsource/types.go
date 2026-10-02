@@ -180,11 +180,26 @@ func summarizeKind(actions []action) string {
 func publicActions(in []action) []action {
 	out := make([]action, len(in))
 	for i := range in {
-		out[i] = in[i]
-		out[i].entry = config.PluginEntry{}
-		out[i].skill = skillCandidate{}
-		out[i].preparedRoot = ""
-		out[i].cleanup = nil
+		a := in[i]
+		// Construct the public DTO field-by-field so credentials held by the
+		// internal config entry, environment, or headers cannot reach JSON output.
+		out[i] = action{
+			Kind: a.Kind, Action: a.Action, Status: a.Status,
+			RiskLevel: a.RiskLevel, RiskReasons: a.RiskReasons,
+			Name: a.Name, Source: a.Source, Target: a.Target, ConfigPath: a.ConfigPath,
+			Scope: a.Scope, Mode: a.Mode, Transport: a.Transport, URL: a.URL,
+			Command: a.Command, Args: a.Args,
+			Skills: a.Skills, SkillCount: a.SkillCount,
+			Agents: a.Agents, AgentCount: a.AgentCount,
+			Commands: a.Commands, CommandCount: a.CommandCount,
+			Commit: a.Commit, Layout: a.Layout, InstallRoot: a.InstallRoot,
+			CanonicalPath: a.CanonicalPath, Discoverable: a.Discoverable, Indexed: a.Indexed,
+			ToolCount: a.ToolCount, Compatibility: a.Compatibility,
+			MappedCapabilities: a.MappedCapabilities, SkippedCapabilities: a.SkippedCapabilities,
+			HookCount: a.HookCount, ManifestKind: a.ManifestKind, Version: a.Version,
+			PromptCount: a.PromptCount, ThemeCount: a.ThemeCount, Runtime: a.Runtime,
+			Warnings: a.Warnings, Error: a.Error, Next: a.Next,
+		}
 	}
 	return out
 }

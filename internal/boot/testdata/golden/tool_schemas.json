@@ -1,12 +1,20 @@
 [
   {
     "Name": "ask",
-    "Description": "Ask the user one or more multiple-choice questions when you hit a decision that is genuinely theirs to make — one you can't resolve from the request, the code, or sensible defaults. The frontend shows the options for the user to pick; their choices are returned to you. Prefer this over asking in prose for any real fork (which approach, which library, scope). Don't use it for decisions with an obvious default — pick the sensible option and proceed. Tool-approval modes such as YOLO do not answer these questions for the user. Each question has a short `header` (a tab label), the `question` text, 2-4 `options` (each a `label` and optional `description`; put any recommended option first), and `multiSelect` when more than one may apply.",
+    "Description": "Ask the user one or more multiple-choice questions when you hit a decision that is genuinely theirs to make — one you can't resolve from the request, the code, or sensible defaults. The frontend shows the options for the user to pick; their choices are returned to you. Prefer this over asking in prose for any real fork (which approach, which library, scope). Don't use it for decisions with an obvious default — pick the sensible option and proceed. Permission presets do not answer these questions for the user. Each question has a short `header` (a tab label), the `question` text, 2-4 `options` (each a `label` and optional `description`; put any recommended option first), and `multiSelect` when more than one may apply.",
     "ReadOnly": true,
     "Schema": {
       "properties": {
+        "decision_id": {
+          "description": "Required when reopening a previously accepted decision; cite the original decision_id.",
+          "type": "string"
+        },
+        "new_evidence": {
+          "description": "Required with decision_id when asking again after the user already accepted a consequence.",
+          "type": "string"
+        },
         "questions": {
-          "description": "1-4 questions to ask together.",
+          "description": "1-3 related questions to ask together. Same ambiguity is asked only once.",
           "items": {
             "properties": {
               "header": {
@@ -51,7 +59,7 @@
             ],
             "type": "object"
           },
-          "maxItems": 4,
+          "maxItems": 3,
           "minItems": 1,
           "type": "array"
         }
@@ -79,8 +87,12 @@
           "description": "Shell command to execute",
           "type": "string"
         },
+        "denial_id": {
+          "description": "Host-issued denial identifier required when retrying with danger-full-access.",
+          "type": "string"
+        },
         "justification": {
-          "description": "Required when additional_write_dirs is non-empty. Explain why those directories must be writable.",
+          "description": "Required when additional_write_dirs or sandbox_permissions is set. Explain why the access is needed.",
           "type": "string"
         },
         "preserve_background_processes": {
@@ -88,112 +100,25 @@
           "type": "boolean"
         },
         "run_in_background": {
-          "description": "Run detached: returns a job id immediately and keeps running across turns (no foreground timeout). Read new output with bash_output, wait with wait, stop it with kill_shell. Use for long-running commands like servers, watchers, or builds you don't need to block on.",
+          "description": "Run detached: returns a job id immediately and keeps running across turns (no foreground timeout). Read it with job_output or stop it with job_kill.",
           "type": "boolean"
-        }
-      },
-      "required": [
-        "command"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "Name": "bash_output",
-    "Description": "Read new output from a background job started with bash(run_in_background=true) or task(run_in_background=true). Returns the output produced since the last bash_output call for that job, plus its status (running/done/failed/killed). Does not block.",
-    "ReadOnly": true,
-    "Schema": {
-      "properties": {
-        "filter": {
-          "description": "Optional regular expression; only matching lines of the new output are returned.",
+        },
+        "sandbox_permissions": {
+          "description": "Optional per-call permission escalation. Use workspace-write for an authorized write while the session is read-only. danger-full-access is accepted only after a host-recorded denial and explicit authorization.",
+          "enum": [
+            "workspace-write",
+            "danger-full-access"
+          ],
           "type": "string"
         },
-        "job_id": {
-          "description": "The background job id (e.g. \"bash-1\") returned when it was started.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "job_id"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "Name": "complete_step",
-    "Description": "Record the evidence-backed completion of ONE step of an approved plan. Call it as you finish each step instead of silently moving on: it signs the step off with PROOF it is done — the verification you ran (command + result), a completed built-in review that is fresh for any later changes, the diff/files you changed, or a manual check. A completion with no evidence is REJECTED, so don't claim a step is done until you can show why. The host advances the task list for you when you sign off — it marks this step completed and moves the next to in_progress, so you don't need a separate todo_write to mark completions. Fields: `step` (which step — its title or number, matching the task list), `result` (what is now true/changed), `evidence` (≥1 item, each with `kind` = verification|review|diff|files|manual and a `summary`, plus optional `command`/`paths`, and `criterion_id` naming the acceptance criterion the proof satisfies), and optional `notes`.",
-    "ReadOnly": true,
-    "Schema": {
-      "properties": {
-        "evidence": {
-          "description": "Proof the step is done. At least one item is required.",
-          "items": {
-            "properties": {
-              "command": {
-                "description": "REQUIRED for verification evidence: the command as it actually ran (e.g. \"go test ./...\") — it is checked against this session's real command history.",
-                "type": "string"
-              },
-              "criterion_id": {
-                "description": "The acceptance criterion this proof satisfies, as the plan renders it (e.g. \"c2\" from \"accept [c2]: ...\"). Cite it whenever the step has criteria: a command succeeding is not the same as a criterion being met, and the host records the proof against the criterion you name.",
-                "type": "string"
-              },
-              "kind": {
-                "description": "verification = a command/test was run (command REQUIRED); review = a built-in review run completed and, after changes, inspected the latest changed result (the verdict/findings still apply separately); diff = a concrete code change (paths REQUIRED); files = files created/edited/inspected (paths REQUIRED); manual = a manual check.",
-                "enum": [
-                  "verification",
-                  "review",
-                  "diff",
-                  "files",
-                  "manual"
-                ],
-                "type": "string"
-              },
-              "paths": {
-                "description": "REQUIRED for diff/files evidence: the files this evidence refers to, as the paths were passed to the tools that touched them.",
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "summary": {
-                "description": "The evidence itself: the test result, what the diff does, or what was confirmed.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "kind",
-              "summary"
-            ],
-            "type": "object"
-          },
-          "minItems": 1,
-          "type": "array"
-        },
-        "notes": {
-          "description": "Optional caveats, follow-ups, or anything deferred.",
-          "type": "string"
-        },
-        "result": {
-          "description": "What is now true or changed as a result of finishing this step.",
-          "type": "string"
-        },
-        "step": {
-          "description": "Which plan step this completes — its title or number, matching the task list. Use only when the item has no step_id.",
-          "type": "string"
-        },
-        "step_id": {
-          "description": "PREFERRED: the stable step_id of the task-list item this completes, e.g. \"plan_step_02\". Unlike a title or a number it survives retitles, insertions, and reordering, so cite it whenever the item has one.",
-          "type": "string"
-        },
-        "step_index": {
-          "description": "Optional 1-based task-list item number. Use only when the item has no step_id; an index goes stale the moment a step is inserted above it.",
+        "timeout_ms": {
+          "description": "Optional foreground timeout in milliseconds, capped by the configured shell timeout",
           "minimum": 1,
           "type": "integer"
         }
       },
       "required": [
-        "evidence",
-        "result"
+        "command"
       ],
       "type": "object"
     }
@@ -233,6 +158,36 @@
     }
   },
   {
+    "Name": "create_goal",
+    "Description": "Create one persisted same-session goal when the current direct human request is a long-running objective that should continue across autonomous rounds. You may infer that intent without requiring the user to name goal mode. Do not use this for routine single-turn work.",
+    "ReadOnly": false,
+    "Schema": {
+      "additionalProperties": false,
+      "properties": {
+        "max_goal_rounds": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional positive automatic-round limit; omit or null for unlimited."
+        },
+        "objective": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "objective"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "Name": "edit_file",
     "Description": "Replace an exact string in a file with another. old_string must occur exactly once; add surrounding context to disambiguate. Use for targeted edits instead of rewriting the whole file.",
     "ReadOnly": false,
@@ -260,13 +215,28 @@
     }
   },
   {
-    "Name": "kill_shell",
-    "Description": "Terminate a running background job (bash or task) started with run_in_background. A no-op if the job has already finished or the id is unknown.",
+    "Name": "get_goal",
+    "Description": "Read the current same-session goal, including its exact id/revision, objective, phase, admitted rounds, optional round limit, blocker reason, and live activation. Call this before update_goal.",
+    "ReadOnly": true,
+    "Schema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "Name": "job_kill",
+    "Description": "Request cancellation of a running background job by job id. Returns immediately; the process tree settles as killed once shutdown completes.",
     "ReadOnly": false,
     "Schema": {
       "properties": {
         "job_id": {
-          "description": "The background job id to terminate (e.g. \"bash-1\").",
+          "description": "Job id returned by the tool that started the background work.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Optional short reason for stopping the job.",
           "type": "string"
         }
       },
@@ -277,11 +247,55 @@
     }
   },
   {
-    "Name": "read_file",
-    "Description": "Read a text file with optional line offset/limit. Output prefixes each line with its 1-based number (e.g. `   42→...`) so subsequent edit_file calls can target exact lines. Use `offset` and `limit` to page through large files; the tool reports total length and pagination hints in a trailer.",
+    "Name": "job_output",
+    "Description": "Read output from a background job. Reads are non-blocking unless wait=true; every response includes the current status. Do not busy-poll a running job.",
     "ReadOnly": true,
     "Schema": {
       "properties": {
+        "filter": {
+          "description": "Optional regular expression; only matching lines of new output are returned.",
+          "type": "string"
+        },
+        "job_id": {
+          "description": "Job id returned by the tool that started the background work.",
+          "type": "string"
+        },
+        "timeout_ms": {
+          "description": "Maximum wait in milliseconds. Defaults to 30000 and is capped at 600000.",
+          "maximum": 600000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "wait": {
+          "description": "Wait until the job finishes or timeout_ms elapses. A timeout leaves the job running.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "Name": "read_file",
+    "Description": "Read one bounded text window with optional line offset/limit. Output prefixes each line with its 1-based number. Any successful window observes the current file version for later structured edits. Use the next-window hint to page only when more content is useful. Legacy intent and cursor fields are accepted as navigation hints and never create a whole-file completion requirement.",
+    "ReadOnly": true,
+    "Schema": {
+      "properties": {
+        "cursor": {
+          "description": "Optional continuation cursor from a prior result. Invalid legacy cursors should be replaced with an explicit offset and limit.",
+          "type": "string"
+        },
+        "intent": {
+          "description": "Compatibility hint. Every value reads only this bounded window and creates no whole-file obligation.",
+          "enum": [
+            "inspect",
+            "range",
+            "full"
+          ],
+          "type": "string"
+        },
         "limit": {
           "description": "Maximum lines to return (default 2000)",
           "minimum": 1,
@@ -305,41 +319,27 @@
   },
   {
     "Name": "todo_write",
-    "Description": "Record and update a structured task list for the current work. Send the COMPLETE list every call — it replaces the previous one. Use it to plan multi-step work and show progress: keep exactly one item in_progress at a time, and flip an item to completed the moment it's done (don't batch completions). Skip it for trivial single-step tasks. The list is two-level: a `level` 0 item is a PHASE (a milestone) and the `level` 1 items after it are its concrete sub-steps; omit `level` (0) for a flat list. Each item has `content` (imperative, e.g. \"Add the parser\"), `status` (pending|in_progress|completed), `activeForm` (present-continuous shown while in progress, e.g. \"Adding the parser\"), optional `level` (0 phase | 1 sub-step), and `step_id` — an item's stable identity. COPY `step_id` VERBATIM for every item that already has one: it is how a completion stays attached to its step when you retitle it, insert a step above it, or reorder the list. Give a new item a fresh unique id (e.g. \"plan_step_07\"); never reuse or renumber an existing one.",
+    "Description": "Replace the current turn's complete task list. Send the full flat list on every call; an empty list clears it. Items may be reordered, removed, replanned, or have any number in progress. Each item contains only content and status (pending|in_progress|completed).",
     "ReadOnly": true,
     "Schema": {
+      "additionalProperties": false,
       "properties": {
         "todos": {
-          "description": "The complete task list, in order. Replaces any previous list.",
+          "description": "The complete flat task list for this turn. Replaces the previous list; [] clears it.",
           "items": {
+            "additionalProperties": false,
             "properties": {
-              "activeForm": {
-                "description": "Present-continuous form shown while the task is in progress (e.g. \"Running tests\").",
-                "type": "string"
-              },
               "content": {
-                "description": "Imperative description of the task.",
+                "description": "Task text. Leading and trailing whitespace is removed.",
+                "minLength": 1,
                 "type": "string"
-              },
-              "level": {
-                "description": "Nesting level: 0 = phase/milestone, 1 = a sub-step of the phase above it. Omit for a flat list.",
-                "enum": [
-                  0,
-                  1
-                ],
-                "type": "integer"
               },
               "status": {
-                "description": "Task state. Keep at most one in_progress.",
                 "enum": [
                   "pending",
                   "in_progress",
                   "completed"
                 ],
-                "type": "string"
-              },
-              "step_id": {
-                "description": "Stable identity for this item, e.g. \"plan_step_02\". Copy it verbatim from the item's previous entry so completions stay attached across retitles, insertions, and reordering; use a fresh unique id for a genuinely new item.",
                 "type": "string"
               }
             },
@@ -360,69 +360,88 @@
   },
   {
     "Name": "update_goal",
-    "Description": "Report this turn's disposition for the active goal. Call it at the end of every goal turn instead of using prose markers: `continue` (work is ongoing — give a concrete next_action), `complete` (the request is fully done, output format and constraints satisfied, and verification was attempted or reported unavailable), or `blocked` (only the user can unblock: missing user-only information, an irreversible/externally visible operation, or changed scope). The host validates your claim against Delivery acceptance criteria and decides whether to continue automatically. Fields: `status` (required, one of continue|complete|blocked), `reason` (required for continue and blocked, optional for complete), `next_action` (optional concrete next step; recommended for continue), `completion` (recommended with complete: `verified` is checked against real receipts, while `unverified` and `risks` are yours to declare and never count against you).",
-    "ReadOnly": true,
+    "Description": "Update the exact current goal revision. edit, pause, and resume require current direct-human authority; complete and blocked are also allowed during the exact autonomous goal round. There is no continue action: leaving an active goal unchanged continues it automatically. Only edit consumes objective/max_goal_rounds; only blocked consumes blocked_reason. Omit unused fields; supplied unused fields are ignored.",
+    "ReadOnly": false,
     "Schema": {
+      "additionalProperties": false,
       "properties": {
-        "completion": {
-          "description": "Your own account of the finished work.",
-          "properties": {
-            "risks": {
-              "description": "Known risks to carry forward.",
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "unverified": {
-              "description": "What you did NOT verify. The host cannot infer what you skipped, so stating it is the only way it is known — and it never blocks completion.",
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "verified": {
-              "description": "Commands you ran as proof, as they actually ran. One that never ran, failed, or predates your latest change is recorded as an unbacked claim.",
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            }
-          },
-          "type": "object"
-        },
-        "next_action": {
-          "description": "Optional concrete next step. Recommended for continue so the host can guide the next turn.",
-          "type": "string"
-        },
-        "reason": {
-          "description": "Short explanation. REQUIRED for continue and blocked; optional for complete.",
-          "type": "string"
-        },
-        "status": {
-          "description": "continue = keep working autonomously; complete = the goal is fully done and verified; blocked = only the user can unblock.",
+        "action": {
           "enum": [
-            "continue",
+            "edit",
+            "pause",
+            "resume",
             "complete",
             "blocked"
           ],
           "type": "string"
+        },
+        "blocked_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Non-empty concrete blocker required for blocked. Ignored for other actions."
+        },
+        "goal_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "max_goal_rounds": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Replacement limit for edit; omit to keep it, null removes the limit. Ignored for other actions."
+        },
+        "objective": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Replacement non-empty objective for edit; omit or null to keep it. Ignored for other actions."
+        },
+        "revision": {
+          "minimum": 1,
+          "type": "integer"
         }
       },
       "required": [
-        "status"
+        "action",
+        "goal_id",
+        "revision"
       ],
       "type": "object"
     }
   },
   {
     "Name": "use_capability",
-    "Description": "Unified capability proxy with a fixed schema: list catalog capabilities, inspect metadata, call a capability by stable id (tool:grep, skill:review, mcp-tool:server/tool, task:subagent, workflow:name, web:/lsp:/session:/memory: namespaces), or decline a prefer capability with a non-empty reason. Calling does not change the provider-visible tool schema. Resolved writers still pass permission, plan mode, sandbox, write-path, and workspace-lease checks. The Planner leaves destructive MCP for the Executor.",
+    "Description": "Fixed-schema capability proxy. Prefer search(query, limit\u003c=8), then inspect one exact capability, then call it. list is a compact diagnostic inventory only. Supports stable ids such as tool:grep, skill:review, mcp-tool:server/tool, task:subagent, workflow:name, and web:/lsp:/session:/memory: namespaces. memory:remember saves facts (description+body required; activation=\"relevant\" on create; omit activation on update; \"pinned\" only if user asks); memory:forget(name); tool:memory(operation=search|read|list). decline records a reason for a prefer capability. Independent list/search/inspect calls are read-only and may be issued together. Calls keep the provider-visible schema fixed; real writers still pass permission, plan mode, sandbox, write-path, and workspace-lease checks.",
     "ReadOnly": true,
     "Schema": {
+      "additionalProperties": false,
       "properties": {
         "action": {
-          "description": "list | inspect | call | decline",
+          "description": "Use search for discovery, inspect one exact result, then call. list is diagnostic only.",
+          "enum": [
+            "list",
+            "search",
+            "inspect",
+            "call",
+            "decline"
+          ],
           "type": "string"
         },
         "arguments": {
@@ -431,6 +450,20 @@
         },
         "capability_id": {
           "description": "Capability id such as skill:review, mcp-server:github, or mcp-tool:github/search_issues. Not required for action=list.",
+          "type": "string"
+        },
+        "cursor": {
+          "description": "Opaque cursor returned by action=list. It is valid only for the same catalog version.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum results. Search defaults to 5 and allows at most 8; list defaults to 50 and allows at most 100.",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "query": {
+          "description": "Local catalog query required for action=search. No process or network is started.",
           "type": "string"
         },
         "reason": {
@@ -445,24 +478,19 @@
     }
   },
   {
-    "Name": "wait",
-    "Description": "Block until background jobs finish, then return each job's status and final output/answer. Use to collect the result of a task(run_in_background) or bash(run_in_background) before continuing. Omit job_ids to wait for every running job.",
+    "Name": "view_image",
+    "Description": "Read a local PNG, JPEG, GIF, or WebP image by path and return visual content through native vision or the configured image-understanding model. Use this for image paths instead of read_file. Maximum file size: 3 MiB; maximum dimensions: 40 million pixels.",
     "ReadOnly": true,
     "Schema": {
       "properties": {
-        "job_ids": {
-          "description": "Background job ids to wait for. Omit to wait for every currently-running job.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "timeout_seconds": {
-          "description": "Optional maximum seconds to block before returning current progress. Omit to wait until the jobs finish.",
-          "minimum": 1,
-          "type": "integer"
+        "path": {
+          "description": "Image file path",
+          "type": "string"
         }
       },
+      "required": [
+        "path"
+      ],
       "type": "object"
     }
   },

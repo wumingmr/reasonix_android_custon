@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +18,71 @@ type shutdownSnapshotController struct {
 	normalSnapshots int
 	sessionPath     string
 	shutdown        func() error
+	close           func()
+}
+
+func TestShutdownSaveFailureKeepsEveryControllerOpenAndRetryResumes(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	first := &shutdownSnapshotController{SessionAPI: control.New(control.Options{Label: "first"})}
+	secondAttempts := 0
+	second := &shutdownSnapshotController{SessionAPI: control.New(control.Options{Label: "second"})}
+	second.shutdown = func() error {
+		secondAttempts++
+		if secondAttempts == 1 {
+			return errors.New("disk full")
+		}
+		return nil
+	}
+	a := NewApp()
+	a.tabs["first"] = &WorkspaceTab{ID: "first", Ctrl: first}
+	a.tabs["second"] = &WorkspaceTab{ID: "second", Ctrl: second}
+	a.tabOrder = []string{"first", "second"}
+
+	failed, err := a.requestShutdown(context.Background(), shutdownRequest{RequestID: "attempt-1", Reason: shutdownReasonUserQuit})
+	if err == nil || failed.Phase != "saving" || failed.ErrorCode != "session_save_failed" || !failed.Retryable {
+		t.Fatalf("failed shutdown = %+v, %v", failed, err)
+	}
+	if len(first.calls) != 1 || first.calls[0] != "shutdown-snapshot" || len(second.calls) != 1 {
+		t.Fatalf("save failure closed a controller: first=%v second=%v", first.calls, second.calls)
+	}
+
+	completed, err := a.requestShutdown(context.Background(), shutdownRequest{RequestID: "attempt-1", Reason: shutdownReasonConnectionLost})
+	if err != nil || !completed.Completed || completed.Outcome != "success" {
+		t.Fatalf("retry shutdown = %+v, %v", completed, err)
+	}
+	if completed.Reason != shutdownReasonUserQuit {
+		t.Fatalf("retry rewrote original shutdown reason: %+v", completed)
+	}
+	if len(first.calls) != 2 || first.calls[1] != "close" {
+		t.Fatalf("already-saved controller was not closed exactly once: %v", first.calls)
+	}
+	if len(second.calls) != 3 || second.calls[1] != "shutdown-snapshot" || second.calls[2] != "close" {
+		t.Fatalf("failed save did not retry before close: %v", second.calls)
+	}
+}
+
+func TestConnectionLossCleanupPreservesAbnormalTerminationEvidence(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	a := NewApp()
+	tracker := lifecycleTrackerForTest(t, t.TempDir(), 4242, "connection-loss")
+	tracker.state.PID = 4242
+	if err := tracker.start(); err != nil {
+		t.Fatal(err)
+	}
+	a.lifecycle.tracker = tracker
+	status, err := a.requestShutdown(context.Background(), shutdownRequest{
+		RequestID: "connection-loss", Reason: shutdownReasonConnectionLost,
+	})
+	if err != nil || !status.Completed {
+		t.Fatalf("connection loss cleanup = %+v, %v", status, err)
+	}
+	state, err := readDesktopLifecycleState(tracker.path)
+	if err != nil {
+		t.Fatalf("connection loss evidence was removed: %v", err)
+	}
+	if state.TerminationReason != shutdownReasonConnectionLost || state.CleanupOutcome != "success" || state.Phase != "completed" {
+		t.Fatalf("connection loss evidence = %+v", state)
+	}
 }
 
 func (c *shutdownSnapshotController) Snapshot() error {
@@ -43,8 +110,43 @@ func (c *shutdownSnapshotController) SessionPath() string {
 
 func (c *shutdownSnapshotController) Close() {
 	c.calls = append(c.calls, "close")
+	if c.close != nil {
+		c.close()
+	}
 	if c.SessionAPI != nil {
 		c.SessionAPI.Close()
+	}
+}
+
+func TestShutdownCloseRetrySkipsCompletedResources(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	first := &shutdownSnapshotController{SessionAPI: control.New(control.Options{Label: "first"})}
+	second := &shutdownSnapshotController{SessionAPI: control.New(control.Options{Label: "second"})}
+	closeAttempts := 0
+	second.close = func() {
+		closeAttempts++
+		if closeAttempts == 1 {
+			panic("close failed")
+		}
+	}
+	a := NewApp()
+	a.tabs["first"] = &WorkspaceTab{ID: "first", Ctrl: first}
+	a.tabs["second"] = &WorkspaceTab{ID: "second", Ctrl: second}
+	a.tabOrder = []string{"first", "second"}
+
+	failed, err := a.requestShutdown(context.Background(), shutdownRequest{RequestID: "close-1", Reason: shutdownReasonUserQuit})
+	if err == nil || failed.Phase != "closing" || failed.ErrorCode != "cleanup_panic" {
+		t.Fatalf("failed close = %+v, %v", failed, err)
+	}
+	completed, err := a.requestShutdown(context.Background(), shutdownRequest{RequestID: "close-1", Reason: shutdownReasonUserQuit})
+	if err != nil || !completed.Completed {
+		t.Fatalf("retry close = %+v, %v", completed, err)
+	}
+	if got := first.calls; len(got) != 2 || got[0] != "shutdown-snapshot" || got[1] != "close" {
+		t.Fatalf("completed controller repeated: %v", got)
+	}
+	if got := second.calls; len(got) != 3 || got[0] != "shutdown-snapshot" || got[1] != "close" || got[2] != "close" {
+		t.Fatalf("failed controller did not resume: %v", got)
 	}
 }
 
@@ -77,6 +179,9 @@ func TestShutdownWaitsForRuntimeLifecycleMutation(t *testing.T) {
 		t.Fatal("shutdown bypassed an in-flight runtime lifecycle mutation")
 	default:
 	}
+	if status := app.shutdownStatus(""); status.Phase != "waiting_runtime_admission" {
+		t.Fatalf("blocked shutdown phase = %q, want waiting_runtime_admission", status.Phase)
+	}
 
 	app.runtimeAdmissionMu.Unlock()
 	admissionHeld = false
@@ -99,6 +204,8 @@ func TestShutdownDoesNotWaitForCancelledControllerBuild(t *testing.T) {
 
 	started := make(chan struct{})
 	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock)
 	app.tabBuildStartHook = func(string) {
 		close(started)
 		<-release
@@ -117,16 +224,71 @@ func TestShutdownDoesNotWaitForCancelledControllerBuild(t *testing.T) {
 	}()
 	select {
 	case <-shutdownDone:
-		close(release)
-	case <-time.After(750 * time.Millisecond):
-		close(release)
-		<-shutdownDone
+		// Completion while the build remains blocked proves non-dependence.
+		// The guard is for deadlocks, not shutdown persistence performance.
+		unblock()
+	case <-time.After(5 * time.Second):
+		unblock()
 		t.Fatal("shutdown waited for a cancelled controller build")
 	}
 	select {
 	case <-buildDone:
 	case <-time.After(5 * time.Second):
 		t.Fatal("cancelled controller build did not finish")
+	}
+}
+
+func TestShutdownCancelsBlockedSessionOpen(t *testing.T) {
+	app, _, target, _, _ := canonicalWorkspaceOpenFixture(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock)
+	cancelled := make(chan struct{})
+	app.sessionOpenBuildHook = func(ctx context.Context) {
+		close(started)
+		select {
+		case <-ctx.Done():
+			close(cancelled)
+		case <-release:
+		}
+	}
+
+	openDone := make(chan error, 1)
+	go func() {
+		_, err := app.OpenSession(target.Ref())
+		openDone <- err
+	}()
+	<-started
+
+	shutdownDone := make(chan error, 1)
+	go func() {
+		_, err := app.requestShutdown(context.Background(), shutdownRequest{RequestID: "cancel-session-open", Reason: shutdownReasonUserQuit})
+		shutdownDone <- err
+	}()
+
+	// Observe cancellation itself before waiting for unrelated shutdown work
+	// such as session persistence and window-state writes.
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("session open did not observe shutdown cancellation")
+	}
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Fatalf("shutdown after cancelling session open: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown did not complete after session open observed cancellation")
+	}
+	select {
+	case err := <-openDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled session open = %v, want context canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled session open did not return")
 	}
 }
 

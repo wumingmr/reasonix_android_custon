@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSessionRuntimeMs } from "../lib/useSessionRuntime";
 import { app } from "../lib/bridge";
 import { contextWindowPercentages } from "../lib/contextWindow";
 import { useI18n } from "../lib/i18n";
@@ -6,12 +7,10 @@ import { formatMoneyLocalized } from "../lib/money";
 import { appendRateBand, rateBandLabel } from "../lib/costRateBand";
 import type { BalanceInfo, ContextInfo, ContextPanelInfo } from "../lib/types";
 import { AnchoredPopover } from "./AnchoredPopover";
-import {
-  contextWindowStatus,
-  formatCacheHitRate,
-} from "./ContextPanel";
+import { contextWindowStatus, formatCacheHitRate } from "../lib/contextPanelUtils";
 
 interface ContextWindowRingProps {
+  turnMetrics?: { elapsed: string; tokens: string | null; tps: string | null };
   enabled?: boolean;
   context?: ContextInfo;
   tabId?: string;
@@ -21,10 +20,11 @@ interface ContextWindowRingProps {
   cacheHitTokens?: number;
   cacheMissTokens?: number;
   balance?: BalanceInfo;
+  dismissSignal?: number;
 }
 
-const RING = 20;
-const RING_R = (RING - 3) / 2;
+const RING = 18;
+const RING_R = (RING - 2) / 2;
 const RING_C = 2 * Math.PI * RING_R;
 
 function fmtCompact(n: number): string {
@@ -43,7 +43,7 @@ function fmtDuration(ms: number, t: ReturnType<typeof useI18n>['t']): string {
   return t("context.durationMinutesSeconds", { minutes, seconds });
 }
 
-export function ContextWindowRing({ enabled = true, context, tabId, turnCost, turnRateBand, currency, cacheHitTokens, cacheMissTokens, balance }: ContextWindowRingProps) {
+export function ContextWindowRing({ enabled = true, context, tabId, turnCost, turnRateBand, currency, cacheHitTokens, cacheMissTokens, balance, turnMetrics, dismissSignal }: ContextWindowRingProps) {
   const { locale, t } = useI18n();
   const [open, setOpen] = useState(false);
   const [info, setInfo] = useState<ContextPanelInfo | null>(null);
@@ -81,8 +81,10 @@ export function ContextWindowRing({ enabled = true, context, tabId, turnCost, tu
     requestSeq.current += 1;
     loadingTabRef.current = null;
     setInfo(null);
-    if (!enabled) setOpen(false);
-  }, [enabled, tabId]);
+    if (enterTimer.current != null) clearTimeout(enterTimer.current);
+    if (leaveTimer.current != null) clearTimeout(leaveTimer.current);
+    setOpen(false);
+  }, [dismissSignal, enabled, tabId]);
 
   useEffect(() => () => {
     requestSeq.current += 1;
@@ -91,6 +93,7 @@ export function ContextWindowRing({ enabled = true, context, tabId, turnCost, tu
   }, []);
 
   const onEnter = useCallback(() => {
+    if (enterTimer.current != null) clearTimeout(enterTimer.current);
     if (leaveTimer.current != null) clearTimeout(leaveTimer.current);
     loadInfo();
     enterTimer.current = setTimeout(() => setOpen(true), 200);
@@ -109,6 +112,7 @@ export function ContextWindowRing({ enabled = true, context, tabId, turnCost, tu
     setOpen(false);
   }, []);
 
+  const runtimeMs = useSessionRuntimeMs(open ? info : null);
   if (!enabled) return null;
 
   const turnCacheHit = cacheHitTokens ?? info?.cacheHitTokens ?? 0;
@@ -117,7 +121,7 @@ export function ContextWindowRing({ enabled = true, context, tabId, turnCost, tu
   const compactTokens = windowTokens > 0 ? Math.round(windowTokens * compactRatio) : 0;
   const tokensToCompact = compactTokens > used ? compactTokens - used : 0;
   const ringOffset = RING_C * (1 - usagePct / 100);
-  const elapsed = info?.elapsedMs && info.elapsedMs > 0 ? fmtDuration(info.elapsedMs, t) : undefined;
+  const elapsed = runtimeMs > 0 ? fmtDuration(runtimeMs, t) : undefined;
   const quoteStatus = info?.sessionCostQuote?.displayStatus;
   const sessionCostBucketed = quoteStatus === "bucketed" || info?.sessionCostQuote?.aggregateMode === "currency_buckets";
   const sessionCostFallback = quoteStatus === "fallback_original";
@@ -151,30 +155,44 @@ export function ContextWindowRing({ enabled = true, context, tabId, turnCost, tu
         className={`context-ring${open ? " context-ring--open" : ""} context-ring--${status.tone}`}
         onMouseEnter={onEnter}
         onMouseLeave={onLeave}
+        onFocus={onEnter}
+        onBlur={onLeave}
+        onClick={() => {
+          if (enterTimer.current != null) clearTimeout(enterTimer.current);
+          if (leaveTimer.current != null) clearTimeout(leaveTimer.current);
+          loadInfo();
+          setOpen(true);
+        }}
+        aria-haspopup="dialog"
+        aria-expanded={open}
         aria-label={t("context.windowUsageSummary", { used: String(used), window: String(windowTokens), pct: rawUsagePct })}
       >
         <svg width={RING} height={RING} viewBox={`0 0 ${RING} ${RING}`} className="context-ring__svg">
-          <circle className="context-ring__track" cx={RING / 2} cy={RING / 2} r={RING_R} fill="none" strokeWidth={3} />
+          <circle className="context-ring__track" cx={RING / 2} cy={RING / 2} r={RING_R} fill="none" strokeWidth={2} />
           <circle
             className="context-ring__arc"
             cx={RING / 2} cy={RING / 2} r={RING_R}
-            fill="none" strokeWidth={3}
+            fill="none" strokeWidth={2}
             strokeLinecap="round"
             strokeDasharray={RING_C}
             strokeDashoffset={ringOffset}
             transform={`rotate(-90 ${RING / 2} ${RING / 2})`}
           />
         </svg>
+        <span className="context-ring__percent">{rawUsagePct}%</span>
       </button>
       <AnchoredPopover
         open={open}
         anchorRef={triggerRef}
-        onClose={() => setOpen(false)}
-        className={`context-ring-popover context-ring-popover--${status.tone}`}
+        onClose={() => {
+          if (enterTimer.current != null) clearTimeout(enterTimer.current);
+          setOpen(false);
+        }}
+        className={`context-ring-popover context-ring-popover--${status.tone} composer-menu-surface`}
         align="end"
         placement="auto"
       >
-        <div className="context-ring-popover__inner" onMouseEnter={onPopoverEnter} onMouseLeave={onPopoverLeave}>
+        <div className="context-ring-popover__inner" role="dialog" aria-label={t("context.windowUsageSummary", { used: String(used), window: String(windowTokens), pct: rawUsagePct })} onMouseEnter={onPopoverEnter} onMouseLeave={onPopoverLeave}>
           <div className="context-ring-popover__header">
             <span className="context-ring-popover__title">
               {fmtCompact(used)} / {fmtCompact(windowTokens)}
@@ -201,10 +219,22 @@ export function ContextWindowRing({ enabled = true, context, tabId, turnCost, tu
             )}
             {elapsed && (
               <div className="context-ring-popover__row">
-                <span className="context-ring-popover__label">{t("context.time")}</span>
+                <span className="context-ring-popover__label">{t("context.sessionTime")}</span>
                 <span className="context-ring-popover__value">{elapsed}</span>
               </div>
             )}
+            {turnMetrics && <div className="context-ring-popover__turn-metrics">
+              {([
+                [t("context.turnTime"), t("context.turnTimeTitle"), turnMetrics.elapsed],
+                [t("status.turnTpsLabel"), t("status.turnTpsTitle"), turnMetrics.tps],
+                [t("status.turnOutputTokensLabel"), t("status.turnOutputTokensTitle"), turnMetrics.tokens],
+              ] as const).map(([label, hint, value]) => value && (
+                <div className="context-ring-popover__row" key={label} title={hint}>
+                  <span className="context-ring-popover__label">{label}</span>
+                  <span className="context-ring-popover__value">{value}</span>
+                </div>
+              ))}
+            </div>}
             <div className="context-ring-popover__row">
               <span className="context-ring-popover__label">{t("status.cacheLabel")}</span>
               <span className="context-ring-popover__value">{turnCacheRate}</span>

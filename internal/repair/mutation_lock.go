@@ -1,7 +1,6 @@
 package repair
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -9,13 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"reasonix/internal/config"
-	"reasonix/internal/filelock"
+	"reasonix/internal/pathidentity"
 )
 
 const repairMutationLockTimeout = 5 * time.Second
@@ -40,7 +38,7 @@ var repairPathCaseInsensitive = platformRepairPathCaseInsensitive
 
 func lockRepairTransaction() (func(), error) {
 	expectedPendingState := repairPlanReleaseNodeState(pendingRepairTransactionPath())
-	unlock, err := lockRepairMutations(repairTransactionPath())
+	unlock, err := lockRepairMutationProtocolFile(repairTransactionPath())
 	if err != nil {
 		return nil, fmt.Errorf("lock repair transaction: %w", err)
 	}
@@ -63,10 +61,8 @@ func restoreRepairNodeIfAbsent(backup, target string) error {
 	return nil
 }
 
-// removeRepairNodeIfMatching first displaces a transaction-owned backup to a
-// unique sibling, then verifies the moved node against its original target
-// identity. A path replacement between verification and cleanup is restored or
-// retained, never unlinked as if it were transaction-owned.
+// removeRepairNodeIfMatching displaces and verifies a transaction backup.
+// Replaced paths are restored or retained, never unlinked as transaction-owned.
 func removeRepairNodeIfMatching(path, identityPath, expectedStateID string) error {
 	expectedStateID = strings.TrimSpace(expectedStateID)
 	if expectedStateID == "" {
@@ -129,6 +125,17 @@ func moveRepairNodeToUniqueCleanup(path string) (string, error) {
 // different locks. The decision is made from the target's actual parent
 // directory: macOS and Windows can both host case-sensitive directories.
 func canonicalRepairPath(path string) string {
+	identity, err := pathidentity.Resolve(path, pathidentity.Options{FollowLeaf: false})
+	if err != nil {
+		return ""
+	}
+	return identity.Key
+}
+
+// legacyCanonicalRepairPath freezes the lock and persisted-target identity used
+// before path identity v2. New writers acquire both names during the supported
+// cross-version window.
+func legacyCanonicalRepairPath(path string) string {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return ""
@@ -218,10 +225,22 @@ func repairPlanTargetIdentity(path string) string {
 // configuration files, and paths are sorted so multi-target actions cannot
 // deadlock each other.
 func lockRepairMutations(paths ...string) (func(), error) {
-	return lockRepairMutationsTimeout(repairMutationLockTimeout, paths...)
+	return lockRepairMutationsTimeoutMode(repairMutationLockTimeout, true, paths...)
 }
 
 func lockRepairMutationsTimeout(timeout time.Duration, paths ...string) (func(), error) {
+	return lockRepairMutationsTimeoutMode(timeout, true, paths...)
+}
+
+// Protocol files are expected to be atomically replaced by the previous lock
+// holder. Their callers compare content state after acquisition, so only the
+// lock domain is shared here; ordinary repair targets still require native
+// file identity to remain unchanged while waiting.
+func lockRepairMutationProtocolFile(path string) (func(), error) {
+	return lockRepairMutationsTimeoutMode(repairMutationLockTimeout, false, path)
+}
+
+func lockRepairMutationsTimeoutMode(timeout time.Duration, revalidateTargets bool, paths ...string) (func(), error) {
 	lockDir := config.RepairMutationLockDir()
 	if lockDir == "" {
 		return nil, fmt.Errorf("lock repair mutations: OS user cache directory is unavailable")
@@ -230,54 +249,33 @@ func lockRepairMutationsTimeout(timeout time.Duration, paths ...string) (func(),
 		return nil, fmt.Errorf("lock repair mutations: create lock directory: %w", err)
 	}
 
-	unique := map[string]struct{}{}
-	keys := make([]string, 0, len(paths))
-	for _, path := range paths {
-		path = strings.TrimSpace(path)
-		if path == "" {
-			continue
-		}
-		key := canonicalRepairPath(path)
-		if key == "" {
-			return nil, fmt.Errorf("lock repair mutations: resolve target: empty path")
-		}
-		if _, ok := unique[key]; ok {
-			continue
-		}
-		unique[key] = struct{}{}
-		keys = append(keys, key)
+	targets, primaryKeys, lockKeys, err := repairMutationTargets(paths)
+	if err != nil {
+		return nil, err
 	}
-	if len(keys) == 0 {
+	if len(targets) == 0 {
 		return func() {}, nil
 	}
-	sort.Strings(keys)
-	repairMutationBeforeLock(append([]string(nil), keys...))
-
-	if timeout <= 0 {
-		timeout = repairMutationLockTimeout
+	repairMutationBeforeLock(append([]string(nil), primaryKeys...))
+	domains, err := repairMutationLockDomains(lockDir, lockKeys)
+	if err != nil {
+		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	releases := make([]func(), 0, len(keys))
-	for _, key := range keys {
-		digest := sha256.Sum256([]byte(key))
-		lockPath := filepath.Join(lockDir, fmt.Sprintf("%x.lock", digest))
-		release, err := filelock.Acquire(ctx, lockPath)
-		if err != nil {
-			for _, v := range slices.Backward(releases) {
-				v()
-			}
-			return nil, fmt.Errorf("lock repair mutations: %w", err)
+	releases, err := acquireRepairMutationLocks(timeout, domains)
+	if err != nil {
+		return nil, err
+	}
+	if revalidateTargets {
+		if err := revalidateRepairMutationTargets(targets); err != nil {
+			releaseRepairMutationLocks(releases)
+			return nil, err
 		}
-		releases = append(releases, release)
 	}
 
 	var once sync.Once
 	return func() {
 		once.Do(func() {
-			for _, v := range slices.Backward(releases) {
-				v()
-			}
+			releaseRepairMutationLocks(releases)
 		})
 	}, nil
 }

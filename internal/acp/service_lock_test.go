@@ -424,7 +424,7 @@ func TestACPCtrlReadPathsDoNotRaceWithRebuild(t *testing.T) {
 		}
 		_ = svc.sessionDir()
 		svc.sendAvailableCommands(sess)
-		if got := svc.resolveSlashPrompt(context.Background(), sess, "/no-such-command args"); got != "/no-such-command args" {
+		if got, _ := svc.resolveSlashPrompt(context.Background(), sess, "/no-such-command args"); got != "/no-such-command args" {
 			t.Fatalf("resolveSlashPrompt rewrote unknown command to %q", got)
 		}
 	}
@@ -768,8 +768,8 @@ func TestACPApplyPendingClaimsStateBeforeResolving(t *testing.T) {
 	if got := sess.model; got != "fast" {
 		t.Fatalf("session model = %q, want latest requested value fast", got)
 	}
-	if got := stringPtrValue(sess.effortOverride); got != "high" {
-		t.Fatalf("effort = %q, want pending different-axis value high preserved", got)
+	if got := stringPtrValue(sess.effortOverride); got != "" {
+		t.Fatalf("effort = %q, want prior model's pending effort cleared by the newer model switch", got)
 	}
 }
 

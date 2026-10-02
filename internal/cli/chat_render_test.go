@@ -483,15 +483,15 @@ func TestTodoPanelKeepsLastSuccessfulTodoWrite(t *testing.T) {
 	failed := `{"todos":[{"content":"Sync main-v2","status":"completed"},{"content":"Push origin","status":"in_progress"}]}`
 
 	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "todo-1", Name: "todo_write", Args: initial}})
-	m.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "todo-1", Name: "todo_write", Args: initial, Output: "Todos updated"}})
-	if m.todoArgs != initial {
-		t.Fatalf("todoArgs after successful result = %q, want initial args", m.todoArgs)
+	m.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "todo-1", Name: "todo_write", Args: initial, Output: "Todos updated", TodoWritten: true, Todos: []event.Todo{{Content: "Sync main-v2", Status: "in_progress"}, {Content: "Push origin", Status: "pending"}}}})
+	if len(m.todos) != 2 || m.todos[0].Content != "Sync main-v2" || m.todos[0].Status != "in_progress" {
+		t.Fatalf("todos after successful result = %+v", m.todos)
 	}
 
 	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "todo-2", Name: "todo_write", Args: failed}})
-	m.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "todo-2", Name: "todo_write", Args: failed, Err: "missing complete_step"}})
-	if m.todoArgs != initial {
-		t.Fatalf("failed todo_write must not replace the panel: got %q, want %q", m.todoArgs, initial)
+	m.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "todo-2", Name: "todo_write", Args: failed, Err: "invalid status"}})
+	if len(m.todos) != 2 || m.todos[0].Content != "Sync main-v2" || m.todos[0].Status != "in_progress" {
+		t.Fatalf("failed todo_write must not replace the panel: got %+v", m.todos)
 	}
 }
 

@@ -17,6 +17,67 @@ import (
 	"reasonix/internal/tool"
 )
 
+func TestPowerShellToolUsesPwshIdentityAndConfinedLegacyAlias(t *testing.T) {
+	spec := sandbox.Spec{
+		Mode:  "enforce",
+		Shell: sandbox.Shell{Kind: sandbox.ShellPowerShell, Path: "pwsh"},
+	}
+	primary := ConfineBash(spec, SessionDataGuard{})
+	if primary.Name() != "pwsh" {
+		t.Fatalf("primary name = %q", primary.Name())
+	}
+	schema := string(primary.Schema())
+	for _, want := range []string{`"description"`, `"timeout_ms"`, `"run_in_background"`} {
+		if !strings.Contains(schema, want) {
+			t.Fatalf("pwsh schema missing %s: %s", want, schema)
+		}
+	}
+	if strings.Contains(schema, "preserve_background_processes") {
+		t.Fatalf("pwsh schema should require formal jobs: %s", schema)
+	}
+	legacy, ok := AliasBash(primary, "bash")
+	if !ok || legacy.Name() != "bash" {
+		t.Fatalf("legacy alias = %T/%v/%q", legacy, ok, legacy.Name())
+	}
+	if got := legacy.(bash).sb.Mode; got != "enforce" {
+		t.Fatalf("legacy alias lost confinement: %q", got)
+	}
+}
+
+func TestWindowsEnabledToolShellAliasesSelectOnlyPwsh(t *testing.T) {
+	workspace := Workspace{Bash: sandbox.Spec{
+		Mode:  "enforce",
+		Shell: sandbox.Shell{Kind: sandbox.ShellPowerShell, Path: "pwsh"},
+	}}
+	for _, configured := range []string{"bash", "Bash", "PowerShell", "powershell", "pwsh"} {
+		tools := workspace.Tools(configured)
+		if len(tools) != 1 || tools[0].Name() != "pwsh" {
+			t.Fatalf("enabled %q produced %#v; want only pwsh", configured, tools)
+		}
+	}
+}
+
+func TestGitBashToolBindingPreservesBashDialectAndStableSchema(t *testing.T) {
+	workspace := Workspace{Bash: sandbox.Spec{
+		Mode:  "off",
+		Shell: sandbox.Shell{Kind: sandbox.ShellBash, Path: `C:\Program Files\Git\bin\bash.exe`},
+	}}
+	baseline := ConfineBash(workspace.Bash, SessionDataGuard{})
+	for _, configured := range []string{"bash", "Bash", "PowerShell", "powershell", "pwsh"} {
+		tools := workspace.Tools(configured)
+		if len(tools) != 1 || tools[0].Name() != "bash" {
+			t.Fatalf("enabled %q produced %#v; want the bound Bash tool", configured, tools)
+		}
+		if tools[0].Description() != baseline.Description() || string(tools[0].Schema()) != string(baseline.Schema()) {
+			t.Fatalf("shell alias %q changed provider-visible Bash schema", configured)
+		}
+		bound := tools[0].(bash)
+		if bound.resolved() != workspace.Bash.Shell || strings.Contains(bound.Description(), "PowerShell command") {
+			t.Fatalf("Git Bash binding lost its dialect: %+v", bound)
+		}
+	}
+}
+
 func isolateBuiltinTestUserState(t *testing.T) string {
 	t.Helper()
 	cleanup, err := testenv.IsolateUserState()
@@ -74,9 +135,6 @@ func TestRebindBashWriteRootsUsesMinimalWriteSurface(t *testing.T) {
 	want := realRoots([]string{claim})
 	if len(rebound.sb.WriteRoots) != 1 || rebound.sb.WriteRoots[0] != want[0] {
 		t.Fatalf("write roots = %v, want %v", rebound.sb.WriteRoots, want)
-	}
-	if len(rebound.sb.AppContainerWriteRoots) != 1 || rebound.sb.AppContainerWriteRoots[0] != want[0] {
-		t.Fatalf("app-container write roots = %v, want %v", rebound.sb.AppContainerWriteRoots, want)
 	}
 }
 
@@ -315,6 +373,66 @@ func TestManagedConfigWriteGatedOnApprover(t *testing.T) {
 	}
 }
 
+// TestManagedConfigWriteAsksEvenInsideRoots pins that a Reasonix-managed config
+// file stays gated behind the fresh per-write approval even when the write
+// roots already cover it: YOLO and a widened allow_write must never let an
+// agent rewrite config.toml silently.
+func TestManagedConfigWriteAsksEvenInsideRoots(t *testing.T) {
+	home := isolateBuiltinTestUserState(t)
+	if err := os.MkdirAll(filepath.Join(home, ".reasonix"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	userConfig := config.UserConfigPath()
+	// The whole isolated home is a write root, config.toml included.
+	cfg.Sandbox.AllowWrite = []string{home}
+	managed := NewManagedConfigPaths(config.ReasonixManagedConfigPaths())
+	w := writeFile{roots: realRoots(cfg.WriteRootsForRoot(home)), managed: managed}
+	args, _ := json.Marshal(map[string]string{"path": userConfig, "content": "{}\n"})
+
+	// No approver: fails closed even though the path is inside the roots.
+	if _, err := w.Execute(context.Background(), args); err == nil || !strings.Contains(err.Error(), "interactive user approval") {
+		t.Fatalf("in-root managed config write without an approver should be denied, got: %v", err)
+	}
+	if _, err := os.Stat(userConfig); !os.IsNotExist(err) {
+		t.Fatalf("user config must not be created without approval, stat err=%v", err)
+	}
+
+	// Approved: the approver is consulted and the write lands.
+	approve := &stubConfigWriteApprover{allow: true}
+	ctx := tool.WithConfigWriteApprover(context.Background(), approve)
+	if _, err := w.Execute(ctx, args); err != nil {
+		t.Fatalf("approved in-root managed config write: %v", err)
+	}
+	if len(approve.asked) != 1 || approve.asked[0] != userConfig {
+		t.Fatalf("approver should be asked for the in-root config path, asked=%v", approve.asked)
+	}
+
+	// Declined: reason surfaces, nothing lands.
+	decline := &stubConfigWriteApprover{allow: false, reason: "the user declined this Reasonix config write"}
+	dctx := tool.WithConfigWriteApprover(context.Background(), decline)
+	if err := os.Remove(userConfig); err != nil {
+		t.Fatalf("remove approved config before declined write: %v", err)
+	}
+	if _, err := w.Execute(dctx, args); err == nil || !strings.Contains(err.Error(), "declined") {
+		t.Fatalf("declined in-root managed config write should surface the reason, got: %v", err)
+	}
+	if _, err := os.Stat(userConfig); !os.IsNotExist(err) {
+		t.Fatalf("declined config must not be created, stat err=%v", err)
+	}
+
+	// A plain file inside the roots still writes silently: the managed gate is
+	// file-level, not directory-level.
+	plain := filepath.Join(home, "notes.txt")
+	pargs, _ := json.Marshal(map[string]string{"path": plain, "content": "hi\n"})
+	if _, err := w.Execute(context.Background(), pargs); err != nil {
+		t.Fatalf("plain in-root write must not consult the approver: %v", err)
+	}
+	if len(approve.asked) != 1 {
+		t.Fatalf("plain in-root write must not reach the approver, asked=%v", approve.asked)
+	}
+}
+
 func TestBashSandboxConfinement(t *testing.T) {
 	if !sandbox.Available() {
 		t.Skip("OS sandbox not available")
@@ -352,6 +470,7 @@ func TestBashSandboxConfinement(t *testing.T) {
 }
 
 func TestBashEnforceRejectsWhenSandboxUnavailable(t *testing.T) {
+	requirePOSIXShellTest(t)
 	t.Setenv("PATH", t.TempDir())
 
 	exe, err := os.Executable()
@@ -371,7 +490,7 @@ func TestBashEnforceRejectsWhenSandboxUnavailable(t *testing.T) {
 	if err == nil {
 		t.Fatal("bash should reject enforce mode when the OS sandbox is unavailable")
 	}
-	if !strings.Contains(err.Error(), "bash sandbox requested but unavailable") {
+	if !strings.Contains(err.Error(), "shell sandbox requested but unavailable") {
 		t.Fatalf("error = %q, want sandbox unavailable", err)
 	}
 	if out != "" {

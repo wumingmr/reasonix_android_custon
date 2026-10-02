@@ -7,6 +7,7 @@ import (
 
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
+	"reasonix/internal/tool"
 )
 
 type workspaceEffectiveCall struct {
@@ -64,7 +65,7 @@ func workspaceMutationForCall(toolID, toolName string, args json.RawMessage, rea
 		ToolID:      toolID,
 		ToolName:    toolName,
 		Paths:       paths,
-		AllPaths:    toolName == "bash" || len(paths) == 0,
+		AllPaths:    tool.IsShellToolName(toolName) || len(paths) == 0,
 		Content:     effects.ContentMutation,
 		Tree:        effects.ContentMutation,
 		WorkingTree: effects.ContentMutation,
@@ -78,7 +79,7 @@ func workspaceHostStateOnlyTool(toolName string) bool {
 		return true
 	}
 	switch toolName {
-	case "kill_shell", "remember", "forget":
+	case "job_kill", "kill_shell", "remember", "forget":
 		return true
 	default:
 		return false

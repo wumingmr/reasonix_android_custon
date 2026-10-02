@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -177,10 +175,10 @@ func resolveRemoteMarkdownImageAddresses(ctx context.Context, host string, looku
 	return addresses, nil
 }
 
-// remoteMarkdownImageMiddleware keeps external images out of the WebView2
+// remoteMarkdownImageMiddleware keeps external images out of the desktop
 // network stack. The backend fetches them with Reasonix's proxy configuration,
 // validates the response, sanitizes SVG, and serves only bounded image bytes
-// from the local Wails origin.
+// from the local desktop origin.
 func (a *App) remoteMarkdownImageMiddleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -353,172 +351,11 @@ func safeRemoteMarkdownImage(body []byte) ([]byte, string) {
 	case "image/x-icon":
 		return body, "image/x-icon"
 	}
-	if sanitized, ok := sanitizeRemoteMarkdownSVG(body); ok {
+	// A remote image is already bounded by the download budget, so only that
+	// budget applies; the chat code-block preview adds its own element and
+	// depth ceilings on top of the shared sanitizer.
+	if sanitized, ok := sanitizeMarkdownSVG(body, svgSanitizeLimits{maxBytes: remoteMarkdownImageMaxBytes}); ok {
 		return sanitized, "image/svg+xml"
 	}
 	return nil, ""
-}
-
-var remoteMarkdownSVGForbiddenElements = map[string]bool{
-	"animate":          true,
-	"animatemotion":    true,
-	"animatetransform": true,
-	"audio":            true,
-	"embed":            true,
-	"foreignobject":    true,
-	"iframe":           true,
-	"object":           true,
-	"script":           true,
-	"set":              true,
-	"style":            true,
-	"video":            true,
-}
-
-func sanitizeRemoteMarkdownSVG(body []byte) ([]byte, bool) {
-	trimmed := bytes.TrimSpace(body)
-	trimmed = bytes.TrimPrefix(trimmed, []byte{0xef, 0xbb, 0xbf})
-	trimmed = bytes.TrimSpace(trimmed)
-	if len(trimmed) == 0 {
-		return nil, false
-	}
-
-	decoder := xml.NewDecoder(bytes.NewReader(trimmed))
-	decoder.Strict = true
-	var out bytes.Buffer
-	encoder := xml.NewEncoder(&out)
-	rootSeen := false
-	rootDepth := 0
-	skipDepth := 0
-
-	for {
-		token, err := decoder.Token()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, false
-		}
-		switch value := token.(type) {
-		case xml.StartElement:
-			if skipDepth > 0 {
-				skipDepth++
-				continue
-			}
-			name := strings.ToLower(value.Name.Local)
-			if !rootSeen {
-				if name != "svg" || (value.Name.Space != "" && value.Name.Space != "http://www.w3.org/2000/svg") {
-					return nil, false
-				}
-				rootSeen = true
-			} else if rootDepth == 0 {
-				return nil, false
-			}
-			if remoteMarkdownSVGForbiddenElements[name] {
-				skipDepth = 1
-				continue
-			}
-			attrs := value.Attr[:0]
-			for _, attr := range value.Attr {
-				attrName := strings.ToLower(attr.Name.Local)
-				if strings.HasPrefix(attrName, "on") || attrName == "srcset" ||
-					(attr.Name.Space == "http://www.w3.org/XML/1998/namespace" && attrName == "base") {
-					continue
-				}
-				if attrName == "href" || attrName == "src" {
-					if !safeRemoteMarkdownSVGReference(attr.Value) {
-						continue
-					}
-				} else if !safeRemoteMarkdownSVGAttributeValue(attr.Value) {
-					continue
-				}
-				attrs = append(attrs, attr)
-			}
-			value.Attr = attrs
-			if err := encoder.EncodeToken(value); err != nil {
-				return nil, false
-			}
-			rootDepth++
-		case xml.EndElement:
-			if skipDepth > 0 {
-				skipDepth--
-				continue
-			}
-			if rootDepth <= 0 {
-				return nil, false
-			}
-			if err := encoder.EncodeToken(value); err != nil {
-				return nil, false
-			}
-			rootDepth--
-		case xml.CharData:
-			if skipDepth == 0 && (!rootSeen || rootDepth == 0) {
-				if len(bytes.TrimSpace(value)) != 0 {
-					return nil, false
-				}
-				continue
-			}
-			if skipDepth == 0 {
-				if err := encoder.EncodeToken(value); err != nil {
-					return nil, false
-				}
-			}
-		case xml.Comment:
-			// Comments are not needed for display and can hide suspicious payloads.
-		case xml.Directive, xml.ProcInst:
-			// Drop DTDs and processing instructions; SVG does not need them here.
-		default:
-			if skipDepth == 0 {
-				if err := encoder.EncodeToken(value); err != nil {
-					return nil, false
-				}
-			}
-		}
-	}
-	if !rootSeen || rootDepth != 0 || skipDepth != 0 || encoder.Flush() != nil {
-		return nil, false
-	}
-	return out.Bytes(), true
-}
-
-func safeRemoteMarkdownSVGReference(raw string) bool {
-	value := strings.ToLower(strings.TrimSpace(raw))
-	if strings.HasPrefix(value, "#") {
-		return true
-	}
-	for _, prefix := range []string{
-		"data:image/png;base64,",
-		"data:image/jpeg;base64,",
-		"data:image/gif;base64,",
-		"data:image/webp;base64,",
-		"data:image/bmp;base64,",
-		"data:image/x-icon;base64,",
-	} {
-		if strings.HasPrefix(value, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-func safeRemoteMarkdownSVGAttributeValue(raw string) bool {
-	value := strings.ToLower(raw)
-	if strings.Contains(value, "javascript:") || strings.Contains(value, "vbscript:") || strings.Contains(value, "data:text/html") {
-		return false
-	}
-	for {
-		index := strings.Index(value, "url(")
-		if index < 0 {
-			return !strings.Contains(value, "@import") && !strings.Contains(value, "expression(")
-		}
-		value = value[index+4:]
-		end := strings.IndexByte(value, ')')
-		if end < 0 {
-			return false
-		}
-		target := strings.Trim(strings.TrimSpace(value[:end]), "\"'")
-		if !strings.HasPrefix(target, "#") {
-			return false
-		}
-		value = value[end+1:]
-	}
 }

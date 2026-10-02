@@ -36,10 +36,16 @@ type dispatchItem struct {
 
 // recordDispatcher keeps filesystem latency off provider/UI event goroutines.
 // Dispatchers are shared per state directory, so controller rebuilds do not
-// create one goroutine per recorder instance.
+// create one goroutine per recorder instance; CloseRecordDispatchers retires
+// them once their directory's process lifetime ends.
 type recordDispatcher struct {
 	writer *Writer
 	queue  chan dispatchItem
+	// stop requests the run goroutine to drain the queue and exit. The queue
+	// channel itself is never closed: Recorders can outlive a shutdown, and
+	// enqueue/flush must never send on a closed channel.
+	stop    chan struct{}
+	stopped chan struct{}
 }
 
 var recorderDispatchers = struct {
@@ -56,7 +62,7 @@ func dispatcherFor(writer *Writer) *recordDispatcher {
 	if dispatcher := recorderDispatchers.byDir[writer.dir]; dispatcher != nil {
 		return dispatcher
 	}
-	dispatcher := &recordDispatcher{writer: writer, queue: make(chan dispatchItem, recorderQueueSize)}
+	dispatcher := &recordDispatcher{writer: writer, queue: make(chan dispatchItem, recorderQueueSize), stop: make(chan struct{}), stopped: make(chan struct{})}
 	recorderDispatchers.byDir[writer.dir] = dispatcher
 	go dispatcher.run()
 	return dispatcher
@@ -72,13 +78,33 @@ func existingDispatcher(dir string) *recordDispatcher {
 }
 
 func (d *recordDispatcher) run() {
-	for item := range d.queue {
-		if item.flush != nil {
-			close(item.flush)
-			continue
+	defer close(d.stopped)
+	for {
+		select {
+		case item := <-d.queue:
+			d.process(item)
+		case <-d.stop:
+			// Drain what was already accepted, then exit so a process moving
+			// through many state directories does not keep one goroutine per
+			// dir. Later enqueues are dropped, matching the best-effort queue.
+			for {
+				select {
+				case item := <-d.queue:
+					d.process(item)
+				default:
+					return
+				}
+			}
 		}
-		_ = d.writer.Append(item.record)
 	}
+}
+
+func (d *recordDispatcher) process(item dispatchItem) {
+	if item.flush != nil {
+		close(item.flush)
+		return
+	}
+	_ = d.writer.Append(item.record)
 }
 
 func (d *recordDispatcher) enqueue(rec record) {
@@ -103,15 +129,52 @@ func (d *recordDispatcher) flush(ctx context.Context) error {
 	done := make(chan struct{})
 	select {
 	case d.queue <- dispatchItem{flush: done}:
+	case <-d.stopped:
+		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 	select {
 	case <-done:
 		return nil
+	case <-d.stopped:
+		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// CloseRecordDispatchers stops every process-local record dispatcher, drains
+// what was already queued, and forgets the per-directory cache so a process
+// (or test binary) moving through many state directories does not accumulate
+// one goroutine per dir. Mirrors CloseUsageCatalogs for shutdown and test
+// isolation boundaries. Each dispatcher is captured exactly once under the
+// registry lock, so stop is closed exactly once per generation.
+func CloseRecordDispatchers(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	recorderDispatchers.Lock()
+	dispatchers := make([]*recordDispatcher, 0, len(recorderDispatchers.byDir))
+	for dir, dispatcher := range recorderDispatchers.byDir {
+		dispatchers = append(dispatchers, dispatcher)
+		delete(recorderDispatchers.byDir, dir)
+	}
+	recorderDispatchers.Unlock()
+	for _, dispatcher := range dispatchers {
+		close(dispatcher.stop)
+	}
+	var first error
+	for _, dispatcher := range dispatchers {
+		select {
+		case <-dispatcher.stopped:
+		case <-ctx.Done():
+			if first == nil {
+				first = ctx.Err()
+			}
+		}
+	}
+	return first
 }
 
 // NewRecorder wraps inner with usage recording. source labels every record
@@ -240,6 +303,10 @@ func (r *Recorder) RecordWorkspaceMutation(m event.WorkspaceMutation) {
 
 func (r *Recorder) RecordRunBudget(sample event.RunBudgetSample) {
 	event.RecordRunBudget(r.inner, sample)
+}
+
+func (r *Recorder) RecordSubagentLifecycle(info event.SubagentLifecycleInfo) {
+	event.RecordSubagentLifecycle(r.inner, info)
 }
 
 func (r *Recorder) recordUsage(e event.Event) {

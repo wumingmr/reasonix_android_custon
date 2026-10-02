@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -162,5 +163,29 @@ func TestE2EDeleteRangePreservesGBK(t *testing.T) {
 	}
 	if !strings.Contains(s, "第一行") || !strings.Contains(s, "第三行") {
 		t.Errorf("delete_range removed the wrong lines: %q", s)
+	}
+}
+
+// A UTF-8 CJK file carrying one stray invalid byte is not GB18030. Decoding it
+// as GB18030 turns the orphaned continuation bytes into U+FFFD, and an edit
+// anywhere in the file then rewrites every one of them.
+func TestE2EEditKeepsBytesOfUTF8FileWithStrayByte(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mixed.go")
+	before := []byte("// 中文注释：修改前的内容\nvalue := 1\n// 结尾\xff\n")
+	if err := os.WriteFile(path, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	editTL, _ := tool.LookupBuiltin("edit_file")
+	if _, err := editTL.Execute(context.Background(), e2eArgs(map[string]any{
+		"path":       path,
+		"old_string": "value := 1",
+		"new_string": "value := 2",
+	})); err != nil {
+		t.Fatalf("edit_file: %v", err)
+	}
+	got, _ := os.ReadFile(path)
+	want := []byte("// 中文注释：修改前的内容\nvalue := 2\n// 结尾\xff\n")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("edit_file changed bytes outside the edit:\n got % x\nwant % x", got, want)
 	}
 }

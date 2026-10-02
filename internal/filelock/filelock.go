@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -48,6 +48,16 @@ func AcquireMode(ctx context.Context, path string, mode Mode) (func(), error) {
 	return acquire(ctx, path, 0, mode)
 }
 
+// AcquireModeWithKey uses localKey for the process-local queue while opening
+// path for the cross-process lock. Callers with filesystem identity knowledge
+// use this to make aliases share a queue without using a comparison key for IO.
+func AcquireModeWithKey(ctx context.Context, path, localKey string, mode Mode) (func(), error) {
+	if localKey == "" {
+		return nil, errors.New("file lock local key is empty")
+	}
+	return acquireWithKey(ctx, path, localKey, 0, mode)
+}
+
 // AcquireWithExternalTimeout obtains an exclusive lock while keeping the
 // in-process queue and cross-process file-lock budgets separate. ctx bounds
 // only the wait for another goroutine in this process; externalTimeout starts
@@ -59,7 +69,23 @@ func AcquireWithExternalTimeout(ctx context.Context, path string, externalTimeou
 	return acquire(ctx, path, externalTimeout, ModeExclusive)
 }
 
+// AcquireWithExternalTimeoutAndKey is AcquireWithExternalTimeout with an
+// explicit process-local identity key.
+func AcquireWithExternalTimeoutAndKey(ctx context.Context, path, localKey string, externalTimeout time.Duration) (func(), error) {
+	if externalTimeout <= 0 {
+		return nil, errors.New("external file lock timeout must be positive")
+	}
+	if localKey == "" {
+		return nil, errors.New("file lock local key is empty")
+	}
+	return acquireWithKey(ctx, path, localKey, externalTimeout, ModeExclusive)
+}
+
 func acquire(ctx context.Context, path string, externalTimeout time.Duration, mode Mode) (func(), error) {
+	return acquireWithKey(ctx, path, "", externalTimeout, mode)
+}
+
+func acquireWithKey(ctx context.Context, path, localKey string, externalTimeout time.Duration, mode Mode) (func(), error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -67,7 +93,10 @@ func acquire(ctx context.Context, path string, externalTimeout time.Duration, mo
 	if err != nil {
 		return nil, err
 	}
-	key := localRegistryKey(lockPath)
+	key := localKey
+	if key == "" {
+		key = lockPath
+	}
 	releaseLocal, err := acquireLocal(ctx, key, mode)
 	if err != nil {
 		return nil, err
@@ -118,11 +147,26 @@ func TryAcquire(path string) (func(), error) {
 
 // TryAcquireMode attempts a non-blocking lock in exclusive or shared mode.
 func TryAcquireMode(path string, mode Mode) (func(), error) {
+	return tryAcquireModeWithKey(path, "", mode)
+}
+
+// TryAcquireModeWithKey is the non-blocking form of AcquireModeWithKey.
+func TryAcquireModeWithKey(path, localKey string, mode Mode) (func(), error) {
+	if localKey == "" {
+		return nil, errors.New("file lock local key is empty")
+	}
+	return tryAcquireModeWithKey(path, localKey, mode)
+}
+
+func tryAcquireModeWithKey(path, localKey string, mode Mode) (func(), error) {
 	lockPath, err := canonicalLockPath(path)
 	if err != nil {
 		return nil, err
 	}
-	key := localRegistryKey(lockPath)
+	key := localKey
+	if key == "" {
+		key = lockPath
+	}
 	releaseLocal, ok := tryAcquireLocal(key, mode)
 	if !ok {
 		return nil, ErrHeld
@@ -261,6 +305,21 @@ func RegistrySizeForTest() int {
 	return len(localRegistry.locks)
 }
 
+// HeldPathsForTest returns the canonical paths currently holding a lock. A
+// package TestMain uses it to turn a leaked lease into a failure everywhere:
+// Windows cannot remove a directory containing an open lock file, so a leak
+// that only breaks t.TempDir cleanup there is otherwise invisible on POSIX.
+func HeldPathsForTest() []string {
+	localRegistry.Lock()
+	defer localRegistry.Unlock()
+	held := make([]string, 0, len(localRegistry.locks))
+	for path := range localRegistry.locks {
+		held = append(held, path)
+	}
+	sort.Strings(held)
+	return held
+}
+
 func canonicalLockPath(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -270,16 +329,5 @@ func canonicalLockPath(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve file lock path: %w", err)
 	}
-	abs = filepath.Clean(abs)
-	if runtime.GOOS == "windows" {
-		abs = strings.ToLower(filepath.ToSlash(abs))
-	}
-	return abs, nil
-}
-
-func localRegistryKey(path string) string {
-	if runtime.GOOS == "darwin" {
-		return strings.ToLower(filepath.ToSlash(path))
-	}
-	return path
+	return filepath.Clean(abs), nil
 }

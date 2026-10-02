@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import {
+  analyzeFrontendDiagnosticAnomalies,
   createFrontendDiagnostics,
   isFrontendDiagnosticsBuild,
+  isSupportedFrontendDiagnosticSchemaVersion,
 } from "../lib/frontendDiagnostics";
 
 let now = 10_000;
@@ -99,7 +101,10 @@ assert.ok(active.droppedEventCount > 0, "overflow is visible in the summary");
 assert.equal(active.markerCount, 0, "evicted markers are not counted as retained");
 
 const payload = diagnostics.stop();
-assert.equal(payload.schemaVersion, 1);
+assert.equal(payload.schemaVersion, 2);
+assert.equal(isSupportedFrontendDiagnosticSchemaVersion(1), true, "schema v1 remains readable by replay tools");
+assert.equal(isSupportedFrontendDiagnosticSchemaVersion(2), true, "schema v2 is the current capture format");
+assert.equal(isSupportedFrontendDiagnosticSchemaVersion(3), false, "unknown future schemas are rejected explicitly");
 assert.equal(payload.manifest.platform, "windows");
 assert.equal(payload.events[payload.events.length - 1]?.type, "stop");
 const serialized = JSON.stringify(payload);
@@ -112,6 +117,7 @@ assert.equal(serialized.includes("layoutVariant"), true, "row layout variant rem
 assert.equal(serialized.includes("estimateSource"), true, "height estimate source remains available for analysis");
 assert.equal(serialized.includes("workspace.session-directory"), true, "sidebar directory event remains available for analysis");
 assert.equal(serialized.includes("workspaceSessions"), true, "sidebar session counts remain available for analysis");
+assert.ok(Array.isArray(payload.summary.anomalies), "payload includes automatic anomaly analysis");
 for (const forbidden of ["PRIVATE_TEXT", "PRIVATE_TOKEN", "private-user", "private-tab", "path", "token", "tabId"]) {
   assert.equal(serialized.includes(forbidden), false, `payload excludes ${forbidden}`);
 }
@@ -125,5 +131,28 @@ assert.equal(isFrontendDiagnosticsBuild("canary", false), true);
 assert.equal(isFrontendDiagnosticsBuild("preview", false), true);
 assert.equal(isFrontendDiagnosticsBuild("stable", true), true);
 assert.equal(isFrontendDiagnosticsBuild("stable", false), false);
+
+assert.deepEqual(analyzeFrontendDiagnosticAnomalies([
+  { t: 0, type: "navigation.begin", intent: 7 },
+  { t: 1, type: "workspace.session-directory", workspaceSessions: 8 },
+  { t: 2, type: "workspace.session-directory", workspaceSessions: 7 },
+  { t: 3, type: "navigation.settle", intent: 7 },
+  { t: 4, type: "history.older-request", trigger: "viewport-user" },
+  { t: 5, type: "transcript.scroll-write", owner: "unknown-writer" },
+]), [
+  { code: "settle-before-paint-ready", intent: 7 },
+  { code: "navigation-session-count-changed", intent: 7, count: 2 },
+  { code: "viewport-older-without-user-input", count: 1 },
+  { code: "unknown-scroll-writer", count: 1 },
+], "automatic analysis reports ordering, paging, catalog, and writer anomalies");
+
+assert.deepEqual(analyzeFrontendDiagnosticAnomalies([
+  { t: 0, type: "history.viewport-permit" },
+  { t: 1, type: "history.older-request", trigger: "viewport-user" },
+]), [], "a viewport page request consumes one explicit user permit without a false anomaly");
+assert.deepEqual(analyzeFrontendDiagnosticAnomalies([
+  { t: 0, type: "navigation.begin", intent: 9 },
+  { t: 1, type: "navigation.settle", intent: 9, outcome: "failed" },
+]), [], "a failed data terminal may release its mask without a paint-ready false positive");
 
 console.log("frontend diagnostics tests passed");

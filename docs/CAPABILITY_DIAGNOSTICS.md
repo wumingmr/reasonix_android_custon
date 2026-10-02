@@ -32,13 +32,45 @@ packages, MCP servers, and instruction docs (`AGENTS.md` / `REASONIX.md` /
 **Default is static and safe:** no network, no MCP child processes. Use `--live`
 only when you explicitly want to start automatic MCP servers.
 
-Related (unchanged) doctor commands:
+Related doctor commands:
 
 ```bash
 reasonix doctor                  # env / providers / sandbox snapshot
 reasonix doctor session <id>     # support session bundle
 reasonix doctor redact-sessions  # redact secrets in session files
 ```
+
+## Skill tool references
+
+Both `doctor` and `doctor capabilities` check `allowed-tools` on effective
+skills using the same configured paths, exclusions, disabled names, and source
+precedence. The inventory combines compile-time tools with host-managed tool
+identities. `use_capability` is a known host tool even with no MCP servers;
+there is no need to disable or override the built-in review skills.
+
+Recognition means the reference names a known tool, not that the tool is
+registered, permitted, or ready in every session. Hidden tools callable through
+the proxy are included. MCP dependency configuration remains a separate check.
+
+| Capability issue code | Meaning |
+| --- | --- |
+| `skill.tool_reference_unknown` | An ordinary name is not in the known inventory; check spelling |
+| `skill.tool_reference_invalid` | Invalid glob syntax or an incomplete MCP reference |
+| `skill.tool_reference_ambiguous` | Supplied MCP bindings resolve a literal to multiple tools |
+| `skill.tool_reference_unverified` | A dynamic reference or unmatched pattern cannot be verified offline |
+| `skill.mcp_dependency_missing` | An auto-use required skill depends on an unconfigured MCP server |
+| `skill.mcp_dependency_failed` | The required server has an observed host failure |
+
+Unverified references are informational in capability diagnostics. Ordinary
+doctor retains its warning-list format and explicitly labels these references
+as unverified. Neither result grants tool access or proves a server is broken.
+Static checks do not start MCP servers or call a model provider.
+When an existing runtime host or an explicit `--live` probe supplies MCP tools,
+capability diagnostics use that observed inventory to resolve portable aliases.
+Alias resolution follows runtime plugin ownership: a plugin skill can use aliases
+from its own package, while an ordinary local skill needs a concrete callable
+name or capability ID. Diagnostics preserve the adapter's original and visible
+names, including configured prefix stripping.
 
 ## Everyday workflows
 
@@ -117,6 +149,28 @@ reasonix doctor capabilities --json
 and to use `--live` only after you explicitly allow external MCP. Project or
 global skills named `reasonix-guide` override the builtin; you can also hide it
 with `[skills].disabled_skills = ["reasonix-guide"]`.
+
+The guide loads a short router first. Skills, commands, hooks, MCP, plugins,
+and instruction resolution have separate pages embedded in the binary. Read only
+the relevant page with `read_skill`; for a tool hidden behind the capability
+dispatcher, use:
+
+```json
+{"action":"call","capability_id":"tool:read_skill","arguments":{"name":"reasonix-guide","reference":"references/hooks.md"}}
+```
+
+Omit `reference` to retain the existing full skill-body read. Reference reads
+are limited to `references/*.md` in the selected embedded skill package; they
+do not read arbitrary host paths or fall back to a builtin behind a project
+override or disabled skill. File-backed skills continue to use their source
+files for references. No user data format or migration changes.
+
+The session skills catalog shares its fixed character budget across descriptions
+before omitting entries. If names alone exceed the budget, it lists complete
+entries with an omitted count and a discovery hint. Omitted entries remain
+available through `use_capability` search/inspect/call; the preview is not the
+authoritative inventory. Skill selection uses actual task relevance rather than
+mandatory invocation on weak keyword matches.
 
 ## CLI reference
 
@@ -262,6 +316,13 @@ config files.
 
 ## Cache impact
 
-Adding the built-in `reasonix-guide` skill appends **one stable index line** to
-the system-prompt skills index after upgrade. The skill body is loaded only on
-invocation. Diagnostics itself is not part of the provider prompt.
+Adding the built-in `reasonix-guide` skill appends one line to the next changed
+`session-context` Skills catalog. The skill body is loaded only on invocation.
+Diagnostics itself is not part of the provider prompt.
+
+Changing the static invocation policy or tool description/schema changes the
+prefix used by newly assembled sessions and can require cache warming. Reading
+a guide or reference page adds a tool result without rewriting the current
+system prefix or tool schemas. Catalog rendering is deterministic for the same
+inventory. Prompt wording should be evaluated on the actual deployed providers;
+deterministic integration tests do not measure model selection quality.

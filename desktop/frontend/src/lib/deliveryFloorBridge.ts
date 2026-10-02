@@ -9,18 +9,19 @@ export interface QualityFloorBindings {
 }
 
 export function normalizeQualityFloor(floor: string): QualityFloor {
-  return floor === "delivery" ? "delivery" : "standard";
+	void floor;
+	return "standard";
 }
 
-// The mock stores the floor on the tab list so the browser shell reflects the
-// toggle the way the Wails host does; the host derives it from the session.
+// The mock preserves the retired bridge surface while matching the host's
+// standard-only compatibility behavior.
 export function makeMockQualityFloorBindings(
   tabs: () => TabMeta[],
   setTabs: (next: TabMeta[]) => void,
 ): QualityFloorBindings {
-  const applyToTab = (tabID: string, floor: string) => {
-    const next = normalizeQualityFloor(floor);
-    setTabs(tabs().map((tab) => (tab.id === tabID ? { ...tab, qualityFloor: next } : tab)));
+	const applyToTab = (tabID: string, floor: string) => {
+		const next = normalizeQualityFloor(floor);
+		setTabs(tabs().map((tab) => (tab.id === tabID ? { ...tab, qualityFloor: next, floorInferred: false } : tab)));
   };
   return {
     async SetQualityFloor(floor: string) {

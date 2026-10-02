@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"reasonix/internal/extension"
+	"reasonix/internal/skill/skillwatch"
 )
 
 // RuntimeDoctorReport is the structured runtime diagnostics document for
@@ -17,6 +18,7 @@ type RuntimeDoctorReport struct {
 	PublishedGen          uint64                             `json:"publishedGeneration"`
 	DrainingGens          []uint64                           `json:"drainingGenerations,omitempty"`
 	RuntimeOwnerFallbacks uint64                             `json:"runtimeOwnerFallbacks"`
+	SkillWatch            *skillwatch.Diagnostics            `json:"skillWatch,omitempty"`
 	Text                  string                             `json:"-"`
 }
 
@@ -40,6 +42,10 @@ func CollectRuntimeDoctor(res *BuildResult) RuntimeDoctorReport {
 		Resume:                owner.DecideResume(gen),
 	}
 	if res != nil {
+		if res.SkillWatchService != nil {
+			diagnostics := res.SkillWatchService.Diagnostics()
+			report.SkillWatch = &diagnostics
+		}
 		report.Status = res.Status
 		if res.Status != nil {
 			report.Text = FormatRuntimeStatus(res.Status)
@@ -68,6 +74,11 @@ func RenderRuntimeDoctorText(report RuntimeDoctorReport) string {
 		body = "runtime status: unavailable\n"
 	}
 	body += fmt.Sprintf("runtime owner fallbacks: %d\n", report.RuntimeOwnerFallbacks)
+	if watch := report.SkillWatch; watch != nil {
+		body += fmt.Sprintf("skill watch: physical=%d logical=%d scans=%d entries=%d events=%d notifications=%d degraded=%d helper-restarts=%d\n",
+			watch.PhysicalWatches, watch.LogicalSubscriptions, watch.Scans, watch.ScannedEntries,
+			watch.EventsReceived, watch.Notifications, watch.DegradedRoots, watch.HelperRestarts)
+	}
 	body += fmt.Sprintf("recoverability: clean=%v irreversible=%v\n", report.Recoverability.Clean, report.Recoverability.HasIrreversible)
 	body += fmt.Sprintf("resume: allow=%v cleanRollback=%v\n", report.Resume.AllowResume, report.Resume.CleanRollback)
 	for _, n := range report.Recoverability.Notes {

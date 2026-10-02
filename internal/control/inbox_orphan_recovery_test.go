@@ -19,7 +19,7 @@ func TestInboxSnapshotRecoversUnownedInFlightItem(t *testing.T) {
 	if err := os.WriteFile(session, []byte("{}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	c := New(Options{SessionPath: session, SessionDir: dir, Sink: event.Discard})
+	c := newOwnedTestController(t, Options{SessionPath: session, SessionDir: dir, Sink: event.Discard})
 	rec, err := c.EnqueueInbox(InboxRequest{Intent: sessioninbox.IntentSteer, Submit: "orphaned guidance"})
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +50,7 @@ func TestInboxSnapshotPreservesActivelyOwnedSteer(t *testing.T) {
 	if err := os.WriteFile(session, []byte("{}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	c := New(Options{SessionPath: session, SessionDir: dir, Sink: event.Discard})
+	c := newOwnedTestController(t, Options{SessionPath: session, SessionDir: dir, Sink: event.Discard})
 	rec, err := c.EnqueueInbox(InboxRequest{Intent: sessioninbox.IntentSteer, Submit: "active guidance"})
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +87,7 @@ func TestTrySteerOrphanRequiresReviewBeforeExplicitRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &gatedTurnRunner{started: make(chan struct{}), release: make(chan struct{})}
-	c := New(Options{Runner: runner, SessionPath: session, SessionDir: dir, Sink: event.Discard})
+	c := newOwnedTestController(t, Options{Runner: runner, SessionPath: session, SessionDir: dir, Sink: event.Discard})
 	defer c.autosaveWG.Wait()
 	defer close(runner.release)
 	rec, err := c.EnqueueInbox(InboxRequest{Intent: sessioninbox.IntentSteer, Submit: "retry me"})
@@ -140,7 +140,7 @@ func TestRetryThenStaleSteerTreatsAlreadyRunningItemAsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &gatedTurnRunner{started: make(chan struct{}), release: make(chan struct{})}
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Runner:      runner,
 		SessionPath: session,
 		SessionDir:  dir,
@@ -184,7 +184,7 @@ func TestInboxAdmissionOwnsClaimBeforeSnapshotRecovery(t *testing.T) {
 	if err := os.WriteFile(session, []byte("{}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Runner:      &fakeTurnRunner{},
 		SessionPath: session,
 		SessionDir:  dir,
@@ -247,7 +247,7 @@ func TestInboxSnapshotDoesNotHoldAdmissionWhileDiskLocked(t *testing.T) {
 	if err := os.WriteFile(session, []byte("{}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	c := New(Options{SessionPath: session, SessionDir: dir, Sink: event.Discard})
+	c := newOwnedTestController(t, Options{SessionPath: session, SessionDir: dir, Sink: event.Discard})
 	st, err := c.ensureInbox()
 	if err != nil {
 		t.Fatal(err)
@@ -288,7 +288,7 @@ func TestInboxCompletionKeepsOwnershipWithoutHoldingAdmissionDuringSnapshot(t *t
 	if err := os.WriteFile(session, []byte("{}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	c := New(Options{SessionPath: session, SessionDir: dir, Sink: event.Discard})
+	c := newOwnedTestController(t, Options{SessionPath: session, SessionDir: dir, Sink: event.Discard})
 	rec, err := c.EnqueueInbox(InboxRequest{Intent: sessioninbox.IntentSteer, Submit: "complete atomically"})
 	if err != nil {
 		t.Fatal(err)
@@ -337,7 +337,7 @@ func TestInboxCompletionOwnsItemWithoutHoldingAdmissionDuringDurableAck(t *testi
 	if err := os.WriteFile(session, []byte("{}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	c := New(Options{SessionPath: session, SessionDir: dir, Sink: event.Discard})
+	c := newOwnedTestController(t, Options{SessionPath: session, SessionDir: dir, Sink: event.Discard})
 	rec, err := c.EnqueueInbox(InboxRequest{Intent: sessioninbox.IntentSteer, Submit: "ack atomically"})
 	if err != nil {
 		t.Fatal(err)

@@ -11,6 +11,7 @@ import (
 // produced. For an exploration task the grader's "want X, got Y" line is the
 // entire finding — a bare false would leave every failure indistinguishable.
 func TestGradeVerboseKeepsWhatTheGraderSaid(t *testing.T) {
+	requireRealBash(t)
 	taskDir := t.TempDir()
 	verify := "#!/usr/bin/env bash\necho \"answer.txt normalized to 'askrigg', want 'gorsefen'\" >&2\nexit 1\n"
 	if err := os.WriteFile(filepath.Join(taskDir, "verify.sh"), []byte(verify), 0o755); err != nil {
@@ -27,6 +28,7 @@ func TestGradeVerboseKeepsWhatTheGraderSaid(t *testing.T) {
 }
 
 func TestGradeVerboseStaysQuietWhenTheTaskPasses(t *testing.T) {
+	requireRealBash(t)
 	taskDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(taskDir, "verify.sh"), []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)

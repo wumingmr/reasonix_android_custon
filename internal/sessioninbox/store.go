@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"reasonix/internal/filelock"
+	filelock "reasonix/internal/identitylock"
 	"reasonix/internal/store"
 )
 
@@ -24,12 +24,12 @@ const (
 	maxManifestBytes = 8 << 20
 )
 
-// Store is the transactional durable inbox for one session path.
+// Store is the transactional durable inbox for one session locator.
 // Disk I/O runs under store.mu only; callers must not hold Controller locks.
 type Store struct {
 	mu       sync.Mutex
 	dir      string
-	session  string // session transcript path
+	session  string // logical locator: transcript path or canonical session route
 	runID    string
 	limits   Limits
 	man      *manifest
@@ -43,11 +43,19 @@ type Store struct {
 // for its transaction lock; body blobs remain lazy. Cross-process recovery
 // marks uncertain items and pauses.
 func Open(sessionPath string, limits Limits) (*Store, error) {
+	return OpenAt(sessionPath, store.SessionInboxDir(sessionPath), limits)
+}
+
+// OpenAt separates the logical session locator from its physical inbox directory.
+// Canonical runtimes have an immutable identity, not a transcript file path.
+func OpenAt(sessionPath, dir string, limits Limits) (*Store, error) {
 	sessionPath = strings.TrimSpace(sessionPath)
 	if sessionPath == "" {
 		return nil, fmt.Errorf("sessioninbox: empty session path")
 	}
-	dir := store.SessionInboxDir(sessionPath)
+	if strings.TrimSpace(dir) == "" {
+		return nil, fmt.Errorf("sessioninbox: empty inbox directory")
+	}
 	s := &Store{
 		dir:     dir,
 		session: sessionPath,
@@ -71,7 +79,7 @@ func (s *Store) Dir() string {
 	return s.dir
 }
 
-// SessionPath returns the bound session transcript path.
+// SessionPath returns the bound logical session locator.
 func (s *Store) SessionPath() string {
 	if s == nil {
 		return ""
@@ -471,6 +479,19 @@ func (s *Store) UpdateItem(id string, env PromptEnvelope) (InboxItemMeta, error)
 // additional client idempotency key to it. aliasEnvelope is the original client
 // request, not the merged body, so collect-mode redelivery remains deduplicated.
 func (s *Store) UpdateItemWithIdempotency(id string, env PromptEnvelope, alias string, aliasEnvelope PromptEnvelope) (InboxItemMeta, error) {
+	return s.updateItem(id, env, alias, aliasEnvelope, "")
+}
+
+// UpdateItemWithIdempotencyIfVersion prevents collect-mode appends from
+// overwriting an edit made while references were being prepared.
+func (s *Store) UpdateItemWithIdempotencyIfVersion(id string, env PromptEnvelope, alias string, aliasEnvelope PromptEnvelope, version string) (InboxItemMeta, error) {
+	if version == "" {
+		return InboxItemMeta{}, ErrContentChanged
+	}
+	return s.updateItem(id, env, alias, aliasEnvelope, version)
+}
+
+func (s *Store) updateItem(id string, env PromptEnvelope, alias string, aliasEnvelope PromptEnvelope, version string) (InboxItemMeta, error) {
 	if s == nil {
 		return InboxItemMeta{}, ErrClosed
 	}
@@ -479,7 +500,9 @@ func (s *Store) UpdateItemWithIdempotency(id string, env PromptEnvelope, alias s
 	if alias != "" && !validIdempotencyKey(alias) {
 		return InboxItemMeta{}, fmt.Errorf("sessioninbox: invalid idempotency key")
 	}
-	env = normalizeEnvelope(env)
+	if version == "" {
+		env = normalizeEnvelope(env)
+	}
 	if strings.TrimSpace(env.SubmitText) == "" && env.Invocation == nil && len(env.Invocations) == 0 {
 		return InboxItemMeta{}, ErrEmpty
 	}
@@ -519,6 +542,9 @@ func (s *Store) UpdateItemWithIdempotency(id string, env PromptEnvelope, alias s
 	if replayed {
 		return meta, nil
 	}
+	if version != "" && ContentVersion(meta) != version {
+		return InboxItemMeta{}, ErrContentChanged
+	}
 	if byteSize > s.limits.MaxItemBytes {
 		return InboxItemMeta{}, ErrItemTooLarge
 	}
@@ -544,6 +570,14 @@ func (s *Store) UpdateItemWithIdempotency(id string, env PromptEnvelope, alias s
 	if next.Items[i].State == StateBlocked {
 		next.Items[i].State = StateQueued
 		next.Items[i].BlockReason = ""
+	}
+	if len(env.ReferenceErrors) > 0 {
+		// Preserve uncertain delivery until explicit retry, even after editing.
+		if next.Items[i].State != StateUncertain {
+			next.Items[i].State = StateBlocked
+		}
+		next.Items[i].BlockReason = strings.Join(env.ReferenceErrors, "; ")
+		next.Paused = true
 	}
 	if err := s.commitManifestLocked(next); err != nil {
 		s.removeBlobLocked(newBlob)

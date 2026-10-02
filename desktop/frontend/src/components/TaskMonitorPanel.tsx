@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
@@ -11,14 +12,14 @@ import {
   XCircle,
 } from "lucide-react";
 import { app } from "../lib/bridge";
+import { desktopHost } from "../lib/desktopHost";
 import { useT } from "../lib/i18n";
 import type { TaskEvent, TaskSnapshot } from "../lib/types";
 
 type CatalogTask = TaskSnapshot & { __projectKey: string; __projectLabel: string; __catalogKey: string };
 
 function hasTaskCatalogBinding(): boolean {
-  const bound = (window as unknown as { go?: { main?: { App?: { ListTaskPage?: unknown } } } }).go?.main?.App?.ListTaskPage;
-  return typeof bound === "function";
+  return typeof desktopHost().app?.ListTaskPage === "function";
 }
 
 // --- helpers ---
@@ -380,7 +381,7 @@ export function TaskMonitorPanel({
 			)}
 			{indexProgress.partial && <div className="taskmonitor__indexing">Indexing tasks ({indexProgress.indexed}/{indexProgress.total})</div>}
           {summaryMode && <div className="taskmonitor__category-title">{t("summary.tasks")}</div>}
-          {actionError && <div className="taskmonitor__state taskmonitor__state--error">{actionError}</div>}
+          {actionError && <div className="taskmonitor__state taskmonitor__state--error"><ErrorMessage error={actionError} /></div>}
           {actionMessage && <div className="taskmonitor__state">{actionMessage}</div>}
           {loading && (
             <div className="taskmonitor__state">
@@ -392,7 +393,7 @@ export function TaskMonitorPanel({
           {error && (
             <div className="taskmonitor__state taskmonitor__state--error">
               <AlertCircle size={16} />
-              <span>{error}</span>
+              <span><ErrorMessage error={error} /></span>
             </div>
           )}
 
@@ -521,7 +522,7 @@ export function TaskMonitorPanel({
                         {evError && (
                           <div className="taskmonitor__state taskmonitor__state--error">
                             <AlertCircle size={12} />
-                            <span>{evError}</span>
+                            <span><ErrorMessage error={evError} /></span>
                           </div>
                         )}
 

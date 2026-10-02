@@ -8,7 +8,7 @@ import (
 )
 
 func TestSetQualityFloorNormalizesVocabulary(t *testing.T) {
-	c := New(Options{Label: "floor"})
+	c := newOwnedTestController(t, Options{Label: "floor"})
 	cases := map[string]string{
 		"":           QualityFloorStandard,
 		"standard":   QualityFloorStandard,
@@ -19,10 +19,10 @@ func TestSetQualityFloorNormalizesVocabulary(t *testing.T) {
 		"eco":        QualityFloorStandard,
 		"lite":       QualityFloorStandard,
 		"minimal":    QualityFloorStandard,
-		"delivery":   QualityFloorDelivery,
-		"deliver":    QualityFloorDelivery,
-		"quality":    QualityFloorDelivery,
-		" DELIVERY ": QualityFloorDelivery,
+		"delivery":   QualityFloorStandard,
+		"deliver":    QualityFloorStandard,
+		"quality":    QualityFloorStandard,
+		" DELIVERY ": QualityFloorStandard,
 	}
 	for raw, want := range cases {
 		if err := c.SetQualityFloor(raw); err != nil {
@@ -38,26 +38,26 @@ func TestSetQualityFloorNormalizesVocabulary(t *testing.T) {
 	if err := c.SetQualityFloor("turbo"); err == nil {
 		t.Fatal("unknown floor value must error")
 	}
-	if got := c.QualityFloor(); got != QualityFloorDelivery {
+	if got := c.QualityFloor(); got != QualityFloorStandard {
 		t.Fatalf("rejected value must not change state, got %q", got)
 	}
 }
 
-func TestQualityFloorConstraintReachesTurnConstraints(t *testing.T) {
-	c := New(Options{Label: "floor"})
+func TestRetiredQualityFloorNeverReachesTurnConstraints(t *testing.T) {
+	c := newOwnedTestController(t, Options{Label: "floor"})
 	if got := c.qualityFloorConstraint(); got != taskcontract.PolicyFloorNone {
 		t.Fatalf("default floor constraint = %v, want none", got)
 	}
 	if err := c.SetQualityFloor(QualityFloorDelivery); err != nil {
 		t.Fatalf("SetQualityFloor: %v", err)
 	}
-	if got := c.qualityFloorConstraint(); got != taskcontract.PolicyFloorDelivery {
-		t.Fatalf("floor constraint = %v, want delivery", got)
+	if got := c.qualityFloorConstraint(); got != taskcontract.PolicyFloorNone {
+		t.Fatalf("floor constraint = %v, want none", got)
 	}
 }
 
 func TestSetQualityFloorConcurrentWithReads(t *testing.T) {
-	c := New(Options{Label: "floor"})
+	c := newOwnedTestController(t, Options{Label: "floor"})
 	var wg sync.WaitGroup
 	for i := range 8 {
 		wg.Add(2)
@@ -71,10 +71,8 @@ func TestSetQualityFloorConcurrentWithReads(t *testing.T) {
 		}(i)
 		go func() {
 			defer wg.Done()
-			switch c.QualityFloor() {
-			case QualityFloorStandard, QualityFloorDelivery:
-			default:
-				t.Errorf("QualityFloor returned invalid value %q", c.QualityFloor())
+			if got := c.QualityFloor(); got != QualityFloorStandard {
+				t.Errorf("QualityFloor returned %q, want standard", got)
 			}
 			_ = c.qualityFloorConstraint()
 		}()

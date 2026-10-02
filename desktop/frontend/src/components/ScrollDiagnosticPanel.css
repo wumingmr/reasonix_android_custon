@@ -1,5 +1,5 @@
 .scroll-diagnostics {
-  --wails-draggable: no-drag;
+  --reasonix-draggable: no-drag;
   position: absolute;
   left: 14px;
   bottom: 14px;
@@ -35,7 +35,7 @@
 }
 
 .scroll-diagnostics button:hover {
-  background: var(--bg-hover);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
   color: var(--fg);
 }
 
@@ -109,7 +109,7 @@
 }
 
 .scroll-diagnostics--stopped .scroll-diagnostics__dot {
-  background: var(--success);
+  background: var(--ok);
 }
 
 @media (max-width: 620px) {

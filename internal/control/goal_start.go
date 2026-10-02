@@ -1,5 +1,10 @@
 package control
 
+// goalActivationState is host-only; loading history never grants execution.
+type goalActivationState struct {
+	disarmed bool
+}
+
 // goalLaunchState is the one-shot "user just started this Goal" flag.
 // It is host-only and never persisted.
 type goalLaunchState struct {

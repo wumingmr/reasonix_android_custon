@@ -308,7 +308,7 @@ func TestSaveSnapshotSucceedsWhenCrossProcessFileLockReleasesBeforeDeadline(t *t
 }
 
 func TestSaveShutdownRecoveryBranchBypassesHeldOriginalFileLock(t *testing.T) {
-	dir := t.TempDir()
+	dir := schemaOneTempDir(t)
 	path := filepath.Join(dir, "session.jsonl")
 	base := NewSession("sys")
 	base.Add(provider.Message{Role: provider.RoleUser, Content: "persisted"})
@@ -607,7 +607,7 @@ func TestSaveLoadLargeMessage(t *testing.T) {
 }
 
 func TestSaveSnapshotRejectsStalePrefixOverwrite(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	current := NewSession("sys")
 	current.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
 	current.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
@@ -668,7 +668,7 @@ func TestSaveSnapshotAllowsAppendFromDiskPrefix(t *testing.T) {
 // over the bytes on disk and must land as one — not collide with the
 // placeholder, misread the turn as divergence, and fork a recovery branch.
 func TestSaveSnapshotAppendsAcrossInterruptedToolCallTail(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	s := NewSession("sys")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "run the build"})
 	s.Add(provider.Message{
@@ -715,7 +715,7 @@ func TestSaveSnapshotAppendsAcrossInterruptedToolCallTail(t *testing.T) {
 // tool results on disk. LoadSession fabricates placeholders only for the still
 // unanswered calls; the live session later appends the real remaining results.
 func TestSaveSnapshotAppendsAcrossPartiallyAnsweredMultiToolCallTail(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	s := NewSession("sys")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "inspect and test"})
 	s.Add(provider.Message{
@@ -857,7 +857,7 @@ func TestSaveRewriteOwnedAcrossInterruptedToolCallTail(t *testing.T) {
 // the whole new turn from disk. It must fall back to a full rewrite that
 // persists the repair and the new turn together.
 func TestSaveSnapshotAfterDirtyResumeKeepsEventChainReplayable(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	s := NewSession("sys")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "run the build"})
 	s.Add(provider.Message{
@@ -910,7 +910,7 @@ func TestSaveSnapshotAfterDirtyResumeKeepsEventChainReplayable(t *testing.T) {
 // appending against the repaired view would leave the broken arguments on disk.
 // The snapshot must rewrite so the repair and new turn persist together.
 func TestSaveSnapshotAfterDirtyResumeWithTruncatedToolArgsPersistsRepair(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	s := NewSession("sys")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "run tests"})
 	s.Add(provider.Message{
@@ -992,7 +992,7 @@ func TestSaveRecoveryBranchNotNeededWhenRawTranscriptCoversSnapshot(t *testing.T
 }
 
 func TestSaveSnapshotAppendsWithoutReplacingPrefixFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	base := NewSession("sys")
 	base.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
 	if err := base.Save(path); err != nil {
@@ -1019,7 +1019,7 @@ func TestSaveSnapshotAppendsWithoutReplacingPrefixFile(t *testing.T) {
 }
 
 func TestSaveSnapshotAppendsEventLogAndDisplayReadModel(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	base := NewSession("sys")
 	base.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
 	if err := base.SaveSnapshot(path); err != nil {
@@ -1084,7 +1084,7 @@ func TestSaveSnapshotAppendsEventLogAndDisplayReadModel(t *testing.T) {
 }
 
 func TestSaveRewriteAppendsReplaceEventAndRefreshesCheckpoint(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	base := NewSession("sys")
 	base.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
 	base.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
@@ -1125,8 +1125,8 @@ func TestSaveRewriteAppendsReplaceEventAndRefreshesCheckpoint(t *testing.T) {
 	}
 }
 
-func TestSaveSnapshotMigratesLegacyJSONLToEventLog(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "legacy.jsonl")
+func TestSaveSnapshotKeepsLegacyJSONLNative(t *testing.T) {
+	path := schemaOneSessionPath(t, "legacy.jsonl")
 	if err := os.WriteFile(path, []byte(`{"role":"system","content":"sys"}`+"\n"+`{"role":"user","content":"legacy"}`+"\n"), 0o644); err != nil {
 		t.Fatalf("write legacy jsonl: %v", err)
 	}
@@ -1138,9 +1138,8 @@ func TestSaveSnapshotMigratesLegacyJSONLToEventLog(t *testing.T) {
 	if err := loaded.SaveSnapshot(path); err != nil {
 		t.Fatalf("SaveSnapshot legacy append: %v", err)
 	}
-	events := readSessionEventsForTest(t, path)
-	if len(events) != 1 || events[0].Type != sessionEventTypeReplace {
-		t.Fatalf("legacy migration events = %+v, want one replace seed", events)
+	if _, err := os.Stat(SessionEventLogPath(path)); !os.IsNotExist(err) {
+		t.Fatalf("legacy snapshot created an event log: %v", err)
 	}
 	reloaded, err := LoadSession(path)
 	if err != nil {
@@ -1149,8 +1148,8 @@ func TestSaveSnapshotMigratesLegacyJSONLToEventLog(t *testing.T) {
 	if got := reloaded.Messages[len(reloaded.Messages)-1].Content; got != "migrated" {
 		t.Fatalf("migrated tail = %q, want migrated", got)
 	}
-	if _, err := os.Stat(SessionEventIndexPath(path)); err != nil {
-		t.Fatalf("event index missing: %v", err)
+	if _, err := os.Stat(SessionEventIndexPath(path)); !os.IsNotExist(err) {
+		t.Fatalf("legacy snapshot created an event index: %v", err)
 	}
 }
 
@@ -1407,7 +1406,7 @@ func TestSaveSnapshotAllowsCompatibleSystemAppendFromStaleRevisionBaseline(t *te
 }
 
 func TestSaveSnapshotRefusesStaleBaselineAppendOverRewoundTranscript(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	s := NewSession("sys")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
 	if err := s.SaveSnapshot(path); err != nil {
@@ -1444,7 +1443,7 @@ func TestSaveSnapshotRefusesStaleBaselineAppendOverRewoundTranscript(t *testing.
 }
 
 func TestSaveRewriteAllowsOwnedRewriteAfterLedgerReset(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	s := NewSession("sys")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
 	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "partial turn"})
@@ -1534,7 +1533,7 @@ func TestSaveSnapshotStillPersistsNormalizedRepair(t *testing.T) {
 }
 
 func TestSaveSnapshotRejectsStalePrefixAfterSystemPromptRefresh(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	current := NewSession("new sys")
 	current.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
 	current.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
@@ -1616,7 +1615,7 @@ func TestSaveRewriteAllowsRewriteOverSameContentForeignStamp(t *testing.T) {
 }
 
 func TestSaveRewriteRejectsForeignStampForUnattributedBytes(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	base := NewSession("sys")
 	base.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
 	base.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
@@ -1701,7 +1700,7 @@ func TestSaveSnapshotAllowsOwnedNonPrefixRewrite(t *testing.T) {
 }
 
 func TestSaveSnapshotRejectsInterruptedForeignWriteAtSameRevision(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	base := NewSession("sys")
 	base.Add(provider.Message{Role: provider.RoleUser, Content: "base"})
 	if err := base.Save(path); err != nil {
@@ -1838,7 +1837,7 @@ func TestCloneWithMessagesIfCompatibleRejectsHistoryChanges(t *testing.T) {
 }
 
 func TestSaveRewriteRejectsStalePrefixOverwrite(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	current := NewSession("sys")
 	current.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
 	current.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
@@ -1866,7 +1865,7 @@ func TestSaveRewriteRejectsStalePrefixOverwrite(t *testing.T) {
 }
 
 func TestSaveRecoveryBranchPersistsDivergedSnapshot(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.jsonl")
+	path := schemaOneSessionPath(t, "session.jsonl")
 	current := NewSession("sys")
 	current.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
 	current.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
@@ -1923,7 +1922,7 @@ func TestSaveRecoveryBranchPersistsDivergedSnapshot(t *testing.T) {
 }
 
 func TestSaveSnapshotRefusesToRecreateExternallyRemovedBaseline(t *testing.T) {
-	dir := t.TempDir()
+	dir := schemaOneTempDir(t)
 	path := filepath.Join(dir, "removed.jsonl")
 	s := NewSession("sys")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "keep me"})

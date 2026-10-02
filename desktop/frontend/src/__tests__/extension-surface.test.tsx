@@ -30,6 +30,7 @@ import {
 } from "../lib/useController";
 import { ExtensionCard } from "../components/ExtensionCard";
 import { ExtensionFormDialog } from "../components/ExtensionFormDialog";
+import { installDesktopHostStub } from "./desktopHostStub";
 
 let passed = 0;
 let failed = 0;
@@ -111,11 +112,15 @@ ok(acceptsExtensionGeneration(5, undefined), "events without a generation always
 
 {
   let s: ControllerState = { ...initialState };
-  s = reducer(s, { type: "event", e: surfaceEvent({ kind: "form", surfaceId: "f1", generation: 9, form: { title: "Setup", fields: [{ key: "name", kind: "input", required: true }] } }) });
-  ok(s.extensionForm?.pluginId === "alpha" && s.extensionForm.form.title === "Setup", "form surface arms the pending form");
+  s = reducer(s, { type: "event", e: surfaceEvent({ kind: "form", surfaceId: "f1", generation: 9, formInstanceId: "form-1", form: { title: "Setup", fields: [{ key: "name", kind: "input", required: true }] } }) });
+  ok(s.extensionForm?.pluginId === "alpha" && s.extensionForm.form.title === "Setup" && s.extensionForm.formInstanceExact,
+    "form surface arms the pending form with its host-issued instance identity");
   s = reducer(s, { type: "event", e: surfaceEvent({ kind: "form", surfaceId: "f1", generation: 4, form: { title: "Stale", fields: [] } }) });
   ok(s.extensionForm?.form.title === "Setup", "stale form generation is dropped");
-  s = reducer(s, { type: "event", e: surfaceEvent({ kind: "form", surfaceId: "f2", generation: 10, form: { title: "Next", fields: [] } }) });
+  s = reducer(s, { type: "event", e: surfaceEvent({ kind: "form", surfaceId: "f1", generation: 9, formInstanceId: "form-2", form: { title: "Replacement", fields: [] } }) });
+  s = reducer(s, { type: "clearExtensionForm", identity: { pluginId: "alpha", surfaceId: "f1", formInstanceId: "form-1" } });
+  ok(s.extensionForm?.formInstanceId === "form-2", "old completion cannot clear a replacement form instance");
+  s = reducer(s, { type: "event", e: surfaceEvent({ kind: "form", surfaceId: "f2", generation: 10, formInstanceId: "form-3", form: { title: "Next", fields: [] } }) });
   ok(s.extensionForm?.surfaceId === "f2", "a new form replaces the pending one");
   s = reducer(s, { type: "clearExtensionForm" });
   ok(s.extensionForm === undefined, "clearExtensionForm dismisses the form");
@@ -206,7 +211,7 @@ async function flush(ms = 30) {
 
 const invokeCalls: Array<{ tabId: string; name: string; args: Record<string, string> }> = [];
 let invokeResult: string | Error = "Completed!";
-(dom.window as unknown as { go: unknown }).go = {
+installDesktopHostStub(({
   main: {
     App: {
       InvokeExtensionAction: async (tabId: string, name: string, args: Record<string, string>) => {
@@ -216,7 +221,7 @@ let invokeResult: string | Error = "Completed!";
       },
     },
   },
-};
+}).main.App);
 
 const cardItem: ExtensionItem = {
   kind: "extension",
@@ -289,6 +294,8 @@ const cardItem: ExtensionItem = {
     pluginId: "alpha",
     surfaceId: "f1",
     generation: 9,
+    formInstanceId: "form-1",
+    formInstanceExact: true,
     form: {
       title: "Configure sync",
       fields: [
@@ -302,7 +309,7 @@ const cardItem: ExtensionItem = {
   await act(async () => {
     root.render(
       <LocaleProvider>
-        <ExtensionFormDialog surface={surface} onSubmit={(values) => submitted.push(values)} onCancel={() => { cancels += 1; }} />
+        <ExtensionFormDialog key={surface.formInstanceId} surface={surface} onSubmit={(values) => submitted.push(values)} onCancel={() => { cancels += 1; }} />
       </LocaleProvider>,
     );
     await flush();
@@ -347,6 +354,16 @@ const cardItem: ExtensionItem = {
     await flush();
   });
   ok(cancels === 1, "Escape cancels the form");
+
+  await act(async () => {
+    root.render(
+      <LocaleProvider>
+        <ExtensionFormDialog key="form-2" surface={{ ...surface, formInstanceId: "form-2" }} onSubmit={(next) => submitted.push(next)} onCancel={() => { cancels += 1; }} />
+      </LocaleProvider>,
+    );
+    await flush();
+  });
+  ok(container.querySelector<HTMLInputElement>(".extension-form__input")?.value === "", "a replacement instance resets form field state");
 
   await act(async () => root.unmount());
   container.remove();

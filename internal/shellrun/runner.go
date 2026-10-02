@@ -1,5 +1,5 @@
 // Package shellrun provides a shared foreground shell runner used by the model
-// bash tool and the user !command path. It classifies exits, collects a bounded
+// shell tool and the user !command path. It classifies exits, collects a bounded
 // output tail, and keeps combined stdout/stderr model-visible output intact.
 package shellrun
 
@@ -14,11 +14,12 @@ import (
 	"sync"
 	"time"
 
+	fileenc "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/proc"
 	"reasonix/internal/tool"
 )
 
-// DefaultWaitDelay mirrors the bash tool's child-process wait grace.
+// DefaultWaitDelay mirrors the shell tool's child-process wait grace.
 const DefaultWaitDelay = 5 * time.Second
 
 const (
@@ -106,8 +107,10 @@ func RunForeground(ctx context.Context, req Request) Result {
 	collector := newOutputCollector(combinedOutputMaxBytes, tool.OutputTailMaxBytes)
 	var writers []io.Writer
 	writers = append(writers, collector.combined, collector.tail)
+	var progress *progressWriter
 	if req.Progress != nil {
-		writers = append(writers, newProgressWriter(req.Progress, progressOutputMaxBytes, progressOutputTruncated))
+		progress = newProgressWriter(req.Progress, progressOutputMaxBytes, progressOutputTruncated)
+		writers = append(writers, progress)
 	}
 	// Stdout and Stderr must stay the *same* writer value: os/exec then hands the
 	// child a single pipe, so the two streams interleave in the order the child
@@ -136,6 +139,9 @@ func RunForeground(ctx context.Context, req Request) Result {
 		CommandPreview:  req.CommandPreview,
 	})
 
+	if progress != nil {
+		progress.Flush()
+	}
 	out := Result{
 		Combined:   collector.combined.String(),
 		OutputTail: collector.tailString(),
@@ -144,6 +150,10 @@ func RunForeground(ctx context.Context, req Request) Result {
 		Cmd:        cmd,
 	}
 
+	return classifyForegroundResult(runCtx, req, out, err)
+}
+
+func classifyForegroundResult(runCtx context.Context, req Request, out Result, err error) Result {
 	if req.PreserveWaitDelay && runCtx.Err() == nil && errors.Is(err, exec.ErrWaitDelay) {
 		err = nil
 	}
@@ -184,6 +194,9 @@ func RunForeground(ctx context.Context, req Request) Result {
 		out.State = tool.ShellStateFailed
 		out.FailurePhase = tool.ShellPhaseExecution
 		out.Err = fmt.Errorf("command exited: %w", err)
+		if diagnostic := WindowsRuntimeDiagnostic(out.Combined); diagnostic != "" {
+			out.Err = fmt.Errorf("%s: %w", diagnostic, out.Err)
+		}
 		return out
 	}
 	// Process never produced an exit status — launch / dependency style failure.
@@ -248,7 +261,7 @@ func newOutputCollector(combinedLimit, tailLimit int) *outputCollector {
 func (c *outputCollector) tailString() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return string(c.tail.buf)
+	return string(fileenc.DecodeOutput(c.tail.buf, fileenc.Cut{Head: c.tail.cut}))
 }
 
 // boundedBuffer keeps complete output up to limit. Once output crosses the
@@ -282,23 +295,28 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 		b.tail = appendBoundedTail(b.tail, previous, b.tailLimit)
 		if b.buf.Len() > headLimit {
 			b.buf.Truncate(headLimit)
+		} else if remaining := headLimit - b.buf.Len(); remaining > 0 {
+			b.buf.Write(p[:min(remaining, len(p))])
 		}
 	}
 	b.tail = appendBoundedTail(b.tail, p, b.tailLimit)
 	return len(p), nil
 }
 
+// String decodes the output in the encoding the child wrote it in; a Windows
+// console tool answers in the machine's code page, not UTF-8. Once truncated,
+// the head lost its end and the tail its start, so each is decoded on its own.
 func (b *boundedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if !b.truncated {
-		return b.buf.String()
+		return string(fileenc.DecodeOutput(b.buf.Bytes(), fileenc.Cut{}))
 	}
 	var out strings.Builder
 	out.Grow(b.buf.Len() + len(b.marker) + len(b.tail))
-	out.Write(b.buf.Bytes())
+	out.Write(fileenc.DecodeOutput(b.buf.Bytes(), fileenc.Cut{Tail: true}))
 	out.WriteString(b.marker)
-	out.Write(b.tail)
+	out.Write(fileenc.DecodeOutput(b.tail, fileenc.Cut{Head: true}))
 	return out.String()
 }
 
@@ -320,6 +338,7 @@ type tailWriter struct {
 	mu    *sync.Mutex
 	limit int
 	buf   []byte
+	cut   bool // bytes before buf were dropped to hold the limit
 }
 
 func (w *tailWriter) Write(p []byte) (int, error) {
@@ -328,6 +347,7 @@ func (w *tailWriter) Write(p []byte) (int, error) {
 	w.buf = append(w.buf, p...)
 	if w.limit > 0 && len(w.buf) > w.limit {
 		w.buf = append([]byte(nil), w.buf[len(w.buf)-w.limit:]...)
+		w.cut = true
 	}
 	return len(p), nil
 }
@@ -339,6 +359,7 @@ type progressWriter struct {
 	forwarded int
 	marker    string
 	truncated bool
+	pending   []byte
 }
 
 func newProgressWriter(emit func(string), limit int, marker string) *progressWriter {
@@ -354,17 +375,6 @@ func (w *progressWriter) Write(p []byte) (int, error) {
 	if w.emit == nil || w.truncated {
 		return len(p), nil
 	}
-	remaining := max(0, w.limit-w.forwarded)
-	forward := min(len(p), remaining)
-	if forward > 0 {
-		w.emit(string(p[:forward]))
-		w.forwarded += forward
-	}
-	if forward < len(p) {
-		w.truncated = true
-		if w.marker != "" {
-			w.emit(w.marker)
-		}
-	}
+	w.writeUTF8(p, false)
 	return len(p), nil
 }

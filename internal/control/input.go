@@ -9,6 +9,7 @@ import (
 	"reasonix/internal/ablation"
 	"reasonix/internal/agent"
 	"reasonix/internal/event"
+	goaldomain "reasonix/internal/goal"
 	"reasonix/internal/memory"
 	"reasonix/internal/planmode"
 	"reasonix/internal/skill"
@@ -27,6 +28,8 @@ type InvocationRequest struct {
 // prompt prefix is left untouched and the toggle costs nothing in cache hits.
 const PlanModeMarker = planmode.Marker
 
+// legacyPlanModeMarker is retained only so transcripts written by older builds
+// can be displayed without their injected workflow prefix.
 const legacyPlanModeMarker = "[Plan mode — read-only. Explore the codebase first (read_file, ls, grep, glob, web_fetch, task, ask are available; writers are refused by the harness). Before planning, if a decision that is genuinely the user's — tech stack, an ambiguous requirement, scope, an irreversible choice — would materially shape the plan and you can't settle it from the codebase or a sensible default, use the ask tool to clarify it first; otherwise pick the obvious default and state the assumption in the plan instead of asking. Then present a LAYERED plan as your reply and stop — do not write files, edit, or run side-effecting bash. Structure the plan as a two-level markdown list so it becomes a layered task list: each PHASE is a top-level numbered list item (a coherent milestone, e.g. \"1. Add the config loader\"), and each phase's concrete, verifiable sub-steps are bullets indented beneath it (e.g. \"   - parse the TOML into Config\"). Use plain numbered list items for phases — do NOT write phases as markdown headings (##, ###) — so both levels parse. Keep phases few (about 2-6). The user will be asked to approve before any changes are made.]"
 
 const (
@@ -63,11 +66,20 @@ const (
 // sidecar recording exists (e.g. sessions created before the display-recording
 // feature, or synthetic user messages injected by the controller).
 func StripComposePrefixes(content string) string {
-	s := agent.StripTransientUserBlocks(content)
-	s = stripComposeMarker(s, PlanModeMarker)
-	s = stripComposeMarker(s, legacyPlanModeMarker)
-	s = strings.TrimSpace(s)
-	return s
+	// The plan marker is prepended after the transient blocks, so a block can
+	// become leading only after the marker strips: iterate to a fixpoint.
+	s := content
+	for range 4 {
+		next := agent.StripTransientUserBlocks(s)
+		next = stripComposeMarker(next, PlanModeMarker)
+		next = stripComposeMarker(next, legacyPlanModeMarker)
+		next = stripComposeMarker(next, planmode.LegacyWorkflowMarker)
+		if next == s {
+			break
+		}
+		s = next
+	}
+	return strings.TrimSpace(s)
 }
 
 func stripComposeMarker(s, marker string) string {
@@ -141,6 +153,23 @@ func (c *Controller) Compose(text string) string {
 
 func (c *Controller) compose(text, source string, includeHookContext bool) string {
 	goal, goalStatus := c.goals.snapshot()
+	if c.sessionEngineEnabled() {
+		if view, err := c.goalLifecycleView(); err == nil && view != nil {
+			goal = view.Objective
+			if view.Phase == goaldomain.PhaseActive && view.Activation == goaldomain.ActivationArmed {
+				goalStatus = GoalStatusRunning
+			} else {
+				goalStatus = GoalStatusStopped
+			}
+			if includeHookContext {
+				if recovery, recoveryErr := goaldomain.RecoveryPrompt(*view); recoveryErr == nil {
+					text = recovery + "\n\n" + text
+				}
+			}
+		} else {
+			goal, goalStatus = "", GoalStatusStopped
+		}
+	}
 	return c.composeWithGoal(
 		text,
 		source,
@@ -320,7 +349,7 @@ const goalTaskContractInstructions = `Goal mode: pursue this goal autonomously. 
 - Pause only when the next step involves an irreversible or externally visible operation, the requested scope has changed, or progress requires information only the user can provide. Otherwise keep working and report assumptions at the end.
 - Complete only when the concrete request is done, the output format and constraints are satisfied, and relevant verification was attempted or reported unavailable.
 
-Do not stop after describing a plan; execute the next useful step. End every goal-mode turn by calling the update_goal tool with your disposition: continue (work is ongoing — give the next concrete step in next_action), complete (when the request is done and verification was attempted or reported unavailable), or blocked (only when the user can unblock). The host validates your claim and decides whether to continue automatically.`
+Do not stop after describing a plan; execute the next useful step. Use get_goal before a lifecycle change and pass its exact ID and revision to update_goal. Mark complete only when the whole objective is done. If useful work remains, leave an active goal unchanged: the host automatically schedules the next round without a continue action. Mark blocked only for a concrete persistent blocker.`
 
 // MemoryQuickAddNote parses the "# <note>" memory shortcut. The space after
 // "#" is intentional: "#7", "#issue", and "#标题" are ordinary user prompts,
@@ -464,11 +493,17 @@ func (c *Controller) resolveSkillInvocation(input string) (skill.Skill, string, 
 // runAs=subagent skills: direct slash invocation executes those through the
 // isolated SkillRunner instead.
 func (c *Controller) RunSkill(input string) (sent string, found bool) {
+	sent, _, found = c.RunSkillWithName(input)
+	return sent, found
+}
+
+// RunSkillWithName returns the resolved skill name with its rendered invocation.
+func (c *Controller) RunSkillWithName(input string) (sent, name string, found bool) {
 	sk, task, ok := c.resolveSkillInvocation(input)
 	if !ok {
-		return "", false
+		return "", "", false
 	}
-	return c.skills.render(sk, task), true
+	return c.skills.renderInvocation(sk, task), sk.Name, true
 }
 
 // MCPPrompt resolves a "/mcp__server__prompt args…" line: it maps the positional

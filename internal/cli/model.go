@@ -27,7 +27,7 @@ func (m *chatTUI) runModelSubcommand(input string) {
 		m.notice(i18n.M.ModelSwitchUnavailable)
 		return
 	}
-	if m.runtimeSwitchBusy() {
+	if m.modelReplacementBusy() {
 		m.notice(i18n.M.ModelSwitchBusy)
 		return
 	}

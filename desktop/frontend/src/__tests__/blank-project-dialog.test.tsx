@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import type { AppBindings } from "../lib/bridge";
+import { installDesktopHostStub } from "./desktopHostStub";
 
 let passed = 0;
 let failed = 0;
@@ -91,9 +92,14 @@ ok(cancelled === 1, "Escape cancels the dialog");
 
 const here = dirname(fileURLToPath(import.meta.url));
 const treeSource = readFileSync(resolve(here, "../components/ProjectTree.tsx"), "utf8");
+const addControlsSource = readFileSync(resolve(here, "../components/ProjectTreeAddControls.tsx"), "utf8");
 const flowSource = readFileSync(resolve(here, "../components/BlankProjectFlow.tsx"), "utf8");
 const creationSource = readFileSync(resolve(here, "../components/useProjectCreation.tsx"), "utf8");
-ok(/key: "blank-project"[\s\S]*openBlankProjectFlow\(\)/.test(treeSource), "workbench menu starts the blank-project flow");
+ok(
+  /onBlank: \(\) => \{ closeMenu\(\); openBlankProjectFlow\(\); \}/.test(treeSource) &&
+    /key: "blank-project"[\s\S]*onSelect: onBlank/.test(addControlsSource),
+  "workbench menu starts the blank-project flow",
+);
 ok(/CreateBlankProject\(draft\.parentDirectory, projectName\)/.test(flowSource), "the dialog delegates atomic directory creation to Go");
 ok(/await onOpenProject\(createdPath\)/.test(flowSource), "the new directory reuses workspace navigation and registration");
 ok(/lazy\(\(\) => import\("\.\/BlankProjectFlow"\)/.test(creationSource), "the creation flow stays outside the startup bundle");
@@ -101,7 +107,7 @@ ok(/lazy\(\(\) => import\("\.\/BlankProjectFlow"\)/.test(creationSource), "the c
 await act(async () => root.unmount());
 
 const bridgeCalls: string[] = [];
-window.go = { main: { App: {
+installDesktopHostStub(({ main: { App: {
   async PickBlankProjectParent() {
     bridgeCalls.push("pick");
     return "/Users/test/Projects";
@@ -110,7 +116,7 @@ window.go = { main: { App: {
     bridgeCalls.push(`create:${parentDirectory}:${projectName}`);
     return `${parentDirectory}/${projectName}`;
   },
-} as Partial<AppBindings> as AppBindings } };
+} as Partial<AppBindings> as AppBindings } }).main.App);
 const flowRoot = createRoot(rootElement);
 await act(async () => {
   flowRoot.render(
@@ -144,6 +150,35 @@ ok(
 );
 
 await act(async () => flowRoot.unmount());
+
+// A committed open followed by a failed refresh is not a failed creation.
+// Retrying must refresh the same project without allocating another topic.
+bridgeCalls.length = 0;
+let refreshAttempts = 0;
+const retryRoot = createRoot(rootElement);
+await act(async () => {
+  retryRoot.render(<LocaleProvider><BlankProjectFlow
+    onOpenProject={async path => { bridgeCalls.push(`open:${path}`); }}
+    onRefresh={async () => { if (++refreshAttempts === 1) throw new Error("snapshot unavailable"); }}
+    onClose={() => { bridgeCalls.push("close"); }}
+  /></LocaleProvider>);
+});
+await act(async () => {
+  const retryInput = document.querySelector<HTMLInputElement>(".blank-project-dialog__input")!;
+  Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")?.set?.call(retryInput, "retry-project");
+  retryInput.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+});
+const submitRetry = async () => act(async () => {
+  document.querySelector(".blank-project-dialog form, form.blank-project-dialog, [role=dialog] form")!
+    .dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
+});
+await submitRetry();
+ok(document.body.textContent?.includes("snapshot unavailable") === true, "refresh failure remains visible");
+await submitRetry();
+ok(bridgeCalls.filter(call => call.startsWith("create:")).length === 1, "retry keeps the created directory");
+ok(bridgeCalls.filter(call => call.startsWith("open:")).length === 1, "refresh retry does not open another session");
+ok(refreshAttempts === 2 && bridgeCalls.at(-1) === "close", "retry completes the remaining refresh");
+await act(async () => retryRoot.unmount());
 dom.window.close();
 process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

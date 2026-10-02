@@ -33,7 +33,7 @@ eq(contextBudgetRecoveryKey("none"), "", "none recovery is empty");
 const fromPanel = resolveContextBudget(undefined, {
   contextBudget: { source: "official", windowTokens: 1000 },
 } as ContextPanelInfo);
-eq(fromPanel?.source, "official", "panel budget is preferred");
+eq(fromPanel?.source, "official", "panel budget is a fallback without live context");
 
 const fromContext = resolveContextBudget({
   used: 1,
@@ -42,6 +42,15 @@ const fromContext = resolveContextBudget({
   contextBudget: { source: "learned" },
 } as ContextInfo, null);
 eq(fromContext?.source, "learned", "context info budget is used when panel omits it");
+
+const stalePanel = { contextBudget: { promptTokens: 271100 } } as ContextPanelInfo;
+eq(resolveContextBudget({ used: 179300, window: 1000000, sessionTokens: 0,
+  contextBudget: { promptTokens: 179300 } }, stalePanel)?.promptTokens, 179300, "live budget wins over stale panel");
+eq(resolveContextBudget({ used: 0, window: 256000, sessionTokens: 0 }, stalePanel), undefined,
+  "rebound runtime with no budget does not resurrect old request");
+eq(resolveContextBudget({ used: 10, window: 1000, sessionTokens: 0,
+  maintenance: { contextBudget: { promptTokens: 10 } } } as ContextInfo, stalePanel)?.promptTokens,
+  10, "live maintenance budget wins over stale panel");
 
 eq(sharedContextPhysicalRemaining({ windowMode: "shared", physicalRemaining: -12 }), 0, "shared remaining is clamped");
 eq(sharedContextPhysicalRemaining({ windowMode: "unknown", physicalRemaining: 99 }), undefined, "unknown provider has no asserted physical remainder");

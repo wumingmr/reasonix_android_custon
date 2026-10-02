@@ -186,7 +186,7 @@ func (r *SemanticRouter) callModel(ctx context.Context, input string, candidates
 			r.Sink.Emit(e)
 		}
 	}()
-	ch, err := r.Provider.Stream(ctx, req)
+	ch, err := provider.Stream(ctx, r.Provider, req)
 	if err != nil {
 		return nil, err
 	}

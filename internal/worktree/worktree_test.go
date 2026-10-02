@@ -9,13 +9,51 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"reasonix/internal/gitcmd"
 )
+
+// opened is dir's identity as a session opening it resolves it; a directory
+// outside any work tree yields the unresolved Repo a session would hold.
+func opened(t *testing.T, dir string) gitcmd.Repo {
+	t.Helper()
+	repo, err := gitcmd.Open(context.Background(), dir)
+	if err != nil {
+		return gitcmd.Repo{Dir: dir}
+	}
+	return repo
+}
 
 func requireGit(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is unavailable")
 	}
+	isolateGitConfig(t)
+}
+
+// isolateGitConfig detaches the test from the machine's git configuration.
+//
+// A machine with core.hooksPath set redirects `rev-parse --git-path
+// hooks/pre-commit` out of the temporary repository and into the developer's
+// own hooks directory, which the hook tests then overwrite. It also makes them
+// pass for the wrong reason: the hook they plant is not the one git would run.
+//
+// Set on the process, not per command, and only here: the code under test
+// spawns git itself and inherits os.Environ(), so per-command environment
+// would isolate the helpers and leave MergeBack's own invocations reading the
+// user file.
+//
+// An empty file rather than os.DevNull keeps the value an ordinary path on
+// every platform.
+func isolateGitConfig(t *testing.T) {
+	t.Helper()
+	empty := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", empty)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 }
 
 func initRepo(t *testing.T) string {
@@ -25,7 +63,6 @@ func initRepo(t *testing.T) string {
 		t.Helper()
 		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
 		cmd.Env = append(os.Environ(),
-			"GIT_CONFIG_NOSYSTEM=1",
 			"GIT_AUTHOR_NAME=Reasonix Test", "GIT_AUTHOR_EMAIL=reasonix@example.invalid",
 			"GIT_COMMITTER_NAME=Reasonix Test", "GIT_COMMITTER_EMAIL=reasonix@example.invalid")
 		out, err := cmd.CombinedOutput()
@@ -47,7 +84,7 @@ func TestCreateManagedWorktreeFromRepositoryFolder(t *testing.T) {
 	requireGit(t)
 	repo := initRepo(t)
 	managed := t.TempDir()
-	result, err := Create(context.Background(), repo, managed)
+	result, err := Create(context.Background(), opened(t, repo), managed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +132,7 @@ func TestCreatePreservesSelectedRepositorySubdirectory(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git commit: %v %s", err, out)
 	}
-	result, err := Create(context.Background(), subdir, t.TempDir())
+	result, err := Create(context.Background(), opened(t, subdir), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,15 +149,15 @@ func TestInspectRejectsUncommittedSelectedSubdirectoryWithoutGitMutation(t *test
 	if err := os.MkdirAll(untracked, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	before, _, err := runGit(context.Background(), repo, "for-each-ref", "--format=%(refname)", "refs/heads/reasonix/delivery-")
+	before, _, err := runGit(context.Background(), opened(t, repo), "for-each-ref", "--format=%(refname)", "refs/heads/reasonix/delivery-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := Inspect(context.Background(), untracked)
+	got := Inspect(context.Background(), opened(t, untracked))
 	if got.Available || !strings.Contains(got.Reason, "committed HEAD") {
 		t.Fatalf("availability = %+v", got)
 	}
-	after, _, err := runGit(context.Background(), repo, "for-each-ref", "--format=%(refname)", "refs/heads/reasonix/delivery-")
+	after, _, err := runGit(context.Background(), opened(t, repo), "for-each-ref", "--format=%(refname)", "refs/heads/reasonix/delivery-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +175,7 @@ func TestCreateFromExistingLinkedWorktree(t *testing.T) {
 		t.Fatalf("git worktree add: %v %s", err, out)
 	}
 
-	result, err := Create(context.Background(), linked, t.TempDir())
+	result, err := Create(context.Background(), opened(t, linked), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +206,7 @@ func TestCreateDoesNotCopyOrChangeDirtySource(t *testing.T) {
 	if err := os.WriteFile(dirtyPath, []byte("uncommitted\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	result, err := Create(context.Background(), repo, t.TempDir())
+	result, err := Create(context.Background(), opened(t, repo), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,14 +231,14 @@ func TestCreateDoesNotCopyOrChangeDirtySource(t *testing.T) {
 
 func TestInspectRejectsNonRepositoryAndUnbornRepository(t *testing.T) {
 	requireGit(t)
-	if got := Inspect(context.Background(), t.TempDir()); got.Available || !strings.Contains(got.Reason, "not inside a Git repository") {
+	if got := Inspect(context.Background(), opened(t, t.TempDir())); got.Available || !strings.Contains(got.Reason, "not inside a Git repository") {
 		t.Fatalf("non-repo availability = %+v", got)
 	}
 	unborn := t.TempDir()
 	if out, err := exec.Command("git", "-C", unborn, "init").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v %s", err, out)
 	}
-	if got := Inspect(context.Background(), unborn); got.Available || !strings.Contains(got.Reason, "initial commit") {
+	if got := Inspect(context.Background(), opened(t, unborn)); got.Available || !strings.Contains(got.Reason, "initial commit") {
 		t.Fatalf("unborn availability = %+v", got)
 	}
 }
@@ -212,7 +249,7 @@ func TestInspectWithoutGitExplainsSafeFallback(t *testing.T) {
 	} else {
 		t.Setenv("PATH", t.TempDir())
 	}
-	got := Inspect(context.Background(), t.TempDir())
+	got := Inspect(context.Background(), opened(t, t.TempDir()))
 	if got.Available || !strings.Contains(got.Reason, "Git is not installed") || !strings.Contains(got.Reason, "serialize writes") {
 		t.Fatalf("no-Git availability = %+v", got)
 	}
@@ -250,12 +287,115 @@ func TestGitWorktreeAddUsesExtendedTimeout(t *testing.T) {
 	if got := gitTimeout([]string{"status", "--porcelain=v1"}); got != gitProbeTimeout {
 		t.Fatalf("status timeout = %v, want %v", got, gitProbeTimeout)
 	}
+	if got := gitTimeout([]string{"reset", "--hard", "HEAD"}); got != gitWorktreeMutationTimeout {
+		t.Fatalf("reset timeout = %v, want %v: the new worktree's checkout happens there", got, gitWorktreeMutationTimeout)
+	}
 	got := gitTimeout([]string{"worktree", "add", "-b", "branch", "destination", "HEAD"})
-	if got != gitWorktreeAddTimeout {
-		t.Fatalf("worktree add timeout = %v, want %v", got, gitWorktreeAddTimeout)
+	if got != gitWorktreeMutationTimeout {
+		t.Fatalf("worktree add timeout = %v, want %v", got, gitWorktreeMutationTimeout)
+	}
+	if remove := gitTimeout([]string{"worktree", "remove", "destination"}); remove != gitWorktreeMutationTimeout {
+		t.Fatalf("worktree remove timeout = %v, want %v", remove, gitWorktreeMutationTimeout)
 	}
 	if got < 2*time.Minute || got <= gitProbeTimeout {
 		t.Fatalf("worktree add timeout = %v, want a checkout-safe timeout longer than probes", got)
+	}
+}
+
+func TestRollbackCreateRemovesOnlyUntouchedWorktree(t *testing.T) {
+	requireGit(t)
+	repo := initRepo(t)
+	result, err := Create(context.Background(), opened(t, repo), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RollbackCreate(context.Background(), result); err != nil {
+		t.Fatalf("RollbackCreate: %v", err)
+	}
+	if _, err := os.Stat(result.WorktreeRoot); !os.IsNotExist(err) {
+		t.Fatalf("worktree still exists after rollback: %v", err)
+	}
+	if _, err := os.Stat(metadataPath(result.WorktreeRoot)); !os.IsNotExist(err) {
+		t.Fatalf("worktree metadata still exists after rollback: %v", err)
+	}
+	cmd := exec.Command("git", "-C", repo, "show-ref", "--verify", "--quiet", "refs/heads/"+result.Branch)
+	if err := cmd.Run(); err == nil {
+		t.Fatalf("branch %q still exists after rollback", result.Branch)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "README.md")); err != nil {
+		t.Fatalf("source repository was damaged: %v", err)
+	}
+}
+
+func TestRollbackCreatePreservesChangedWorktree(t *testing.T) {
+	requireGit(t)
+	repo := initRepo(t)
+	result, err := Create(context.Background(), opened(t, repo), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	change := filepath.Join(result.WorktreeRoot, "uncommitted.txt")
+	if err := os.WriteFile(change, []byte("preserve me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := RollbackCreate(context.Background(), result); err == nil || !strings.Contains(err.Error(), "contains changes") {
+		t.Fatalf("RollbackCreate error = %v, want changed-worktree refusal", err)
+	}
+	if got, err := os.ReadFile(change); err != nil || string(got) != "preserve me\n" {
+		t.Fatalf("changed worktree was not preserved: data=%q err=%v", got, err)
+	}
+	cmd := exec.Command("git", "-C", repo, "show-ref", "--verify", "--quiet", "refs/heads/"+result.Branch)
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("changed worktree branch was removed: %v", err)
+	}
+}
+
+func TestRollbackCreatePreservesIgnoredContent(t *testing.T) {
+	requireGit(t)
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{name: "file", path: "ignored.txt"},
+		{name: "directory", path: filepath.Join("cache", "artifact.bin")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := initRepo(t)
+			if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("ignored.txt\ncache/\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			git := exec.Command("git", "-C", repo, "add", ".gitignore")
+			if out, err := git.CombinedOutput(); err != nil {
+				t.Fatalf("git add .gitignore: %v %s", err, out)
+			}
+			git = exec.Command("git", "-C", repo, "-c", "user.name=Reasonix Test", "-c", "user.email=reasonix@example.invalid", "commit", "-m", "ignore generated files")
+			if out, err := git.CombinedOutput(); err != nil {
+				t.Fatalf("git commit .gitignore: %v %s", err, out)
+			}
+
+			result, err := Create(context.Background(), opened(t, repo), t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			ignoredPath := filepath.Join(result.WorktreeRoot, tc.path)
+			if err := os.MkdirAll(filepath.Dir(ignoredPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(ignoredPath, []byte("preserve me\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := RollbackCreate(context.Background(), result); err == nil || !strings.Contains(err.Error(), "contains changes") {
+				t.Fatalf("RollbackCreate error = %v, want ignored-content refusal", err)
+			}
+			if got, err := os.ReadFile(ignoredPath); err != nil || string(got) != "preserve me\n" {
+				t.Fatalf("ignored content was not preserved: data=%q err=%v", got, err)
+			}
+			git = exec.Command("git", "-C", repo, "show-ref", "--verify", "--quiet", "refs/heads/"+result.Branch)
+			if err := git.Run(); err != nil {
+				t.Fatalf("ignored-content branch was removed: %v", err)
+			}
+		})
 	}
 }
 
@@ -279,7 +419,7 @@ func TestCreateSupportsPathsWithSpaces(t *testing.T) {
 	}
 	git("add", ".")
 	git("commit", "-m", "initial")
-	result, err := Create(context.Background(), repo, filepath.Join(parent, "managed worktrees"))
+	result, err := Create(context.Background(), opened(t, repo), filepath.Join(parent, "managed worktrees"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -45,6 +45,29 @@ func TestDarwinICNSUsesMacOSIconSafeArea(t *testing.T) {
 	}
 }
 
+func TestDarwinDevelopmentIconMatchesBundleArtwork(t *testing.T) {
+	f, err := os.Open("build/darwin/appicon.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	dev, err := png.Decode(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := decodeICNSImage(t, "build/darwin/icon.icns", "ic10")
+	if dev.Bounds() != bundle.Bounds() {
+		t.Fatalf("development icon bounds = %v, want %v", dev.Bounds(), bundle.Bounds())
+	}
+	for y := dev.Bounds().Min.Y; y < dev.Bounds().Max.Y; y++ {
+		for x := dev.Bounds().Min.X; x < dev.Bounds().Max.X; x++ {
+			if color.NRGBAModel.Convert(dev.At(x, y)) != color.NRGBAModel.Convert(bundle.At(x, y)) {
+				t.Fatalf("development icon differs from bundle artwork at (%d, %d)", x, y)
+			}
+		}
+	}
+}
+
 func assertFullCanvasRoundedIcon(t *testing.T, img image.Image, size int) {
 	t.Helper()
 

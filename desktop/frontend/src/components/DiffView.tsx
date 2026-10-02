@@ -17,7 +17,7 @@ export interface DiffProps {
 //   ./editors/CodeMirrorMerge  @codemirror/merge
 //
 // The replacement only has to honor DiffProps. See desktop/README.md.
-const Impl = lazy(() => import("./editors/HljsDiff"));
+const Impl = lazy(() => Promise.all([import("./editors/HljsDiff"), import("./CodeSyntax.css")]).then(([module]) => module));
 
 export function DiffView(props: DiffProps) {
   return (

@@ -1,14 +1,41 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"reasonix/internal/billing"
 	"reasonix/internal/provider"
 )
+
+// A config still holding the August Flash anchor must be quoted at the
+// September rate: the cost a user sees is the vendor's current price, not the
+// one their config was written with.
+func TestStaleDeepSeekAnchorQuotesAtTheLiveRate(t *testing.T) {
+	p := &ProviderEntry{
+		Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash",
+		Price: clonePricing(augustDeepSeekV4PricesCNY()["deepseek-v4-flash"]), BillingCurrency: "CNY",
+	}
+	ctx := p.PricingContextForModel(p.Model)
+	if ctx.ScheduleID != billing.ScheduleDeepSeekV4September2026 {
+		t.Fatalf("stale anchor bound schedule = %q, want the live schedule", ctx.ScheduleID)
+	}
+	// Monday 2026-09-14T06:00Z is inside the 06:00-10:00 UTC peak window.
+	q := billing.BuildQuote(billing.QuoteInput{
+		Usage:       billing.UsageTokens{CompletionTokens: 1_000_000},
+		Rates:       p.RateCardForModel(p.Model),
+		OccurredAt:  time.Date(2026, 9, 14, 6, 0, 0, 0, time.UTC),
+		BillingMode: billing.BillingModePAYG, ProviderKind: "deepseek", ModelID: p.Model,
+		ScheduleID: ctx.ScheduleID, CatalogSource: ctx.CatalogSource,
+	})
+	if q.RateBand != billing.RateBandPeak || q.Original.Amount != "8" {
+		t.Fatalf("quote = %+v, want the September peak output rate of 8 CNY", q)
+	}
+}
 
 func TestBillingSplitUpgradeV5ToV6FreezesProviderCurrency(t *testing.T) {
 	dir := t.TempDir()
@@ -40,8 +67,8 @@ price = { cache_hit = 0.0028, input = 0.14, output = 0.28, currency = "$" }
 		t.Fatal(err)
 	}
 	text := string(raw)
-	if !strings.Contains(text, "config_version = 7") {
-		t.Fatalf("missing v7:\n%s", text)
+	if !strings.Contains(text, fmt.Sprintf("config_version = %d", Default().ConfigVersion)) {
+		t.Fatalf("missing current config version %d:\n%s", Default().ConfigVersion, text)
 	}
 	if !strings.Contains(text, "display_currency") && !strings.Contains(text, `currency = "CNY"`) {
 		t.Fatalf("display currency not migrated:\n%s", text)
@@ -55,7 +82,7 @@ price = { cache_hit = 0.0028, input = 0.14, output = 0.28, currency = "$" }
 		t.Fatal("missing flash")
 	}
 	// List price must stay USD official; display is CNY.
-	if flash.Price == nil || flash.Price.Currency != "$" || flash.Price.CacheHit != 0.014 || flash.Price.Input != 0.44 || flash.Price.Output != 1.32 {
+	if flash.Price == nil || flash.Price.Currency != "$" || flash.Price.CacheHit != 0.006 || flash.Price.Input != 0.3 || flash.Price.Output != 1.2 {
 		t.Fatalf("list price rewritten: %+v", flash.Price)
 	}
 	if got := flash.ProviderBillingCurrency(); got != "USD" {
@@ -99,8 +126,15 @@ func TestDeepSeekPricingContextSchedulesOnlyTrustedProtocolsAndAnchor(t *testing
 		{kind: "anthropic", baseURL: "https://api.deepseek.com/anthropic"},
 	} {
 		p := &ProviderEntry{Kind: endpoint.kind, BaseURL: endpoint.baseURL, Model: "deepseek-v4-flash", Price: clonePricing(anchor), BillingCurrency: "CNY"}
-		if got := p.PricingContextForModel(p.Model).ScheduleID; got != billing.ScheduleDeepSeekV4August2026 {
+		if got := p.PricingContextForModel(p.Model).ScheduleID; got != billing.ScheduleDeepSeekV4September2026 {
 			t.Fatalf("%s schedule = %q", endpoint.kind, got)
+		}
+		// A config that has not been re-saved since the August price cut still
+		// proves it is an untouched official row, so it must bind the live
+		// schedule and be quoted at today's rate rather than the old one.
+		p.Price = clonePricing(augustDeepSeekV4PricesCNY()["deepseek-v4-flash"])
+		if got := p.PricingContextForModel(p.Model).ScheduleID; got != billing.ScheduleDeepSeekV4September2026 {
+			t.Fatalf("%s stale-anchor schedule = %q", endpoint.kind, got)
 		}
 	}
 	for _, p := range []*ProviderEntry{
@@ -160,7 +194,7 @@ price = { cache_hit = 0.0028, input = 0.14, output = 0.28, currency = "$" }
 	}
 	cfg := LoadForEdit(path)
 	official, _ := cfg.Provider("deepseek")
-	if got := official.Prices["deepseek-v4-flash"]; got == nil || got.CacheHit != 0.10 || got.Input != 3 || got.Output != 9 {
+	if got := official.Prices["deepseek-v4-flash"]; got == nil || got.CacheHit != 0.04 || got.Input != 2 || got.Output != 8 {
 		t.Fatalf("flash = %+v", got)
 	}
 	if got := official.Prices["deepseek-v4-pro"]; got == nil || got.CacheHit != 0.30 || got.Input != 9 || got.Output != 27 {

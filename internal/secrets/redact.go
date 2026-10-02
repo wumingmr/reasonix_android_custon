@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"reasonix/internal/localeenv"
 	"reasonix/internal/provider"
 )
 
@@ -144,10 +145,11 @@ func filterRegisteredCredentialEnv(env []string) []string {
 // inherited variables are removed only when the user opted into [secrets]
 // filter_subprocess_env, preserving existing gh/git/npm workflows by default.
 func ProcessEnv() []string {
+	env := localeenv.DefaultUTF8(os.Environ())
 	if !filterSubprocessEnvEnabled.Load() {
-		return filterRegisteredCredentialEnv(os.Environ())
+		return filterRegisteredCredentialEnv(env)
 	}
-	return FilterEnv(os.Environ())
+	return FilterEnv(env)
 }
 
 // Redact masks credential-like values for explicit diagnostic, export, and

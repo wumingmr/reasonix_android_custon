@@ -19,10 +19,19 @@ var sessionReset = map[string]bool{
 	"cacheHit":         true,
 	"cacheMiss":        true,
 	"missingReasoning": true,
-	"compactionMu":     true,
-	"compactionState":  true,
-	"cacheState":       true,
-	"compaction":       true,
+	// A strong-projection repair belongs to the corrupted conversation; a new
+	// conversation starts without it.
+	"reasoningReplayStrongProjection":       true,
+	"reasoningReplayStrongProjectionAnchor": true,
+	"compactionMu":                          true,
+	"compactionState":                       true,
+	"cacheState":                            true,
+	"checkpointState":                       true,
+	"pendingModelContextCommit":             true,
+	"compaction":                            true,
+	"todoMu":                                true,
+	"todoState":                             true,
+	"todoWritten":                           true,
 }
 
 // sessionCarryOver names the fields reset deliberately leaves alone, each with
@@ -31,9 +40,6 @@ var sessionReset = map[string]bool{
 var sessionCarryOver = map[string]bool{
 	"compactionRunMu": true, // a singleflight latch, not conversation state
 	"path":            true, // preflight rebinds on the next transcript bind
-	"checkpointState": true, // preflight rebinds with the transcript
-	"todoMu":          true,
-	"todoState":       true, // SetSession rebuilds it from the new snapshot
 	// lastPrefixShape survives the swap today; the next request compares its
 	// prefix against the replaced conversation's shape. Left as found here.
 	"lastPrefixShape":     true,
@@ -135,12 +141,16 @@ func TestSetSessionRestartsTheConversationState(t *testing.T) {
 	a.sess.cacheHit.Store(11)
 	a.sess.cacheMiss.Store(7)
 	a.sess.missingReasoning = missingReasoningWatch{active: true, stateRecorded: true, healthyStreak: 2}
+	a.sess.reasoningReplayStrongProjection = 7
+	a.sess.reasoningReplayStrongProjectionAnchor = "anchor"
 	a.sess.compaction.stuck = true
 	a.sess.compaction.stuckInputHash = "old-input"
 	a.sess.compaction.consecutive = 3
 	a.sess.compaction.failedTurn.Store(8)
 	a.sess.compaction.lastTurn.Store(9)
 	a.sess.compactionState = CompactionState{}
+	a.sess.checkpointState = "pending"
+	a.sess.pendingModelContextCommit = &SessionModelContextCommit{OperationID: "old-operation"}
 	a.unwrittenResolve.at = time.Unix(1, 0)
 
 	next := NewSession("")
@@ -155,6 +165,12 @@ func TestSetSessionRestartsTheConversationState(t *testing.T) {
 	if a.sess.missingReasoning != (missingReasoningWatch{}) {
 		t.Errorf("missingReasoning = %+v, want the incident to end with its conversation", a.sess.missingReasoning)
 	}
+	if a.sess.reasoningReplayStrongProjection != 0 {
+		t.Errorf("reasoningReplayStrongProjection = %d, want it restarted", a.sess.reasoningReplayStrongProjection)
+	}
+	if a.sess.reasoningReplayStrongProjectionAnchor != "" {
+		t.Errorf("reasoningReplayStrongProjectionAnchor = %q, want it restarted", a.sess.reasoningReplayStrongProjectionAnchor)
+	}
 	if a.sess.compaction.stuck || a.sess.compaction.stuckInputHash != "" || a.sess.compaction.consecutive != 0 ||
 		a.sess.compaction.failedTurn.Load() != 0 || a.sess.compaction.lastTurn.Load() != 0 {
 		t.Errorf("compaction progress = stuck:%t hash:%q consecutive:%d failedTurn:%d lastTurn:%d, want it restarted",
@@ -163,6 +179,9 @@ func TestSetSessionRestartsTheConversationState(t *testing.T) {
 	}
 	if a.sess.cacheState != CacheStateUnknown {
 		t.Errorf("cacheState = %q, want %q", a.sess.cacheState, CacheStateUnknown)
+	}
+	if a.sess.checkpointState != "none" || a.sess.pendingModelContextCommit != nil {
+		t.Errorf("pending model context leaked across session reset: state=%q pending=%+v", a.sess.checkpointState, a.sess.pendingModelContextCommit)
 	}
 	if a.unwrittenResolve.at.IsZero() {
 		t.Error("unwrittenResolve was cleared; the retry it owes belongs to the provider configuration, not the conversation")

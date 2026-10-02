@@ -6,6 +6,9 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { useProjectTreeOrganization } from "../components/ProjectTreeOrganization";
 import type { ProjectNode, ProjectTreeOrganizationBindings, SessionGroup } from "../lib/types";
+import type { SessionOrganizationSnapshot } from "../generated/desktopContract.generated";
+import { ToastProvider } from "../lib/toast";
+import { LocaleProvider } from "../lib/i18n";
 
 let passed = 0;
 let failed = 0;
@@ -78,7 +81,7 @@ async function mount(bindings: ProjectTreeOrganizationBindings) {
   const render = async (nextRevision = revision) => {
     revision = nextRevision;
     await act(async () => {
-      root.render(<StrictMode><Harness bindings={bindings} revision={revision} /></StrictMode>);
+      root.render(<StrictMode><LocaleProvider><ToastProvider><Harness bindings={bindings} revision={revision} /></ToastProvider></LocaleProvider></StrictMode>);
       await flush();
     });
   };
@@ -98,14 +101,22 @@ function legacyBindings(list: () => Promise<SessionGroup[]>): ProjectTreeOrganiz
     SaveSessionGroups: async () => {},
   };
 }
+function snapshot(groups: SessionGroup[], revision = 1, applied = true): SessionOrganizationSnapshot {
+  return { groups: structuredClone(groups), revision, applied, order: [], manualOrderEnabled: false };
+}
+const rejectLegacyWrite = async () => { throw new Error("new UI must never invoke an unversioned or topic group writer"); };
+function organizationBindings(read: () => Promise<SessionOrganizationSnapshot>, write: NonNullable<ProjectTreeOrganizationBindings["UpdateSessionOrganization"]>): ProjectTreeOrganizationBindings {
+  return { ReorderTopics: rejectLegacyWrite, ListProjectGroups: async () => { throw new Error("new API must own reads"); }, SaveSessionGroups: rejectLegacyWrite,
+    GetSessionOrganization: read, UpdateSessionOrganization: write };
+}
 
 console.log("\nproject tree organization races");
 
 {
-  const initial = deferred<SessionGroup[]>();
-  const { dom, root } = await mount(legacyBindings(() => initial.promise));
+  const initial = deferred<SessionOrganizationSnapshot>();
+  const { dom, root } = await mount(organizationBindings(() => initial.promise, async () => { throw new Error("read only scenario"); }));
   await act(async () => {
-    initial.resolve([{ id: "existing", title: "Existing", topicIds: [] }]);
+    initial.resolve(snapshot([{ id: "existing", title: "Existing", sessionKeys: [] }]));
     await flush();
   });
   await waitFor("StrictMode group load", () => document.getElementById("groups")?.textContent?.includes("Existing") === true);
@@ -114,16 +125,22 @@ console.log("\nproject tree organization races");
 }
 
 {
-  const initial = deferred<SessionGroup[]>();
-  const { dom, root } = await mount(legacyBindings(() => initial.promise));
+  const initial = deferred<SessionOrganizationSnapshot>();
+  const write = deferred<void>();
+  let reads = 0;
+  const { dom, root } = await mount(organizationBindings(() => ++reads === 1 ? initial.promise : Promise.resolve(snapshot([])), async (_workspace, expected, mutation) => {
+    await write.promise;
+    return snapshot([{ id: mutation.groupId!, title: mutation.title!, sessionKeys: [] }], expected + 1);
+  }));
   await act(async () => {
     (document.getElementById("create") as HTMLButtonElement).click();
     await flush();
   });
-  initial.resolve([{ id: "stale", title: "Stale", topicIds: [] }]);
+  initial.resolve(snapshot([{ id: "stale", title: "Stale", sessionKeys: [] }]));
   await act(flush);
   const text = document.getElementById("groups")?.textContent ?? "";
   ok(text.includes("Local") && !text.includes("Stale"), "a stale initial read cannot overwrite an optimistic mutation");
+  await act(async () => { write.resolve(); await flush(); });
   await cleanup(dom, root);
 }
 
@@ -131,23 +148,19 @@ console.log("\nproject tree organization races");
   let state: SessionGroup[] = [];
   let revision = 0;
   let conflictInjected = false;
-  const bindings: ProjectTreeOrganizationBindings = {
-    ReorderTopics: async () => {},
-    ListProjectGroups: async () => structuredClone(state),
-    SaveSessionGroups: async (_scope, _root, groups) => { state = structuredClone(groups); revision += 1; },
-    GetProjectGroups: async () => ({ groups: structuredClone(state), revision, applied: true }),
-    SaveSessionGroupsVersioned: async (_scope, _root, expected, groups) => {
+  const writes: number[] = [];
+  const bindings = organizationBindings(async () => snapshot(state, revision), async (_workspace, expected, mutation) => {
+      writes.push(expected);
       if (!conflictInjected) {
         conflictInjected = true;
-        state = [{ id: "remote", title: "Remote", topicIds: [] }];
+        state = [{ id: "remote", title: "Remote", sessionKeys: [] }];
         revision += 1;
       }
-      if (expected !== revision) return { groups: structuredClone(state), revision, applied: false };
-      state = structuredClone(groups);
+      if (expected !== revision) return snapshot(state, revision, false);
+      state.push({ id: mutation.groupId!, title: mutation.title!, sessionKeys: [] });
       revision += 1;
-      return { groups: structuredClone(state), revision, applied: true };
-    },
-  };
+      return snapshot(state, revision);
+    });
   const { dom, root } = await mount(bindings);
   await act(async () => {
     (document.getElementById("create") as HTMLButtonElement).click();
@@ -160,26 +173,36 @@ console.log("\nproject tree organization races");
   });
   ok(state.some((group) => group.title === "Remote") && state.some((group) => group.title === "Local"),
     "CAS conflict rebases and displays the local mutation without losing the remote group");
+  ok(JSON.stringify(writes) === "[0,1]", "conflict replays one semantic mutation against the returned revision");
   await cleanup(dom, root);
 }
 
 {
-  let state: SessionGroup[] = [{ id: "one", title: "One", topicIds: ["archived"] }];
+  let state: SessionGroup[] = [{ id: "one", title: "One", sessionKeys: ["ref\x00local\x00archived"] }];
   let revision = 1;
-  const bindings: ProjectTreeOrganizationBindings = {
-    ReorderTopics: async () => {},
-    ListProjectGroups: async () => structuredClone(state),
-    SaveSessionGroups: async () => {},
-    GetProjectGroups: async () => ({ groups: structuredClone(state), revision, applied: true }),
-    SaveSessionGroupsVersioned: async () => ({ groups: structuredClone(state), revision, applied: false }),
-  };
+  const bindings = organizationBindings(async () => snapshot(state, revision), async () => snapshot(state, revision, false));
   const { dom, root, render } = await mount(bindings);
   await waitFor("initial archive membership", () => document.getElementById("groups")?.textContent?.includes("archived") === true);
-  state = [{ id: "one", title: "One", topicIds: [] }];
+  state = [{ id: "one", title: "One", sessionKeys: [] }];
   revision += 1;
   await render(1);
   await waitFor("metadata invalidation", () => !document.getElementById("groups")?.textContent?.includes("archived"));
   ok(true, "metadata revision invalidates loaded groups after archive cleanup");
+  await cleanup(dom, root);
+}
+
+{
+  let legacyWrites = 0;
+  const bindings = legacyBindings(async () => [{ id: "existing", title: "Authoritative", sessionKeys: [] }]);
+  bindings.SaveSessionGroups = async () => { legacyWrites++; };
+  const { dom, root } = await mount(bindings);
+  await waitFor("legacy read", () => document.getElementById("groups")?.textContent?.includes("Authoritative") === true);
+  await act(async () => { (document.getElementById("create") as HTMLButtonElement).click(); await flush(); });
+  await waitFor("unsupported write restores authority", () => !document.getElementById("groups")?.textContent?.includes("Local"));
+  ok(legacyWrites === 0 && document.getElementById("groups")?.textContent?.includes("Authoritative") === true,
+    "missing versioned API never falls back to old writes and restores authoritative groups");
+  ok(document.querySelector(".toast--error")?.textContent?.includes("Upgrade the desktop service") === true,
+    "unsupported writer produces a visible upgrade error");
   await cleanup(dom, root);
 }
 

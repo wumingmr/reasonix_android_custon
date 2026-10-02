@@ -2,7 +2,7 @@ package winuninstall
 
 import "testing"
 
-func TestPlanDoesNotPromoteLegacyOnlyRegistrationWithoutManagedWailsInstall(t *testing.T) {
+func TestPlanDoesNotPromoteLegacyOnlyRegistrationWithoutManagedDesktopInstall(t *testing.T) {
 	legacy := &Registration{
 		DisplayName:     "Reasonix",
 		DisplayVersion:  "0.53.0",
@@ -19,7 +19,7 @@ func TestPlanDoesNotPromoteLegacyOnlyRegistrationWithoutManagedWailsInstall(t *t
 	}
 }
 
-func TestPlanRefreshesManagedWailsRegistrationAndDeletesMatchingLegacyAlias(t *testing.T) {
+func TestPlanRefreshesManagedDesktopRegistrationAndDeletesMatchingLegacyAlias(t *testing.T) {
 	current := &Registration{
 		DisplayName:     "Reasonix",
 		DisplayVersion:  "1.18.0",
@@ -42,7 +42,7 @@ func TestPlanRefreshesManagedWailsRegistrationAndDeletesMatchingLegacyAlias(t *t
 	}
 	if got.Desired.InstallLocation != `d:\reasonix` ||
 		got.Desired.UninstallString != `"d:\reasonix\uninstall.exe"` ||
-		got.Desired.DisplayIcon != `d:\reasonix\reasonix-launcher.exe` {
+		got.Desired.DisplayIcon != `d:\reasonix\Reasonix.exe` {
 		t.Fatalf("desired registration = %+v", got.Desired)
 	}
 }

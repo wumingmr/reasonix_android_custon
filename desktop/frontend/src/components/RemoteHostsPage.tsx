@@ -1,3 +1,6 @@
+import { ErrorMessage } from "./ErrorMessage";
+import { SettingsSelect } from "./SettingsSelect";
+import { Pencil, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import { useConfirmDialog } from "./ConfirmDialog";
@@ -16,6 +19,7 @@ const EMPTY_INPUT: RemoteHostInput = {
   proxyJump: "",
   defaultWorkspace: "",
   serveInstall: "auto",
+  credentialMode: "remote",
   useSSHConfig: false,
 };
 
@@ -113,7 +117,7 @@ export function RemoteHostsPage() {
   return (
     <>
       <div className="remote-hosts">
-        <div className="remote-hosts__toolbar">
+        <div className="remote-hosts__toolbar settings-toolbar">
           <h2>{t("remote.hosts.title")}</h2>
           <div className="remote-hosts__actions">
             <button className="btn" onClick={() => setScreen({ kind: "import" })}>
@@ -124,7 +128,7 @@ export function RemoteHostsPage() {
             </button>
           </div>
         </div>
-        {pageError && <p className="remote-host-form__error" role="alert">{pageError}</p>}
+        {pageError && <p className="remote-host-form__error" role="alert"><ErrorMessage error={pageError} /></p>}
         {hosts.length === 0 ? (
           <p className="remote-hosts__empty">{t("remote.hosts.empty")}</p>
         ) : (
@@ -242,11 +246,11 @@ function RemoteHostRow(props: {
             {t("remote.connect")}
           </button>
         )}
-        <button className="btn" onClick={props.onEdit}>
-          {t("remote.host.edit")}
+        <button className="btn settings-icon-button" title={t("remote.host.edit")} aria-label={t("remote.host.edit")} onClick={props.onEdit}>
+          <Pencil size={16} aria-hidden="true" />
         </button>
-        <button className="btn btn--danger" onClick={props.onRemove}>
-          {t("remote.host.remove")}
+        <button className="btn settings-icon-button" title={t("remote.host.remove")} aria-label={t("remote.host.remove")} onClick={props.onRemove}>
+          <Trash2 size={16} aria-hidden="true" />
         </button>
       </div>
     </li>
@@ -388,14 +392,21 @@ function RemoteHostForm(props: {
       </label>
       <label>
         {t("remote.host.serveInstall")}
-        <select value={form.serveInstall} onChange={(e) => set("serveInstall", e.target.value)}>
+        <SettingsSelect value={form.serveInstall} onValueChange={(value) => set("serveInstall", value)}>
           <option value="auto">auto</option>
           <option value="npm">npm</option>
           <option value="upload">upload</option>
           <option value="never">never</option>
-        </select>
+        </SettingsSelect>
       </label>
-      {err && <p className="remote-host-form__error" role="alert">{err}</p>}
+      <label>
+        {t("remote.host.credentialMode")}
+        <SettingsSelect value={form.credentialMode} onValueChange={(value) => set("credentialMode", value)}>
+          <option value="remote">{t("remote.host.credentialModeRemote")}</option>
+          <option value="local-proxy">{t("remote.host.credentialModeLocalProxy")}</option>
+        </SettingsSelect>
+      </label>
+      {err && <p className="remote-host-form__error" role="alert"><ErrorMessage error={err} /></p>}
       <div className="remote-host-form__actions">
         <button className="btn" onClick={props.onCancel}>{t("remote.host.cancel")}</button>
         <button className="btn btn--primary" disabled={busy || !form.label.trim() || !form.host.trim() || (!form.useSSHConfig && form.port < 1) || form.port > 65535} onClick={() => void submit()}>
@@ -434,7 +445,7 @@ function RemoteSSHConfigImport(props: { onDone: () => void; onCancel: () => void
 
   return (
     <div className="remote-import">
-      {err && <p className="remote-host-form__error" role="alert">{err}</p>}
+      {err && <p className="remote-host-form__error" role="alert"><ErrorMessage error={err} /></p>}
       {candidates.length === 0 ? (
         <p className="remote-hosts__empty">{t("remote.hosts.importEmpty")}</p>
       ) : (
@@ -474,6 +485,7 @@ function hostToInput(h?: RemoteHostView): RemoteHostInput {
     proxyJump: h.proxyJump,
     defaultWorkspace: h.defaultWorkspace,
     serveInstall: h.serveInstall,
+    credentialMode: h.credentialMode || "remote",
     useSSHConfig: h.useSSHConfig,
     password: "",
     keyPassphrase: "",

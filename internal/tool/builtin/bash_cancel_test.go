@@ -24,6 +24,9 @@ func TestBashCancelReturnsPromptly(t *testing.T) {
 	args, _ := json.Marshal(map[string]any{"command": cmd})
 
 	ctx, cancel := context.WithCancel(context.Background())
+	// This fixture tests process cancellation, independently of sandbox availability.
+	ctx = sandbox.WithPermissionPreset(ctx, "danger-full-access")
+	defer cancel()
 	go func() { time.Sleep(300 * time.Millisecond); cancel() }()
 
 	start := time.Now()

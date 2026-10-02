@@ -47,7 +47,7 @@ func simulateForeignSessionLeaseHolder(t *testing.T, path string) {
 	})
 }
 
-func TestDeleteSessionKeepsDuplicateLiveSessionHeldByOtherRuntime(t *testing.T) {
+func TestLegacyDeleteSessionKeepsDuplicateLiveSessionHeldByOtherRuntime(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
 	dir := config.SessionDir()
@@ -80,7 +80,7 @@ func TestDeleteSessionKeepsDuplicateLiveSessionHeldByOtherRuntime(t *testing.T) 
 		tabOrder:    []string{"active"},
 	}
 
-	err := app.DeleteSession(filepath.Base(path))
+	err := app.deleteSession(filepath.Base(path))
 	if err == nil || !strings.Contains(err.Error(), errSessionBusyElsewhere.Error()) {
 		t.Fatalf("DeleteSession err = %v, want refusal while a foreign runtime holds the lease", err)
 	}

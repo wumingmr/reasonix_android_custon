@@ -13,11 +13,19 @@ import (
 
 	"reasonix/internal/appidentity"
 	"reasonix/internal/installlayout"
+	"reasonix/internal/proc"
 )
 
 // Run resolves the active desktop, performs the one-time legacy handoff when
 // needed, and starts the desktop process.
 func Run(args []string, buildVersion string) int {
+	if len(args) > 0 && args[0] == "--repair-shortcuts" {
+		if err := repairInstallerShortcuts(args[1:], ResolveInstallRoot, appidentity.RepairShortcuts); err != nil {
+			fmt.Fprintln(os.Stderr, "error: repair Windows shortcut integration:", err)
+			return 1
+		}
+		return 0
+	}
 	if len(args) == 1 {
 		switch args[0] {
 		case "version", "--version", "-v":
@@ -51,7 +59,12 @@ func Run(args []string, buildVersion string) int {
 		return 1
 	}
 
+	if handled, code := coordinatedLaunch(installRoot, args); handled {
+		return code
+	}
+
 	cmd := exec.Command(desktopPath, StripLegacyLaunchArgs(args)...)
+	proc.HideConsole(cmd)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	cmd.Dir = installRoot
 	if DetachByDefault() {
@@ -130,6 +143,7 @@ func runLegacyMigratorIfNeeded(installRoot string) error {
 	}
 
 	cmd := exec.Command(migratorPath, "--install-root", installRoot, "--no-relaunch")
+	proc.HideConsole(cmd)
 	cmd.Dir = installRoot
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -200,4 +214,5 @@ func usage() {
 	fmt.Println("usage: reasonix-launcher [args...]")
 	fmt.Println("  Starts the active Reasonix desktop from current.json.")
 	fmt.Println("  Legacy --safe-mode / launch --detach tokens are ignored.")
+	fmt.Println("  --repair-shortcuts <absolute.lnk...> repairs owned installer shortcuts without launching.")
 }

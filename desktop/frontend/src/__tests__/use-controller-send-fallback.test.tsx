@@ -4,8 +4,10 @@ import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { AppBindings } from "../lib/bridge";
+import { LocaleProvider, preloadLocale, useI18n } from "../lib/i18n";
 import { useController } from "../lib/useController";
-import type { BalanceInfo, CheckpointMeta, ContextInfo, EffortInfo, HistoryMessage, JobView, Meta, TabMeta } from "../lib/types";
+import type { BalanceInfo, CheckpointMeta, ContextInfo, EffortInfo, HistoryMessage, JobView, Meta, TabMeta, WireEvent } from "../lib/types";
+import { installDesktopHostStub } from "./desktopHostStub";
 
 let passed = 0;
 let failed = 0;
@@ -46,6 +48,10 @@ function tabMeta(overrides: Partial<TabMeta> = {}): TabMeta {
     tokenMode: "full",
     active: true,
     cwd: "/repo/send",
+    sessionId: "session-send",
+    session: { hostId: "local", sessionId: "session-send" },
+    sessionGeneration: 1,
+    runtime: { phase: "ready", epoch: "runtime-send" },
     ...overrides,
   };
 }
@@ -61,6 +67,10 @@ function metaFor(tab: TabMeta): Meta {
     workspaceName: tab.workspaceName,
     workspacePath: tab.workspacePath,
     gitBranch: tab.gitBranch,
+    sessionId: tab.sessionId,
+    session: tab.session,
+    sessionGeneration: tab.sessionGeneration,
+    runtime: tab.runtime,
     autoApproveTools: false,
     bypass: false,
     collaborationMode: tab.collaborationMode ?? "normal",
@@ -91,7 +101,7 @@ globalThis.localStorage = dom.window.localStorage;
 globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
 globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
 
-const backendTab = tabMeta({ backgroundJobs: 2 });
+let backendTab = tabMeta({ backgroundJobs: 2 });
 const context: ContextInfo = { used: 0, window: 100, sessionTokens: 0 };
 const effort: EffortInfo = { supported: true, current: "auto", default: "auto", levels: ["auto"] };
 const balance: BalanceInfo = { available: false, display: "" };
@@ -99,39 +109,67 @@ const jobs: JobView[] = [];
 const checkpoints: CheckpointMeta[] = [];
 let tabsAvailable = false;
 let submitCalls = 0;
+let rejectSubmit = false;
+let rejectAnswer = false;
+let rejectAnswerMessage = "prompt write failed";
+let rejectListTabs = false;
+let listTabsCalls = 0;
+let pendingPromptIdentityCalls = 0;
+const exactAnswerCalls: Array<{ tabId: string; turnId: string; promptId: string; answer: unknown }> = [];
+const legacyAnswerCalls: string[] = [];
 
-window.runtime = {
-  EventsOn: () => () => {},
-  BrowserOpenURL: () => {},
-};
-window.go = {
+const desktopStub = installDesktopHostStub(({
   main: {
     App: {
-      ListTabs: async () => (tabsAvailable ? [backendTab] : []),
+      ListTabs: async () => {
+        listTabsCalls += 1;
+        if (rejectListTabs) throw new Error("runtime status unavailable");
+        return tabsAvailable ? [backendTab] : [];
+      },
       MetaForTab: async () => metaFor(backendTab),
       ContextUsageForTab: async () => context,
       EffortForTab: async () => effort,
       BalanceForTab: async () => balance,
       JobsForTab: async () => jobs,
       CheckpointsForTab: async () => checkpoints,
+      ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
       HistoryForTab: async (): Promise<HistoryMessage[]> => [],
       HistoryPageForTab: async () => ({ messages: [], startTurn: 0, endTurn: 0, totalTurns: 0, hasOlder: false }),
       HistoryCheckpointTurnsForTab: async () => [],
       ReplayPendingPrompts: async () => {},
+      ReplayPendingPromptsForTab: async () => {},
+      PendingPromptIdentitiesForTab: async (tabId: string) => {
+        pendingPromptIdentityCalls += tabId === "tab-send" ? 1 : 0;
+        return backendTab.pendingPrompt && backendTab.turnId ? [{
+          promptId: backendTab.turnId === "turn-authoritative" ? "ask-fallback" : "ask-retry",
+          turnId: backendTab.turnId,
+          runtimeEpoch: backendTab.runtime?.epoch,
+          kind: "ask",
+        }] : [];
+      },
       SubmitToTab: async (tabId: string) => {
         submitCalls += tabId === "tab-send" ? 1 : 0;
       },
       SubmitToTabWithID: async (tabId: string) => {
         submitCalls += tabId === "tab-send" ? 1 : 0;
+        if (rejectSubmit) throw new Error("turn already running");
+      },
+      AnswerQuestionForTab: async (_tabId: string, promptId: string) => { legacyAnswerCalls.push(promptId); },
+      ResolvePromptForSession: async (target, answer) => {
+        exactAnswerCalls.push({ tabId: target.tabId, turnId: target.turnId, promptId: target.promptId, answer });
+        if (rejectAnswer && rejectAnswerMessage.includes("not the active turn")) desktopStub.emit("agent:event", { kind: "prompt_answered", tabId: target.tabId, itemId: target.promptId });
+        if (rejectAnswer) throw new Error(rejectAnswerMessage);
       },
     } as Partial<AppBindings> as AppBindings,
   },
-};
+}).main.App);
 
 type Controller = ReturnType<typeof useController>;
 let controller: Controller | undefined;
+let setLocale: ReturnType<typeof useI18n>["setPref"] | undefined;
 
 function Probe() {
+  setLocale = useI18n().setPref;
   controller = useController();
   return null;
 }
@@ -141,7 +179,7 @@ if (!rootEl) throw new Error("missing root");
 const root = createRoot(rootEl);
 
 await act(async () => {
-  root.render(<Probe />);
+  root.render(<LocaleProvider><Probe /></LocaleProvider>);
   await flushPromises();
 });
 eq(controller?.activeTabId, undefined, "startup has no active tab when backend has no tabs");
@@ -154,8 +192,141 @@ await act(async () => {
 
 eq(controller?.activeTabId, "tab-send", "send fallback activates the backend-selected tab");
 eq(controller?.state.backgroundJobs, 2, "send fallback reconciles backend runtime metadata");
-ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "hello from fallback") ?? false, "send fallback keeps the optimistic user turn");
+ok(Object.values(controller?.state.localSubmissions ?? {}).some((submission) => submission.text === "hello from fallback"), "send fallback keeps the optimistic user turn");
 eq(submitCalls, 1, "send fallback submits to the activated tab");
+
+await act(async () => {
+  desktopStub.emit("agent:event", { kind: "turn_done", tabId: "tab-send" } as WireEvent);
+  await flushPromises();
+});
+
+backendTab = tabMeta({ running: true, pendingPrompt: true, turnId: "turn-authoritative" });
+await act(async () => {
+  desktopStub.emit("agent:event", {
+    kind: "ask_request",
+    tabId: "tab-send",
+    runtimeEpoch: "runtime-send",
+    ask: { id: "ask-fallback", questions: [{ id: "q1", prompt: "Proceed?", options: [{ label: "yes" }] }] },
+  } as WireEvent);
+  await flushPromises();
+});
+eq(controller?.state.activeTurnId, undefined, "Ask fixture starts without a local turn id");
+const beforeAnswerListCalls = listTabsCalls;
+const beforePendingPromptIdentityCalls = pendingPromptIdentityCalls;
+await act(async () => {
+  await controller?.answerQuestion("ask-fallback", [{ questionId: "q1", selected: ["yes"] }]);
+  await flushPromises();
+});
+eq(listTabsCalls, beforeAnswerListCalls, "Ask answer does not borrow the latest tab turn");
+eq(pendingPromptIdentityCalls, beforePendingPromptIdentityCalls + 1, "Ask answer resolves one exact pending-prompt identity");
+eq(exactAnswerCalls.at(-1)?.turnId, "turn-authoritative", "Ask answer uses the authoritative turn fence");
+eq(legacyAnswerCalls.length, 0, "Ask answer never falls back to the unfenced endpoint");
+eq(controller?.state.ask, undefined, "successful exact answer clears the matching Ask without replay");
+
+await act(async () => {
+  desktopStub.emit("agent:event", {
+    kind: "ask_request",
+    tabId: "tab-send",
+    turnId: "turn-authoritative",
+    runtimeEpoch: "runtime-send",
+    ask: { id: "ask-retry", questions: [{ id: "q2", prompt: "Retry?", options: [{ label: "yes" }] }] },
+  } as WireEvent);
+  await flushPromises();
+});
+rejectAnswer = true;
+let answerRejected = false;
+await preloadLocale("zh");
+await act(async () => {
+  setLocale?.("zh");
+  await flushPromises();
+});
+await act(async () => {
+  try {
+    await controller?.answerQuestion("ask-retry", [{ questionId: "q2", selected: ["yes"] }]);
+  } catch {
+    answerRejected = true;
+  }
+  await flushPromises();
+});
+eq(answerRejected, true, "failed exact answer propagates to AskCard");
+eq(controller?.state.ask?.id, "ask-retry", "failed exact answer preserves the pending Ask");
+eq(controller?.state.pendingPrompt, true, "failed exact answer keeps the prompt gate active");
+eq(controller?.state.items.find((item) => item.kind === "notice" && item.text.includes("prompt write failed"))?.text, "提交回答失败：prompt write failed", "failed Ask answer uses the active locale");
+rejectAnswer = false;
+
+rejectSubmit = true;
+await act(async () => {
+  await controller?.send("continue while prompt is pending").catch(() => {});
+  await flushPromises();
+  await flushPromises();
+});
+eq(Object.values(controller?.state.localSubmissions ?? {}).some((submission) => submission.text === "continue while prompt is pending" && submission.status === "failed"), true, "colliding submit marks its optimistic bubble failed");
+eq(controller?.state.ask?.id, "ask-retry", "colliding submit preserves the pending Ask");
+eq(controller?.state.running, true, "active backend snapshot keeps the composer blocked after rejection");
+eq(controller?.state.pendingPrompt, true, "active backend snapshot restores the prompt gate after rejection");
+eq(controller?.state.activeTurnId, "turn-authoritative", "active backend snapshot restores the authoritative turn id");
+
+await act(async () => {
+  desktopStub.emit("agent:event", { kind: "turn_done", tabId: "tab-send", turnId: "turn-authoritative" } as WireEvent);
+  backendTab = tabMeta({ running: false, pendingPrompt: false, turnId: undefined });
+  await flushPromises();
+  await controller?.send("retry against an idle backend").catch(() => {});
+  await flushPromises();
+  await flushPromises();
+});
+eq(controller?.state.running, false, "authoritative idle snapshot releases a rejected submit");
+eq(controller?.state.pendingPrompt, false, "authoritative idle snapshot leaves no prompt gate");
+
+rejectListTabs = true;
+const beforeFailedReconcileCalls = listTabsCalls;
+await act(async () => {
+  await controller?.send("retry while runtime status is unavailable").catch(() => {});
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+});
+eq(listTabsCalls - beforeFailedReconcileCalls, 4, "rejected submit retries failed ListTabs reads at every bounded delay");
+eq(controller?.state.running, true, "exhausted status reads leave the composer conservatively blocked");
+rejectListTabs = false;
+
+backendTab = tabMeta({ running: true, pendingPrompt: true, turnId: "turn-authoritative" });
+await act(async () => {
+  desktopStub.emit("agent:event", {
+    kind: "ask_request",
+    tabId: "tab-send",
+    turnId: "turn-authoritative",
+    runtimeEpoch: "runtime-send",
+    ask: { id: "ask-stale", questions: [{ id: "q3", prompt: "Stale?", options: [{ label: "yes" }] }] },
+  } as WireEvent);
+  await flushPromises();
+});
+rejectAnswer = true;
+rejectAnswerMessage = 'turn "turn-old" is not the active turn for tab "tab-send"';
+await act(async () => {
+  try { await controller?.answerQuestion("ask-stale", [{ questionId: "q3", selected: ["yes"] }]); } catch {}
+  await flushPromises();
+});
+eq(controller?.state.ask, undefined, "stale Ask submission expires the old card");
+rejectAnswer = false;
+rejectAnswerMessage = "prompt write failed";
+
+// Pre-admission rejection does not append a backend event. A fresh idle read
+// with the same sequence must still undo each optimistic submission.
+rejectSubmit = true;
+backendTab = tabMeta({ running: false, pendingPrompt: false, turnEventSeq: 700 });
+await act(async () => {
+  desktopStub.emit("agent:event", { kind: "turn_done", tabId: "tab-send" } as WireEvent);
+  await controller?.send("seed idle status after rejected submit").catch(() => {});
+  await flushPromises();
+  await flushPromises();
+});
+eq(controller?.state.runtimeStatusSeq, 1, "baseline uses the business cut, never the old ledger sequence");
+eq(controller?.state.running, false, "first rejection settles to authoritative idle");
+await act(async () => {
+  await controller?.send("second pre-admission rejection").catch(() => {});
+  await flushPromises();
+  await flushPromises();
+});
+eq(controller?.state.running, false, "same-sequence idle settles a new failed submit");
+eq(controller?.state.cancellable, false, "same-sequence idle removes the stale Stop action");
 
 await act(async () => {
   root.unmount();

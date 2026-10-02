@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"sort"
 
@@ -24,21 +25,29 @@ func (availability catalogWorkspaceAvailability) decorate(page ProjectTopicPage,
 	return page
 }
 
-func (a *App) catalogWorkspaceAvailability(catalog *sessioncatalog.Catalog, scope, workspaceRoot string) catalogWorkspaceAvailability {
+func (a *App) catalogWorkspaceAvailability(catalog *sessioncatalog.Catalog, scope, workspaceRoot string, views ...context.Context) catalogWorkspaceAvailability {
 	availability := catalogWorkspaceAvailability{}
 	if a == nil || catalog == nil {
 		return availability
 	}
 	ctx, cancel := a.catalogReadContext()
 	defer cancel()
+	if len(views) > 0 && views[0] != nil {
+		ctx = views[0]
+	}
 	scope, workspaceRoot = normalizeDesktopTopicScope(scope, workspaceRoot)
 	for _, target := range a.sessionCatalogTargets() {
 		if target.Scope != scope || scope == "project" && !sameProjectRoot(target.WorkspaceRoot, workspaceRoot) {
 			continue
 		}
-		if _, err := os.Stat(target.Path); os.IsNotExist(err) {
-			continue
+		if !catalog.MetadataOnly() {
+			if _, err := os.Stat(target.Path); os.IsNotExist(err) {
+				continue
+			}
 		}
+		// Metadata discovery owns absence: an unused optional root completes
+		// empty, while a disappeared root with retained history is unavailable.
+		// Re-statting here used to silently omit that failure and claim complete.
 		switch catalog.DirectoryStatus(ctx, target.Path).State {
 		case "ready":
 			availability.ready++
@@ -57,9 +66,15 @@ func (a *App) catalogWorkspaceAvailability(catalog *sessioncatalog.Catalog, scop
 	return availability
 }
 
-func (a *App) mergeMetadataTopics(req ProjectTopicPageRequest, page ProjectTopicPage) ProjectTopicPage {
-	metadata := a.metadataTopicPage(req)
+func (a *App) mergeMetadataTopics(req ProjectTopicPageRequest, page ProjectTopicPage) (ProjectTopicPage, error) {
+	metadata, err := a.metadataTopicPage(req)
+	if err != nil {
+		return page, err
+	}
 	manualOrder := manualTopicOrderFor(req.Scope, req.WorkspaceRoot)
+	if req.readAllSources {
+		manualOrder = false
+	}
 	seen := make(map[string]struct{}, len(page.Items)+len(metadata.Items))
 	for _, item := range page.Items {
 		seen[item.TopicID] = struct{}{}
@@ -87,7 +102,7 @@ func (a *App) mergeMetadataTopics(req ProjectTopicPageRequest, page ProjectTopic
 	}
 	page.NextCursor = ""
 	if hasMore && len(page.Items) > 0 {
-		page.NextCursor = encodeProjectNodeCursor(page.Items[len(page.Items)-1], req.SortMode, manualOrder)
+		page.NextCursor = encodeProjectNodeCursor(page.Items[len(page.Items)-1], req.SortMode, manualOrder, req.groupCursorBind)
 	}
-	return page
+	return page, nil
 }

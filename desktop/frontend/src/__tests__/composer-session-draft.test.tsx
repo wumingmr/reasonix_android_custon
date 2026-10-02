@@ -1,5 +1,3 @@
-// Run: tsx src/__tests__/composer-session-draft.test.tsx
-
 import { JSDOM } from "jsdom";
 import React from "react";
 import { act } from "react";
@@ -11,6 +9,7 @@ import { LocaleProvider } from "../lib/i18n";
 import { resetCustomShortcuts, saveCustomShortcut } from "../lib/keyboardShortcuts";
 import { ToastProvider } from "../lib/toast";
 import type { CollaborationMode, ToolApprovalMode } from "../lib/types";
+import { installDesktopHostStub } from "./desktopHostStub";
 
 let passed = 0;
 let failed = 0;
@@ -92,20 +91,20 @@ function installDom() {
 }
 
 function installBridgeApp(methods: Record<string, unknown>) {
-  (window as unknown as { go: { main: { App: Record<string, unknown> } } }).go = {
-    main: {
-      App: {
-        Commands: async () => [],
-        Models: async () => [],
-        ModelsForTab: async () => [],
-        ListDir: async () => [],
-        ListDirForTab: async () => [],
-        SearchFileRefs: async () => [],
-        SearchFileRefsForTab: async () => [],
-        ...methods,
-      },
-    },
-  };
+  installDesktopHostStub({
+    Commands: async () => [],
+    Models: async () => [],
+    ModelsForTab: async () => [],
+    ListDir: async () => [],
+    ListDirForTab: async () => [],
+    ListDirForTarget: async () => [],
+    SearchFileRefs: async () => [],
+    SearchFileRefsForTab: async () => [],
+    SearchFileRefsForTarget: async () => [],
+		CaptureAttachmentTarget: async () => ({ token: "test-attachment-target", capabilities: ["attachments-v2"] }), ReleaseAttachmentTarget: async () => {},
+    AttachmentDataURLForTarget: async (_target: unknown, path: string) => path,
+    ...methods,
+  });
 }
 
 async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {}) {
@@ -128,7 +127,6 @@ async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {
     onSetMode: () => {},
     onSetCollaborationMode: (_mode: CollaborationMode) => {},
     onSetToolApprovalMode: () => {},
-    onToggleYoloApprovalMode: () => {},
     onClearGoal: () => {},
     onSwitchModel: () => {},
     onSetEffort: () => {},
@@ -340,7 +338,7 @@ console.log("\ncomposer session draft");
   });
   const { root, rerender } = await renderComposer({
     running: true,
-    tabId: "tab-a",
+    tabId: "tab-a", inboxSessionPath: "/repo/session-a.jsonl",
     sessionKey: "session:project:/repo:topic-a:session-a",
     onSend: (text, _submit, targetTabId) => {
       sent.push({ tab: targetTabId ?? "", text });
@@ -354,7 +352,7 @@ console.log("\ncomposer session draft");
   ok(document.querySelector(".composer-guidance-item") !== null, "session A shows its queued guidance before switching");
   await rerender({
     running: false,
-    tabId: "tab-b",
+    tabId: "tab-b", inboxSessionPath: "/repo/session-b.jsonl",
     sessionKey: "session:project:/repo:topic-b:session-b",
     onSend: (text, _submit, targetTabId) => {
       sent.push({ tab: targetTabId ?? "", text });
@@ -365,7 +363,7 @@ console.log("\ncomposer session draft");
 
   await rerender({
     running: true,
-    tabId: "tab-a",
+    tabId: "tab-a", inboxSessionPath: "/repo/session-a.jsonl",
     sessionKey: "session:project:/repo:topic-a:session-a",
     onSend: (text, _submit, targetTabId) => {
       sent.push({ tab: targetTabId ?? "", text });
@@ -749,12 +747,7 @@ console.log("\ncomposer session draft");
     await flushTimers();
   });
   saveCustomShortcut("toolApproval.yolo", { key: "z", ctrl: true });
-  let yoloToggles = 0;
-  const { root } = await renderComposer({
-    onToggleYoloApprovalMode: () => {
-      yoloToggles += 1;
-    },
-  });
+  const { root } = await renderComposer();
   await act(async () => {
     textarea().dispatchEvent(textPasteEvent("pasted"));
     await flushTimers();
@@ -771,7 +764,6 @@ console.log("\ncomposer session draft");
   });
   eq(undoPaste.defaultPrevented, true, "legacy Ctrl+Z YOLO binding yields to composer undo while editing");
   eq(textarea().value, "", "legacy Ctrl+Z YOLO binding still undoes the paste");
-  eq(yoloToggles, 0, "legacy Ctrl+Z YOLO binding does not toggle YOLO while editing");
 
   await act(async () => {
     saveCustomShortcut("toolApproval.yolo", { key: "z", ctrl: true, shift: true });
@@ -790,7 +782,6 @@ console.log("\ncomposer session draft");
   });
   eq(legacyRedo.defaultPrevented, true, "legacy Ctrl+Shift+Z YOLO binding yields to composer redo while editing");
   eq(textarea().value, "pasted", "legacy Ctrl+Shift+Z YOLO binding still redoes the paste");
-  eq(yoloToggles, 0, "legacy Ctrl+Shift+Z YOLO binding does not toggle YOLO while editing");
 
   await act(async () => {
     saveCustomShortcut("toolApproval.yolo", { key: "u", ctrl: true });
@@ -816,7 +807,6 @@ console.log("\ncomposer session draft");
   });
   eq(ctrlYRedo.defaultPrevented, true, "Ctrl+Y redoes the paste when the YOLO shortcut is rebound");
   eq(textarea().value, "pasted", "Ctrl+Y restores the programmatic paste");
-  eq(yoloToggles, 0, "Ctrl+Y does not toggle YOLO after that action is rebound");
 
   await act(async () => {
     resetCustomShortcuts();
@@ -832,9 +822,8 @@ console.log("\ncomposer session draft");
     textarea().dispatchEvent(defaultCtrlY);
     await flushTimers();
   });
-  eq(defaultCtrlY.defaultPrevented, true, "default Ctrl+Y remains reserved for the YOLO shortcut");
-  eq(yoloToggles, 1, "default Ctrl+Y still toggles YOLO exactly once");
-  eq(textarea().value, "pasted", "the YOLO shortcut does not mutate composer history");
+  eq(defaultCtrlY.defaultPrevented, true, "default Ctrl+Y remains reserved while the legacy permission shortcut is retired");
+  eq(textarea().value, "pasted", "the retired shortcut does not mutate composer history");
 
   await act(async () => root.unmount());
   resetCustomShortcuts();
@@ -953,7 +942,7 @@ console.log("\ncomposer session draft");
   const savePastedFile = deferred<string>();
   const sent: string[] = [];
   installBridgeApp({
-    SavePastedFile: async () => {
+    SavePastedFileForTarget: async () => {
       saveStarted.resolve();
       return savePastedFile.promise;
     },
@@ -979,6 +968,10 @@ console.log("\ncomposer session draft");
     textarea().dispatchEvent(event);
     await saveStarted.promise;
   });
+  await rerender({ insertRequest: { id: 10, text: "session A waits for its attachment", mode: "replace" } });
+  ok(sendButton().disabled, "source session cannot submit while its actual attachment is pending");
+  await act(async () => { sendButton().click(); await flushTimers(); });
+  eq(sent.length, 0, "pending attachment prevents source-session dispatch");
   await rerender({ sessionKey: "session:project:/repo:topic-b:session-b" });
   await rerender({ insertRequest: { id: 11, text: "session B stays writable", mode: "replace" } });
   ok(sendButton().disabled === false, "session B is not blocked by session A's pending attachment");
@@ -1296,6 +1289,43 @@ console.log("\ncomposer session draft");
     "submit serializes chat, code, and terminal selections deterministically",
   );
   eq(document.querySelector(".composer-context__item--selection"), null, "a completed submit clears the selection card");
+
+  await act(async () => root.unmount());
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  const changes: string[] = [];
+  const empty = {
+    text: "restored draft",
+    invocations: [], attachments: [], workspaceRefs: [], pastedBlocks: [], openPastedLabels: [], sessionRefs: [], selectedTextRefs: [],
+  };
+  const onChange = (_draftId: string, _generation: number, value: typeof empty) => changes.push(value.text);
+  const { root, rerender } = await renderComposer({
+    sessionKey: "draft:draft-a",
+    tabId: undefined,
+    persistentDraft: { draftId: "draft-a", generation: 1, initial: empty, revision: 1, onChange },
+    composerTarget: { kind: "draft", draftId: "draft-a" },
+  });
+  eq(textarea().value, "restored draft", "persistent draft restores backend-confirmed text");
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+  eq(changes.length, 0, "restoring a persistent draft does not write an unchanged snapshot");
+
+  await act(async () => {
+    updateTextareaFromUser("edited draft", "insertText");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  });
+  eq(changes.join(","), "edited draft", "editing a persistent draft emits one debounced snapshot");
+
+  const saved = { ...empty, text: "saved in another window" };
+  await rerender({ persistentDraft: { draftId: "draft-a", generation: 1, initial: saved, revision: 2, onChange } });
+  eq(textarea().value, "edited draft", "a save acknowledgement revision does not replace newer local edits");
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+  eq(changes.length, 1, "a save acknowledgement does not echo or restore content");
+
+  await rerender({ persistentDraft: { draftId: "draft-a", generation: 2, initial: saved, revision: 2, onChange } });
+  eq(textarea().value, "saved in another window", "an explicit replacement generation installs the saved version");
 
   await act(async () => root.unmount());
   dom.window.close();

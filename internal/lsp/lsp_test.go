@@ -205,9 +205,66 @@ func TestURIRoundtrip(t *testing.T) {
 		if !strings.HasPrefix(uri, "file://") {
 			t.Errorf("%q → %q is not a file URI", p, uri)
 		}
-		if got := uriToPath(uri); got != p {
-			t.Errorf("roundtrip %q → %q", p, got)
+		if got, err := uriToPath(uri); err != nil || got != p {
+			t.Errorf("roundtrip %q → %q, %v", p, got, err)
 		}
+	}
+}
+
+func TestWindowsFileURIConversions(t *testing.T) {
+	tests := []struct {
+		path string
+		uri  string
+	}{
+		{`C:\Users\Test User\中文%20.go`, `file:///C:/Users/Test%20User/%E4%B8%AD%E6%96%87%2520.go`},
+		{`\\server\share\Test User\中文%20.go`, `file://server/share/Test%20User/%E4%B8%AD%E6%96%87%2520.go`},
+	}
+	for _, tt := range tests {
+		if got := pathToURIForOS(tt.path, "windows"); got != tt.uri {
+			t.Errorf("pathToURIForOS(%q) = %q, want %q", tt.path, got, tt.uri)
+		}
+		if got, err := uriToPathForOS(tt.uri, "windows"); err != nil || got != tt.path {
+			t.Errorf("uriToPathForOS(%q) = %q, %v; want %q", tt.uri, got, err, tt.path)
+		}
+	}
+}
+
+func TestURIToPathAuthorityAndValidation(t *testing.T) {
+	if got, err := uriToPathForOS("file://localhost/tmp/a%20b%2520.go", "linux"); err != nil || got != "/tmp/a b%20.go" {
+		t.Fatalf("localhost URI = %q, %v", got, err)
+	}
+	for _, uri := range []string{
+		"https://server/share/a.go",
+		"file://server/share/a.go",
+		"file://server:123/share/a.go",
+		"file:///tmp/a.go?mode=ro",
+		"file:///tmp/a.go#fragment",
+		"file:///tmp/%00.go",
+		"%",
+	} {
+		if _, err := uriToPathForOS(uri, "linux"); err == nil {
+			t.Errorf("uriToPathForOS(%q) unexpectedly succeeded", uri)
+		}
+	}
+}
+
+func TestFormatLocationsKeepsInvalidURIAndSkipsSnippet(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "valid.go")
+	if err := os.WriteFile(path, []byte("package valid\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{wsRoot: root}
+	remote := "https://server/share/secret.go"
+	got := m.formatLocations("definition", []Location{
+		{URI: pathToURI(path), Range: Range{Start: Position{Line: 0}}},
+		{URI: remote, Range: Range{Start: Position{Line: 6}}},
+	})
+	if !strings.Contains(got, "valid.go:1  package valid") {
+		t.Fatalf("valid location lost snippet:\n%s", got)
+	}
+	if !strings.Contains(got, remote+":7") || strings.Contains(got, remote+":7  ") {
+		t.Fatalf("invalid URI was treated as a local path:\n%s", got)
 	}
 }
 

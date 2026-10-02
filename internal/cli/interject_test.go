@@ -7,7 +7,18 @@ import (
 
 	"reasonix/internal/control"
 	"reasonix/internal/event"
+	"reasonix/internal/sessioninbox"
 )
+
+type busyInboxController struct {
+	control.SessionAPI
+}
+
+func (c *busyInboxController) Running() bool { return true }
+
+func (c *busyInboxController) TryEnqueueFollowup(req control.InboxRequest) (sessioninbox.InboxReceipt, error) {
+	return c.EnqueueInbox(req)
+}
 
 func TestInterjectQueuesWhileRunningWithoutOverwrite(t *testing.T) {
 	m := newInboxTestChatTUI(t)
@@ -37,9 +48,10 @@ func TestInterjectQueuesWhileRunningWithoutOverwrite(t *testing.T) {
 func TestInterjectLeavesQueueOnTurnDoneForControllerDispatch(t *testing.T) {
 	r := &blockingTurnRunner{started: make(chan struct{})}
 	dir := t.TempDir()
-	ctrl := control.New(control.Options{Runner: r, Sink: event.Discard, SessionDir: dir, Label: "test"})
+	ctrl := newOwnedTestController(t, control.Options{Runner: r, Sink: event.Discard, SessionDir: dir, Label: "test"})
 	ctrl.EnsureSessionPath()
 	m := newChatTUI(ctrl, "", make(chan event.Event, 8), 80)
+	m.ctrl = &busyInboxController{SessionAPI: ctrl}
 	m.state = tuiRunning
 	m.seedInbox("first", "second")
 
@@ -58,9 +70,9 @@ func TestInterjectLeavesQueueOnTurnDoneForControllerDispatch(t *testing.T) {
 func newInboxTestChatTUI(t *testing.T) chatTUI {
 	t.Helper()
 	dir := t.TempDir()
-	ctrl := control.New(control.Options{SessionDir: dir, Label: "test", Sink: event.Discard})
+	ctrl := newOwnedTestController(t, control.Options{SessionDir: dir, Label: "test", Sink: event.Discard})
 	ctrl.EnsureSessionPath()
 	m := newTestChatTUI()
-	m.ctrl = ctrl
+	m.ctrl = &busyInboxController{SessionAPI: ctrl}
 	return m
 }

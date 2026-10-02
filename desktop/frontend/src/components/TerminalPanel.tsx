@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { AlertTriangle, MessageSquare, MessageSquarePlus, PanelBottomClose, Plus, RefreshCw, TerminalSquare, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -131,8 +132,8 @@ export function TerminalPanel({
     open && Boolean(selectionAction),
   );
 
+  useEffect(startTerminalEventBridge, []);
   useEffect(() => {
-    startTerminalEventBridge();
     const previous = capabilityRef.current;
     const capabilityChanged = previous.tabId === tabId && previous.readOnly !== readOnly;
     capabilityRef.current = { tabId, readOnly };
@@ -188,7 +189,7 @@ export function TerminalPanel({
       ) : !workspace && error ? (
         <div className="terminal-empty terminal-empty--error" role="alert">
           <AlertTriangle size={18} />
-          <strong>{error}</strong>
+          <strong><ErrorMessage error={error} /></strong>
           <button type="button" className="btn btn--secondary btn--small" onClick={() => { clearError(); void ensureReady(tabId).catch(() => {}); }}>
             <RefreshCw size={14} />{t("terminal.retry")}
           </button>
@@ -202,7 +203,7 @@ export function TerminalPanel({
           {error && (
             <div className="terminal-error" role="alert">
               <AlertTriangle size={14} />
-              <span>{error}</span>
+              <span><ErrorMessage error={error} /></span>
               <button type="button" className="terminal-icon-button" onClick={clearError} aria-label={t("terminal.dismissError")} title={t("terminal.dismissError")}><X size={13} /></button>
             </div>
           )}

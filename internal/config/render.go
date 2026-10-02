@@ -71,9 +71,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			b.WriteString("# theme_style = \"graphite\"   # graphite|aurora|slate|carbon|nocturne|amber and legacy aliases\n")
 		}
 		if layout := c.UIShortcutLayout(); layout != "classic" {
-			fmt.Fprintf(&b, "shortcut_layout = %q   # classic|desktop; compatibility setting; Shift+Tab toggles Plan, Ctrl+Y toggles YOLO\n", layout)
+			fmt.Fprintf(&b, "shortcut_layout = %q   # classic|desktop; compatibility setting; Shift+Tab cycles read-only/workspace/YOLO/plan; Ctrl+Y toggles YOLO\n", layout)
 		} else {
-			b.WriteString("# shortcut_layout = \"desktop\"   # classic|desktop; compatibility setting; Shift+Tab toggles Plan, Ctrl+Y toggles YOLO\n")
+			b.WriteString("# shortcut_layout = \"desktop\"   # classic|desktop; compatibility setting; Shift+Tab cycles read-only/workspace/YOLO/plan; Ctrl+Y toggles YOLO\n")
 		}
 		if strings.TrimSpace(c.UI.CursorShape) != "" {
 			fmt.Fprintf(&b, "cursor_shape = %q   # block|underline|bar; text input cursor shape\n", c.UICursorShape())
@@ -104,7 +104,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		if currency := c.DesktopCurrency(); currency != "" {
 			fmt.Fprintf(&b, "currency = %q   # legacy display currency; prefer [billing].display_currency\n", currency)
 		}
-		fmt.Fprintf(&b, "layout_style = %q   # desktop layout: classic|workbench|creation\n", c.DesktopLayoutStyle())
+		fmt.Fprintf(&b, "layout_style = %q   # desktop layout: workbench|creation; legacy classic migrates to workbench\n", c.DesktopLayoutStyle())
 		fmt.Fprintf(&b, "theme = %q   # desktop only: auto|dark|light\n", c.DesktopTheme())
 		fmt.Fprintf(&b, "terminal_theme = %q   # integrated terminal: auto|dark|light; auto follows the desktop app\n", c.DesktopTerminalTheme())
 		if style := c.DesktopThemeStyle(); style != "" {
@@ -119,8 +119,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		}
 		fmt.Fprintf(&b, "close_behavior = %q   # desktop: quit|background when the window close button is clicked\n", c.DesktopCloseBehavior())
 		fmt.Fprintf(&b, "status_bar_style = %q   # desktop: icon|text metric labels in the bottom status bar\n", c.DesktopStatusBarStyle())
+		b.WriteString("status_bar_style_initialized = true   # icon default upgrade applied; preserve later user choices\n")
 		fmt.Fprintf(&b, "status_bar_items = %s   # desktop: ordered visible bottom status bar items\n", renderStringArray(c.DesktopStatusBarItems()))
-		fmt.Fprintf(&b, "default_tool_approval_mode = %q   # desktop: Ask/Auto/YOLO default for newly-created sessions\n", c.DesktopDefaultToolApprovalMode())
+		fmt.Fprintf(&b, "default_tool_approval_mode = %q   # desktop: read-only/workspace-write/danger-full-access default for new sessions\n", c.DesktopDefaultToolApprovalMode())
 		fmt.Fprintf(&b, "check_updates = %v   # desktop: check for new versions on startup\n", c.DesktopCheckUpdates())
 		fmt.Fprintf(&b, "telemetry = %v   # desktop: anonymous launch ping + scrubbed next-launch native crash diagnostics; never content\n", c.DesktopTelemetry())
 		fmt.Fprintf(&b, "metrics = %v   # desktop: aggregate quality/lifecycle metrics (anonymous signal/bucket counts); never content\n", c.DesktopMetrics())
@@ -130,13 +131,13 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		if c.Desktop.ProviderAccess != nil {
 			fmt.Fprintf(&b, "provider_access = %s   # desktop settings: providers shown on Settings > Model > Access\n", renderStringArray(c.Desktop.ProviderAccess))
 		}
+		renderDesktopSessionExperience(&b, c)
 		renderDesktopReasoningDisplayMode(&b, c)
 		fmt.Fprintf(&b, "display_mode = %q   # desktop: standard|compact transcript display mode\n", c.DesktopDisplayMode())
 		if width := c.DesktopConversationWidth(); width == "full" {
 			fmt.Fprintf(&b, "conversation_width = %q   # desktop: standard|full transcript width; empty = standard\n", width)
 		}
 		b.WriteString("\n")
-
 		b.WriteString("[billing]\n")
 		if pref := c.DisplayCurrencyPref(); pref != "" {
 			fmt.Fprintf(&b, "display_currency = %q   # auto|CNY|USD; display only — does not rewrite provider list prices\n", pref)
@@ -226,11 +227,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		b.WriteString("# system_prompt_file = \"prompts/system.md\"   # project paths stay in <workspace>; user paths may fall back to <reasonix home>\n")
 	}
 	fmt.Fprintf(&b, "temperature       = %s\n", formatFloat(c.Agent.Temperature))
-	if strings.TrimSpace(c.Agent.RecoveryModel) != "" {
-		fmt.Fprintf(&b, "recovery_model = %q   # optional independent reviewer for low-risk automatic recovery\n", c.Agent.RecoveryModel)
-	} else {
-		b.WriteString("# recovery_model = \"deepseek-pro\"   # optional; falls back to guardian then main model\n")
-	}
+	renderRecoveryAndCompletionValidation(&b, c)
 	if lang := c.ReasoningLanguage(); lang != "auto" {
 		fmt.Fprintf(&b, "reasoning_language = %q   # visible reasoning language: auto|zh|en\n", lang)
 	} else {
@@ -248,26 +245,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		b.WriteString("# recent_keep         = 2   # deprecated compatibility field; ignored at runtime\n")
 	}
 	renderAgentSafetyControls(&b, c, scope)
-	if c.Agent.PlannerModel != "" {
-		fmt.Fprintf(&b, "planner_model = %q   # low-frequency planner (two-model collaboration)\n", c.Agent.PlannerModel)
-	} else {
-		b.WriteString("# planner_model = \"deepseek-pro\"   # optional: enable two-model collaboration\n")
-	}
-	if c.Agent.VisionModel != "" {
-		fmt.Fprintf(&b, "vision_model = %q   # image understanding fallback: auto or provider/model\n", c.Agent.VisionModel)
-	} else {
-		b.WriteString("# vision_model = \"auto\"   # optional: summarize images for text-only models\n")
-	}
-	if c.Agent.SubagentModel != "" {
-		fmt.Fprintf(&b, "subagent_model = %q   # default model for runAs=subagent skills\n", c.Agent.SubagentModel)
-	} else {
-		b.WriteString("# subagent_model = \"deepseek-pro\"   # optional default for runAs=subagent skills\n")
-	}
-	if len(c.Agent.SubagentModels) > 0 {
-		fmt.Fprintf(&b, "subagent_models = %s   # per-skill overrides\n", renderStringMap(c.Agent.SubagentModels))
-	} else {
-		b.WriteString("# subagent_models = { review = \"deepseek-pro\", security_review = \"deepseek-pro\" }   # per-skill overrides\n")
-	}
+	renderAgentModelAssignments(&b, c)
 	if c.Agent.SubagentEffort != "" {
 		fmt.Fprintf(&b, "subagent_effort = %q   # default effort for subagent entry points\n", c.Agent.SubagentEffort)
 	} else {
@@ -301,7 +279,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	b.WriteString("\n")
 
 	if shouldRenderProviders(c, defaults, scope) {
-		for _, p := range c.Providers {
+		for _, p := range reasoningCompatibilitySnapshots(c.Providers) {
 			b.WriteString("[[providers]]\n")
 			fmt.Fprintf(&b, "name        = %q\n", p.Name)
 			fmt.Fprintf(&b, "kind        = %q\n", p.Kind)
@@ -323,7 +301,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			if p.ModelsURL != "" {
 				fmt.Fprintf(&b, "models_url  = %q   # auto-fetch models from this URL on startup\n", p.ModelsURL)
 			}
-			fmt.Fprintf(&b, "api_key_env = %q\n", p.APIKeyEnv)
+			renderProviderIdentity(&b, p.APIKeyEnv, p.DisplayName)
 			if p.PresetID != "" {
 				fmt.Fprintf(&b, "preset_id   = %q   # curated preset identity; settings UI uses it to avoid duplicate installs\n", p.PresetID)
 			}
@@ -387,7 +365,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 				fmt.Fprintf(&b, "vision_detail = %q   # openai image detail hint: low|high; empty = auto\n", p.VisionDetail)
 			}
 			if p.WebSearch != nil {
-				fmt.Fprintf(&b, "web_search  = %t   # provider-executed web_search tool; omitted defaults on for supported official DeepSeek APIs\n", *p.WebSearch)
+				fmt.Fprintf(&b, "web_search  = %t   # independent web_search tool; omitted defaults on for supported official DeepSeek APIs\n", *p.WebSearch)
 			}
 			if p.ReasoningProtocol != "" {
 				fmt.Fprintf(&b, "reasoning_protocol = %q   # auto|deepseek|glm|kimi-k3|openai|none; overrides model/endpoint reasoning detection\n", p.ReasoningProtocol)
@@ -408,6 +386,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		}
 	}
 
+	renderCheckpointsConfig(&b, c.Checkpoints)
 	b.WriteString("[tools]\n")
 	if len(c.Tools.Enabled) == 0 {
 		b.WriteString("enabled = []   # empty = all built-in tools\n")
@@ -441,6 +420,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	}
 
 	renderLSPConfig(&b, c.LSP)
+	renderBrowserConfig(&b, c.Browser)
 
 	b.WriteString("[skills]\n")
 	if len(c.Skills.Paths) > 0 {
@@ -478,11 +458,6 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		mode = "ask"
 	}
 	fmt.Fprintf(&b, "mode  = %q\n", mode)
-	if c.Permissions.AllowDynamicBash {
-		b.WriteString("allow_dynamic_bash = true   # advanced: let mode=allow cover command substitution and interpreter -c/-e\n")
-	} else {
-		b.WriteString("# allow_dynamic_bash = false   # advanced opt-in; deny/ask and exact rules still take precedence\n")
-	}
 	b.WriteString(renderRuleList("deny", c.Permissions.Deny, `["Bash(rm -rf*)", "Bash(git push*)"]   # hard-blocked in every mode`))
 	b.WriteString(renderRuleList("allow", c.Permissions.Allow, `["Bash(go test:*)", "Bash(git status:*)"]   # never prompted`))
 	b.WriteString(renderRuleList("ask", c.Permissions.Ask, `["Edit(src/**)"]   # force a prompt even if otherwise allowed`))
@@ -492,8 +467,8 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	b.WriteString("# Confine tool blast radius. File-writers (write_file/edit_file/multi_edit/move_file)\n")
 	b.WriteString("# may only write under workspace_root (empty = current dir) and allow_write extras.\n")
 	b.WriteString("# bash = \"enforce\" jails each command in an OS sandbox when available;\n")
-	b.WriteString("# without one, bash execution is refused. Empty defaults to enforce on macOS/Linux.\n")
-	b.WriteString("# Windows has no OS-level Bash sandbox and fixes bash = \"off\".\n")
+	b.WriteString("# without one, restricted permission modes refuse bash execution. Empty defaults to enforce.\n")
+	b.WriteString("# macOS uses Seatbelt, Linux uses bubblewrap, and Windows uses a restricted token/AppContainer.\n")
 	b.WriteString("# network allows sandboxed bash egress.\n")
 	if c.Sandbox.WorkspaceRoot != "" {
 		fmt.Fprintf(&b, "workspace_root = %q\n", c.Sandbox.WorkspaceRoot)
@@ -514,15 +489,17 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	fmt.Fprintf(&b, "network = %v\n", c.Sandbox.Network)
 	b.WriteString("\n")
 
-	b.WriteString("[statusline]\n")
-	b.WriteString("# A custom status line: a command whose first stdout line replaces the built-in\n")
-	b.WriteString("# data row. It receives {\"model\",\"contextUsed\",\"contextWindow\",\"cwd\"} as JSON on stdin.\n")
-	if c.Statusline.Command != "" {
-		fmt.Fprintf(&b, "command = %q\n", c.Statusline.Command)
-	} else {
-		b.WriteString("# command = \"my-statusline.sh\"\n")
+	if scope != RenderScopeProject {
+		b.WriteString("[statusline]   # user/global only, ./reasonix.toml cannot set it\n")
+		b.WriteString("# A custom status line: a command whose first stdout line replaces the built-in\n")
+		b.WriteString("# data row. It receives {\"model\",\"contextUsed\",\"contextWindow\",\"cwd\"} as JSON on stdin.\n")
+		if c.Statusline.Command != "" {
+			fmt.Fprintf(&b, "command = %q\n", c.Statusline.Command)
+		} else {
+			b.WriteString("# command = \"my-statusline.sh\"\n")
+		}
+		b.WriteString("\n")
 	}
-	b.WriteString("\n")
 
 	if shouldRenderBot(c, defaults, scope) {
 		b.WriteString("# Bot gateway: multi-channel IM bot for QQ, Feishu/Lark, and WeChat.\n")
@@ -534,9 +511,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			b.WriteString("# model = \"\"   # empty = default_model\n")
 		}
 		if c.Bot.ToolApprovalMode != "" {
-			fmt.Fprintf(&b, "tool_approval_mode = %q   # ask|auto|yolo; yolo skips tool approvals only\n", c.Bot.ToolApprovalMode)
+			fmt.Fprintf(&b, "tool_approval_mode = %q   # read-only|workspace-write|danger-full-access\n", NormalizeToolApprovalMode(c.Bot.ToolApprovalMode))
 		} else {
-			b.WriteString("# tool_approval_mode = \"ask\"   # ask|auto|yolo; ask and plan decisions still wait\n")
+			b.WriteString("# tool_approval_mode = \"workspace-write\"   # default permission for bot sessions\n")
 		}
 		fmt.Fprintf(&b, "max_steps = %d\n", c.Bot.MaxSteps)
 		fmt.Fprintf(&b, "debounce_ms = %d\n", c.Bot.DebounceMs)
@@ -625,7 +602,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			fmt.Fprintf(&b, "model = %q\n", strings.TrimSpace(c.Bot.QQ.Model))
 		}
 		if strings.TrimSpace(c.Bot.QQ.ToolApprovalMode) != "" {
-			fmt.Fprintf(&b, "tool_approval_mode = %q\n", strings.TrimSpace(c.Bot.QQ.ToolApprovalMode))
+			fmt.Fprintf(&b, "tool_approval_mode = %q\n", NormalizeToolApprovalMode(c.Bot.QQ.ToolApprovalMode))
 		}
 		if strings.TrimSpace(c.Bot.QQ.WorkspaceRoot) != "" {
 			fmt.Fprintf(&b, "workspace_root = %q\n", strings.TrimSpace(c.Bot.QQ.WorkspaceRoot))
@@ -662,7 +639,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			fmt.Fprintf(&b, "model = %q\n", strings.TrimSpace(c.Bot.Dingtalk.Model))
 		}
 		if strings.TrimSpace(c.Bot.Dingtalk.ToolApprovalMode) != "" {
-			fmt.Fprintf(&b, "tool_approval_mode = %q\n", strings.TrimSpace(c.Bot.Dingtalk.ToolApprovalMode))
+			fmt.Fprintf(&b, "tool_approval_mode = %q\n", NormalizeToolApprovalMode(c.Bot.Dingtalk.ToolApprovalMode))
 		}
 		if strings.TrimSpace(c.Bot.Dingtalk.WorkspaceRoot) != "" {
 			fmt.Fprintf(&b, "workspace_root = %q\n", strings.TrimSpace(c.Bot.Dingtalk.WorkspaceRoot))
@@ -685,7 +662,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 				fmt.Fprintf(&b, "model = %q\n", conn.Model)
 			}
 			if conn.ToolApprovalMode != "" {
-				fmt.Fprintf(&b, "tool_approval_mode = %q\n", conn.ToolApprovalMode)
+				fmt.Fprintf(&b, "tool_approval_mode = %q\n", NormalizeToolApprovalMode(conn.ToolApprovalMode))
 			}
 			if conn.WorkspaceRoot != "" {
 				fmt.Fprintf(&b, "workspace_root = %q\n", conn.WorkspaceRoot)
@@ -731,54 +708,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		b.WriteString("\n")
 	}
 
-	// [remote] is user/global only like [secrets]: LoadForRoot discards project
-	// values so a cloned repo can never inject SSH hosts. Rendered here so
-	// saved hosts survive full-file config rewrites.
-	if scope != RenderScopeProject && (c.Remote.ImportSSHConfig || len(c.Remote.Hosts) > 0) {
-		b.WriteString("[remote]   # SSH remote hosts; user/global only, ./reasonix.toml cannot override\n")
-		if c.Remote.ImportSSHConfig {
-			b.WriteString("import_ssh_config = true   # surface ~/.ssh/config aliases in `reasonix remote import`\n")
-		}
-		for _, h := range c.Remote.Hosts {
-			b.WriteString("\n[[remote.hosts]]\n")
-			fmt.Fprintf(&b, "name = %q\n", h.Name)
-			fmt.Fprintf(&b, "host = %q\n", h.Host)
-			if h.Port > 0 {
-				fmt.Fprintf(&b, "port = %d\n", h.Port)
-			}
-			if h.User != "" {
-				fmt.Fprintf(&b, "user = %q\n", h.User)
-			}
-			if h.IdentityFile != "" {
-				fmt.Fprintf(&b, "identity_file = %q   # key file path; Reasonix never stores key material\n", h.IdentityFile)
-			}
-			if h.PassphraseEnv != "" {
-				fmt.Fprintf(&b, "passphrase_env = %q   # env var name; value lives in Reasonix's global .env\n", h.PassphraseEnv)
-			}
-			if h.PasswordEnv != "" {
-				fmt.Fprintf(&b, "password_env = %q   # env var name; value lives in Reasonix's global .env\n", h.PasswordEnv)
-			}
-			if h.ProxyJump != "" {
-				fmt.Fprintf(&b, "proxy_jump = %q   # OpenSSH ProxyJump chain\n", h.ProxyJump)
-			}
-			if h.Workspace != "" {
-				fmt.Fprintf(&b, "workspace = %q   # default remote workspace dir\n", h.Workspace)
-			}
-			if h.ServeInstall != "" {
-				fmt.Fprintf(&b, "serve_install = %q   # auto|npm|upload|never\n", h.ServeInstall)
-			}
-			if h.UseSSHConfig {
-				b.WriteString("use_ssh_config = true   # layer ~/.ssh/config values under unset fields\n")
-			}
-			for _, f := range h.Forwards {
-				b.WriteString("\n[[remote.hosts.forwards]]\n")
-				fmt.Fprintf(&b, "type = %q   # local (-L) | remote (-R)\n", f.Type)
-				fmt.Fprintf(&b, "bind = %q\n", f.Bind)
-				fmt.Fprintf(&b, "target = %q\n", f.Target)
-			}
-		}
-		b.WriteString("\n")
-	}
+	renderRemoteConfig(&b, c, scope)
 
 	b.WriteString("# External MCP servers. type: \"stdio\" (default, a subprocess) | \"http\" | \"sse\".\n")
 	b.WriteString("# ${VAR} / ${VAR:-default} are expanded from the environment in command/args/env/url/headers.\n")
@@ -963,10 +893,7 @@ func RenderTOMLProjectDelta(c *Config) string {
 		fmt.Fprintf(&agentBuf, "temperature = %s\n", formatFloat(c.Agent.Temperature))
 		anyAgent = true
 	}
-	if c.Agent.RecoveryModel != "" && c.Agent.RecoveryModel != d.Agent.RecoveryModel {
-		fmt.Fprintf(&agentBuf, "recovery_model = %q\n", c.Agent.RecoveryModel)
-		anyAgent = true
-	}
+	diffRecoveryAndCompletionValidation(&agentBuf, *c, *d, &anyAgent)
 	if c.Agent.ReasoningLanguage != d.Agent.ReasoningLanguage {
 		if l := c.ReasoningLanguage(); l != "auto" {
 			fmt.Fprintf(&agentBuf, "reasoning_language = %q\n", l)
@@ -989,22 +916,7 @@ func RenderTOMLProjectDelta(c *Config) string {
 		fmt.Fprintf(&agentBuf, "plan_mode_read_only_commands = %s\n", renderStringArray(c.Agent.PlanModeReadOnlyCommands))
 		anyAgent = true
 	}
-	if c.Agent.PlannerModel != "" && c.Agent.PlannerModel != d.Agent.PlannerModel {
-		fmt.Fprintf(&agentBuf, "planner_model = %q\n", c.Agent.PlannerModel)
-		anyAgent = true
-	}
-	if c.Agent.VisionModel != d.Agent.VisionModel {
-		fmt.Fprintf(&agentBuf, "vision_model = %q\n", c.Agent.VisionModel)
-		anyAgent = true
-	}
-	if c.Agent.SubagentModel != "" && c.Agent.SubagentModel != d.Agent.SubagentModel {
-		fmt.Fprintf(&agentBuf, "subagent_model = %q\n", c.Agent.SubagentModel)
-		anyAgent = true
-	}
-	if len(c.Agent.SubagentModels) > 0 && !reflect.DeepEqual(c.Agent.SubagentModels, d.Agent.SubagentModels) {
-		fmt.Fprintf(&agentBuf, "subagent_models = %s\n", renderStringMap(c.Agent.SubagentModels))
-		anyAgent = true
-	}
+	renderAgentModelAssignmentDelta(&agentBuf, c, d, &anyAgent)
 	if c.Agent.SubagentEffort != "" && c.Agent.SubagentEffort != d.Agent.SubagentEffort {
 		fmt.Fprintf(&agentBuf, "subagent_effort = %q\n", c.Agent.SubagentEffort)
 		anyAgent = true
@@ -1031,7 +943,7 @@ func RenderTOMLProjectDelta(c *Config) string {
 	// [[providers]] — include user-defined providers that aren't built-in
 	proj := projectScopedConfigForRender(c)
 	if proj != nil && len(proj.Providers) > 0 && !reflect.DeepEqual(proj.Providers, d.Providers) {
-		for _, p := range proj.Providers {
+		for _, p := range reasoningCompatibilitySnapshots(proj.Providers) {
 			b.WriteString("[[providers]]\n")
 			fmt.Fprintf(&b, "name        = %q\n", p.Name)
 			fmt.Fprintf(&b, "kind        = %q\n", p.Kind)
@@ -1053,7 +965,7 @@ func RenderTOMLProjectDelta(c *Config) string {
 			if p.ModelsURL != "" {
 				fmt.Fprintf(&b, "models_url  = %q\n", p.ModelsURL)
 			}
-			fmt.Fprintf(&b, "api_key_env = %q\n", p.APIKeyEnv)
+			renderProviderIdentity(&b, p.APIKeyEnv, p.DisplayName)
 			if p.PresetID != "" {
 				fmt.Fprintf(&b, "preset_id   = %q\n", p.PresetID)
 			}
@@ -1133,6 +1045,7 @@ func RenderTOMLProjectDelta(c *Config) string {
 		}
 	}
 
+	renderCheckpointsConfig(&b, c.Checkpoints)
 	// [tools]
 	if len(c.Tools.Enabled) > 0 ||
 		(c.Tools.BashTimeoutSeconds != nil && *c.Tools.BashTimeoutSeconds != 0) ||
@@ -1180,6 +1093,11 @@ func RenderTOMLProjectDelta(c *Config) string {
 		renderLSPConfig(&b, c.LSP)
 	}
 
+	// [browser]
+	if !reflect.DeepEqual(c.Browser, d.Browser) {
+		renderBrowserConfig(&b, c.Browser)
+	}
+
 	// [skills]
 	if !reflect.DeepEqual(c.Skills, d.Skills) || len(c.explicitProjectSkillKeys) > 0 {
 		b.WriteString("[skills]\n")
@@ -1214,9 +1132,6 @@ func RenderTOMLProjectDelta(c *Config) string {
 		if mode != "ask" {
 			fmt.Fprintf(&b, "mode = %q\n", mode)
 		}
-		if c.Permissions.AllowDynamicBash {
-			b.WriteString("allow_dynamic_bash = true\n")
-		}
 		if len(c.Permissions.Deny) > 0 {
 			fmt.Fprintf(&b, "deny = %s\n", renderStringArray(c.Permissions.Deny))
 		}
@@ -1239,8 +1154,7 @@ func RenderTOMLProjectDelta(c *Config) string {
 			fmt.Fprintf(&sandboxBuf, "allow_write = %s\n", renderStringArray(c.Sandbox.AllowWrite))
 		}
 		// Only persist a bash mode when its effective value differs from the
-		// platform default. On Windows, even explicit "enforce" currently
-		// resolves to "off", so project configs should not imply otherwise.
+		// cross-platform default.
 		if strings.TrimSpace(c.Sandbox.Bash) != "" && c.BashMode() != d.BashModeForGOOS(runtimeGOOS) {
 			fmt.Fprintf(&sandboxBuf, "bash = %q\n", c.BashMode())
 		}
@@ -1252,15 +1166,6 @@ func RenderTOMLProjectDelta(c *Config) string {
 			b.WriteString(sandboxBuf.String())
 			b.WriteString("\n")
 		}
-	}
-
-	// [statusline]
-	if !reflect.DeepEqual(c.Statusline, d.Statusline) {
-		b.WriteString("[statusline]\n")
-		if c.Statusline.Command != "" {
-			fmt.Fprintf(&b, "command = %q\n", c.Statusline.Command)
-		}
-		b.WriteString("\n")
 	}
 
 	// [[plugins]] — always include when set; replaces all existing entries
@@ -1401,7 +1306,7 @@ func projectScopedConfigForRender(c *Config) *Config {
 		return c
 	}
 	cp := *c
-	cp.Providers = make([]ProviderEntry, 0, len(c.Providers)+len(c.shadowedProjectProviders))
+	cp.Providers = make([]ProviderEntry, 0, len(c.Providers))
 	for _, p := range c.Providers {
 		if c.providerSources[providerMergeKey(p)] == providerSourceUser {
 			continue
@@ -1610,54 +1515,6 @@ func renderAnyValue(v any) (string, bool) {
 	}
 }
 
-func renderModelOverrides(m map[string]ProviderModelOverride) string {
-	keys := make([]string, 0, len(m))
-	for k, ov := range m {
-		if k == "" || modelOverrideEmpty(ov) {
-			continue
-		}
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var b strings.Builder
-	b.WriteString("{ ")
-	for i, k := range keys {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		fmt.Fprintf(&b, "%q = %s", k, renderModelOverride(m[k]))
-	}
-	b.WriteString(" }")
-	return b.String()
-}
-
-func renderModelOverride(ov ProviderModelOverride) string {
-	var parts []string
-	if ov.ReasoningProtocol != "" {
-		parts = append(parts, fmt.Sprintf("reasoning_protocol = %q", ov.ReasoningProtocol))
-	}
-	if len(ov.SupportedEfforts) > 0 {
-		parts = append(parts, "supported_efforts = "+renderStringArray(ov.SupportedEfforts))
-	}
-	if ov.DefaultEffort != "" {
-		parts = append(parts, fmt.Sprintf("default_effort = %q", ov.DefaultEffort))
-	}
-	if ov.Vision != nil {
-		parts = append(parts, fmt.Sprintf("vision = %t", *ov.Vision))
-	}
-	if ov.ContextWindow > 0 {
-		parts = append(parts, fmt.Sprintf("context_window = %d", ov.ContextWindow))
-	}
-	if ov.MaxOutputTokens != 0 {
-		parts = append(parts, fmt.Sprintf("max_output_tokens = %d", ov.MaxOutputTokens))
-	}
-	return "{ " + strings.Join(parts, ", ") + " }"
-}
-
-func modelOverrideEmpty(ov ProviderModelOverride) bool {
-	return ov.ReasoningProtocol == "" && len(ov.SupportedEfforts) == 0 && ov.DefaultEffort == "" && ov.Vision == nil && ov.ContextWindow <= 0 && ov.MaxOutputTokens == 0
-}
-
 func hasPositiveIntMap(m map[string]int) bool {
 	for k, v := range m {
 		if strings.TrimSpace(k) != "" && v > 0 {
@@ -1794,7 +1651,7 @@ func renderBotRoute(b *strings.Builder, route BotRouteConfig) {
 		fmt.Fprintf(b, "model = %q\n", strings.TrimSpace(route.Model))
 	}
 	if strings.TrimSpace(route.ToolApprovalMode) != "" {
-		fmt.Fprintf(b, "tool_approval_mode = %q\n", strings.TrimSpace(route.ToolApprovalMode))
+		fmt.Fprintf(b, "tool_approval_mode = %q\n", NormalizeToolApprovalMode(route.ToolApprovalMode))
 	}
 	if strings.TrimSpace(route.WorkspaceRoot) != "" {
 		fmt.Fprintf(b, "workspace_root = %q\n", strings.TrimSpace(route.WorkspaceRoot))

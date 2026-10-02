@@ -7,18 +7,18 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
+
+	"reasonix/internal/control"
+	"reasonix/internal/session"
 )
 
 type projectTreeRuntimeState struct {
-	revision atomic.Uint64
 	// activityAt records the last activity-status event per tab ID. The TTL
 	// watchdog reaps a live status that sees no terminating event; the state
 	// lives here (not on WorkspaceTab) to keep tabs.go within budget.
-	watchdogOnce sync.Once
-	activityMu   sync.Mutex
-	activityAt   map[string]time.Time
+	activityMu sync.Mutex
+	activityAt map[string]time.Time
 }
 
 // noteActivityStatus refreshes a tab's activity timestamp on every status
@@ -26,9 +26,7 @@ type projectTreeRuntimeState struct {
 // long a status has been displayed, so a long but active turn is never reaped.
 func (s *projectTreeRuntimeState) noteActivityStatus(a *App, tabID string) {
 	s.setActivityAt(tabID, time.Now())
-	// The watchdog starts lazily with the first status event — before that
-	// there is nothing to reap.
-	s.watchdogOnce.Do(func() { a.watchTopicActivityStatus() })
+	// Runtime snapshots, not silence, determine whether work remains active.
 }
 
 func (s *projectTreeRuntimeState) setActivityAt(tabID string, at time.Time) {
@@ -74,8 +72,9 @@ func (a *App) catalogRuntimeSnapshots() []catalogRuntimeSnapshot {
 			return
 		}
 		snapshots = append(snapshots, catalogRuntimeSnapshot{
+			tabID: tab.ID,
 			scope: tab.Scope, workspaceRoot: tab.WorkspaceRoot, topicID: tab.TopicID,
-			sessionPath: tab.SessionPath, activity: tab.ActivityStatus, topicTitle: tab.TopicTitle,
+			sessionPath: tab.SessionPath, sessionHeadID: tab.SessionHeadID, activity: tab.ActivityStatus, topicTitle: tab.TopicTitle,
 			topicTitleSource: tab.topicTitleSource, ctrl: tab.Ctrl, open: open,
 		})
 	}
@@ -93,49 +92,101 @@ func (a *App) catalogRuntimeSnapshots() []catalogRuntimeSnapshot {
 // projection. The frontend subscribes first and then calls this method; the
 // independent revision makes either arrival order deterministic.
 func (a *App) GetProjectTreeRuntimeSnapshot() ProjectTreeRuntimeSnapshot {
-	revision := uint64(0)
-	if a != nil {
-		revision = a.projectTreeRuntime.revision.Load()
+	if a == nil {
+		return ProjectTreeRuntimeSnapshot{Topics: []ProjectRuntimeTopic{}}
 	}
-	return a.projectTreeRuntimeSnapshot(revision)
+	snapshot := a.GetRuntimeStateSnapshot()
+	return ProjectTreeRuntimeSnapshot{Revision: snapshot.Revision, Topics: snapshot.Topics}
 }
 
-func (a *App) projectTreeRuntimeSnapshot(revision uint64) ProjectTreeRuntimeSnapshot {
-	type runtimeGroup struct {
-		scope         string
-		workspaceRoot string
-		snapshots     []catalogRuntimeSnapshot
+func cloneRuntimeTopics(topics []ProjectRuntimeTopic) []ProjectRuntimeTopic {
+	var cloneNode func(ProjectNode) ProjectNode
+	cloneNode = func(node ProjectNode) ProjectNode {
+		next := node
+		next.Children = make([]ProjectNode, len(node.Children))
+		for i, child := range node.Children {
+			next.Children[i] = cloneNode(child)
+		}
+		if node.Remote != nil {
+			remote := *node.Remote
+			next.Remote = &remote
+		}
+		return next
 	}
-	groups := map[string]*runtimeGroup{}
-	for _, snapshot := range a.catalogRuntimeSnapshots() {
+	result := make([]ProjectRuntimeTopic, len(topics))
+	for i, topic := range topics {
+		result[i] = topic
+		result[i].Node = cloneNode(topic.Node)
+	}
+	return result
+}
+
+func (a *App) projectTreeRuntimeTopics(snapshots []catalogRuntimeSnapshot) []ProjectRuntimeTopic {
+	bySession := map[string]ProjectRuntimeTopic{}
+	state, _ := a.workspaceRegistry().LoadProjection(a.bootContext())
+	workspaceAliases := map[string]map[string][]string{}
+	for _, snapshot := range snapshots {
 		scope, root := normalizeDesktopTopicScope(snapshot.scope, snapshot.workspaceRoot)
 		snapshot.scope, snapshot.workspaceRoot = scope, root
-		key := topicSummaryKey(scope, root, snapshot.topicID)
-		group := groups[key]
-		if group == nil {
-			group = &runtimeGroup{scope: scope, workspaceRoot: root}
-			groups[key] = group
+		if snapshot.sessionPath == "" && snapshot.ctrl != nil {
+			snapshot.sessionPath = snapshot.ctrl.SessionPath()
 		}
-		group.snapshots = append(group.snapshots, snapshot)
+		nodes, _ := a.runtimeProjectTopicNodes(scope, root, []catalogRuntimeSnapshot{snapshot}, false)
+		if len(nodes) == 0 {
+			continue
+		}
+		node := nodes[0]
+		node.TabID = snapshot.tabID
+		path := strings.TrimSpace(snapshot.sessionPath)
+		if id, ok := parseSessionRoute(path); ok {
+			ref := session.SessionRef{HostID: localDesktopHostID, SessionID: id}
+			node.Session, node.SessionPath, node.Key = &ref, sessionRoute(id), "canonical_"+id
+		} else if identity, ok := snapshot.ctrl.(control.IdentityLifecycle); ok {
+			if ref, bound := identity.SessionRef(); bound && ref.SessionID != "" {
+				node.Session, node.SessionPath, node.Key = &ref, sessionRoute(ref.SessionID), "canonical_"+ref.SessionID
+			}
+		}
+		if node.Session == nil && path != "" {
+			node.SessionPath, node.Key = path, projectSessionNodeKey(scope, path)
+			// A legacy transcript is listed by its source identity; publishing the
+			// same one lets the renderer overlay this tab onto that row.
+			node.Source = &SessionSourceRef{HostID: localDesktopHostID, Path: path, HeadID: snapshot.sessionHeadID, SourceKey: desktopSourceKey(path, snapshot.sessionHeadID)}
+		}
+		if node.Session != nil {
+			workspaceID := desktopWorkspaceOwnerID(state, scope, root)
+			aliases, exists := workspaceAliases[workspaceID]
+			if !exists {
+				aliases = workspaceSourceAliases(state, workspaceID)
+				workspaceAliases[workspaceID] = aliases
+			}
+			node.IdentityAliases = append([]string{}, aliases[node.Session.SessionID]...)
+			node.LifecycleGeneration = state.SessionStates[node.Session.SessionID].Generation
+			if snapshot.tabID != "" {
+				node.IdentityAliases = append(node.IdentityAliases, "tab\x00local\x00"+snapshot.tabID)
+			}
+		} else if path == "" && snapshot.tabID != "" {
+			node.Key = "tab_" + snapshot.tabID
+			// This tab was opened from an unbacked topic. Publish that exact
+			// placeholder binding instead of asking the renderer to guess by title.
+			node.IdentityAliases = []string{"topic\x00" + snapshot.topicID}
+		}
+		key := scope + "\x00" + root + "\x00" + node.Key
+		bySession[key] = ProjectRuntimeTopic{Scope: scope, WorkspaceRoot: root, Node: node}
 	}
-	keys := make([]string, 0, len(groups))
-	for key := range groups {
+	keys := make([]string, 0, len(bySession))
+	for key := range bySession {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	topics := make([]ProjectRuntimeTopic, 0, len(keys))
 	for _, key := range keys {
-		group := groups[key]
-		nodes, _ := a.runtimeProjectTopicNodes(group.scope, group.workspaceRoot, group.snapshots)
-		if len(nodes) > 0 {
-			topics = append(topics, ProjectRuntimeTopic{Scope: group.scope, WorkspaceRoot: group.workspaceRoot, Node: nodes[0]})
-		}
+		topics = append(topics, bySession[key])
 	}
-	return ProjectTreeRuntimeSnapshot{Revision: revision, Topics: topics}
+	return topics
 }
 
-func (a *App) attachExistingSessionRuntime(tab *WorkspaceTab, path string, wailsCtx context.Context) bool {
-	attached := a.attachExistingSessionRuntimeCore(tab, path, wailsCtx)
+func (a *App) attachExistingSessionRuntime(tab *WorkspaceTab, path string, appCtx context.Context) bool {
+	attached := a.attachExistingSessionRuntimeCore(tab, path, appCtx)
 	if attached {
 		a.emitProjectTreeRuntimeChangedWithLegacy()
 	}
@@ -163,8 +214,24 @@ func (a *App) emitProjectTreeRuntimeChanged() {
 	if a == nil {
 		return
 	}
-	revision := a.projectTreeRuntime.revision.Add(1)
-	a.emitRuntimeEvent("project-tree:runtime-changed", a.projectTreeRuntimeSnapshot(revision))
+	snapshot := a.GetRuntimeStateSnapshot()
+	a.emitRuntimeProjection(snapshot, false)
+}
+
+func (a *App) emitRuntimeProjection(snapshot RuntimeStateProjection, legacy bool) {
+	r := &a.runtimeStateProjection
+	r.mu.Lock()
+	if r.publishedEpoch == snapshot.Epoch && r.publishedRevision >= snapshot.Revision {
+		r.mu.Unlock()
+		return
+	}
+	r.publishedEpoch, r.publishedRevision = snapshot.Epoch, snapshot.Revision
+	r.mu.Unlock()
+	a.emitRuntimeEvent("project-tree:runtime-changed", ProjectTreeRuntimeSnapshot{Revision: snapshot.Revision, Topics: snapshot.Topics})
+	a.emitRuntimeEvent("runtime-state:changed", snapshot)
+	if legacy {
+		a.emitRuntimeEvent("project-tree:changed", map[string]string{"reason": "runtime"})
+	}
 }
 
 // The tagged legacy event keeps the previous frontend usable for one release.
@@ -185,8 +252,6 @@ const (
 	// used instead of a per-session P99: turn durations are not tracked
 	// per session in this package, and simplicity wins (#8528/#8555/#8859).
 	topicActivityStatusTTL = 10 * time.Minute
-	// topicActivityReapInterval is how often the watchdog scans for orphans.
-	topicActivityReapInterval = 30 * time.Second
 )
 
 // liveTopicActivityStatus reports statuses that must be terminated by a
@@ -198,23 +263,6 @@ func liveTopicActivityStatus(status string) bool {
 		return true
 	}
 	return false
-}
-
-// watchTopicActivityStatus reaps live activity statuses that have seen no
-// turn event for longer than the TTL — the missed-TurnDone safety net.
-func (a *App) watchTopicActivityStatus() {
-	a.goSafe("topicActivityWatchdog", func() {
-		ticker := time.NewTicker(topicActivityReapInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-a.bootContext().Done():
-				return
-			case now := <-ticker.C:
-				a.reapStaleTopicActivityStatus(now)
-			}
-		}
-	})
 }
 
 func (a *App) reapStaleTopicActivityStatus(now time.Time) {

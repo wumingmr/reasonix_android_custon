@@ -139,7 +139,7 @@ func captureFatalCrashFile(path, coveredPath string, removeEmpty bool) {
 	}
 	stack := sanitizeFatalRuntimeDump(string(raw))
 	report := baseCrashReport("crash")
-	report.SchemaVersion = 2
+	report.SchemaVersion = currentCrashSchema
 	report.Source = "go.runtime"
 	report.Label = "go.fatal"
 	report.ErrorType = "GoRuntimeFatal"
@@ -148,6 +148,11 @@ func captureFatalCrashFile(path, coveredPath string, removeEmpty bool) {
 	report.TopFrame = topFrameFromStack(stack)
 	report.FingerprintHint = "go.runtime.fatal"
 	report.OccurredAt = occurredAt.Format(time.RFC3339)
+	report.Diagnostics = &crashDiagnostics{
+		ObserverVersion: version, ObserverBuildCommit: buildCommit(), ProcessRole: "service",
+		ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), TerminationReason: "unknown",
+		CleanupOutcome: "interrupted", Evidence: "confirmed", Category: "crash",
+	}
 	report.Message = sanitizeCrashText("[go.runtime.fatal]\n\n"+stack, maxCrashDetailBytes)
 	if writePendingReport(report, true) {
 		_ = os.Remove(coveredPath)

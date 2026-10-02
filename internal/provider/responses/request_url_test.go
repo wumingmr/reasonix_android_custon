@@ -50,3 +50,36 @@ func TestFactoryUsesRequestURLAndIgnoresLegacyChatURL(t *testing.T) {
 		t.Fatalf("legacy requestURL = %q, want base-derived endpoint", got)
 	}
 }
+
+func TestRequestURLEqualToBaseURLIsIgnored(t *testing.T) {
+	p, err := newFromConfig(provider.Config{
+		BaseURL: "https://base.example.com/v1",
+		Model:   "m",
+		Extra:   map[string]any{"request_url": "https://base.example.com/v1"},
+	})
+	if err != nil {
+		t.Fatalf("newFromConfig: %v", err)
+	}
+	if got := p.(*client).requestURL; got != "https://base.example.com/v1/responses" {
+		t.Fatalf("requestURL = %q, want base-derived /responses endpoint", got)
+	}
+}
+
+func TestRequestURLRepeatingBaseResolution(t *testing.T) {
+	const base = "https://base.example.com/v1"
+	for override, want := range map[string]string{
+		"HTTPS://BASE.Example.com/v1/":         base + "/responses",
+		"https://base.example.com/v1?token=1":  "https://base.example.com/v1?token=1",
+		"https://base.example.com/v1#debug":    "https://base.example.com/v1#debug",
+		"https://base.example.com/V1":          "https://base.example.com/V1",
+		"https://base.example.com/v1/response": "https://base.example.com/v1/response",
+	} {
+		p, err := newFromConfig(provider.Config{BaseURL: base, Model: "m", Extra: map[string]any{"request_url": override}})
+		if err != nil {
+			t.Fatalf("newFromConfig: %v", err)
+		}
+		if got := p.(*client).requestURL; got != want {
+			t.Errorf("request_url %q resolved to %q, want %q", override, got, want)
+		}
+	}
+}

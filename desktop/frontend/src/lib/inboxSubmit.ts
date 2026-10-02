@@ -1,27 +1,54 @@
 import type { AppBindings } from "./bridge";
-import type { StructuredInvocationSubmit } from "./invocationDisplay";
+import { asArray } from "./array";
+import type { QuestionAnswer } from "./types";
 
-type InboxEnqueueBindings = Pick<AppBindings, "EnqueueInboxFollowup" | "EnqueueInboxFollowupWithInvocations" | "EnqueueInboxSteer">;
+type ActiveTurnBindings = Pick<AppBindings, "ListTabs" | "SteerInboxItem" | "SteerInboxItemForTurn">;
 
-export function enqueueInboxGuidance(
-  binding: InboxEnqueueBindings,
+export async function resolveActiveTurnId(binding: Pick<AppBindings, "ListTabs">, tabId: string, known?: string): Promise<string | undefined> {
+  // Preserve the turn the user observed. Refreshing it could steer a successor
+  // turn instead; the backend owns admission and durable follow-up fallback.
+  if (known?.trim()) return known.trim();
+  const authoritative = asArray(await binding.ListTabs()).find((tab) => tab.id === tabId)?.turnId;
+  return authoritative;
+}
+
+type AskAnswerBindings = Pick<AppBindings, "ResolvePromptForTab" | "PendingPromptIdentitiesForTab">;
+
+export async function resolvePromptForTab(
+  binding: Pick<AppBindings, "ResolvePromptForTab" | "PendingPromptIdentitiesForTab">,
   tabId: string,
-  display: string,
-  submit: string,
-  structured?: StructuredInvocationSubmit,
-  opts?: { steer?: boolean },
-) {
-  if (structured) {
-    return binding.EnqueueInboxFollowupWithInvocations(
-      tabId,
-      structured.display.trim() || display,
-      structured.input.trim(),
-      structured.invocations,
-      "",
-    );
-  }
-  if (opts?.steer && typeof binding.EnqueueInboxSteer === "function") {
-    return binding.EnqueueInboxSteer(tabId, display, submit || display, "");
-  }
-  return binding.EnqueueInboxFollowup(tabId, display, submit || display, "");
+  promptId: string,
+  kind: string,
+  answer: Record<string, unknown>,
+  knownTurnId?: string,
+  knownRuntimeEpoch?: string,
+): Promise<void> {
+  const submit = await import("./exactPromptSubmit");
+  return submit.resolvePromptForTab(binding, tabId, promptId, kind, answer, knownTurnId, knownRuntimeEpoch);
+}
+
+// Final frontend boundary before optimistic transcript state is created.
+export function normalizeTurnSubmit(displayText: string, submitText: string) {
+  const display = displayText.trim();
+  const submit = submitText.trim();
+  if (!submit) throw new Error("Message cannot be empty.");
+  return { display, submit };
+}
+
+export async function answerPromptForActiveTurn(
+  binding: AskAnswerBindings,
+  tabId: string,
+  promptId: string,
+  answers: QuestionAnswer[],
+  knownTurnId?: string,
+  knownRuntimeEpoch?: string,
+): Promise<void> {
+  await resolvePromptForTab(binding, tabId, promptId, "ask", { questions: answers }, knownTurnId, knownRuntimeEpoch);
+}
+
+export async function steerInboxItemForActiveTurn(binding: ActiveTurnBindings, tabId: string, itemId: string, knownTurnId?: string) {
+  if (typeof binding.SteerInboxItemForTurn !== "function") return binding.SteerInboxItem(tabId, itemId);
+  const turnId = await resolveActiveTurnId(binding, tabId, knownTurnId);
+  if (!turnId) throw new Error("active turn id is unavailable; refresh and try again");
+  return binding.SteerInboxItemForTurn(tabId, turnId, itemId);
 }

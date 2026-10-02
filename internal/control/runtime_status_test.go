@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ func (r *askBlockingRunner) Run(ctx context.Context, _ string) error {
 func TestCancelClearsPendingApprovalRuntimeStatus(t *testing.T) {
 	approvals := make(chan event.Approval, 1)
 	done := make(chan event.Event, 1)
-	c := New(Options{Sink: event.FuncSink(func(e event.Event) {
+	c := newOwnedTestController(t, Options{Sink: event.FuncSink(func(e event.Event) {
 		switch e.Kind {
 		case event.ApprovalRequest:
 			approvals <- e.Approval
@@ -72,7 +73,7 @@ func TestCancelClearsPendingApprovalRuntimeStatus(t *testing.T) {
 func TestCancelClearsPendingAskRuntimeStatus(t *testing.T) {
 	asks := make(chan event.Ask, 1)
 	done := make(chan event.Event, 1)
-	c := New(Options{Sink: event.FuncSink(func(e event.Event) {
+	c := newOwnedTestController(t, Options{Sink: event.FuncSink(func(e event.Event) {
 		switch e.Kind {
 		case event.AskRequest:
 			asks <- e.Ask
@@ -108,7 +109,7 @@ func TestCancelClearsPendingAskRuntimeStatus(t *testing.T) {
 func TestCloseCancelsPendingAskRuntimeStatus(t *testing.T) {
 	asks := make(chan event.Ask, 1)
 	done := make(chan event.Event, 1)
-	c := New(Options{Sink: event.FuncSink(func(e event.Event) {
+	c := newOwnedTestController(t, Options{Sink: event.FuncSink(func(e event.Event) {
 		switch e.Kind {
 		case event.AskRequest:
 			asks <- e.Ask
@@ -145,7 +146,7 @@ func TestCloseDoesNotResurrectFinishingState(t *testing.T) {
 	turnStarted := make(chan struct{})
 	turnDoneEntered := make(chan struct{}, 1)
 	releaseTurnDone := make(chan struct{})
-	c := New(Options{Sink: holdFinishingWindow(releaseTurnDone, turnDoneEntered, nil)})
+	c := newOwnedTestController(t, Options{Sink: holdFinishingWindow(releaseTurnDone, turnDoneEntered, nil)})
 
 	c.runGuarded(func(ctx context.Context) error {
 		close(turnStarted)
@@ -171,7 +172,7 @@ func TestCloseDoesNotResurrectFinishingState(t *testing.T) {
 func TestTurnFinishingDoneClosesAfterTurnDoneFanout(t *testing.T) {
 	turnDoneEntered := make(chan struct{}, 1)
 	releaseTurnDone := make(chan struct{})
-	c := New(Options{Sink: holdFinishingWindow(releaseTurnDone, turnDoneEntered, nil)})
+	c := newOwnedTestController(t, Options{Sink: holdFinishingWindow(releaseTurnDone, turnDoneEntered, nil)})
 	t.Cleanup(c.Close)
 
 	c.runGuarded(func(context.Context) error { return nil })
@@ -201,6 +202,127 @@ func TestTurnFinishingDoneClosesAfterTurnDoneFanout(t *testing.T) {
 	}
 	if _, ok := c.TurnFinishingDone(); ok {
 		t.Fatal("controller retained a stale finishing boundary")
+	}
+}
+
+func TestTurnIdleDoneCoversExecutionAndTurnDoneFanout(t *testing.T) {
+	turnStarted := make(chan struct{})
+	releaseTurn := make(chan struct{})
+	turnDoneEntered := make(chan struct{}, 1)
+	releaseTurnDone := make(chan struct{})
+	c := newOwnedTestController(t, Options{Sink: holdFinishingWindow(releaseTurnDone, turnDoneEntered, nil)})
+	t.Cleanup(c.Close)
+
+	c.runGuarded(func(context.Context) error {
+		close(turnStarted)
+		<-releaseTurn
+		return nil
+	})
+	select {
+	case <-turnStarted:
+	case <-time.After(time.Second):
+		close(releaseTurn)
+		t.Fatal("turn did not start")
+	}
+
+	done, ok := c.TurnIdleDone()
+	if !ok || done == nil {
+		close(releaseTurn)
+		t.Fatal("controller did not expose its active idle boundary")
+	}
+	close(releaseTurn)
+	select {
+	case <-turnDoneEntered:
+	case <-time.After(time.Second):
+		t.Fatal("TurnDone delivery did not enter the finishing window")
+	}
+	select {
+	case <-done:
+		close(releaseTurnDone)
+		t.Fatal("idle boundary closed before TurnDone fan-out returned")
+	default:
+	}
+
+	close(releaseTurnDone)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("idle boundary did not close after TurnDone fan-out")
+	}
+	if _, ok := c.TurnIdleDone(); ok {
+		t.Fatal("controller retained a stale idle boundary")
+	}
+}
+
+func TestTurnIdleDoneStaysOpenAcrossParkedTurn(t *testing.T) {
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstTurnDoneEntered := make(chan struct{})
+	releaseFirstTurnDone := make(chan struct{})
+	secondStarted := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	var firstTurnDone sync.Once
+	c := newOwnedTestController(t, Options{Sink: event.FuncSink(func(e event.Event) {
+		if e.Kind == event.TurnDone {
+			firstTurnDone.Do(func() {
+				close(firstTurnDoneEntered)
+				<-releaseFirstTurnDone
+			})
+		}
+	})})
+	t.Cleanup(c.Close)
+
+	c.runGuarded(func(context.Context) error {
+		close(firstStarted)
+		<-releaseFirst
+		return nil
+	})
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		close(releaseFirst)
+		t.Fatal("first turn did not start")
+	}
+	done, ok := c.TurnIdleDone()
+	if !ok || done == nil {
+		close(releaseFirst)
+		t.Fatal("controller did not expose the first turn's idle boundary")
+	}
+
+	close(releaseFirst)
+	select {
+	case <-firstTurnDoneEntered:
+	case <-time.After(time.Second):
+		close(releaseFirstTurnDone)
+		t.Fatal("first TurnDone did not enter the finishing window")
+	}
+	if got := c.runGuarded(func(context.Context) error {
+		close(secondStarted)
+		<-releaseSecond
+		return nil
+	}); got != turnParked {
+		close(releaseFirstTurnDone)
+		t.Fatalf("turn admitted during finishing = %v, want parked", got)
+	}
+	close(releaseFirstTurnDone)
+	select {
+	case <-secondStarted:
+	case <-time.After(time.Second):
+		close(releaseSecond)
+		t.Fatal("parked turn did not start after finishing completed")
+	}
+	select {
+	case <-done:
+		close(releaseSecond)
+		t.Fatal("idle boundary closed between the finishing and parked turns")
+	default:
+	}
+
+	close(releaseSecond)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("idle boundary did not close after the parked turn completed")
 	}
 }
 

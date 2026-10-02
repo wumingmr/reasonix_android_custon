@@ -7,7 +7,6 @@
 // single-surface prune removes every other tab state, blanking the visible
 // transcript).
 
-import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -16,6 +15,7 @@ import { enqueueNavigationRequest, type NavigationCoalescingRefs } from "../lib/
 import { useController } from "../lib/useController";
 import { historySliceFromMessages } from "./mockHistorySlice";
 import type { BalanceInfo, CheckpointMeta, ContextInfo, EffortInfo, HistoryMessage, HistorySliceRequest, JobView, Meta, TabMeta, TopicActivationEvent, TopicActivationRequest, WireEvent } from "../lib/types";
+import { installDesktopHostStub } from "./desktopHostStub";
 
 let passed = 0;
 let failed = 0;
@@ -139,32 +139,23 @@ let backendActiveId = "tab-a";
 // Per-tab holds so any activation can be stalled mid-flight and released.
 const activationHolds = new Map<string, Promise<void>>();
 const tabsById = new Map([tabA, tabX, tabY].map((tab) => [tab.id, tab]));
-const topicActivationHandlers: Array<(e: TopicActivationEvent) => void> = [];
-const eventHandlers: Array<(e: WireEvent) => void> = [];
 const replayTargets: string[] = [];
 // The pending ticketed activation backend-side: a newer StartTopicActivation
 // supersedes it (cancelled), exactly like the real generation protocol.
 let mockPendingActivation: { requestId: string; tabId: string } | undefined;
 
 function emitTopicActivation(event: TopicActivationEvent): void {
-  for (const handler of topicActivationHandlers) handler(event);
+  desktopStub.emit("topic:activation", event);
 }
 
 function currentTabs(): TabMeta[] {
   return Array.from(tabsById.values()).map((tab) => ({ ...tab, active: tab.id === backendActiveId }));
 }
 
-window.runtime = {
-  EventsOn: (name: string, cb: (...data: unknown[]) => void) => {
-    if (name === "agent:event") eventHandlers.push(cb as (e: WireEvent) => void);
-    if (name === "topic:activation") topicActivationHandlers.push(cb as (e: TopicActivationEvent) => void);
-    return () => {};
-  },
-  BrowserOpenURL: () => {},
-};
-window.go = {
+const appStubTable = ({
   main: {
     App: {
+      RegisterNavigationIntent: async () => {},
       ListTabs: async () => currentTabs(),
       MetaForTab: async (tabID: string) => metaFor(tabsById.get(tabID) ?? tabA),
       ContextUsageForTab: async () => context,
@@ -172,17 +163,18 @@ window.go = {
       BalanceForTab: async () => balance,
       JobsForTab: async () => jobs,
       CheckpointsForTab: async () => checkpoints,
+      ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
       HistoryForTab: async (tabID: string) => {
         if (tabID === "tab-x") return [userMessage("history X")];
         if (tabID === "tab-y") return [userMessage("history Y")];
         return [userMessage("history A")];
       },
       HistoryPageForTab: async (tabID: string) => {
-        const messages = await window.go.main.App.HistoryForTab(tabID);
+        const messages = await appStubTable.HistoryForTab(tabID);
         return { messages, startTurn: 0, endTurn: messages.length, totalTurns: messages.length, hasOlder: false };
       },
       HistorySliceForTab: async (tabID: string, req: HistorySliceRequest) =>
-        historySliceFromMessages(tabID, await window.go.main.App.HistoryForTab(tabID), req),
+        historySliceFromMessages(tabID, await appStubTable.HistoryForTab(tabID), req),
       HistoryCheckpointTurnsForTab: async () => [],
       ActivateTopic: async (_scope: string, workspaceRoot: string, topicId: string) => {
         const target = Array.from(tabsById.values()).find((tab) => tab.workspaceRoot === workspaceRoot && tab.topicId === topicId) ?? tabA;
@@ -219,17 +211,16 @@ window.go = {
       ReplayPendingPromptsForTab: async (tabID: string) => {
         replayTargets.push(tabID);
         if (!tabsById.get(tabID)?.pendingPrompt) return;
-        for (const handler of eventHandlers) {
-          handler({
-            kind: "ask_request",
-            tabId: tabID,
-            ask: { id: `pending-${tabID}`, questions: [{ id: "choice", prompt: "Keep me through A-X-A", options: [] }] },
-          });
-        }
+        desktopStub.emit("agent:event", {
+          kind: "ask_request",
+          tabId: tabID,
+          ask: { id: `pending-${tabID}`, questions: [{ id: "choice", prompt: "Keep me through A-X-A", options: [] }] },
+        });
       },
     } as Partial<AppBindings> as AppBindings,
   },
-};
+}).main.App;
+const desktopStub = installDesktopHostStub(appStubTable);
 
 type Controller = ReturnType<typeof useController>;
 let controller: Controller | undefined;
@@ -350,13 +341,11 @@ await waitFor("queued last click applies once it runs", () => controller?.active
 const promptBlockedA = { ...tabA, running: true, pendingPrompt: true, cancellable: true };
 tabsById.set(tabA.id, promptBlockedA);
 await act(async () => {
-  for (const handler of eventHandlers) {
-    handler({
-      kind: "ask_request",
-      tabId: tabA.id,
-      ask: { id: "pending-tab-a", questions: [{ id: "choice", prompt: "Keep me through A-X-A", options: [] }] },
-    });
-  }
+  desktopStub.emit("agent:event", {
+    kind: "ask_request",
+    tabId: tabA.id,
+    ask: { id: "pending-tab-a", questions: [{ id: "choice", prompt: "Keep me through A-X-A", options: [] }] },
+  });
   await flushPromises();
 });
 eq(controller?.state.ask?.id, "pending-tab-a", "A starts the rapid switch with a visible ask");
@@ -387,26 +376,6 @@ await act(async () => {
 eq(controller?.activeTabId, tabA.id, "late X activation cannot replace A");
 eq(backendActiveId, tabA.id, "late X activation reasserts A as backend owner");
 eq(controller?.state.ask?.id, "pending-tab-a", "late X completion cannot clear A's ask");
-
-// Wiring lock: App.enqueueNavigation must invalidate in-flight activations at
-// enqueue time — the queue-based scenario above only proves the mechanism.
-const appSource = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
-ok(
-  /const enqueueNavigation = useCallback\(\(input: DesktopNavigationIntent\)[\s\S]{0,900}?const navigationIntentSeq = noteNavigationIntent\(\);[\s\S]{0,900}?enqueueNavigationWithIntent\(input, navigationIntentSeq\)/.test(appSource),
-  "App.enqueueNavigation captures a shared navigation intent before handing the request to the queue",
-);
-ok(
-  /const enqueueNavigationWithIntent = useCallback\([\s\S]{0,900}?enqueueNavigationRequest\([\s\S]{0,900}?\{ \.\.\.input, navigationIntentSeq \}/.test(appSource),
-  "App.enqueueNavigationWithIntent forwards the captured intent into enqueueNavigationRequest",
-);
-ok(
-  /const enqueueTabSwitch = useCallback\([\s\S]{0,1400}?const navigationIntentSeq = noteNavigationIntent\(\);[\s\S]{0,1400}?switchTab\(request\.tabId, request\.optimisticTab, request\.navigationIntentSeq\)/.test(appSource),
-  "App.enqueueTabSwitch invalidates older navigation at enqueue time and forwards the shared intent",
-);
-ok(
-  /const latest = \(\) => request\.seq === navigationSeqRef\.current && isNavigationIntentCurrent\(request\.navigationIntentSeq\)/.test(appSource),
-  "App navigation results require both queue ownership and the shared navigation intent",
-);
 
 // useController owns periodic runtime metadata refreshes. Unmount explicitly
 // so the suite verifies their cleanup and does not keep the discovery runner

@@ -21,7 +21,6 @@
 package openai
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -55,11 +54,13 @@ const defaultStreamIdleTimeout = 300 * time.Second
 const maxPrefixContinuations = 1
 
 func init() {
+	provider.RegisterReasoning("openai", ReasoningForConfig)
 	provider.Register("openai", New)
 }
 
 // New builds an OpenAI-compatible provider from a resolved config.
 func New(cfg provider.Config) (provider.Provider, error) {
+	cfg = provider.ApplyOpenCodeGoContract("openai", cfg)
 	if cfg.BaseURL == "" {
 		return nil, fmt.Errorf("openai: base_url is required for provider %q", cfg.Name)
 	}
@@ -72,8 +73,10 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	}
 	keyEnv, _ := cfg.Extra["api_key_env"].(string) // for actionable auth errors
 	keySource, _ := cfg.Extra["api_key_source"].(string)
-	effort, _ := cfg.Extra["effort"].(string)
-	effort = strings.ToLower(strings.TrimSpace(effort))
+	effort, err := configuredEffort(cfg)
+	if err != nil {
+		return nil, err
+	}
 	if effort == "auto" {
 		effort = ""
 	}
@@ -90,10 +93,20 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	extraBody, _ := cfg.Extra["extra_body"].(map[string]any)
 	vision, _ := cfg.Extra["vision"].(bool)
 	officialDeepSeek := IsDeepSeek(cfg.BaseURL)
-	// Official DeepSeek image input is pinned to one SKU. Ignore Extra["vision"]
-	// so stale config or extension metadata cannot send image_url to Flash/Pro.
-	if officialDeepSeek {
-		vision = IsOfficialDeepSeekVisionModel(cfg.Model)
+	modelInfo := provider.ModelInfo{ID: cfg.Model, InputModalities: []provider.ModelModality{provider.ModalityText}}
+	if cfg.ModelInfo != nil {
+		modelInfo = *cfg.ModelInfo
+		modelInfo.ID = cfg.Model
+	}
+	if cfg.ModelInfo != nil {
+		vision = modelInfo.SupportsInput(provider.ModalityImage)
+	}
+	// Keep known text-only models blocked; unknown models use declared capability.
+	vision = DeepSeekImageInputAllowed(officialDeepSeek, chatURL, cfg.Model, cfg.ModelInfo != nil, vision)
+	if vision {
+		modelInfo.InputModalities = []provider.ModelModality{provider.ModalityText, provider.ModalityImage}
+	} else if modelInfo.SupportsInput(provider.ModalityImage) {
+		modelInfo.InputModalities = []provider.ModelModality{provider.ModalityText}
 	}
 	visionDetail, _ := cfg.Extra["vision_detail"].(string)
 	visionDetail = strings.ToLower(strings.TrimSpace(visionDetail))
@@ -153,11 +166,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 			}
 		}
 	case minimax:
-		// M3's knob is binary. The config effort layer normalises user input
-		// to "adaptive", "disabled", or "" (== auto). We keep "high"/"max"
-		// (legacy DeepSeek) and "low"/"medium" (Anthropic) out — config-level
-		// NormalizeEffort remaps them to "adaptive" already, so anything
-		// reaching here is expected to be one of: "", "adaptive", "disabled".
+		// The adapter capability admits only the binary M3 vocabulary.
 		effort = strings.ToLower(strings.TrimSpace(effort))
 		switch effort {
 		case "": // auto — leave empty so the wire emits thinking.type=adaptive
@@ -168,8 +177,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	case zhipu:
 		// Zhipu GLM gates chain-of-thought through `thinking.type`
 		// (enabled|disabled) and silently ignores reasoning_effort, so /effort
-		// mirrors that binary knob. The config effort layer normalises depth
-		// levels onto one of these; "" means auto == the GLM default (thinking on).
+		// mirrors that binary knob; "" preserves the default (thinking on).
 		switch effort {
 		case "", "enabled", "disabled":
 		default:
@@ -218,10 +226,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 			return nil, fmt.Errorf("openai: provider %q: effort must be low, medium, or high", name)
 		}
 	}
-	requestEfforts := requestEffortVocabulary(effortEndpoint{protocol: protocol,
-		thinkingType: thinkingType, effort: effort, deepseek: deepseek, v4Low: deepseekV4Model,
-		minimax: minimax, zhipu: zhipu, longcat: longcat, ollamaCloud: ollamaCloud,
-		explicit: hasExplicitEfforts, supported: supportedEfforts})
+
 	// max_output_tokens=0 on official DeepSeek omits the wire field so the
 	// server uses its 384K ceiling. Effort only selects thinking depth.
 	// Non-DeepSeek endpoints leave 0 as "unset / omit". Never compact_ratio.
@@ -230,7 +235,10 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		return nil, fmt.Errorf("openai: network: %w", err)
 	}
 	return &client{
+		identityHeaders: provider.NewClientIdentityHeaders(),
+		reasoningState:  reasoningState{ollamaCloud: ollamaCloud, thinkingLocked: configuredThinkingType(cfg) == "disabled", reasoning: ReasoningForConfig(cfg)},
 		name:            name,
+		identity:        provider.RequestIdentity{Provider: name, DisplayName: cfg.DisplayName, Protocol: cfg.Protocol},
 		apiKey:          cfg.APIKey,
 		keyEnv:          keyEnv,
 		keySource:       keySource,
@@ -239,7 +247,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		prefixChatURL:   prefixChatURL,
 		headers:         cleanCustomHeaders(headers),
 		extraBody:       cleanExtraBody(extraBody),
-		model:           normalizeModelID(cfg.BaseURL, cfg.Model),
+		model:           deepSeekChatWireModel(chatURL, normalizeModelID(cfg.BaseURL, cfg.Model)),
 		deepseek:        deepseek,
 		minimax:         minimax,
 		zhipu:           zhipu,
@@ -248,16 +256,19 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		mimo:            IsMiMo(cfg.BaseURL),
 		thinkingType:    thinkingType,
 		vision:          vision,
+		modelInfo:       modelInfo,
 		visionDetail:    visionDetail,
 		maxOutputTokens: maxOutputTokens,
 		effort:          effort,
-		requestEfforts:  requestEfforts,
 		http:            httpClient,
 		idleTimeout:     defaultStreamIdleTimeout,
 	}, nil
 }
 
 func newHTTPClient(cfg provider.Config) (*http.Client, error) {
+	if cfg.HTTPClient != nil {
+		return cfg.HTTPClient, nil
+	}
 	spec, _ := cfg.Extra["proxy_spec"].(netclient.ProxySpec)
 	return netclient.NewHTTPClient(spec, netclient.TransportOptions{
 		DialTimeout:           30 * time.Second,
@@ -268,7 +279,10 @@ func newHTTPClient(cfg provider.Config) (*http.Client, error) {
 }
 
 type client struct {
+	identityHeaders http.Header
+	reasoningState
 	name            string
+	identity        provider.RequestIdentity
 	apiKey          string
 	keyEnv          string // api_key_env name, surfaced in auth errors
 	keySource       string // source of keyEnv, surfaced in auth errors
@@ -280,22 +294,31 @@ type client struct {
 	model           string
 	http            *http.Client
 	deepseek        bool
-	minimax         bool          // true for api.minimaxi.com — emits MiniMax-M3's thinking knob instead of reasoning_effort
-	zhipu           bool          // true for Zhipu GLM (bigmodel.cn / z.ai) — gates thinking via thinking.type, ignores reasoning_effort
-	longcat         bool          // true for LongCat — gates thinking via thinking.type, ignores reasoning_effort
-	kimiK3          bool          // true for the explicit K3 protocol or kimi-k3 on Moonshot's direct API hosts
-	mimo            bool          // true for MiMo — upgrades legacy tuple schemas to Draft 2020-12
-	thinkingType    string        // explicit `thinking` config override (enabled|disabled); "" = no override
-	vision          bool          // model accepts image input — embed attached images as image_url parts
+	minimax         bool   // true for api.minimaxi.com — emits MiniMax-M3's thinking knob instead of reasoning_effort
+	zhipu           bool   // true for Zhipu GLM (bigmodel.cn / z.ai) — gates thinking via thinking.type, ignores reasoning_effort
+	longcat         bool   // true for LongCat — gates thinking via thinking.type, ignores reasoning_effort
+	kimiK3          bool   // true for the explicit K3 protocol or kimi-k3 on Moonshot's direct API hosts
+	mimo            bool   // true for MiMo — upgrades legacy tuple schemas to Draft 2020-12
+	thinkingType    string // explicit `thinking` config override (enabled|disabled); "" = no override
+	vision          bool   // model accepts image input — embed attached images as image_url parts
+	modelInfo       provider.ModelInfo
 	visionDetail    string        // image_url detail hint (low|high); "" = auto/omit
 	maxOutputTokens int           // resolved total output budget; <=0 omits the optional field
 	effort          string        // reasoning_effort for OpenAI; thinking.type for MiniMax; "" = auto/provider default
-	requestEfforts  []string      // depth levels a per-request EffortOverride may take; empty = overrides ignored
 	idleTimeout     time.Duration // SSE stall watchdog window; defaultStreamIdleTimeout unless a test overrides
 	authed          atomic.Bool   // a request has succeeded — gate transient-401 retry
 }
 
 func (c *client) Name() string { return c.name }
+
+func (c *client) ModelInfo() provider.ModelInfo {
+	if c == nil {
+		return provider.ModelInfo{}
+	}
+	info := c.modelInfo
+	info.InputModalities = append([]provider.ModelModality(nil), info.InputModalities...)
+	return info
+}
 
 func (c *client) RequiresToolCallReasoning() bool {
 	if c == nil || c.thinkingType == "disabled" {
@@ -361,11 +384,13 @@ func (c *client) MissingToolCallReasoningWarningIdentity() string {
 
 func (c *client) sendOpts() provider.SendOptions {
 	return provider.SendOptions{
-		Provider:   c.name,
-		KeyEnv:     c.keyEnv,
-		KeySource:  c.keySource,
-		KeyPresent: c.apiKey != "",
-		RetryAuth:  c.authed.Load(),
+		Provider:            c.name,
+		ProviderDisplayName: c.identity.DisplayName,
+		Protocol:            c.identity.Protocol,
+		KeyEnv:              c.keyEnv,
+		KeySource:           c.keySource,
+		KeyPresent:          c.apiKey != "",
+		RetryAuth:           c.authed.Load(),
 	}
 }
 
@@ -460,6 +485,9 @@ var bufPool = sync.Pool{
 }
 
 func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provider.Chunk, error) {
+	if err := c.reasoning.Validate(c.model, req.EffortOverride); err != nil {
+		return nil, err
+	}
 	stream, err := c.openStream(ctx, c.chatURL, c.buildRequest(req), req.Tools)
 	if err != nil {
 		return nil, err
@@ -494,6 +522,7 @@ func (c *client) openStream(ctx context.Context, targetURL string, wireReq chatR
 		applyAPIKeyHeader(httpReq.Header, c.baseURL, c.apiKey)
 		httpReq.Header.Set("Accept", "text/event-stream")
 		applyCustomHeaders(httpReq.Header, c.headers)
+		provider.ApplyOpenCodeGoHeaders(httpReq, c.baseURL, c.identityHeaders)
 		return httpReq, nil
 	}
 	resp, err := provider.SendWithRetry(requestCtx, c.http, c.sendOpts(), newReq)
@@ -504,8 +533,7 @@ func (c *client) openStream(ctx context.Context, targetURL string, wireReq chatR
 
 	out := make(chan provider.Chunk)
 	// Body-phase stream cuts surface as StreamInterruptedError so the Agent
-	// can replay the exact frozen request. Connection+header retries stay in
-	// SendWithRetry; providers must not stack a second body-retry budget.
+	// can preserve partial output and let the user decide whether to retry.
 	go c.streamOnce(requestCtx, resp, out)
 	return out, nil
 }
@@ -669,6 +697,8 @@ func sendChunk(ctx context.Context, out chan<- provider.Chunk, chunk provider.Ch
 }
 
 func (c *client) buildRequest(req provider.Request) chatRequest {
+	openCodeGoRoute, officialOpenCodeGo := provider.OpenCodeGoRequestRoute("openai", c.baseURL, c.chatURL, "")
+	openCodeGoChat := officialOpenCodeGo && openCodeGoRoute == provider.OpenCodeGoRouteChat
 	// Repair tool-call pairing before sending: an interrupted/resumed history can
 	// carry an assistant tool_calls turn whose results never landed, which DeepSeek
 	// rejects with a 400 ("must be followed by tool messages …").
@@ -698,33 +728,25 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 			Role:       string(m.Role),
 			ToolCallID: m.ToolCallID,
 		}
-		if m.Role == provider.RoleTool {
-			// Always send the tool message's name, even when empty: strict
-			// backends (MiMo) 400 a tool result without the key (#4711).
+		if m.Role == provider.RoleTool && !openCodeGoChat {
+			// Strict backends (MiMo) 400 a tool result without name (#4711).
 			name := m.Name
 			cm.Name = &name
 		}
-		// DeepSeek thinking mode 400s an assistant tool_calls turn whose
-		// reasoning_content KEY is absent from the request JSON ("reasoning_content
-		// … must be passed back"). The API accepts an empty string, and only
-		// validates turns after the last user message, but emitting the field on
-		// every tool_calls turn is uniform and verified accepted — so always send
-		// it (empty included) rather than fail the request when reasoning was lost
-		// upstream (e.g. a gateway renamed the field). With thinking disabled the
-		// API tolerates every shape, so keep the exact pre-fix bytes there: send
-		// the key only when a thinking-mode round left reasoning in the history
-		// (dropping it would invalidate the prompt-cache prefix of mixed
-		// thinking-on→off sessions for no gain).
+		// DeepSeek thinking mode requires the reasoning_content KEY on every
+		// assistant history turn, plain turns included: the API accepts an empty
+		// string, while omitting the key produces a 400. Preserve non-empty
+		// reasoning even when the current round has since disabled thinking.
 		if m.Role == provider.RoleAssistant {
 			switch {
 			case c.kimiK3 && (m.ReasoningContent != "" || len(m.ToolCalls) > 0):
 				// Kimi K3 requires the complete assistant message on multi-turn
 				// and tool-call requests, including provider-issued reasoning.
 				cm.ReasoningContent = &m.ReasoningContent
-			case (c.deepseek || c.RequiresToolCallReasoning()) && len(m.ToolCalls) > 0:
-				if c.RequiresToolCallReasoning() || m.ReasoningContent != "" {
-					cm.ReasoningContent = &m.ReasoningContent
-				}
+			case c.RequiresToolCallReasoning() && (c.deepseek || hasReasoningOrToolCall(m)):
+				cm.ReasoningContent = &m.ReasoningContent
+			case c.deepseek && m.ReasoningContent != "":
+				cm.ReasoningContent = &m.ReasoningContent
 			case c.zhipu && (m.ReasoningContent != "" || (c.glmThinkingEnabled() && len(m.ToolCalls) > 0)):
 				// GLM interleaved and preserved thinking require provider-issued
 				// reasoning unchanged. Coding Plan includes the field on tool turns
@@ -754,26 +776,13 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 			cm.Content = m.Content
 		}
 		msgs = append(msgs, cm)
-		if c.vision && m.Role == provider.RoleTool && !IsDeepSeek(c.baseURL) {
+		if c.vision && m.Role == provider.RoleTool {
 			pendingToolImages = append(pendingToolImages, m.Images...)
 		}
 	}
 	flushToolImages()
 
-	var tools []chatTool
-	for _, t := range req.Tools {
-		parameters := t.Parameters
-		if len(parameters) == 0 {
-			parameters = provider.CanonicalizeSchema(nil)
-		}
-		if c.mimo {
-			parameters = provider.NormalizeLegacyTupleItemsForDraft202012(parameters)
-		}
-		tools = append(tools, chatTool{
-			Type:     "function",
-			Function: chatFunction{Name: t.Name, Description: t.Description, Parameters: parameters},
-		})
-	}
+	tools := encodeChatTools(req, c.mimo)
 
 	maxOutputTokens := req.MaxTokens
 	if maxOutputTokens == 0 {
@@ -793,72 +802,7 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 		ReasoningEffort: kimiK3ReasoningEffort(c.kimiK3, c.requestEffort(req)),
 		ExtraBody:       c.extraBody,
 	}
-	switch {
-	case c.kimiK3:
-		// K3 fixes its sampling values and recommends omitting them. It also
-		// names the output budget max_completion_tokens rather than max_tokens.
-		out.Temperature = nil
-		out.MaxTokens = 0
-		out.MaxCompletionTokens = maxOutputTokens
-		out.ExtraBody = omitExtraBodyFields(out.ExtraBody,
-			"temperature", "top_p", "n", "presence_penalty", "frequency_penalty", "max_completion_tokens")
-	case IsOpenAI(c.baseURL):
-		// OpenAI's current Chat Completions contract replaces max_tokens with
-		// max_completion_tokens, which includes visible and reasoning tokens and
-		// is required by o-series models. Compatible gateways retain max_tokens.
-		out.MaxTokens = 0
-		out.MaxCompletionTokens = maxOutputTokens
-	case c.deepseek:
-		// DeepSeek's CoT is controlled by `thinking` plus `reasoning_effort` for
-		// depth. Thinking is on by default but can be turned off via
-		// effort=disabled / thinking=disabled (credit @eghrhegpe, #5063).
-		if c.thinkingType == "disabled" {
-			out.Thinking = &thinkingMode{Type: "disabled"}
-		} else {
-			out.Thinking = &thinkingMode{Type: "enabled"}
-		}
-	case c.minimax:
-		// M3 uses a single `thinking.type` field with two valid values:
-		// "adaptive" (default, thinking on) and "disabled" (off). Reasoning
-		// depth is not a knob on M3, so reasoning_effort is omitted entirely.
-		t := c.effort
-		if t == "" {
-			t = "adaptive" // /effort auto == the M3 model default
-		}
-		out.Thinking = &thinkingMode{Type: t}
-		out.ReasoningEffort = ""
-	case c.zhipu:
-		// Zhipu GLM's binary thinking knob: "enabled" (default, thinking on) or
-		// "disabled". reasoning_effort is silently ignored by the endpoint, so we
-		// omit it and drive chain-of-thought purely through thinking.type.
-		t := c.effort
-		if t == "" {
-			t = "enabled" // auto == the GLM default (thinking on)
-		}
-		if c.thinkingType != "" {
-			t = c.thinkingType // explicit `thinking` config overrides the effort knob
-		}
-		out.Thinking = &thinkingMode{Type: t}
-		out.ReasoningEffort = ""
-	case c.longcat:
-		// LongCat's binary thinking knob: "enabled" (default, thinking on) or
-		// "disabled". The API documents reasoning_content in OpenAI responses but
-		// not reasoning_effort, so keep depth out of the request.
-		t := c.effort
-		if t == "" {
-			t = c.thinkingType
-		}
-		if t == "" {
-			t = "enabled"
-		}
-		out.Thinking = &thinkingMode{Type: t}
-		out.ReasoningEffort = ""
-	case c.thinkingType != "":
-		// Generic OpenAI-compatible provider with an explicit `thinking` config
-		// field (e.g. opencode.ai) — emit thinking.type; reasoning_effort, if any,
-		// is left untouched for backends that also honour it.
-		out.Thinking = &thinkingMode{Type: c.thinkingType}
-	}
+	c.applyReasoning(&out, req)
 	return out
 }
 
@@ -927,9 +871,9 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 	var lastFinishReason string
 	var sawDone bool
 	var think thinkSplitter
+	var probe sseProbe
 
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner := provider.NewStreamScanner(resp.Body, 1024*1024)
 
 	for scanner.Scan() {
 		select { // ping the idle watchdog; non-blocking so a full buffer is fine
@@ -937,7 +881,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 		default:
 		}
 		line := strings.TrimSpace(scanner.Text())
-		if line == "" || !strings.HasPrefix(line, "data:") {
+		if !probe.dataLine(line) {
 			continue
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
@@ -951,7 +895,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 
 		var sr streamResponse
 		if err := json.Unmarshal([]byte(data), &sr); err != nil {
-			return emitted, provider.StreamDecodeError(c.name, data, err)
+			return emitted, scanner.DecodeError(c.name, data, err)
 		}
 		if sr.Error != nil {
 			return emitted, fmt.Errorf("%s: %s", c.name, sr.Error.Message)
@@ -973,16 +917,12 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 		}
 
 		delta := sr.Choices[0].Delta
-		reasoningDelta := delta.ReasoningContent
-		if reasoningDelta == "" {
-			reasoningDelta = delta.Reasoning
+		if sent, err := emitChatReasoning(ctx, out, delta.ReasoningContent, delta.Reasoning); err != nil {
+			return emitted, err
+		} else {
+			emitted = emitted || sent
 		}
-		if reasoningDelta != "" {
-			emitted = true
-			if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkReasoning, Text: reasoningDelta}) {
-				return emitted, ctx.Err()
-			}
-		}
+
 		if delta.Content != "" {
 			r, txt := think.push(delta.Content)
 			if r != "" {
@@ -1012,17 +952,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 				cur.Name = tc.Function.Name
 			}
 			cur.Arguments += tc.Function.Arguments
-			thoughtSignature := ""
-			if tc.ExtraContent != nil {
-				thoughtSignature = tc.ExtraContent.Google.ThoughtSignature
-			}
-			if thoughtSignature == "" {
-				// Early Gemini OpenAI-compatible responses placed the field in
-				// function. Accept that shape when replaying older sessions and
-				// when talking to compatibility gateways that still emit it.
-				thoughtSignature = tc.Function.ThoughtSignature
-			}
-			if thoughtSignature != "" {
+			if thoughtSignature := tc.thoughtSignature(); thoughtSignature != "" {
 				cur.ThoughtSignature = thoughtSignature
 			}
 			// Signal the call's start the moment its name is known, so a frontend
@@ -1066,7 +996,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 	// tool-call arguments, which then 400 on every replay (#3953). OpenAI Chat
 	// accepts either [DONE] or a legal finish_reason as a complete terminal.
 	if !sawDone && lastFinishReason == "" {
-		return emitted, fmt.Errorf("%s: stream ended before completion: %w", c.name, io.ErrUnexpectedEOF)
+		return emitted, probe.incompleteErr(c.name, resp.Header.Get("Content-Type"))
 	}
 
 	if r, txt := think.flush(); r != "" || txt != "" {
@@ -1230,18 +1160,13 @@ type chatMessage struct {
 	// Prefix is wire-only and is set exclusively on an automatically recovered
 	// DeepSeek assistant tail. omitempty keeps every ordinary request byte-stable.
 	Prefix bool `json:"prefix,omitempty"`
-	// A pointer so the field can serialize as an empty string: DeepSeek thinking
-	// mode requires the reasoning_content key to be PRESENT on assistant
-	// tool_calls turns (an empty value passes; a missing key 400s), while every
-	// other message must keep omitting it.
+	// A pointer so the field can serialize as an empty string for a malformed
+	// tool turn while preserving non-empty reasoning on every assistant turn.
 	ReasoningContent *string        `json:"reasoning_content,omitempty"`
 	ToolCalls        []chatToolCall `json:"tool_calls,omitempty"`
 	ToolCallID       string         `json:"tool_call_id,omitempty"`
-	// Name is the role=tool message's function name. A pointer so ordinary
-	// messages omit the key (byte-stable prefix), while tool messages always
-	// serialize it — even empty: strict OpenAI-compatible backends (MiMo, per
-	// its error table) reject a tool message whose `name` key is absent
-	// ("name is not set"), and OpenAI's spec requires the field on role=tool.
+	// Name is the role=tool message's function name. A pointer preserves an
+	// empty name for strict backends (MiMo); OpenCode Go Chat rejects the key.
 	Name *string `json:"name,omitempty"`
 }
 
@@ -1274,14 +1199,16 @@ func imageContentParts(text string, images []string, detail string) []chatConten
 }
 
 type chatTool struct {
-	Type     string       `json:"type"`
-	Function chatFunction `json:"function"`
+	Type         string       `json:"type"`
+	Function     chatFunction `json:"function"`
+	DeferLoading bool         `json:"defer_loading,omitempty"`
 }
 
 type chatFunction struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Strict      bool            `json:"strict,omitempty"`
 }
 
 type chatToolCall struct {
@@ -1298,6 +1225,15 @@ type chatToolCall struct {
 	} `json:"function"`
 }
 
+// thoughtSignature also accepts the early Gemini shape that placed the field in
+// function, still emitted by some compatibility gateways and older sessions.
+func (tc chatToolCall) thoughtSignature() string {
+	if tc.ExtraContent != nil && tc.ExtraContent.Google.ThoughtSignature != "" {
+		return tc.ExtraContent.Google.ThoughtSignature
+	}
+	return tc.Function.ThoughtSignature
+}
+
 type chatToolCallExtraContent struct {
 	Google struct {
 		ThoughtSignature string `json:"thought_signature,omitempty"`
@@ -1308,7 +1244,7 @@ type streamResponse struct {
 	Choices []struct {
 		Delta struct {
 			Content          string         `json:"content"`
-			ReasoningContent string         `json:"reasoning_content"`
+			ReasoningContent *string        `json:"reasoning_content"`
 			Reasoning        string         `json:"reasoning"`
 			ToolCalls        []chatToolCall `json:"tool_calls"`
 		} `json:"delta"`

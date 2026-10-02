@@ -13,7 +13,7 @@ import (
 )
 
 func TestRemoteServeBrowserURLUsesFragmentForCurrentServe(t *testing.T) {
-	ctrl := control.New(control.Options{SessionDir: t.TempDir()})
+	ctrl := newOwnedTestController(t, control.Options{SessionDir: t.TempDir()})
 	t.Cleanup(ctrl.Close)
 	srv := serve.New(ctrl, serve.NewBroadcaster(), config.ServeConfig{AuthMode: "token", Token: "current secret/+"})
 	ts := httptest.NewServer(srv.Handler())

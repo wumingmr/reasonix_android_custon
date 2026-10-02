@@ -16,10 +16,10 @@ import (
 // RunTurn until Approve is called. Every other method is a harmless stub so the
 // gateway's turn/approve path can drive it without a real controller.
 type approvalBlockingController struct {
-	botController // embedded nil interface: unused methods panic if ever called
-	started       chan struct{}
-	released      chan struct{}
-	approved      chan struct{}
+	stubBotController
+	started  chan struct{}
+	released chan struct{}
+	approved chan struct{}
 }
 
 func newApprovalBlockingController() *approvalBlockingController {

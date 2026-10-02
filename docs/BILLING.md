@@ -53,18 +53,28 @@ pricing (`unavailable`). Legacy scalar aliases (`cost`, `costUsd`,
 
 ## DeepSeek scheduled rates
 
-For official DeepSeek OpenAI, Responses, and Anthropic endpoints, V4 Flash,
-`deepseek-v4-flash-vision-exp` (same list price as Flash), and V4 Pro use
-occurrence-time pricing from 2026-08-17 00:00 Beijing time. Peak windows are
-09:00–12:00 and 14:00–18:00 Beijing time; boundaries are left-closed/right-open
-and all other times are off-peak. The request-completion timestamp is used
-because the provider does not report per-token billing time. Images sent to the
-vision SKU are billed as input tokens from provider usage.
+For official DeepSeek OpenAI, Responses, and Anthropic endpoints, Flash and V4
+Pro use occurrence-time pricing. Peak windows are 09:00–12:00 and 14:00–18:00
+Beijing time; boundaries are left-closed/right-open and all other times are
+off-peak. The request-completion timestamp is used because the provider does not
+report per-token billing time. Images sent to a vision-capable model are billed
+as input tokens from provider usage.
+
+Two dated schedules are recorded. From 2026-08-17 00:00 Beijing time, V4 Flash,
+`deepseek-v4-flash-vision-exp` (same list price as Flash), and V4 Pro. From
+2026-09-10 12:00 Beijing time, `deepseek-flash` carries a lower Flash price, and
+the retired `deepseek-v4-flash` and `deepseek-v4-flash-vision-exp` ids are served
+by that model and billed at the same rate. V4 Pro keeps its own price until the
+vendor routes it to V4.1 Flash. A quote resolves against the schedule in effect
+at its occurrence time, so the superseded August rates stay queryable.
 
 The stored provider price remains the peak anchor. Dynamic resolution is
-enabled only for PAYG configurations whose complete rate card exactly matches
-that official anchor. Custom endpoints, edited prices, and unrecognized models
-remain static. Persisted session, ledger, and stats quotes are never repriced.
+enabled only for PAYG configurations whose complete rate card exactly matches an
+official anchor. A config that still holds the previous generation's anchor is
+recognized as an untouched official row and billed against the live schedule,
+so a dated vendor price change reaches it without a re-save. Custom endpoints,
+edited prices, and unrecognized models remain static. Persisted session, ledger,
+and stats quotes are never repriced.
 
 ## Wallets and diagnostics
 

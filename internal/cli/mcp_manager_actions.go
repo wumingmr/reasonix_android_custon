@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -20,6 +21,12 @@ import (
 )
 
 func (m chatTUI) applyMCPAction(v mcpServerView, action mcpAction) (tea.Model, tea.Cmd) {
+	switch action {
+	case mcpActionMode, mcpActionConnect, mcpActionAuth, mcpActionClearAuth, mcpActionDisable, mcpActionRemove:
+		if m.mcpConnectBusy(v.Name) {
+			return m, nil
+		}
+	}
 	switch action {
 	case mcpActionViewTools:
 		m.mcp.stage = mcpStageTools
@@ -54,22 +61,73 @@ func (m chatTUI) connectSelectedMCP(v mcpServerView) (tea.Model, tea.Cmd) {
 	if v.Status == "connected" {
 		m.ctrl.DisconnectMCPServer(v.Name)
 	}
-	n, err := m.ctrl.ConnectConfiguredMCPServer(v.Name)
-	if err != nil {
-		m.notice("mcp connect: " + err.Error())
-		return m, nil
+	delete(m.mcpDisabled, v.Name)
+	m.notice("connecting " + v.Name + "…")
+	return m, m.startMCPConnect(v.Name, mcpConnectRetry, nil)
+}
+
+// mcpConnectBusy refuses an action on a server whose connect is in flight:
+// its result would otherwise land on a server the user has since changed.
+func (m *chatTUI) mcpConnectBusy(name string) bool {
+	if !m.mcpConnecting[name] {
+		return false
 	}
-	if m.mcpDisabled != nil {
-		delete(m.mcpDisabled, v.Name)
+	m.notice("mcp: still connecting " + name + " — try again when it finishes")
+	return true
+}
+
+// startMCPConnect runs the handshake off the UI loop: it can take up to the
+// server's startup timeout, and inside Update it would freeze every key.
+func (m *chatTUI) startMCPConnect(name string, cause mcpConnectCause, entry *config.PluginEntry) tea.Cmd {
+	if m.mcpConnecting == nil {
+		m.mcpConnecting = map[string]bool{}
+	}
+	m.mcpConnecting[name] = true
+	ctrl := m.ctrl
+	return func() tea.Msg {
+		n, err := ctrl.ConnectConfiguredMCPServer(name)
+		return mcpConnectDoneMsg{server: name, cause: cause, entry: entry, tools: n, err: err}
+	}
+}
+
+func (m *chatTUI) handleMCPConnectDone(msg mcpConnectDoneMsg) {
+	delete(m.mcpConnecting, msg.server)
+	if msg.err == nil && !m.mcpStillWanted(msg.server) {
+		m.ctrl.DisconnectMCPServer(msg.server)
+		m.refreshHostAndInvalidateSlashCatalog()
+		m.refreshMCPManager()
+		m.notice("mcp: dropped the connection to " + msg.server + " — it was disabled or removed while connecting")
+		return
+	}
+	switch {
+	case msg.err != nil && msg.cause == mcpConnectMode:
+		if msg.entry != nil {
+			recordMCPModePluginFailure(m.ctrl, *msg.entry, msg.err)
+		}
+		m.notice("saved connection mode, but connect failed: " + msg.err.Error())
+	case msg.err != nil && msg.cause == mcpConnectAuth:
+		m.notice("MCP authorization saved, but reconnect failed: " + msg.err.Error())
+	case msg.err != nil:
+		m.notice("mcp connect: " + msg.err.Error())
+	case msg.cause == mcpConnectAuth:
+		if m.host != nil {
+			m.host.ClearFailure(msg.server)
+		}
+		m.notice(fmt.Sprintf("authorized and connected %s — %d tools (available next message)", msg.server, msg.tools))
+	default:
+		m.notice(fmt.Sprintf("connected %s — %d tools (available next message)", msg.server, msg.tools))
 	}
 	m.refreshHostAndInvalidateSlashCatalog()
 	m.refreshMCPManager()
-	if m.mcp != nil {
-		m.mcp.stage = mcpStageDetail
-		m.mcp.selectName(v.Name)
+}
+
+// mcpStillWanted reports whether a server that just connected is still
+// configured and not disabled for this session.
+func (m *chatTUI) mcpStillWanted(name string) bool {
+	if m.mcpDisabled[name] {
+		return false
 	}
-	m.notice(fmt.Sprintf("connected %s — %d tools (available next message)", v.Name, n))
-	return m, nil
+	return slices.Contains(m.ctrl.ConfiguredMCPNames(), name)
 }
 
 func (m chatTUI) disableSelectedMCP(v mcpServerView) (tea.Model, tea.Cmd) {
@@ -158,19 +216,16 @@ func (m chatTUI) applyMCPMode(tier string) (tea.Model, tea.Cmd) {
 		m.notice(fmt.Sprintf("mcp mode: no configured MCP server named %q", v.Name))
 		return m, nil
 	}
-	if _, err := config.UpsertPluginInSourceForRoot(workspace, selected); err != nil {
+	if _, err := config.UpsertPluginKeepingDecision(workspace, selected); err != nil {
 		m.notice("mcp mode: " + err.Error())
 		return m, nil
 	}
 	if m.mcpDisabled != nil {
 		delete(m.mcpDisabled, v.Name)
 	}
+	var connect tea.Cmd
 	if m.ctrl != nil && !mcpConnected(m.ctrl, v.Name) {
-		if _, err := m.ctrl.ConnectConfiguredMCPServer(v.Name); err != nil {
-			recordMCPModePluginFailure(m.ctrl, selected, err)
-			m.notice("saved connection mode, but connect failed: " + err.Error())
-		}
-		m.refreshHostAndInvalidateSlashCatalog()
+		connect = m.startMCPConnect(v.Name, mcpConnectMode, &selected)
 	}
 	m.refreshMCPManager()
 	if m.mcp != nil {
@@ -178,7 +233,7 @@ func (m chatTUI) applyMCPMode(tier string) (tea.Model, tea.Cmd) {
 		m.mcp.selectName(v.Name)
 	}
 	m.notice("updated connection mode for " + v.Name)
-	return m, nil
+	return m, connect
 }
 
 func recordMCPModePluginFailure(ctrl control.Capabilities, e config.PluginEntry, err error) {
@@ -235,28 +290,21 @@ func (m chatTUI) authenticateMCP(v mcpServerView) (tea.Model, tea.Cmd) {
 	})
 }
 
-func (m *chatTUI) handleMCPExternalDone(msg mcpExternalDoneMsg) {
+func (m *chatTUI) handleMCPExternalDone(msg mcpExternalDoneMsg) tea.Cmd {
 	if msg.err != nil {
 		m.notice(msg.label + ": " + msg.err.Error())
-		return
+		return nil
 	}
 	if msg.server == "" || m.ctrl == nil {
 		if msg.target != "" {
 			m.notice(msg.label + ": " + msg.target)
 		}
-		return
+		return nil
 	}
-	n, err := m.ctrl.ConnectConfiguredMCPServer(msg.server)
-	if err != nil {
-		m.notice("MCP authorization saved, but reconnect failed: " + err.Error())
-		return
+	if m.mcpConnectBusy(msg.server) {
+		return nil
 	}
-	if m.host != nil {
-		m.host.ClearFailure(msg.server)
-	}
-	m.refreshHostAndInvalidateSlashCatalog()
-	m.refreshMCPManager()
-	m.notice(fmt.Sprintf("authorized and connected %s — %d tools (available next message)", msg.server, n))
+	return m.startMCPConnect(msg.server, mcpConnectAuth, nil)
 }
 
 func (m chatTUI) clearSelectedMCPAuthentication() (tea.Model, tea.Cmd) {
@@ -284,7 +332,12 @@ func (m chatTUI) clearMCPAuthentication(v mcpServerView) (tea.Model, tea.Cmd) {
 		m.notice("clear authentication: " + err.Error())
 		return m, nil
 	}
-	_, changed, _, err := config.ClearPluginAuthenticationInSourceForRoot(workspace, v.Name)
+	var changed bool
+	err := config.KeepMCPDecisionAcross(workspace, v.Name, func() (config.PluginEntry, error) {
+		updated, didChange, _, cerr := config.ClearPluginAuthenticationInSourceForRoot(workspace, v.Name)
+		changed = didChange
+		return updated, cerr
+	})
 	if err != nil {
 		m.notice("clear authentication: " + err.Error())
 		return m, nil
@@ -399,11 +452,6 @@ func mcpOpenCommand(target string) (*exec.Cmd, error) {
 		return exec.Command("open", target), nil
 	case "windows":
 		return exec.Command("rundll32", "url.dll,FileProtocolHandler", target), nil
-	case "android":
-		if p, err := exec.LookPath("termux-open"); err == nil {
-			return exec.Command(p, target), nil
-		}
-		return exec.Command("xdg-open", target), nil
 	default:
 		return exec.Command("xdg-open", target), nil
 	}

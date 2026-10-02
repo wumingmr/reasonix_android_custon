@@ -9,19 +9,13 @@ import (
 )
 
 // goalUsageTee wraps the controller's event sink and attributes billable usage
-// events to the active goal turn's recorder, so every model request under the
-// same Goal scope — executor, planner, subagent, compaction, classifier,
-// capability router, recovery reviewer, and goal evaluator — accumulates into
-// the goal's observational token total. There is no token hard limit; the
-// total is for display and diagnostics only. Title generation and unrelated
+// events to the admitted automatic goal round. Title generation and unrelated
 // background calls are excluded. The tee forwards every event unchanged.
 type goalUsageTee struct {
 	event.AuditForwarder
-	inner event.Sink
-	mu    sync.Mutex
-	// active is the current goal turn's recorder; nil when no goal turn is
-	// running. Writes happen on the turn goroutine; the tee serializes reads.
-	active *goalTurnRecorder
+	inner          event.Sink
+	mu             sync.Mutex
+	lifecycleUsage func(event.Event)
 }
 
 // NewGoalUsageTee wraps inner in a usage-accounting tee. Pass the returned sink
@@ -40,17 +34,44 @@ func (t *goalUsageTee) Emit(e event.Event) {
 	if t == nil {
 		return
 	}
-	if e.Kind == event.Usage && e.Usage != nil && e.UsageSource != event.UsageSourceTitle {
-		t.mu.Lock()
-		rec := t.active
-		t.mu.Unlock()
-		if rec != nil {
-			rec.addUsageWithRequests(usageTotalTokens(e.Usage), e.Usage.RequestCount)
-		}
-	}
+	t.recordUsage(e)
 	if t.inner != nil {
 		t.inner.Emit(e)
 	}
+}
+
+// EmitChecked preserves durability-aware sink behavior through the usage tee.
+// Prompt and dispatch commits must still fail closed when the inner ledger
+// rejects an event.
+func (t *goalUsageTee) EmitChecked(e event.Event) error {
+	if t == nil {
+		return nil
+	}
+	if err := event.EmitChecked(t.inner, e); err != nil {
+		return err
+	}
+	t.recordUsage(e)
+	return nil
+}
+
+func (t *goalUsageTee) recordUsage(e event.Event) {
+	if e.Kind == event.Usage && e.Usage != nil && e.UsageSource != event.UsageSourceTitle {
+		t.mu.Lock()
+		observe := t.lifecycleUsage
+		t.mu.Unlock()
+		if observe != nil {
+			observe(e)
+		}
+	}
+}
+
+func (t *goalUsageTee) setLifecycleUsageRecorder(record func(event.Event)) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.lifecycleUsage = record
+	t.mu.Unlock()
 }
 
 func (t *goalUsageTee) InboxChanged(snap sessioninbox.InboxSnapshot) {
@@ -58,26 +79,6 @@ func (t *goalUsageTee) InboxChanged(snap sessioninbox.InboxSnapshot) {
 		return
 	}
 	notifyInboxChanged(t.inner, snap)
-}
-
-// setActiveRecorder binds the current goal turn's recorder (nil clears it).
-func (t *goalUsageTee) setActiveRecorder(rec *goalTurnRecorder) {
-	if t == nil {
-		return
-	}
-	t.mu.Lock()
-	t.active = rec
-	t.mu.Unlock()
-}
-
-// activeRecorder returns the current goal turn's recorder, if any.
-func (t *goalUsageTee) activeRecorder() *goalTurnRecorder {
-	if t == nil {
-		return nil
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.active
 }
 
 // usageTotalTokens prefers TotalTokens and falls back to the non-overlapping

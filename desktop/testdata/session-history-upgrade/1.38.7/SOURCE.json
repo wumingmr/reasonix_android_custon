@@ -1,0 +1,28 @@
+{
+  "tag": "desktop-v1.38.7",
+  "commit": "036c7c50c5c154f747419aee6b75667f9044c8fa",
+  "files": {
+    "branch-expected.json": "d3de36d1bb875af1b1901659811e0bb57d89c3dbe10e13a7e15cc20d31e3de06",
+    "complete-expected.json": "7a7f4ff665b08e09cdb5907d301234fcefcaf965659ff1c204a87bab79db1816",
+    "interrupted-expected.json": "135b8d97ceb2f016c666e5db226b3e438fe2ad51c168f36b0b5c7b88f77b81b0",
+    "legacy/branch.display-index.json": "01ea9120649f941703d537de3ae82319748b8513eb822b8816da036f1b7bce72",
+    "legacy/branch.event-index.json": "d71e703b01d187f839c88b4a603dfb2e0752f98166f0bd18a9feb1bd99f1834c",
+    "legacy/branch.events.jsonl": "fe893cc94cb91d0828e0782fbcf8afcf900ff6b3b97d9ac8dfb8e0e8f31654aa",
+    "legacy/branch.jsonl": "f2cdfda73ed2ba907daa47f9edf5a37c3570de5d091d206e42224e4af430f549",
+    "legacy/branch.jsonl.meta": "ee060bc5258d4a3717798e0be53043f6cde9f2c67d5877db68a61ecc0e3be530",
+    "legacy/complete.display-index.json": "063723297d52b2a34fcd1bf2e2402c794b974eea36efb8794bd0ea9275c7c2a4",
+    "legacy/complete.event-index.json": "82526fc406b437c251dc54651e9d65710fb87faaf207661f9f5110abc395493d",
+    "legacy/complete.events.jsonl": "23698dbee30d1f9a6e3d4f69809429f676a1a81f3a6330e2c20071f7998e331b",
+    "legacy/complete.jsonl": "2dda5bd4665630ad9e136fbbff64b014ee61096d4f885ef518a0e9100eaac103",
+    "legacy/complete.jsonl.meta": "3b282c2b4702ab5f4fc36505eaae234115101095aceb2280bf15ecfedf210000",
+    "legacy/interrupted.display-index.json": "fc7ebf154d1dd1dd79968e0da3885303bdc8c3478bd05475a5d1867ff3c6636a",
+    "legacy/interrupted.event-index.json": "c1a3ab2e7d699e20483b0d10b4d1857b8658ea4d300e71c5f127b6af0df3397c",
+    "legacy/interrupted.events.jsonl": "026f0962a73ffa532f4772b787b7c9db68b0a657df3718846b26e716d1115284",
+    "legacy/interrupted.jsonl": "2f6b32c6d9b84190f018294dcef675f594435450d4bce2aca655b7f13f3728f3",
+    "legacy/interrupted.jsonl.meta": "126a468eedd45e4cd44eda00b68a205014ed8f7184914706ff77a5a0603ec4ab"
+  },
+  "normalizations": [
+    "synthetic writer identity",
+    "length-preserving writer hostname"
+  ]
+}

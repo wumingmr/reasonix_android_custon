@@ -16,7 +16,9 @@ func (a *App) captureTopicRuntimeBindings(topicID string) []removedSessionRuntim
 			if tab == nil || tab.TopicID != topicID {
 				continue
 			}
-			captured = append(captured, removedRuntimeFromTab(tab, tabRuntimeSessionDir(tab), canonicalTabSessionPath(tab.currentSessionPath())))
+			item := removedRuntimeFromTab(tab, tabRuntimeSessionDir(tab), canonicalTabSessionPath(tab.currentSessionPath()))
+			item.failedStartup = a.suppressTabStartupRestoreLocked(tab)
+			captured = append(captured, item)
 		}
 	}
 	return captured
@@ -32,7 +34,14 @@ func (a *App) snapshotTopicRuntimeBindings(captured []removedSessionRuntime) err
 		if item.ctrl.Running() {
 			return errTopicHasActiveWork
 		}
+		if historicalPreview(item.ctrl) {
+			continue
+		}
 		if err := item.ctrl.Snapshot(); err != nil {
+			if item.failedStartup && failedStartupSnapshotError(err) {
+				slog.Warn("desktop: skipping unavailable failed runtime snapshot before removing topic")
+				continue
+			}
 			if !errors.Is(err, agent.ErrSessionSnapshotConflict) {
 				return err
 			}
@@ -43,14 +52,16 @@ func (a *App) snapshotTopicRuntimeBindings(captured []removedSessionRuntime) err
 	return nil
 }
 
-func topicRuntimeBindingsMatchLocked(tabs map[string]*WorkspaceTab, topicID string, expected map[*WorkspaceTab]removedSessionRuntime) (int, bool) {
+func (a *App) topicRuntimeBindingsMatchLocked(tabs map[string]*WorkspaceTab, topicID string, expected map[*WorkspaceTab]removedSessionRuntime) (int, bool) {
 	matched := 0
 	for _, tab := range tabs {
 		if tab == nil || tab.TopicID != topicID {
 			continue
 		}
 		item, ok := expected[tab]
-		if !ok || tab.Ctrl != item.ctrl || tabRuntimeSessionDir(tab) != item.sessionDir || canonicalTabSessionPath(tab.currentSessionPath()) != item.sessionPath {
+		if !ok || tab.Ctrl != item.ctrl || tabRuntimeSessionDir(tab) != item.sessionDir ||
+			canonicalTabSessionPath(tab.currentSessionPath()) != item.sessionPath ||
+			a.suppressTabStartupRestoreLocked(tab) != item.failedStartup {
 			return 0, false
 		}
 		matched++
@@ -66,8 +77,8 @@ func (a *App) removeTopicRuntimeBindingsIfUnchanged(topicID string, captured []r
 		expected[item.tab] = item
 	}
 	a.mu.Lock()
-	visible, visibleOK := topicRuntimeBindingsMatchLocked(a.tabs, topicID, expected)
-	detached, detachedOK := topicRuntimeBindingsMatchLocked(a.detachedSessions, topicID, expected)
+	visible, visibleOK := a.topicRuntimeBindingsMatchLocked(a.tabs, topicID, expected)
+	detached, detachedOK := a.topicRuntimeBindingsMatchLocked(a.detachedSessions, topicID, expected)
 	if !visibleOK || !detachedOK || visible+detached != len(captured) {
 		a.mu.Unlock()
 		return fallbackRuntimeTarget{}, false
@@ -83,6 +94,7 @@ func (a *App) removeTopicRuntimeBindingsIfUnchanged(topicID string, captured []r
 			fallbackSet = true
 		}
 		a.markTabRemovedLocked(tab)
+		stopTabAutosave(tab)
 		delete(a.tabs, id)
 		a.removeTabOrderLocked(id)
 		if a.activeTabID == id {
@@ -98,6 +110,7 @@ func (a *App) removeTopicRuntimeBindingsIfUnchanged(topicID string, captured []r
 			fallbackSet = true
 		}
 		a.markTabRemovedLocked(tab)
+		stopTabAutosave(tab)
 		delete(a.detachedSessions, key)
 	}
 	if a.activeTabID == "" && len(a.tabOrder) > 0 {
@@ -111,6 +124,9 @@ func (a *App) removeTopicRuntimeBindingsIfUnchanged(topicID string, captured []r
 }
 
 func (a *App) finalizeRemovedTopicRuntimes(removed []removedSessionRuntime) {
+	if len(removed) > 0 {
+		a.lifecycleCheckpoint("before-topic-runtime-cleanup")
+	}
 	for _, item := range removed {
 		if item.sink != nil {
 			item.sink.clearContext()
@@ -121,6 +137,13 @@ func (a *App) finalizeRemovedTopicRuntimes(removed []removedSessionRuntime) {
 		item.ctrl.SetSessionPath("")
 		a.quiesceTabAutosave(item.tab)
 	}
+}
+
+// Stop admission without joining the saver under App/title/index locks.
+func stopTabAutosave(tab *WorkspaceTab) {
+	tab.saveMu.Lock()
+	tab.closing = true
+	tab.saveMu.Unlock()
 }
 
 func (a *App) tryLockRuntimeMutation(operation string) (func(), bool) {

@@ -197,31 +197,6 @@ func TestLedgerMatchesFileReadAndWriteReceipts(t *testing.T) {
 	}
 }
 
-func TestLedgerReportsAnchorRefreshReadsAfterWrites(t *testing.T) {
-	ledger := NewLedger()
-	ledger.Record(Receipt{ToolName: "write_file", Success: true, Paths: []string{`src\a.go`}, Write: true})
-	writeIndex, ok := ledger.LatestSuccessfulWriteIndex([]string{`src/a.go`})
-	if !ok {
-		t.Fatal("expected latest write index")
-	}
-	if ledger.HasSuccessfulAnchorRefreshReadAfter([]string{`src/a.go`}, writeIndex) {
-		t.Fatal("read-after-write should be false before a read")
-	}
-
-	ledger.Record(Receipt{ToolName: "grep", Success: true, Paths: []string{`src/a.go`}, Read: true, Args: json.RawMessage(`{"path":"src/a.go","pattern":"func"}`)})
-	if ledger.HasSuccessfulAnchorRefreshReadAfter([]string{`src/a.go`}, writeIndex) {
-		t.Fatal("grep should not refresh anchor edit state")
-	}
-	ledger.Record(Receipt{ToolName: "read_file", Success: true, Paths: []string{`src/a.go`}, Read: true, Args: json.RawMessage(`{"path":"src/a.go","offset":100,"limit":20}`)})
-	if ledger.HasSuccessfulAnchorRefreshReadAfter([]string{`src/a.go`}, writeIndex) {
-		t.Fatal("windowed read_file should not refresh anchor edit state")
-	}
-	ledger.Record(Receipt{ToolName: "read_file", Success: true, Paths: []string{`src/a.go`}, Read: true, Args: json.RawMessage(`{"path":"src/a.go"}`)})
-	if !ledger.HasSuccessfulAnchorRefreshReadAfter([]string{`src/a.go`}, writeIndex) {
-		t.Fatal("read-after-write should be true after a successful read")
-	}
-}
-
 func TestLedgerReportsFinalReadinessReceiptsAfterWriter(t *testing.T) {
 	ledger := NewLedger()
 	ledger.Record(Receipt{ToolName: "bash", Success: true, Command: "go test ./..."})
@@ -616,49 +591,21 @@ func TestLedgerNoBaselineDoesNotConstrainCompletedTodos(t *testing.T) {
 	}
 }
 
-func TestValidateSerialTodosRejectsInvalidOrdering(t *testing.T) {
-	tests := []struct {
-		name  string
-		todos []TodoItem
-		want  string
-	}{
-		{
-			name: "completed after current",
-			todos: []TodoItem{
-				{Content: "first", Status: "in_progress"},
-				{Content: "second", Status: "completed"},
-			},
-			want: "completed after unfinished",
-		},
-		{
-			name: "multiple current items",
-			todos: []TodoItem{
-				{Content: "first", Status: "in_progress"},
-				{Content: "second", Status: "in_progress"},
-			},
-			want: "second in_progress",
-		},
-		{
-			name:  "pending without current",
-			todos: []TodoItem{{Content: "first", Status: "pending"}},
-			want:  "no in_progress",
-		},
+func TestValidateSerialTodosAllowsModelReportedOrdering(t *testing.T) {
+	for _, todos := range [][]TodoItem{
+		{{Content: "first", Status: "in_progress"}, {Content: "second", Status: "completed"}},
+		{{Content: "first", Status: "pending"}},
+		{{Content: "done", Status: "completed"}, {Content: "current", Status: "in_progress"}, {Content: "later", Status: "pending"}},
+	} {
+		if err := ValidateSerialTodos(todos); err != nil {
+			t.Fatalf("model-reported todo ordering rejected: %v", err)
+		}
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if err := ValidateSerialTodos(tc.todos); err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("ValidateSerialTodos() error = %v, want %q", err, tc.want)
-			}
-		})
-	}
-
-	valid := []TodoItem{
-		{Content: "done", Status: "completed"},
-		{Content: "current", Status: "in_progress"},
-		{Content: "later", Status: "pending"},
-	}
-	if err := ValidateSerialTodos(valid); err != nil {
-		t.Fatalf("valid serial list rejected: %v", err)
+	if err := ValidateSerialTodos([]TodoItem{
+		{Content: "first", Status: "in_progress"},
+		{Content: "second", Status: "in_progress"},
+	}); err == nil || !strings.Contains(err.Error(), "second in_progress") {
+		t.Fatalf("multiple current items error = %v", err)
 	}
 }
 
@@ -727,28 +674,21 @@ func TestValidateSerialTodosAcceptsPhaseChains(t *testing.T) {
 	}
 }
 
-func TestValidateSerialTodosRejectsInvalidPhaseChains(t *testing.T) {
+func TestValidateSerialTodosOnlyRejectsInvalidPhaseShape(t *testing.T) {
+	for _, todos := range [][]TodoItem{
+		{{Content: "Phase", Status: "completed"}, {Content: "sub one", Status: "in_progress", Level: 1}},
+		{{Content: "Phase", Status: "in_progress"}, {Content: "sub one", Status: "pending", Level: 1}},
+		{{Content: "Phase", Status: "pending"}, {Content: "sub one", Status: "in_progress", Level: 1}, {Content: "Second", Status: "completed"}},
+	} {
+		if err := ValidateSerialTodos(todos); err != nil {
+			t.Fatalf("model-reported phase status rejected: %v", err)
+		}
+	}
 	tests := []struct {
 		name  string
 		todos []TodoItem
 		want  string
 	}{
-		{
-			name: "phase completed before its sub-steps",
-			todos: []TodoItem{
-				{Content: "Phase", Status: "completed"},
-				{Content: "sub one", Status: "in_progress", Level: 1},
-			},
-			want: "sub-step 2 \"sub one\" is unfinished",
-		},
-		{
-			name: "phase in_progress while sub-steps are unfinished",
-			todos: []TodoItem{
-				{Content: "Phase", Status: "in_progress"},
-				{Content: "sub one", Status: "pending", Level: 1},
-			},
-			want: "cannot be in_progress while sub-step 2",
-		},
 		{
 			name: "phase and sub-step both in_progress",
 			todos: []TodoItem{
@@ -764,27 +704,6 @@ func TestValidateSerialTodosRejectsInvalidPhaseChains(t *testing.T) {
 				{Content: "Next", Status: "pending"},
 			},
 			want: "no phase above it",
-		},
-		{
-			name: "completed segment after the current chain",
-			todos: []TodoItem{
-				{Content: "Phase", Status: "pending"},
-				{Content: "sub one", Status: "in_progress", Level: 1},
-				{Content: "Second phase", Status: "completed"},
-				{Content: "sub two", Status: "completed", Level: 1},
-			},
-			want: "completed after unfinished",
-		},
-		{
-			name: "stale sub-step progress before the current item",
-			todos: []TodoItem{
-				{Content: "Phase", Status: "pending"},
-				{Content: "sub one", Status: "completed", Level: 1},
-				{Content: "sub two", Status: "pending", Level: 1},
-				{Content: "Second phase", Status: "pending"},
-				{Content: "sub three", Status: "in_progress", Level: 1},
-			},
-			want: "in_progress after pending work",
 		},
 	}
 	for _, tc := range tests {
@@ -1091,58 +1010,6 @@ func TestToolCallRequiresAcceptanceCriteriaForExecutionCommands(t *testing.T) {
 	}
 	if !ToolCallRequiresAcceptanceCriteria("bash", json.RawMessage(`{"command":"node --check app.js"}`), false) {
 		t.Fatal("node --check is a verification command and should require acceptance criteria")
-	}
-}
-
-func TestBashToolCallMixesMutationAndVerification(t *testing.T) {
-	tests := []struct {
-		name    string
-		command string
-		want    bool
-	}{
-		{
-			name:    "temporary JavaScript extraction",
-			command: `python3 -c 'open("/tmp/snake_check.js","w").write("x")' && node --check /tmp/snake_check.js`,
-			want:    true,
-		},
-		{name: "generated code before tests", command: "go generate ./... && go test ./...", want: true},
-		{name: "read-only extraction pipeline", command: "tail -n +2 snake.js | head -n 20 | node --check -"},
-		{name: "plain verifier", command: "go test ./..."},
-		{name: "plain mutation", command: "gofmt -w main.go"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			args, err := json.Marshal(map[string]string{"command": tt.command})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := BashToolCallMixesMutationAndVerification(args); got != tt.want {
-				t.Fatalf("BashToolCallMixesMutationAndVerification(%q) = %v, want %v", tt.command, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestBashToolCallMasksVerificationExit(t *testing.T) {
-	tests := []struct {
-		command string
-		want    bool
-	}{
-		{command: `tail -n +2 snake.html | head -n 20 | node --check -; echo "EXIT: $?"`, want: true},
-		{command: `go test ./...; printf 'status=%s\n' "$?"`, want: true},
-		{command: `tail -n +2 snake.html | head -n 20 | node --check -`},
-		{command: `go test ./...`},
-		{command: `echo "$?"`},
-		{command: `echo done; go test ./...`},
-	}
-	for _, tt := range tests {
-		args, err := json.Marshal(map[string]string{"command": tt.command})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := BashToolCallMasksVerificationExit(args); got != tt.want {
-			t.Errorf("BashToolCallMasksVerificationExit(%q) = %v, want %v", tt.command, got, tt.want)
-		}
 	}
 }
 

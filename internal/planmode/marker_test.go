@@ -9,7 +9,7 @@ func TestMarkerStatesWorkflowAndPermissionBoundariesSeparately(t *testing.T) {
 	for _, want := range []string{
 		"planning workflow",
 		"Do not begin implementation",
-		"not a permission boundary",
+		"host blocks state-changing actions before plan approval",
 		"Permissions and Sandbox",
 		"approve the plan before the workflow switches to implementation",
 	} {

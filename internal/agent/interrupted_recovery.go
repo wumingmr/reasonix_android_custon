@@ -11,6 +11,8 @@ import (
 
 const interruptedRecoveryTag = "interrupted-turn-recovery"
 
+const recoveryPrecedenceClause = "The user's new message takes precedence. If it is unrelated to the interrupted task, do not resume that task."
+
 const (
 	maxRecoveryTools = 24
 	maxRecoveryFiles = 8
@@ -20,7 +22,7 @@ const (
 // pendingInterruptedRecovery returns the newest unconsumed recovery handoff.
 // A later real user turn consumes older handoffs implicitly, so the persisted
 // LocalOnly record never needs an in-place mutation that could churn history.
-func (a *Agent) pendingInterruptedRecovery() *provider.InterruptedTurnRecovery {
+func (a *Agent) transcriptInterruptedRecovery() *provider.InterruptedTurnRecovery {
 	if a == nil || a.sess.conversation == nil {
 		return nil
 	}
@@ -29,11 +31,19 @@ func (a *Agent) pendingInterruptedRecovery() *provider.InterruptedTurnRecovery {
 		m := v
 		if m.LocalOnly && m.InterruptedTurn != nil && m.InterruptedTurn.Pending {
 			copy := *m.InterruptedTurn
+			if copy.FailureDiagnostic != nil {
+				diagnostic := *copy.FailureDiagnostic
+				copy.FailureDiagnostic = &diagnostic
+			}
+			copy.WriteChecks = append([]provider.WriteRecoveryCheck(nil), copy.WriteChecks...)
+			copy.SatisfiedWrites = append([]provider.InterruptedToolSummary(nil), copy.SatisfiedWrites...)
 			copy.CompletedTools = append([]provider.InterruptedToolSummary(nil), copy.CompletedTools...)
 			copy.InterruptedTools = append([]string(nil), copy.InterruptedTools...)
+			copy.NotStartedTools = append([]provider.InterruptedToolSummary(nil), copy.NotStartedTools...)
+			copy.UnknownTools = append([]provider.InterruptedToolSummary(nil), copy.UnknownTools...)
 			return &copy
 		}
-		if m.Role == provider.RoleUser && IsUserAuthoredTurn(m.Content) {
+		if IsUserAuthoredTurnMessage(m) {
 			return nil
 		}
 	}
@@ -48,7 +58,11 @@ func interruptedRecoveryBlock(r *provider.InterruptedTurnRecovery) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "<%s>\n", interruptedRecoveryTag)
-	b.WriteString("The previous turn was interrupted. Treat these as host-verified recovery facts, not as a new task.\n")
+	if len(r.UserConfirmedTools) > 0 {
+		b.WriteString("The previous turn was interrupted. Preserve the stated provenance: user-confirmed effects are attestations, not tool results.\n")
+	} else {
+		b.WriteString("The previous turn was interrupted. Treat these as host-verified recovery facts, not as a new task.\n")
+	}
 	if len(r.CompletedTools) == 0 {
 		b.WriteString("completed_tools: none\n")
 	} else {
@@ -92,6 +106,12 @@ func interruptedRecoveryBlock(r *provider.InterruptedTurnRecovery) string {
 		}
 		b.WriteByte('\n')
 	}
+	writeRecoveryChecks(&b, r.WriteChecks)
+	writeRecoveryCalls(&b, "write_postconditions_satisfied_do_not_repeat", r.SatisfiedWrites)
+	writeRecoveryCalls(&b, "not_started_tools", r.NotStartedTools)
+	writeRecoveryCalls(&b, "outcome_unknown_tools", r.UnknownTools)
+	writeRecoveryCalls(&b, "failed_tools", r.FailedTools)
+	writeRecoveryCalls(&b, "user_confirmed_effects_do_not_repeat", r.UserConfirmedTools)
 	if r.DroppedPartialText || r.DroppedPartialReasoning {
 		b.WriteString("unsafe_partial_output: excluded from model context")
 		if r.DroppedPartialText && r.DroppedPartialReasoning {
@@ -102,7 +122,7 @@ func interruptedRecoveryBlock(r *provider.InterruptedTurnRecovery) string {
 			b.WriteString(" (assistant text)\n")
 		}
 	}
-	b.WriteString("Before continuing, inspect the current workspace and prior completed tool results. Do not blindly repeat completed writes. Re-issue any interrupted tool call from scratch with complete arguments if it is still needed.\n")
+	b.WriteString("Use these facts when deciding the next action. Read-only or idempotent calls may be retried when useful. For outcome-unknown calls, inspect workspace or external state before retrying operations with side effects, and ask the user when the safe action cannot be inferred. Calls marked not_started may be planned again with complete arguments. " + recoveryPrecedenceClause + "\n")
 	fmt.Fprintf(&b, "</%s>", interruptedRecoveryTag)
 	return b.String()
 }
@@ -122,4 +142,27 @@ func clipRecoveryValue(value string) string {
 		return value
 	}
 	return string(runes[:maxRecoveryValue]) + "…"
+}
+
+func writeRecoveryCalls(b *strings.Builder, label string, calls []provider.InterruptedToolSummary) {
+	if len(calls) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "%s:\n", label)
+	for i, call := range calls {
+		if i >= maxRecoveryTools {
+			fmt.Fprintf(b, "- ... %d omitted\n", len(calls)-i)
+			break
+		}
+		fmt.Fprintf(b, "- %s id=%s\n", html.EscapeString(clipRecoveryValue(call.Name)), html.EscapeString(clipRecoveryValue(call.ID)))
+	}
+}
+
+func writeRecoveryChecks(b *strings.Builder, checks []provider.WriteRecoveryCheck) {
+	for i, check := range checks {
+		if i >= maxRecoveryTools*maxRecoveryFiles {
+			break
+		}
+		fmt.Fprintf(b, "write_postcondition: id=%s path=%s state=%s\n", html.EscapeString(clipRecoveryValue(check.CallID)), html.EscapeString(clipRecoveryValue(check.Path)), html.EscapeString(clipRecoveryValue(check.State)))
+	}
 }

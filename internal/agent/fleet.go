@@ -14,6 +14,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
 	"reasonix/internal/jobs"
+	"reasonix/internal/tool"
 )
 
 const (
@@ -33,10 +34,10 @@ func NewFleetTool(taskTool *TaskTool) *FleetTool {
 	return &FleetTool{taskTool: taskTool}
 }
 
-func (*FleetTool) Name() string { return "fleet" }
+func (*FleetTool) Name() string { return tool.HostFleet }
 
 func (*FleetTool) Description() string {
-	return "Dispatch 2–64 sub-agent tasks as a small dependency graph and return bounded previews plus stable Subagent references for full-result retrieval from completed persisted children with read_subagent_result. Each item may select a profile, model, effort, tools, write_paths, or read_only, and may declare depends_on to run after other items (research → implement → review). Tasks with no dependency between them run in parallel and must declare non-overlapping write_paths; ordered tasks may share paths. Omitted write_paths claim the whole workspace, so two or more concurrent writers without paths fail preflight before any task starts. A failed task's dependents are skipped; independent branches keep going unless fail_fast is set. Background mode returns a fleet job id collectable with wait."
+	return "Dispatch 2–64 sub-agent tasks as a small dependency graph and return bounded previews plus stable Subagent references for full-result retrieval from completed persisted children with read_subagent_result. Each item may select a profile, model, effort, tools, write_paths, or read_only, and may declare depends_on to run after other items (research → implement → review). Tasks with no dependency between them run in parallel and must declare non-overlapping write_paths; ordered tasks may share paths. Omitted write_paths claim the whole workspace, so two or more concurrent writers without paths fail preflight before any task starts. A failed task's dependents are skipped; independent branches keep going unless fail_fast is set. Background mode returns a fleet job id collectable with job_output."
 }
 
 func (*FleetTool) Schema() json.RawMessage {
@@ -67,7 +68,7 @@ func (*FleetTool) Schema() json.RawMessage {
     }
   },
   "fail_fast":{"type":"boolean","description":"Stop starting new tasks after the first failure. Tasks already running are left to finish so partial writes are not abandoned mid-flight. Omitted (the default) means independent branches keep going; a failed task's dependents are skipped either way."},
-  "run_in_background":{"type":"boolean","description":"Run the whole fleet asynchronously and return a job id collectable with wait. Items queue for concurrency/write slots inside the job."}
+  "run_in_background":{"type":"boolean","description":"Run the whole fleet asynchronously and return a job id collectable with job_output. Items queue for concurrency/write slots inside the job."}
 },
 "required":["tasks"]
 }`)
@@ -136,11 +137,7 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (result s
 	// happen to have observed. Validation failures emit a failed terminal;
 	// once runFleet starts it owns the lifecycle (the background job runs
 	// runFleet inside the job, after this function has returned).
-	groupParentID, groupSink, _, ok := CallContext(ctx)
-	if !ok || groupSink == nil {
-		groupParentID = "fleet"
-		groupSink = event.Discard
-	}
+	groupParentID, groupSink := fleetCallContext(ctx)
 	// The merger emits already-namespaced group/child IDs, so it must use the
 	// raw call sink. A nested subSink would prefix the group ID a second time
 	// (group/group), leaving the frontend unable to match its lifecycle card.
@@ -244,7 +241,7 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (result s
 				writerRegistered = true
 			}
 		}
-		job := jm.StartForSession(jobs.SessionFromContext(ctx), "fleet", label, func(jobCtx context.Context, _ io.Writer) (string, error) {
+		job, startErr := jm.TryStartForSession(jobs.SessionFromContext(ctx), "fleet", label, func(jobCtx context.Context, _ io.Writer) (string, error) {
 			// Execute returns as soon as the job is registered, so the job owns
 			// the handed-off merger until every child preview and terminal has
 			// flushed. Closing it in Execute would strand child cards at running.
@@ -260,12 +257,15 @@ func (f *FleetTool) Execute(ctx context.Context, args json.RawMessage) (result s
 			jobCtx = withSubagentProgressMerger(jobCtx, merger)
 			return f.runFleet(jobCtx, groupSink, specs, plan, parentID)
 		})
+		if startErr != nil {
+			return rejectedFleetStart(observer, writerID, writerRegistered, startErr)
+		}
 		// runFleet (inside the job) owns the terminal and merger close from
 		// here on. Foreground runFleet hands off only the terminal; Execute
 		// still closes the merger after the synchronous call returns.
 		lifecycleHandoff = true
 		mergerCloseHandoff = true
-		return fmt.Sprintf("Started background fleet %q (%s). Collect results with wait; you will be notified when it finishes.", job.ID, label), nil
+		return fmt.Sprintf("Started background fleet %q (%s). Collect results with job_output; you will be notified when it finishes.", job.ID, label), nil
 	}
 
 	lifecycleHandoff = true

@@ -1,10 +1,8 @@
 package agent
 
 import (
-	"errors"
-	"fmt"
+	"context"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"reasonix/internal/provider"
@@ -67,7 +65,13 @@ func byteOffsetBeforeLastRunes(content string, count int) int {
 // pruneToolResultsToProjectionLocked installs a durable, model-visible prune
 // projection. The caller owns compactionRunMu for the whole maintenance run;
 // canonical storage, including RawContent, is never modified.
-func (a *Agent) pruneToolResultsToProjectionLocked(trigger string) (bool, error) {
+func (a *Agent) pruneToolResultsToProjectionLocked(ctx context.Context, trigger string) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	canonical, transcriptVersion := a.sess.conversation.snapshotMessagesVersion()
 	a.sess.compactionMu.Lock()
 	stateSnapshot := a.sess.compactionState
@@ -76,6 +80,9 @@ func (a *Agent) pruneToolResultsToProjectionLocked(trigger string) (bool, error)
 	projected := append([]provider.Message(nil), visible...)
 	affected := 0
 	for i := range projected {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		if projected[i].Role != provider.RoleTool {
 			continue
 		}
@@ -93,57 +100,11 @@ func (a *Agent) pruneToolResultsToProjectionLocked(trigger string) (bool, error)
 	if affected == 0 {
 		return false, nil
 	}
-	projected = provider.ProjectionMessages(projected)
-	sourceTokens := a.estimatedVisibleRequestTokens(visible)
-	resultTokens := a.estimatedVisibleRequestTokens(projected)
-	inputHash := a.contextMaintenanceInputHash(modelInputMessages(visible))
-	outputHash := providerVisibleFingerprint(modelInputMessages(projected))
-	projectionVersion := stateSnapshot.Projection.ProjectionVersion + 1
-	now := time.Now().UTC()
-	coveredHash := coveredPrefixHash(canonical, len(canonical))
-	receipt := &ContextMaintenanceReceipt{
-		OperationID: fmt.Sprintf("prune-%d-%s", projectionVersion, outputHash), Status: "applied", Action: "prune",
-		Trigger: trigger, SourceProjection: stateSnapshot.Projection.ProjectionVersion, ProjectionVersion: projectionVersion,
-		CoveredCount: len(canonical), CoveredPrefixHash: coveredHash, InputHash: inputHash, OutputHash: outputHash,
-		InputTokens: sourceTokens, ResultTokens: resultTokens, SavedTokens: max(0, sourceTokens-resultTokens),
-		AffectedToolResults: affected, CacheBreak: true, CreatedAt: now,
-	}
-	next := stateSnapshot
-	next.SchemaVersion = compactionStateSchemaCurrent
-	next.TranscriptVersion = transcriptVersion
-	next.Generation++
-	next.PromptCacheKey = a.currentPromptCacheKey()
-	next.Projection = ContextProjection{
-		Messages: projected, TranscriptVersion: transcriptVersion, ProjectionVersion: projectionVersion,
-		CoveredCount: len(canonical), CoveredPrefixHash: coveredHash, SourceTokens: sourceTokens,
-		ProjectionTokens: resultTokens, ViewInputHash: inputHash, ViewOutputHash: outputHash, CreatedAt: now,
-	}
-	next.LastReceipt = receipt
-	next.UpdatedAt = now
-
-	a.sess.compactionMu.Lock()
-	current, currentVersion := a.sess.conversation.snapshotMessagesVersion()
-	if currentVersion != transcriptVersion || len(current) != len(canonical) ||
-		coveredPrefixHash(current, len(current)) != coveredHash ||
-		a.sess.compactionState.Projection.ProjectionVersion != stateSnapshot.Projection.ProjectionVersion ||
-		a.sess.compactionState.Generation != stateSnapshot.Generation {
-		a.sess.compactionMu.Unlock()
-		return false, errCompressStaleContext
-	}
-	previous := a.sess.compactionState
-	a.sess.compactionState = next
-	if err := a.persistCompactionStateLocked(); err != nil {
-		a.sess.compactionState = previous
-		a.sess.compactionMu.Unlock()
-		if errors.Is(err, errCompressStaleContext) {
-			return false, err
-		}
-		return false, fmt.Errorf("persist prune projection: %w", err)
-	}
-	a.sess.checkpointState = "applied"
-	a.sess.compactionMu.Unlock()
-	a.emitContextMaintenance(receipt)
-	return true, nil
+	return a.installMaintenanceProjection(ctx, maintenanceInstall{
+		trigger: trigger, action: "prune", state: stateSnapshot,
+		canonical: canonical, transcriptVersion: transcriptVersion,
+		visible: visible, projected: projected, affected: affected,
+	})
 }
 
 type toolResultMaintenanceMode int

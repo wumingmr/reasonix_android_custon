@@ -21,7 +21,8 @@ const coalesceMaxBytes = 16 << 10
 const DefaultStreamDeltaWindow = 16 * time.Millisecond
 
 // Coalesce wraps inner so bursts of consecutive streaming deltas — Text or
-// Reasoning events carrying nothing but a Text payload — merge into one event.
+// Reasoning events carrying nothing but a Text payload, or ToolProgress events
+// carrying nothing but one tool's Output — merge into one event.
 // The first delta of a burst forwards immediately (time-to-first-token is
 // unchanged); later deltas buffer at most window, flushing earlier on any
 // other event (total order preserved), a kind switch, or coalesceMaxBytes.
@@ -43,60 +44,129 @@ type coalescer struct {
 	// called under mu. A single drainer forwards FIFO, so a sink that
 	// synchronously re-enters Emit enqueues and returns instead of deadlocking.
 	mu          sync.Mutex
-	kind        Kind
+	key         deltaKey
 	buf         strings.Builder
 	pending     bool
 	timer       *time.Timer
 	lastForward time.Time
-	queue       []Event
+	queue       []coalescedEvent
 	draining    bool
 }
 
-var _ OptionalSinkCapabilities = (*coalescer)(nil)
+type coalescedEvent struct {
+	event   Event
+	done    chan error
+	forward func()
+}
 
-// isStreamDelta reports whether e is a pure streaming delta: merging is only
-// safe when no other field carries meaning. The zero-probe comparison keeps
-// this true by construction as Event grows fields.
-func isStreamDelta(e Event) bool {
-	if (e.Kind != Text && e.Kind != Reasoning) || e.Text == "" {
-		return false
-	}
+var _ OptionalSinkCapabilities = (*coalescer)(nil)
+var _ CheckedSink = (*coalescer)(nil)
+
+// deltaKey is the identity a buffered burst merges under; any change flushes.
+type deltaKey struct {
+	kind                         Kind
+	source, messageID, attemptID string
+	toolID                       string
+}
+
+// streamDelta reports whether e is a pure streaming delta, with its merge key
+// and payload: merging is only safe when no other field carries meaning. The
+// zero-probe comparison keeps this true by construction as Event grows fields.
+func streamDelta(e Event) (deltaKey, string, bool) {
+	key := deltaKey{kind: e.Kind, source: e.Source, messageID: e.MessageID, attemptID: e.AttemptID}
 	probe := e
-	probe.Text = ""
-	return reflect.DeepEqual(probe, Event{Kind: e.Kind})
+	probe.Source, probe.MessageID, probe.AttemptID = "", "", ""
+	payload := e.Text
+	switch e.Kind {
+	case Text, Reasoning:
+		probe.Text = ""
+	case ToolProgress:
+		key.toolID, payload = e.Tool.ID, e.Tool.Output
+		probe.Tool.ID, probe.Tool.Output = "", ""
+	default:
+		return deltaKey{}, "", false
+	}
+	if payload == "" || (e.Kind == ToolProgress && key.toolID == "") || !reflect.DeepEqual(probe, Event{Kind: e.Kind}) {
+		return deltaKey{}, "", false
+	}
+	return key, payload, true
+}
+
+func (k deltaKey) event(payload string) Event {
+	e := Event{Kind: k.kind, Source: k.source, MessageID: k.messageID, AttemptID: k.attemptID}
+	if k.kind == ToolProgress {
+		e.Tool = Tool{ID: k.toolID, Output: payload}
+	} else {
+		e.Text = payload
+	}
+	return e
 }
 
 func (c *coalescer) Emit(e Event) {
-	c.mu.Lock()
-	if !isStreamDelta(e) {
-		c.enqueueFlushLocked()
-		c.queue = append(c.queue, e)
-		c.drainAndUnlock()
-		return
+	_ = c.enqueue(e, false)
+}
+
+// EmitChecked is a synchronous ordering barrier. Buffered deltas are written
+// before e, and it returns only after the durable inner sink has acknowledged
+// e. Regular streaming Emit calls remain non-blocking while a drainer is
+// active; they learn asynchronous failures through the lifecycle sink's
+// poisoned-ledger state.
+func (c *coalescer) EmitChecked(e Event) error {
+	return c.enqueue(e, true)
+}
+
+func (c *coalescer) enqueue(e Event, checked bool) error {
+	var done chan error
+	if checked {
+		done = make(chan error, 1)
 	}
-	if c.pending && c.kind != e.Kind {
+	key, payload, delta := streamDelta(e)
+	c.mu.Lock()
+	if checked && delta {
+		c.enqueueFlushLocked()
+		c.queue = append(c.queue, coalescedEvent{event: e, done: done})
+		c.drainAndUnlock()
+		return <-done
+	}
+	if !delta {
+		c.enqueueFlushLocked()
+		c.queue = append(c.queue, coalescedEvent{event: e, done: done})
+		c.drainAndUnlock()
+		if done != nil {
+			return <-done
+		}
+		return nil
+	}
+	if c.pending && c.key != key {
 		c.enqueueFlushLocked()
 	}
 	if !c.pending && time.Since(c.lastForward) >= c.window {
 		c.lastForward = time.Now()
-		c.queue = append(c.queue, e)
+		c.queue = append(c.queue, coalescedEvent{event: e, done: done})
 		c.drainAndUnlock()
-		return
+		if done != nil {
+			return <-done
+		}
+		return nil
 	}
 	if !c.pending {
 		c.pending = true
-		c.kind = e.Kind
+		c.key = key
 		if c.timer == nil {
 			c.timer = time.AfterFunc(c.window, c.flush)
 		} else {
 			c.timer.Reset(c.window)
 		}
 	}
-	c.buf.WriteString(e.Text)
+	c.buf.WriteString(payload)
 	if c.buf.Len() >= coalesceMaxBytes {
 		c.enqueueFlushLocked()
 	}
 	c.drainAndUnlock()
+	if done != nil {
+		return <-done
+	}
+	return nil
 }
 
 func (c *coalescer) flush() {
@@ -111,9 +181,10 @@ func (c *coalescer) enqueueFlushLocked() {
 		return
 	}
 	c.timer.Stop()
-	c.queue = append(c.queue, Event{Kind: c.kind, Text: c.buf.String()})
+	c.queue = append(c.queue, coalescedEvent{event: c.key.event(c.buf.String())})
 	c.buf.Reset()
 	c.pending = false
+	c.key = deltaKey{}
 	c.lastForward = time.Now()
 }
 
@@ -129,8 +200,16 @@ func (c *coalescer) drainAndUnlock() {
 		batch := c.queue
 		c.queue = nil
 		c.mu.Unlock()
-		for _, e := range batch {
-			c.inner.Emit(e)
+		for _, item := range batch {
+			if item.forward != nil {
+				item.forward()
+				continue
+			}
+			err := EmitChecked(c.inner, item.event)
+			if item.done != nil {
+				item.done <- err
+				close(item.done)
+			}
 		}
 		c.mu.Lock()
 	}
@@ -141,86 +220,61 @@ func (c *coalescer) drainAndUnlock() {
 // Optional sink capabilities flush first so audits never overtake a buffered
 // delta, then forward to inner sinks that opt in.
 
-func (c *coalescer) RecordDelegationAudit(a evidence.DelegationAudit) {
+func (c *coalescer) enqueueCapability(forward func()) {
 	c.mu.Lock()
 	c.enqueueFlushLocked()
+	c.queue = append(c.queue, coalescedEvent{forward: forward})
 	c.drainAndUnlock()
-	RecordDelegationAudit(c.inner, a)
+}
+
+func (c *coalescer) RecordDelegationAudit(a evidence.DelegationAudit) {
+	c.enqueueCapability(func() { RecordDelegationAudit(c.inner, a) })
 }
 
 func (c *coalescer) RecordReadinessAudit(a evidence.ReadinessAudit) {
-	c.mu.Lock()
-	c.enqueueFlushLocked()
-	c.drainAndUnlock()
-	RecordReadinessAudit(c.inner, a)
+	c.enqueueCapability(func() { RecordReadinessAudit(c.inner, a) })
 }
 
 func (c *coalescer) RecordAnchorSafetyAudit(a AnchorSafetyAudit) {
-	c.mu.Lock()
-	c.enqueueFlushLocked()
-	c.drainAndUnlock()
-	RecordAnchorSafetyAudit(c.inner, a)
+	c.enqueueCapability(func() { RecordAnchorSafetyAudit(c.inner, a) })
 }
 
 func (c *coalescer) RecordTurnCompletion() {
-	c.mu.Lock()
-	c.enqueueFlushLocked()
-	c.drainAndUnlock()
-	RecordTurnCompletion(c.inner)
+	c.enqueueCapability(func() { RecordTurnCompletion(c.inner) })
 }
 
 func (c *coalescer) RecordProtocolRecovery(a ProtocolRecoveryAudit) {
-	c.mu.Lock()
-	c.enqueueFlushLocked()
-	c.drainAndUnlock()
-	RecordProtocolRecovery(c.inner, a)
+	c.enqueueCapability(func() { RecordProtocolRecovery(c.inner, a) })
 }
 
 func (c *coalescer) RecordContractShadow(a ContractShadowAudit) {
-	c.mu.Lock()
-	c.enqueueFlushLocked()
-	c.drainAndUnlock()
-	RecordContractShadow(c.inner, a)
+	c.enqueueCapability(func() { RecordContractShadow(c.inner, a) })
 }
 
 func (c *coalescer) RecordCompletionReport(a CompletionReportAudit) {
-	c.mu.Lock()
-	c.enqueueFlushLocked()
-	c.drainAndUnlock()
-	RecordCompletionReport(c.inner, a)
+	c.enqueueCapability(func() { RecordCompletionReport(c.inner, a) })
 }
 
 func (c *coalescer) RecordOutcomeProgress(sample evidence.OutcomeSample) {
-	c.mu.Lock()
-	c.enqueueFlushLocked()
-	c.drainAndUnlock()
-	RecordOutcomeProgress(c.inner, sample)
+	c.enqueueCapability(func() { RecordOutcomeProgress(c.inner, sample) })
 }
 
 func (c *coalescer) RecordMemoryRecall(a MemoryRecallAudit) {
-	c.mu.Lock()
-	c.enqueueFlushLocked()
-	c.drainAndUnlock()
-	RecordMemoryRecall(c.inner, a)
+	c.enqueueCapability(func() { RecordMemoryRecall(c.inner, a) })
 }
 
 func (c *coalescer) RecordDelegationAdmission(a DelegationAdmissionAudit) {
-	c.mu.Lock()
-	c.enqueueFlushLocked()
-	c.drainAndUnlock()
-	RecordDelegationAdmission(c.inner, a)
+	c.enqueueCapability(func() { RecordDelegationAdmission(c.inner, a) })
 }
 
 func (c *coalescer) RecordWorkspaceMutation(m WorkspaceMutation) {
-	c.mu.Lock()
-	c.enqueueFlushLocked()
-	c.drainAndUnlock()
-	RecordWorkspaceMutation(c.inner, m)
+	c.enqueueCapability(func() { RecordWorkspaceMutation(c.inner, m) })
 }
 
 func (c *coalescer) RecordRunBudget(sample RunBudgetSample) {
-	c.mu.Lock()
-	c.enqueueFlushLocked()
-	c.drainAndUnlock()
-	RecordRunBudget(c.inner, sample)
+	c.enqueueCapability(func() { RecordRunBudget(c.inner, sample) })
+}
+
+func (c *coalescer) RecordSubagentLifecycle(info SubagentLifecycleInfo) {
+	c.enqueueCapability(func() { RecordSubagentLifecycle(c.inner, info) })
 }

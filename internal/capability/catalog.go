@@ -17,6 +17,8 @@ import (
 type Catalog struct {
 	Entries     []Entry
 	Fingerprint string
+	Incomplete  bool
+	Stale       bool
 }
 
 // CatalogOptions builds a catalog from live tools, skills, configured MCP
@@ -30,6 +32,9 @@ type CatalogOptions struct {
 	Disabled    map[string]bool
 	CachedTools map[string][]plugin.CachedTool // server → tools
 	CacheKeyOK  map[string]bool                // server → schema-cache key match
+	// CatalogIncomplete/Stale describe the discovery snapshot used for Skills.
+	CatalogIncomplete bool
+	CatalogStale      bool
 	// ProxyTools carries host-observed live tools of servers connected through
 	// the use_capability proxy: they are absent from Tools (never registered)
 	// yet must stay routable after the server turns ready.
@@ -41,10 +46,25 @@ type CatalogOptions struct {
 // match state. Mismatched caches are still returned (with
 // CacheKeyOK=false) so MCPServerEntries can mark them stale instead of
 // hiding them; servers without a usable cache are simply absent. Call once at
-// session start and reuse — the cache lives on disk.
-func LoadCachedToolsForSpecs(specs []plugin.Spec) (map[string][]plugin.CachedTool, map[string]bool) {
+// session start and reuse — the cache lives on disk. The profile selects the
+// cache identity: capability-declaring profiles never read the legacy shared
+// file, whose catalog was negotiated under different client capabilities.
+func LoadCachedToolsForSpecs(specs []plugin.Spec, profile plugin.HostProfile) (map[string][]plugin.CachedTool, map[string]bool) {
 	cached := map[string][]plugin.CachedTool{}
 	keyOK := map[string]bool{}
+	if profile.UsesEnhancedCache() {
+		for _, s := range specs {
+			name := strings.TrimSpace(s.Name)
+			if name == "" {
+				continue
+			}
+			if cs, ok := plugin.LoadCachedSchemaForSpecProfile(s, profile); ok && len(cs.Tools) > 0 {
+				cached[name] = cs.Tools
+				keyOK[name] = true
+			}
+		}
+		return cached, keyOK
+	}
 	for _, s := range specs {
 		name := strings.TrimSpace(s.Name)
 		if name == "" {
@@ -105,7 +125,7 @@ func BuildCatalog(opts CatalogOptions) Catalog {
 		}
 		return out[i].ID < out[j].ID
 	})
-	return Catalog{Entries: out, Fingerprint: catalogFingerprint(out)}
+	return Catalog{Entries: out, Fingerprint: catalogFingerprint(out), Incomplete: opts.CatalogIncomplete, Stale: opts.CatalogStale}
 }
 
 // SkillEntriesForCatalog keeps every skill in the catalog. Legacy frontmatter
@@ -159,21 +179,20 @@ func MCPServerEntries(opts CatalogOptions) []Entry {
 		}
 		out = append(out, e)
 
-		// Surface concrete tools that are not on the provider-visible registry:
-		// live proxy-observed tools once the server is connected (proxied
-		// servers never register), cached schema before any connection exists.
-		registryHasTools := false
+		// Surface tools missing from the provider-visible registry: live proxy
+		// tools once connected, cached schema before. Pinned registrations can lag
+		// the live server, so a registered tool hides only itself, not the rest.
+		registered := map[string]bool{}
 		prefix := plugin.ToolPrefix(name)
 		for _, te := range opts.Tools {
 			if strings.HasPrefix(te.Name, prefix) {
-				registryHasTools = true
-				break
+				registered[te.Name] = true
 			}
 		}
 		var toolSrc []plugin.CachedTool
 		toolStatus := StatusConfigured
 		switch {
-		case status == StatusReady && len(opts.ProxyTools[name]) > 0 && !registryHasTools:
+		case status == StatusReady && len(opts.ProxyTools[name]) > 0:
 			toolSrc = opts.ProxyTools[name]
 			toolStatus = StatusReady
 		case status != StatusReady:
@@ -185,7 +204,11 @@ func MCPServerEntries(opts CatalogOptions) []Entry {
 		}
 		for _, ct := range toolSrc {
 			raw := strings.TrimSpace(ct.Name)
-			if raw == "" {
+			if raw == "" || !ct.ToolIsModelVisible() {
+				// App-only tools stay in the server-private App catalog.
+				continue
+			}
+			if toolStatus == StatusReady && registered[plugin.ModelToolName(name, raw)] {
 				continue
 			}
 			out = append(out, Entry{
@@ -245,7 +268,7 @@ func rankStatus(s Status) int {
 func catalogFingerprint(entries []Entry) string {
 	h := sha256.New()
 	for _, e := range entries {
-		fmt.Fprintf(h, "%s|%s|%s|%v\n", e.ID, e.Kind, e.Status, e.AutoUse)
+		fmt.Fprintf(h, "%s|%s|%s|%v|%s|%s|%t|%s\n", e.ID, e.Kind, e.Status, e.AutoUse, e.Name, e.Description, e.ReadOnly, e.SkillRunAs)
 	}
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }

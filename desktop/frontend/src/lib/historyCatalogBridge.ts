@@ -3,6 +3,7 @@ import type {
   HistorySearchRequest, HistorySessionPage, HistorySessionPageRequest,
 } from "./historyCatalogTypes";
 import type { SessionMeta } from "./types";
+import { mockReadSnapshotPage } from "./mockReadSnapshot";
 
 export interface HistoryCatalogBindings {
   ListHistorySessions(req: HistorySessionPageRequest): Promise<HistorySessionPage>;
@@ -18,14 +19,12 @@ export function makeMockHistoryCatalogBindings(sessions: SessionMeta[]): History
   });
   return {
     async ListHistorySessions(req) {
-      const start = req.cursor ? Number(req.cursor) || 0 : 0;
       const query = req.query.trim().toLowerCase();
       const items = sessions.filter((session) =>
         (req.scope === "all" || (session.scope || "global") === req.scope) &&
         (req.status !== "current" || session.current) && (req.status !== "open" || session.open) &&
         (!query || [session.title, session.preview, session.topicTitle, session.workspaceRoot].some((value) => (value || "").toLowerCase().includes(query))));
-      const limit = Math.max(1, Math.min(req.limit || 50, 200));
-      return { items: items.slice(start, start + limit).map((session) => ({ ...session })), nextCursor: start + limit < items.length ? String(start + limit) : "", revision: 1, partial: false, staleCursor: false };
+      return { ...mockReadSnapshotPage("history-sessions", [req.scope, req.workspaceRoot, req.status, req.timeFilter, query], req.cursor, req.limit, items), revision: 1, partial: false, staleCursor: false };
     },
     async SearchHistoryContent() { return { items: [], nextCursor: "", revision: 1, partial: false, staleCursor: false, status: await status() }; },
     async GetHistorySearchContext() { return []; },

@@ -25,6 +25,8 @@ Legacy 迁移、OS home 约定目录扫描以及其他 fallback 路径都会跳�
 | --- | --- |
 | 全局配置 | `<Reasonix home>/config.toml` |
 | 全局 provider 凭据 | `<Reasonix home>/.env` |
+| 进行中的模型凭据提交 | `<Reasonix home>/transactions/model-credentials/` |
+| 已完成的模型设置回执 | `<Reasonix home>/transactions/model-settings-receipts/` |
 | 旧 credentials 导入来源 | `<Reasonix home>/credentials` |
 | 全局斜杠命令 | `<Reasonix home>/commands/` |
 | 全局 skills | `<Reasonix home>/skills/` |
@@ -33,11 +35,31 @@ Legacy 迁移、OS home 约定目录扫描以及其他 fallback 路径都会跳�
 | 会话 | `<state root>/sessions/` |
 | 归档 | `<state root>/archive/` |
 | 记忆 | `<state root>/memory/` 与 `<state root>/projects/` |
-| 可丢弃的会话 Catalog | `<cache root>/session-catalog/v5.sqlite` |
+| 全局 Desktop Topic 元数据 | `<state root>/desktop/topic-state-v1.sqlite` |
+| 项目 Desktop Topic 元数据 | `<state root>/projects/<workspace slug>/desktop/topic-state-v1.sqlite` |
+| 可丢弃的会话 Catalog | `<cache root>/session-catalog/v6.sqlite` |
 | 可丢弃的 Task Catalog | `<cache root>/task-catalog/v1.sqlite` |
 
 `<state root>` 默认等于 `<Reasonix home>`；只有设置 `REASONIX_STATE_HOME`
 时才会不同。
+
+Desktop 在将新项目写入 `desktop-projects.json` 时检测项目目录名冲突。只有另一个已登记
+项目仍实际指向同一个旧目录时，才给新项目分配目录。已有项目和从旧工作区记录导入的
+项目都继续使用原来的 `<state root>/projects/<workspace slug>/` 目录；原项目在冲突
+项目分配到别处后移除并重新加入，也仍使用该旧目录。只有满足上述冲突条件的新项目使用
+`<state root>/projects/@<项目绝对路径的 SHA-256>/`；其中的
+`.workspace-root` 文件记录目录归属。会话、Topic 和项目记忆路径都遵循该归属记录。
+读取项目列表不会创建或修改归属记录，也不会移动已有文件。如果两个项目在此修复之前就
+已经以同一个 slug 登记，其历史共享文件仍保留在原目录，因为旧目录无法证明每个文件的
+所属项目。
+Studio 目前只解析 `<state root>/projects/<workspace slug>/`，不会读取 `.workspace-root`；
+因此新分配目录的项目状态暂时不会与 Studio 共享，直到 Studio 支持此归属记录。
+
+Desktop Topic 的标题、标题来源、创建时间和自动标题状态以这些 SQLite 文件为权威存储。
+首次访问时，Desktop 会导入项目 `.reasonix/` 目录（或全局 Reasonix 目录）中的旧
+`desktop-topic-*.json`。检测到旧文件的 scope 会继续镜像旧格式以支持降级；全新 scope
+不会创建这些 JSON。旧文件不会被删除，项目本地 settings、skills、commands、attachments
+以及 `reasonix.toml` 均不受影响。
 
 会话 Catalog 是可重建的查询投影，不是用户数据；JSONL、event log、
 metadata sidecar 和 `desktop-projects.json` 仍是权威数据。详见
@@ -54,16 +76,24 @@ event log 也仍是权威数据；可重建的跨项目投影见
 Reasonix 写入用户配置的 provider、plugin、UI、desktop、tool、skill、sandbox、
 bot 和 agent 设置。Provider 条目只保存 `api_key_env` 里的凭据变量名，不保存真实密钥值。
 
-已保存的 provider 与 bot 凭据变量不会进入任何由模型控制的子进程环境。Reasonix 的
-文件读取工具、受沙盒保护的 shell 命令和 MCP server 也无法读取全局凭据 `.env`；
-项目自身的普通 `.env` 可见性保持不变。Windows 的 shell 命令仍不具备 OS 级沙箱，
-详见《使用指南》，因此只应为可信任务批准 shell 权限。
+已保存的 provider 与 bot 凭据变量不会进入任何由模型控制的子进程环境。在 macOS
+和 Linux 上，Reasonix 的文件读取工具、受沙盒保护的 shell 命令和 MCP server 也
+无法读取全局凭据 `.env`；项目自身的普通 `.env` 可见性保持不变。Windows 没有 OS 级
+Shell 沙箱：Shell 命令和本地工具都以当前系统用户运行，可以主动读取该用户可读的文件，
+包括凭据存储；因此受限权限在 Windows 上应视为工具层写入边界，而不是凭据保险库。
+
+如果已退役的 Windows 沙箱（v1.38.8 至 v1.38.10）遗留的拒绝项锁住了凭据存储，
+Reasonix 会在该沙箱运行留下的标记能证明拒绝项来自 Reasonix 时自动移除它。即使没有
+这份证明，保存密钥也能成功：保存会在不读取现有 ACL 的情况下把文件 ACL 重置为当前
+用户；如果连这一步也被拒绝，则把被锁的文件改名为 `.env.locked-<时间戳>` 放在旁边，
+并写入新的凭据存储，因此重新填写密钥总能成功。普通读取绝不会改写 ACL，只会连同修复
+结果一起报告原始的访问错误。
 
 示例：
 
 ```toml
-config_version = 1
-default_model = "deepseek/deepseek-v4-flash"
+config_version = 11
+default_model = "deepseek/deepseek-flash"
 language = "zh"
 credentials_store = "auto"   # 旧兼容字段；provider key 保存在 .env
 
@@ -77,10 +107,10 @@ provider_access = ["deepseek"]
 
 [[providers]]
 name        = "deepseek"
-kind        = "anthropic"
-base_url    = "https://api.deepseek.com/anthropic"
-models      = ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]
-default     = "deepseek-v4-flash"
+kind        = "openai"
+base_url    = "https://api.deepseek.com"
+models      = ["deepseek-flash", "deepseek-v4-pro"]
+default     = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 web_search  = true
 
@@ -100,25 +130,37 @@ CJK 双宽字符；如果偏好其它形状，可以设为 `block` 或 `underlin
 
 ### 自定义 provider 的 `api_key_env` 命名
 
-通过桌面端设置或 `reasonix setup` 添加自定义 provider 时，Reasonix 会把生成的
-`api_key_env` 保存到 `config.toml`，并把真实密钥值写入全局 `.env` 中同名的 key。
-生成结果是稳定的，因此同一个 provider 重启后仍会读取同一个凭据槽位。
+通过桌面端设置、TUI `/setup` 或 `reasonix setup` 新增、替换或明确清空 provider
+凭据时，Reasonix 会分配新的 `REASONIX_CONNECTION_*_KEY` 独立槽位，先写入槽位，再
+原子发布所选 provider 的新 `api_key_env` 引用。其他 provider 即使此前共享固定变量，也
+会保留原引用。已有固定名称继续可读，启动时不会批量迁移。
 
-Reasonix 会根据 provider 名称生成默认值。能规范化成 ASCII 的名称会得到可读的
+旧版或手工 provider 条目仍可能根据 provider 名称生成默认变量。能规范化成 ASCII 的名称会得到可读的
 env 名，例如 `LOCAL_GATEWAY_API_KEY`；如果名称全部由中文等非 ASCII 字符组成，则会
 生成带稳定 hash 后缀的名称，例如 `CUSTOM_d39b9067_API_KEY`，避免多个中文 provider
 都共用 `CUSTOM_API_KEY`。如果名称以数字开头，则会添加 `CUSTOM_` 前缀以保证生成的
 环境变量名合法；例如 `9router` 会生成 `CUSTOM_9ROUTER_API_KEY`。
 
-CLI 的自定义 provider 向导会先根据 base URL 生成 provider 名称，再套用同一套
-provider-name 规则。例如 `https://token.sensenova.cn/v1` 会生成 provider 名
-`custom-token-sensenova-cn`，默认 key env 是 `CUSTOM_TOKEN_SENSENOVA_CN_API_KEY`。
-直接回车会接受这个默认值；如果你确实想让多个 provider 共用一个凭据，也可以手动输入
-`CUSTOM_API_KEY` 或其他自定义 env 名。
+CLI 的自定义 provider 向导会先根据 base URL 生成 provider 名称，再套用同一规则得到草稿
+变量名。在变量名提示处直接回车时，这个草稿名只在保存 key 之前使用；保存后连接会切换到
+新分配的独立槽位。
+
+在 `reasonix setup` 的这个提示处手动输入的变量名会被保留，方便脚本引用固定名称，前提是
+写入它不会改变其他读取方拿到的值：配置里没有其他 provider、机器人或远程主机设置读取它，
+全局 `.env` 里没有它的值（或清空标记），Reasonix 运行的环境变量里也没有设置它。否则向导
+会说明是什么占用了它，并请你重新输入；直接回车则改用独立槽位。如果在提示之后、保存之前这个名字被占用，保存会被拒绝，
+不写入任何内容。
+
+之后再为用户配置里的 provider 保存新 key 时，如果这个 provider（或本次一起保存 key 的那组
+provider）在用户配置里是该变量唯一的读取方（编辑前后都是），且全局 `.env` 里已有它的值，
+Reasonix 会原地改写这个变量；读取同名变量的项目会像之前读到旧 key 一样读到新 key。项目
+`reasonix.toml` 里声明的 provider 始终改用独立槽位。配置发布之前，旧值以一个临时变量名保存在全局 `.env` 里：
+保存失败或中断时会写回旧值，除非这期间有别的写入方改过这个变量。如果还有其他 provider
+或设置读取这个变量，新 key 仍写入独立槽位，共享变量保持不变。
 
 升级时不会自动改写已有配置。旧配置中已经使用 `CUSTOM_API_KEY` 的自定义 provider 会继续
-读取这个 key。若多个旧自定义 provider 已经意外共用了 `CUSTOM_API_KEY`，需要手动把各自的
-`api_key_env` 改成不同名称，并重新保存对应的 API key。
+读取这个 key。若多个旧自定义 provider 已经意外共用了 `CUSTOM_API_KEY`，重新保存每个
+连接的 API key，即可将对应连接轮换到独立槽位。
 
 ### 自定义 provider 的端点 URL
 

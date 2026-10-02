@@ -9,13 +9,13 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/i18n"
 	"reasonix/internal/permission"
+	"reasonix/internal/tool"
 )
 
 type approvalChoice struct {
 	label           string
 	allow           bool
 	allowForSession bool
-	persistToConfig bool
 	exitPlan        bool
 }
 
@@ -23,25 +23,25 @@ func approvalChoices(a *event.Approval) []approvalChoice {
 	if a == nil {
 		return nil
 	}
+	// Recovery approvals belong to the retired Auto Guard workflow. Keep old
+	// events decodable for history, but never expose actions that could confirm,
+	// retry, or grant authority to a historical recovery record.
+	if isRecoveryApprovalEvent(a) {
+		return nil
+	}
 	fresh := a.Fresh || control.RequiresFreshHumanApprovalTool(a.Tool)
 	var decisions []approvalChoice
 	switch {
-	case isRecoveryApprovalEvent(a):
-		if a.Recovery != nil && a.Recovery.CanGrantTask {
-			decisions = []approvalChoice{{allow: true}, {allow: true, allowForSession: true}, {}}
-		} else {
-			decisions = []approvalChoice{{allow: true}, {}}
-		}
 	case a.Tool == planApprovalTool:
 		decisions = []approvalChoice{{allow: true}, {}, {exitPlan: true}}
 	case a.Kind == event.ApprovalKindWriteAccess || a.WriteAccess != nil:
-		decisions = []approvalChoice{{allow: true}, {allow: true, allowForSession: true}, {allow: true, allowForSession: true, persistToConfig: true}, {}}
+		decisions = []approvalChoice{{allow: true}, {allow: true, allowForSession: true}, {}}
 	case fresh && freshApprovalAllowsSession(a.Tool):
 		decisions = []approvalChoice{{allow: true}, {allow: true, allowForSession: true}, {}}
 	case fresh:
 		decisions = []approvalChoice{{allow: true}, {}}
 	default:
-		decisions = []approvalChoice{{allow: true}, {allow: true, allowForSession: true}, {allow: true, allowForSession: true, persistToConfig: true}, {}}
+		decisions = []approvalChoice{{allow: true}, {allow: true, allowForSession: true}, {}}
 	}
 	labels := approvalChoiceLabels(a)
 	for i := range decisions {
@@ -53,21 +53,16 @@ func approvalChoices(a *event.Approval) []approvalChoice {
 }
 
 func approvalChoiceLabels(a *event.Approval) []string {
+	if isRecoveryApprovalEvent(a) {
+		return nil
+	}
 	choices := i18n.M.FreshHumanApprovalChoices
 	fresh := a.Fresh || control.RequiresFreshHumanApprovalTool(a.Tool)
-	if isRecoveryApprovalEvent(a) {
-		choices = i18n.M.RecoveryApprovalChoices
-		if isRecoveryPlanChangeApproval(a) {
-			choices = i18n.M.RecoveryPlanChangeChoices
-		} else if a.Recovery != nil && a.Recovery.CanGrantTask {
-			choices = i18n.M.RecoveryTaskGrantChoices
-		}
-	} else if a.Tool == planApprovalTool {
+	if a.Tool == planApprovalTool {
 		choices = i18n.M.PlanApprovalChoices
 	} else if !fresh {
 		sessionRule := permission.SessionGrantRuleForScope(a.Tool, a.Subject)
-		persistentRule := permission.RememberRuleForScope(a.Tool, a.Subject)
-		choices = fmt.Sprintf(i18n.M.ToolApprovalChoices, sessionRule, persistentRule)
+		choices = fmt.Sprintf(i18n.M.ToolApprovalChoices, sessionRule)
 	}
 	switch a.Tool {
 	case control.SandboxEscapeApprovalTool:
@@ -80,20 +75,15 @@ func approvalChoiceLabels(a *event.Approval) []string {
 	if a.Kind == event.ApprovalKindWriteAccess || a.WriteAccess != nil {
 		choices = i18n.M.WriteAccessApprovalChoices
 	}
-	if !fresh && a.Tool == "bash" && permission.BashCommandPrefix(a.Subject) != "" {
+	if !fresh && tool.IsShellToolName(a.Tool) && permission.BashCommandPrefix(a.Subject) != "" {
 		rule := permission.RememberRuleForScope(a.Tool, a.Subject)
-		choices = fmt.Sprintf(i18n.M.BashPrefixChoices, rule, rule)
+		choices = fmt.Sprintf(i18n.M.BashPrefixChoices, rule)
 	}
 	var labels []string
 	for line := range strings.SplitSeq(choices, "\n") {
 		line = strings.TrimSpace(line)
 		if len(line) >= 3 && line[0] >= '1' && line[0] <= '9' && line[1] == '.' {
 			labels = append(labels, strings.TrimSpace(line[2:]))
-		}
-	}
-	if isRecoveryApprovalEvent(a) && a.Recovery != nil && a.Recovery.CanGrantTask && len(labels) > 1 {
-		if scope := strings.TrimSpace(a.Recovery.TaskGrantScope); scope != "" {
-			labels[1] += " — " + scope
 		}
 	}
 	return labels

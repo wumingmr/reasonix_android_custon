@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"reasonix/internal/plancontract"
+	"reasonix/internal/tool"
 )
 
 // SubmitPlanTool is the planner's structured exit: it hands the host a plan as
@@ -21,7 +22,7 @@ func (*SubmitPlanTool) finalizesTurn() {}
 
 func NewSubmitPlanTool() *SubmitPlanTool { return &SubmitPlanTool{} }
 
-func (*SubmitPlanTool) Name() string { return "submit_plan" }
+func (*SubmitPlanTool) Name() string { return tool.HostSubmitPlan }
 
 func (*SubmitPlanTool) Description() string {
 	return "Submit your finished plan as structured data. This is how a plan reaches the host — the host renders it for the user and hands it to the executor, so do NOT also restate the plan in prose. Every step needs a `title`; a step with a `parent_id` is a sub-step of that phase (two levels, keep phases few). Record what you actually READ as `verified_files` and what you only INFERRED as `candidate_files` — never present a guess as a verified path. Attach `acceptance` criteria and command-level `verification` to the steps they belong to, mark must-keep-passing behavior with `regression`, and label anything unproven in `assumptions`. Set `requires_approval` when execution should stop for the user first; the host decides whether it actually gates."
@@ -96,9 +97,9 @@ func (*SubmitPlanTool) Schema() json.RawMessage {
 // ReadOnly is true: submitting a plan records a proposal and touches nothing.
 func (*SubmitPlanTool) ReadOnly() bool { return true }
 
-// ProviderVisible gates on the host having armed a planning turn, mirroring
-// complete_step's phase opt-out: the schema stays constant for cache stability
-// and availability is decided when the call runs.
+// ProviderVisible gates on the host having armed a planning turn. The schema
+// stays constant for cache stability and availability is decided when the call
+// runs.
 func (*SubmitPlanTool) ProviderVisible(ctx context.Context) bool {
 	_, ok := planSubmissionFromContext(ctx)
 	return ok

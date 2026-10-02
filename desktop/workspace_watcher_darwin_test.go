@@ -209,6 +209,28 @@ func TestDarwinWorkspaceWatcherCoalescesChannelOverflow(t *testing.T) {
 	w.sendOverflow()
 }
 
+func TestDarwinWorkspaceWatcherCatchUpPreservesLaterWrites(t *testing.T) {
+	w := newDarwinWatcherForTest(t)
+	root := canonicalWorkspaceRoot(t.TempDir())
+	if err := w.Add(root, false); err != nil {
+		t.Fatal(err)
+	}
+	barrier := w.(interface{ CatchUp() })
+	barrier.CatchUp()
+	path := filepath.Join(root, "after-barrier.jsonl")
+	if err := os.WriteFile(path, []byte("new source"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	waitForDarwinWorkspaceEvent(t, w, func(event fsnotify.Event) bool {
+		return filepath.Clean(event.Name) == path && event.Op&fsnotify.Create != 0
+	})
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// A late lifecycle request cannot flush a released native subscription.
+	barrier.CatchUp()
+}
+
 func TestDarwinWorkspaceWatcherKeepsWorkspaceAndExternalGitScope(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "workspace")

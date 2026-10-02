@@ -13,7 +13,10 @@ import (
 	"reasonix/internal/provider"
 )
 
-const outputBudgetReserve = 8 * 1024
+const (
+	outputBudgetReserve    = 8 * 1024
+	minOutputBudgetReserve = protocolReserveTokens
+)
 
 const learnedOutputBudgetTTL = 24 * time.Hour
 
@@ -37,6 +40,7 @@ type outputBudgetState struct {
 	contextUsage      atomic.Pointer[contextUsage] // gauge's memoised prompt size
 	learned           atomic.Pointer[learnedContextBudget]
 	admission         atomic.Pointer[contextAdmission]
+	truncation        atomic.Pointer[promptTruncation]
 }
 
 // learnedContextBudget is an Agent-local observation of the live provider/model
@@ -104,10 +108,18 @@ func (o *outputBudgetState) reset() {
 	o.lastUsage.Store(nil)
 	o.activeReqShape.Store(nil)
 	o.admission.Store(nil)
+	o.contextUsage.Store(nil)
 }
 
 func (a *Agent) setPromptTokenCalibration(promptTokens int, shape requestCalibrationShape) {
 	if a == nil || promptTokens <= 0 || shape.requestChars <= 0 {
+		return
+	}
+	// A prompt the provider truncated describes its own ceiling, not this
+	// model's tokenizer. Learning from it shrinks every later estimate, which
+	// delays compaction and truncates more of the next prompt.
+	if ceiling := promptTruncationCeiling(promptTokens, shape, a.sess.output.promptCalibration.Load()); ceiling > 0 {
+		a.notePromptTruncation(ceiling)
 		return
 	}
 	a.sess.output.promptCalibration.Store(&promptTokenCalibration{
@@ -479,8 +491,35 @@ func (a *Agent) effectiveOutputBudget(req provider.Request) (int, bool, error) {
 }
 
 func (a *Agent) admitOutputBudget(req provider.Request) (contextAdmission, error) {
+	return a.admitOutputBudgetWithReserve(req, outputBudgetReserveForWindow(a.effectiveContextWindow()), false)
+}
+
+// outputBudgetReserveForWindow preserves the original safety ratio: the 8K
+// tokenizer/protocol cushion was chosen for a 1M-token window, so smaller
+// windows reserve roughly the same 1/128 share. A 256-token floor covers
+// framing, while the 8K cap keeps larger windows byte-stable.
+func outputBudgetReserveForWindow(window int) int {
+	if window <= 0 {
+		return outputBudgetReserve
+	}
+	return min(outputBudgetReserve, max(minOutputBudgetReserve, window/128))
+}
+
+// admitSummaryOutputBudget uses the summary request's dedicated protocol
+// reserve instead of the ordinary-turn reserve. Unknown gateways are treated
+// as shared when an effective window exists: summary planning already makes
+// that conservative assumption, so execution must enforce the same contract.
+func (a *Agent) admitSummaryOutputBudget(req provider.Request) (contextAdmission, error) {
+	return a.admitOutputBudgetWithReserve(req, protocolReserveTokens, true)
+}
+
+func shouldUseSharedWindowForAdmission(mode provider.ContextWindowMode, observedWindow int, conservativeUnknown bool) bool {
+	return mode == provider.ContextWindowUnknown && (observedWindow > 0 || conservativeUnknown)
+}
+
+func (a *Agent) admitOutputBudgetWithReserve(req provider.Request, reserveTokens int, conservativeUnknown bool) (contextAdmission, error) {
 	adm := contextAdmission{
-		ReserveTokens: outputBudgetReserve,
+		ReserveTokens: reserveTokens,
 		LastRecovery:  a.lastAdmission().LastRecovery,
 		Source:        provider.ContextBudgetSourceUnknown,
 	}
@@ -495,7 +534,7 @@ func (a *Agent) admitOutputBudget(req provider.Request) (contextAdmission, error
 		adm.ObservedCompletion = learned.completionBudget
 	}
 	policy := contextBudgetPolicyOf(a.svc.prov)
-	if policy.WindowMode == provider.ContextWindowUnknown && adm.ObservedWindow > 0 {
+	if shouldUseSharedWindowForAdmission(policy.WindowMode, adm.ObservedWindow, conservativeUnknown) {
 		policy.WindowMode = provider.ContextWindowShared
 	}
 	if policy.AutoOutputTokens <= 0 && a.learnedCompletionBudget() > 0 {
@@ -523,7 +562,7 @@ func (a *Agent) admitOutputBudget(req provider.Request) (contextAdmission, error
 	}
 	est := a.estimatedRequestTokens(req)
 	adm.PromptTokens = est
-	physical := window - est - outputBudgetReserve
+	physical := window - est - reserveTokens
 	adm.PhysicalRemaining = physical
 	shared := policy.WindowMode == provider.ContextWindowShared
 	if !shared {
@@ -582,6 +621,20 @@ func (a *Agent) applyAdmissionToRequest(req *provider.Request) error {
 		return nil
 	}
 	adm, err := a.admitOutputBudget(*req)
+	if err != nil {
+		return err
+	}
+	if adm.ApplyMaxTokens && adm.EffectiveOutputTokens > 0 {
+		req.MaxTokens = adm.EffectiveOutputTokens
+	}
+	return nil
+}
+
+func (a *Agent) applySummaryAdmissionToRequest(req *provider.Request) error {
+	if a == nil || req == nil {
+		return nil
+	}
+	adm, err := a.admitSummaryOutputBudget(*req)
 	if err != nil {
 		return err
 	}

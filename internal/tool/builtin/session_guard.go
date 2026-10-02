@@ -144,6 +144,9 @@ func (g SessionDataGuard) denies(abs string) bool {
 		return false
 	}
 	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) == 2 && parts[1] == ".workspace-root" {
+		return !allowLiftsProtected(allow, target, filepath.Join(projects, parts[0], ".workspace-root"))
+	}
 	if len(parts) < 2 || parts[1] != "sessions" {
 		return false
 	}

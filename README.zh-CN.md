@@ -92,8 +92,7 @@ brew install esengine/reasonix/reasonix   # macOS
 | Windows | 安装器 `.exe` 或便携 `.zip` | x64 / ARM64 |
 | Linux | `.deb` 或 `.tar.gz` | x64 |
 
-Windows 安装器通过 [SignPath.io](https://signpath.io/) 完成代码签名，证书由
-[SignPath 基金会](https://signpath.org/) 免费提供。
+Windows 安装器使用 Certum 代码签名证书签名。
 
 ### 路径 C：VS Code 扩展
 
@@ -115,7 +114,7 @@ cd DeepSeek-Reasonix
 
 #### CLI
 
-CLI 构建需要 **Go 1.25+**。模块固定了 `toolchain` 指令；
+CLI 构建需要 **Go 1.26+**。模块固定了 `toolchain` 指令；
 保持 `GOTOOLCHAIN=auto` 让 Go 自动下载固定的工具链，或自行安装。
 
 ```sh
@@ -125,18 +124,14 @@ make cross      # -> dist/（darwin|linux|windows × amd64|arm64）
 
 #### 桌面端
 
-桌面端构建额外需要：
-
-- **Node 24+ 和 pnpm 10**（`npm install -g pnpm@10`）用于前端
-- **Wails CLI**，与共享的 `.wails-version` 固定版本一致
+桌面端构建额外需要 **Node 24+ 和 pnpm 10**（`npm install -g pnpm@10`），
+用于前端与 Electron 壳：
 
 ```sh
-make wails-install
-cd desktop
-wails build
+scripts/desktop-build.sh darwin/arm64 v0.0.0-dev   # 每次构建一个平台
 ```
 
-平台相关的 WebView 依赖和 Linux 构建标签见
+无需安装系统 WebView 依赖：Electron 壳自带 Chromium。详见
 [桌面端构建指南](desktop/README.md#prerequisites)。
 
 ## 快速开始
@@ -170,6 +165,7 @@ CLI 进阶用法和详细配置见 **[CLI 命令参考](./docs/CLI.zh-CN.md)**�
   [ACP 编辑器接入](./docs/ACP.zh-CN.md)
 - **功能与排障：** [子智能体 Profile](./docs/SUBAGENT_PROFILES.zh-CN.md) ·
   [Context Engine v2](./docs/SESSION_MEMORY_RETRIEVAL.zh-CN.md) ·
+  [文件成果与 `present` 工具](./docs/PRESENT_TOOL.zh-CN.md) ·
   [能力诊断](./docs/CAPABILITY_DIAGNOSTICS.zh-CN.md) ·
   [恢复与安全模式](./docs/RECOVERY.zh-CN.md) ·
   [机器人使用指南](./docs/BOT_GUIDE.zh-CN.md) ·
@@ -205,10 +201,10 @@ CLI 进阶用法和详细配置见 **[CLI 命令参考](./docs/CLI.zh-CN.md)**�
 | Contributor | Contributor | Contributor | Contributor |
 | --- | --- | --- | --- |
 | [**SivanCola**](https://github.com/SivanCola) | [**esengine**](https://github.com/esengine) | [**ttmouse**](https://github.com/ttmouse) | [**lifu963**](https://github.com/lifu963) |
-| **reasonix** | [**HUQIANTAO**](https://github.com/HUQIANTAO) | [**GTC2080**](https://github.com/GTC2080) | [**light-front-theory**](https://github.com/light-front-theory) |
-| **merge-order-check** | [**Li-Charles-One**](https://github.com/Li-Charles-One) | [**eghrhegpe**](https://github.com/eghrhegpe) | **wufengfan** |
-| [**CVEngineer66**](https://github.com/CVEngineer66) | [**dependabot\[bot\]**](https://github.com/apps/dependabot) | [**lanshi17**](https://github.com/lanshi17) | [**SuMuxi66**](https://github.com/SuMuxi66) |
-| [**CnsMaple**](https://github.com/CnsMaple) | [**cyq1017**](https://github.com/cyq1017) | [**JesonChou**](https://github.com/JesonChou) | [**XTLine**](https://github.com/XTLine) |
+| **reasonix** | [**HUQIANTAO**](https://github.com/HUQIANTAO) | [**GTC2080**](https://github.com/GTC2080) | [**mchenziyi**](https://github.com/mchenziyi) |
+| [**Li-Charles-One**](https://github.com/Li-Charles-One) | **merge-order-check** | [**light-front-theory**](https://github.com/light-front-theory) | **Yan Li** |
+| [**eghrhegpe**](https://github.com/eghrhegpe) | **wufengfan** | [**Bernardxu123**](https://github.com/Bernardxu123) | [**HaoyueQin**](https://github.com/HaoyueQin) |
+| [**CVEngineer66**](https://github.com/CVEngineer66) | [**JesonChou**](https://github.com/JesonChou) | [**SuMuxi66**](https://github.com/SuMuxi66) | [**lanshi17**](https://github.com/lanshi17) |
 <!-- reasonix-top-contributors:end -->
 
 特别感谢 [**Bernardxu123**](https://github.com/Bernardxu123) 设计的项目 logo和开场视频。

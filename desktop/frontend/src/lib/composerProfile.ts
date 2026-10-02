@@ -7,6 +7,7 @@ import {
   normalizeToolApprovalMode,
   type CollaborationMode,
   type GoalStatus,
+  type GoalLifecycleView,
   type Meta,
   type Mode,
   type TabMeta,
@@ -25,6 +26,8 @@ export interface ComposerProfile {
   goal: string;
   qualityFloor: QualityFloor;
   pending: ComposerProfilePending;
+  /** Session the values were read for; "" while the surface has none. */
+  owner?: string;
 }
 
 export type ComposerProfilesByTab = Record<string, ComposerProfile>;
@@ -35,17 +38,34 @@ const profileFields: ComposerProfileField[] = ["collaborationMode", "toolApprova
 export const defaultComposerProfile: ComposerProfile = Object.freeze({
   collaborationMode: "normal",
   goalDraftMode: false,
-  toolApprovalMode: "ask",
+  toolApprovalMode: "workspace-write",
   goal: "",
   qualityFloor: "standard",
   pending: {},
 });
 
-function activeGoal(goal?: string, status?: GoalStatus): string {
-  const trimmed = (goal ?? "").trim();
+function activeGoal(goal?: string, status?: GoalStatus, view?: GoalLifecycleView): string {
+  const trimmed = (view?.objective ?? goal ?? "").trim();
   if (!trimmed) return "";
+  if (view) return view.phase === "complete" ? "" : trimmed;
   if (status && status !== "running") return "";
   return trimmed;
+}
+
+type ComposerProfileOwnerSource = { sessionId?: string; session?: { sessionId?: string } | null; sessionPath?: string } | null | undefined;
+
+export function composerProfileOwner(source: ComposerProfileOwnerSource): string {
+  return (source?.session?.sessionId || source?.sessionId || source?.sessionPath || "").trim();
+}
+
+// A surface gaining its first session keeps its profile; moving between two
+// sessions does not, because a preset belongs to the session it was set for.
+export function composerProfileOwnersConflict(a: string | undefined, b: string | undefined): boolean {
+  return Boolean(a && b && a !== b);
+}
+
+export function composerProfileForOwner(profile: ComposerProfile | undefined, owner: string): ComposerProfile | undefined {
+  return profile && !composerProfileOwnersConflict(profile.owner, owner) ? profile : undefined;
 }
 
 function profileWithPending(profile: Omit<ComposerProfile, "pending">, pending: ComposerProfilePending = {}): ComposerProfile {
@@ -54,31 +74,32 @@ function profileWithPending(profile: Omit<ComposerProfile, "pending">, pending: 
 
 function fallbackToolApprovalMode(rawMode: string | undefined, fallback?: ToolApprovalMode | null): ToolApprovalMode | undefined {
   if ((rawMode ?? "").trim() !== "") return undefined;
-  return fallback === "auto" ? "auto" : undefined;
+  return fallback ? normalizeToolApprovalMode(fallback) : undefined;
 }
 
 export function composerProfileFromTab(tab?: TabMeta | null, fallback?: ToolApprovalMode | null): ComposerProfile {
   if (!tab) return { ...defaultComposerProfile, pending: {} };
   const legacyMode = normalizeMode(tab.mode);
-  const goal = activeGoal(tab.goal, tab.goalStatus);
+  const goal = activeGoal(tab.goal, tab.goalStatus, tab.goalView);
   return profileWithPending({
     collaborationMode: normalizeCollaborationMode(tab.collaborationMode, goal, legacyMode),
     goalDraftMode: false,
     toolApprovalMode: normalizeToolApprovalMode(
       tab.toolApprovalMode,
       legacyMode,
-      tab.toolApprovalMode === "yolo",
+      false,
       fallbackToolApprovalMode(tab.toolApprovalMode, fallback),
     ),
     goal,
     qualityFloor: tab.qualityFloor ?? "standard",
+    owner: composerProfileOwner(tab),
   });
 }
 
 export function composerProfileFromMeta(meta?: Meta | null, legacyMode?: Mode, fallback?: ToolApprovalMode | null): ComposerProfile {
   if (!meta) return { ...defaultComposerProfile, pending: {} };
   const fallbackMode = normalizeMode(legacyMode);
-  const goal = activeGoal(meta.goal, meta.goalStatus);
+  const goal = activeGoal(meta.goal, meta.goalStatus, meta.goalView);
   const toolApprovalMode = normalizeToolApprovalMode(
     meta.toolApprovalMode,
     fallbackMode,
@@ -91,6 +112,7 @@ export function composerProfileFromMeta(meta?: Meta | null, legacyMode?: Mode, f
     toolApprovalMode,
     goal,
     qualityFloor: meta.qualityFloor ?? "standard",
+    owner: composerProfileOwner(meta),
   });
 }
 
@@ -122,11 +144,12 @@ function profilesEqual(a: ComposerProfile | undefined, b: ComposerProfile | unde
     && a.toolApprovalMode === b.toolApprovalMode
     && a.goal === b.goal
     && a.qualityFloor === b.qualityFloor
+    && (a.owner ?? "") === (b.owner ?? "")
     && profileFields.every((field) => Boolean(a.pending[field]) === Boolean(b.pending[field]));
 }
 
 export function reconcileComposerProfile(current: ComposerProfile | undefined, backend: ComposerProfile): ComposerProfile {
-  if (!current) return { ...backend, pending: {} };
+  if (!current || composerProfileOwnersConflict(current.owner, backend.owner)) return { ...backend, pending: {} };
 
   const pending: ComposerProfilePending = {};
   const next: ComposerProfile = { ...backend, pending };
@@ -153,7 +176,8 @@ export function hydrateComposerProfilesFromTabs(current: ComposerProfilesByTab, 
   let changed = false;
 
   for (const tab of tabs) {
-    const profile = reconcileComposerProfile(current[tab.id], composerProfileFromTab(tab, current[tab.id]?.toolApprovalMode));
+    const previous = composerProfileForOwner(current[tab.id], composerProfileOwner(tab));
+    const profile = reconcileComposerProfile(previous, composerProfileFromTab(tab, previous?.toolApprovalMode));
     next[tab.id] = profile;
     if (!profilesEqual(current[tab.id], profile)) changed = true;
   }
@@ -165,8 +189,10 @@ export function hydrateComposerProfilesFromTabs(current: ComposerProfilesByTab, 
   return changed ? next : current;
 }
 
-export function hydrateComposerProfileFromMeta(current: ComposerProfilesByTab, tabId: string, meta: Meta): ComposerProfilesByTab {
-  const previous = current[tabId];
+export function hydrateComposerProfileFromMeta(current: ComposerProfilesByTab, tabId: string, meta: Meta, tab?: TabMeta | null): ComposerProfilesByTab {
+  const owner = composerProfileOwner(meta);
+  if (composerProfileOwnersConflict(composerProfileOwner(tab), owner)) return current;
+  const previous = composerProfileForOwner(current[tabId], owner);
   const backend = composerProfileFromMeta(
     meta,
     previous ? composerProfileMode(previous) : undefined,
@@ -184,7 +210,7 @@ export function patchComposerProfile(
   patch: Partial<Omit<ComposerProfile, "pending">>,
   pendingFields: ComposerProfileField[],
 ): ComposerProfilesByTab {
-  const previous = current[tabId] ?? base ?? defaultComposerProfile;
+  const previous = composerProfileForOwner(current[tabId], base?.owner ?? "") ?? base ?? defaultComposerProfile;
   const pending: ComposerProfilePending = { ...previous.pending };
   for (const field of pendingFields) pending[field] = true;
   const profile: ComposerProfile = {
@@ -200,7 +226,7 @@ export function patchComposerProfile(
 }
 
 export function composerProfileMode(profile: ComposerProfile): Mode {
-  return modeFromAxes(profile.collaborationMode === "plan", profile.toolApprovalMode === "yolo");
+  return modeFromAxes(profile.collaborationMode === "plan", normalizeToolApprovalMode(profile.toolApprovalMode) === "danger-full-access");
 }
 
 export function displayedComposerProfileCollaborationMode(profile: ComposerProfile): CollaborationMode {
@@ -217,7 +243,7 @@ export function composerProfileWithMode(mode: Mode): Partial<Omit<ComposerProfil
   return {
     collaborationMode: modeHasPlan(mode) ? "plan" : "normal",
     goalDraftMode: false,
-    toolApprovalMode: modeHasAutoApproveTools(mode) ? "yolo" : "ask",
+    toolApprovalMode: modeHasAutoApproveTools(mode) ? "workspace-write" : "read-only",
     goal: "",
   };
 }

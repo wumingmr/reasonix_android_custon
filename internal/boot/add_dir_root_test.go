@@ -23,9 +23,9 @@ func TestAdditionalDirsResolveAgainstExplicitWorkspaceRoot(t *testing.T) {
 	}
 
 	// An explicit workspace root (from --dir) pins resolution to proj, not the git root.
-	root := resolveWorkspaceRoot(proj)
+	root := ResolveWorkspaceRoot(proj)
 	if root != proj {
-		t.Fatalf("resolveWorkspaceRoot(%q) = %q, want the explicit --dir", proj, root)
+		t.Fatalf("ResolveWorkspaceRoot(%q) = %q, want the explicit --dir", proj, root)
 	}
 
 	// A relative --add-dir resolves against that explicit root (proj/shared), not

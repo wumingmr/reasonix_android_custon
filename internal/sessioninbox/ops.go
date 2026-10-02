@@ -493,8 +493,8 @@ func (s *Store) RetryItem(id string) error {
 	return nil
 }
 
-// NextQueued returns the first FIFO queued follow-up (or rejected steer kept as
-// follow-up) when the inbox is not paused.
+// NextQueued uses the persisted pending order regardless of intent. A blocked
+// or uncertain head prevents later messages from silently overtaking it.
 func (s *Store) NextQueued() (InboxItemMeta, bool) {
 	if s == nil {
 		return InboxItemMeta{}, false
@@ -508,16 +508,8 @@ func (s *Store) NextQueued() (InboxItemMeta, bool) {
 		return InboxItemMeta{}, false
 	}
 	for _, it := range s.man.Items {
-		if it.State == StateQueued && it.Intent == IntentFollowup {
-			return it, true
-		}
-		// Rejected steers that remain intent=steer but queued are still follow-ups
-		// for the dispatcher after ConvertIntent; only followup intent is admitted.
-	}
-	// Also admit steer-intent items that are still queued (user wants them as turns).
-	for _, it := range s.man.Items {
-		if it.State == StateQueued {
-			return it, true
+		if isPendingState(it.State) {
+			return it, it.State == StateQueued
 		}
 	}
 	return InboxItemMeta{}, false

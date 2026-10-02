@@ -66,6 +66,7 @@ func (e *ContextLimitError) Unwrap() error {
 var (
 	contextLimitEnglishRe = regexp.MustCompile(`(?i)maximum context length is (\d+) tokens?\.?\s*however,\s*you requested (\d+) tokens? \((\d+) in the (?:messages|prompt), (\d+) in the completion\)`)
 	contextLimitPromptRe  = regexp.MustCompile(`(?i)prompt is too long:\s*(\d+) tokens? > (\d+) maximum`)
+	contextLimitInputRe   = regexp.MustCompile(`(?i)\binput length (\d+) exceeds the maximum length (\d+)\b`)
 	contextLimitSumRe     = regexp.MustCompile("(?i)input length and [`']?max_tokens[`']? exceed context limit:\\s*(\\d+)\\s*\\+\\s*(\\d+)\\s*>\\s*(\\d+)")
 	outputLimitRe         = regexp.MustCompile(`(?i)max_tokens\s*(?:is\s+too\s+large|too\s+large)\s*[:=]?\s*(\d+).*?(?:supports?|maximum|at\s+most)[^\d]*(\d+)`)
 )
@@ -191,11 +192,13 @@ func parseContextLimitText(text string) (window, requested, prompt, completion i
 	if m := contextLimitSumRe.FindStringSubmatch(text); len(m) == 4 {
 		return completeContextLimit(atoiStrict(m[3]), 0, atoiStrict(m[1]), atoiStrict(m[2]))
 	}
-	if m := contextLimitPromptRe.FindStringSubmatch(text); len(m) == 3 {
-		prompt = atoiStrict(m[1])
-		window = atoiStrict(m[2])
-		if prompt > 0 && window > 0 && prompt > window {
-			return window, prompt, prompt, 0, true
+	for _, re := range []*regexp.Regexp{contextLimitPromptRe, contextLimitInputRe} {
+		if m := re.FindStringSubmatch(text); len(m) == 3 {
+			prompt = atoiStrict(m[1])
+			window = atoiStrict(m[2])
+			if prompt > 0 && window > 0 && prompt > window {
+				return window, prompt, prompt, 0, true
+			}
 		}
 	}
 	return 0, 0, 0, 0, false
@@ -222,11 +225,20 @@ func ParseContextLimitError(apiErr *APIError) *ContextLimitError {
 		} else if w, r, p, c, ok := parseContextLimitText(message); ok {
 			window, requested, prompt, completion = w, r, p, c
 		} else {
+			// A bare overflow with no token numbers (Zhipu GLM 1261) is still
+			// provider-confirmed: trust it with an unknown window so consumers
+			// fall back to the configured window instead of resending as-is.
+			if isUnnumberedPromptTooLong(message, apiErr.Body) {
+				return &ContextLimitError{APIError: apiErr}
+			}
 			return nil
 		}
 	}
 	if !contextLimitInvariant(window, requested, prompt, completion) &&
 		!(window > 0 && requested > window && prompt > 0) {
+		if isUnnumberedPromptTooLong(message, apiErr.Body) {
+			return &ContextLimitError{APIError: apiErr}
+		}
 		return nil
 	}
 	if requested <= 0 {
@@ -239,6 +251,26 @@ func ParseContextLimitError(apiErr *APIError) *ContextLimitError {
 		PromptTokens:     prompt,
 		CompletionTokens: completion,
 	}
+}
+
+// isUnnumberedPromptTooLong matches provider overflow errors that carry no
+// token numbers at all. Canonical shape — Zhipu GLM 1261:
+//
+//	{"error":{"code":"1261","message":"Prompt exceeds max length"}}
+//
+// The message (or the whole body, when the JSON shape differs) is matched
+// case-insensitively; code 1261 is not matched directly so sibling GLM codes
+// that reuse the message stay covered and numeric codes never false-positive.
+func isUnnumberedPromptTooLong(message, body string) bool {
+	for _, s := range []string{message, body} {
+		if s == "" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(s), "prompt exceeds max length") {
+			return true
+		}
+	}
+	return false
 }
 
 // AsContextLimitError unwraps err to a trusted overflow, if any.

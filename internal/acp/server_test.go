@@ -164,42 +164,6 @@ func (f *configurableFactory) NewSession(_ context.Context, p SessionParams) (*c
 
 func (f *configurableFactory) SessionDir() string { return f.dir }
 
-type teardownFactory struct {
-	dir     string
-	grace   time.Duration
-	mu      sync.Mutex
-	manager *jobs.Manager
-}
-
-func (f *teardownFactory) SessionDir() string { return f.dir }
-
-func (f *teardownFactory) NewSession(_ context.Context, p SessionParams) (*control.Controller, error) {
-	jm := jobs.NewManager(event.Discard, jobs.WithTeardownGrace(f.grace))
-	f.mu.Lock()
-	f.manager = jm
-	f.mu.Unlock()
-	runner := &fakeRunner{
-		sink:     p.Sink,
-		behavior: func(context.Context, event.Sink, string) error { return nil },
-	}
-	return control.New(control.Options{
-		Runner:     runner,
-		Sink:       p.Sink,
-		SessionDir: f.dir,
-		Jobs:       jm,
-	}), nil
-}
-
-func (f *teardownFactory) lastManager(t *testing.T) *jobs.Manager {
-	t.Helper()
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.manager == nil {
-		t.Fatal("session manager was not created")
-	}
-	return f.manager
-}
-
 func (f *configurableFactory) SessionConfigState(_ context.Context, p SessionConfigStateParams) (SessionConfigState, error) {
 	model := strings.TrimSpace(p.Model)
 	if model == "" {
@@ -223,12 +187,12 @@ func (f *configurableFactory) SessionConfigState(_ context.Context, p SessionCon
 	}
 	runtimeProfile := strings.TrimSpace(p.RuntimeProfile)
 	if runtimeProfile == "" || runtimeProfile == "full" {
-		runtimeProfile = "balanced"
+		runtimeProfile = "standard"
 	}
 	if runtimeProfile == "light" {
 		runtimeProfile = "economy"
 	}
-	if runtimeProfile != "economy" && runtimeProfile != "balanced" && runtimeProfile != "delivery" {
+	if runtimeProfile != "standard" && runtimeProfile != "economy" && runtimeProfile != "balanced" && runtimeProfile != "delivery" {
 		return SessionConfigState{}, os.ErrInvalid
 	}
 	return SessionConfigState{
@@ -401,8 +365,8 @@ func (c *rpcClient) call(t *testing.T, method string, params any) frame {
 	select {
 	case f := <-c.callAsync(method, params):
 		return f
-	case <-time.After(2 * time.Second):
-		t.Fatalf("%s: timed out", method)
+	case <-t.Context().Done():
+		t.Fatalf("%s: %v", method, t.Context().Err())
 		return frame{}
 	}
 }
@@ -429,11 +393,13 @@ func startServer(t *testing.T, factory Factory) (*rpcClient, func()) {
 		close(done)
 	}()
 	client := newRPCClient(inW, outR)
-	return client, func() {
+	stop := sync.OnceFunc(func() {
 		_ = inW.Close()
 		<-done
 		_ = outW.Close()
-	}
+	})
+	t.Cleanup(stop)
+	return client, stop
 }
 
 type orderedRPCClient struct {
@@ -488,11 +454,13 @@ func startOrderedServer(t *testing.T, factory Factory) (*orderedRPCClient, func(
 		close(done)
 	}()
 	client := newOrderedRPCClient(inW, outR)
-	return client, func() {
+	stop := sync.OnceFunc(func() {
 		_ = inW.Close()
 		<-done
 		_ = outW.Close()
-	}
+	})
+	t.Cleanup(stop)
+	return client, stop
 }
 
 func requireResponseFrame(t *testing.T, f frame, id int) {
@@ -531,9 +499,18 @@ func requireAvailableCommandsFrame(t *testing.T, f frame) {
 // arrives, then sweeps any notifications still buffered.
 func drainPrompt(t *testing.T, c *rpcClient, promptCh chan frame) ([]frame, frame) {
 	t.Helper()
+	return drainPromptWithin(t, c, promptCh, 0)
+}
+
+func drainPromptWithin(t *testing.T, c *rpcClient, promptCh chan frame, idleTimeout time.Duration) ([]frame, frame) {
+	t.Helper()
 	var notifs []frame
 	var resp frame
 	for {
+		var idle <-chan time.Time
+		if idleTimeout > 0 {
+			idle = time.After(idleTimeout)
+		}
 		select {
 		case f := <-c.notifs:
 			notifs = append(notifs, f)
@@ -546,11 +523,10 @@ func drainPrompt(t *testing.T, c *rpcClient, promptCh chan frame) ([]frame, fram
 					return notifs, resp
 				}
 			}
-		// A full prompt crosses the ACP server, controller, agent, and transcript
-		// persistence path. Loaded Windows release runners can leave that
-		// asynchronous pipeline idle for more than two seconds, so keep a
-		// generous but bounded responsiveness limit for the end-to-end helper.
-		case <-time.After(5 * time.Second):
+		// Persistence semantics use the suite deadline; latency tests opt in.
+		case <-t.Context().Done():
+			t.Fatal("session/prompt: test canceled")
+		case <-idle:
 			t.Fatal("session/prompt: timed out")
 		}
 	}
@@ -870,6 +846,7 @@ func TestServeAdvertisesCommandsAfterEverySessionOpenResponse(t *testing.T) {
 	client.send(t, 4, "session/load", SessionLoadParams{SessionID: persistedID, Cwd: sessionDir})
 	requireResponseFrame(t, client.next(t), 4)
 	requireAvailableCommandsFrame(t, client.next(t))
+	requirePlanFrame(t, client.next(t))
 
 	client.send(t, 5, "session/close", SessionCloseParams{SessionID: persistedID})
 	requireResponseFrame(t, client.next(t), 5)
@@ -877,6 +854,23 @@ func TestServeAdvertisesCommandsAfterEverySessionOpenResponse(t *testing.T) {
 	client.send(t, 6, "session/resume", SessionResumeParams{SessionID: persistedID, Cwd: sessionDir})
 	requireResponseFrame(t, client.next(t), 6)
 	requireAvailableCommandsFrame(t, client.next(t))
+	requirePlanFrame(t, client.next(t))
+}
+
+func requirePlanFrame(t *testing.T, got frame) {
+	t.Helper()
+	if got.Method != "session/update" || got.ID != nil {
+		t.Fatalf("frame = %+v, want plan session/update notification", got)
+	}
+	var params struct {
+		Update planUpdate `json:"update"`
+	}
+	if err := json.Unmarshal(got.Params, &params); err != nil {
+		t.Fatalf("decode plan frame: %v", err)
+	}
+	if params.Update.SessionUpdate != "plan" {
+		t.Fatalf("session update = %q, want plan", params.Update.SessionUpdate)
+	}
 }
 
 func TestServeSessionConfigSwitchesModelAndEffort(t *testing.T) {
@@ -978,8 +972,8 @@ func TestServeSessionAxesStayIndependent(t *testing.T) {
 	}
 	requireNoExecutionModeOptions(t, nr.ConfigOptions)
 	approval, ok := findConfigOption(nr.ConfigOptions, "tool_approval")
-	if !ok || approval.CurrentValue != control.ToolApprovalAsk {
-		t.Fatalf("initial tool approval = %+v, want ask", approval)
+	if !ok || approval.CurrentValue != control.ToolApprovalWorkspaceWrite {
+		t.Fatalf("initial permission preset = %+v, want workspace-write", approval)
 	}
 
 	buildsBefore := factory.buildCount()
@@ -997,7 +991,7 @@ func TestServeSessionAxesStayIndependent(t *testing.T) {
 		requireNoExecutionModeOptions(t, set.ConfigOptions)
 		modelOpt, _ := findConfigOption(set.ConfigOptions, "model")
 		approvalOpt, _ := findConfigOption(set.ConfigOptions, "tool_approval")
-		if modelOpt.CurrentValue != "fast" || approvalOpt.CurrentValue != control.ToolApprovalAsk {
+		if modelOpt.CurrentValue != "fast" || approvalOpt.CurrentValue != control.ToolApprovalWorkspaceWrite {
 			t.Fatalf("deprecated %s mutated live axes: model=%q approval=%q", tc.id, modelOpt.CurrentValue, approvalOpt.CurrentValue)
 		}
 	}
@@ -1086,8 +1080,8 @@ func TestServeLegacyModeAliasesRemainCompatible(t *testing.T) {
 		mode string
 		want string
 	}{
-		{mode: sessionModeLegacyDefault, want: control.ToolApprovalAsk},
-		{mode: sessionModeLegacyAuto, want: control.ToolApprovalYolo},
+		{mode: sessionModeLegacyDefault, want: control.ToolApprovalReadOnly},
+		{mode: sessionModeLegacyAuto, want: control.ToolApprovalWorkspaceWrite},
 	} {
 		if resp := client.call(t, "session/set_mode", SessionSetModeParams{SessionID: nr.SessionID, ModeID: tc.mode}); resp.Error != nil {
 			t.Fatalf("set legacy mode %q: %+v", tc.mode, resp.Error)
@@ -1159,8 +1153,8 @@ func TestServeSessionAxesRestoreFromMetadata(t *testing.T) {
 	if approval.CurrentValue != control.ToolApprovalAuto || lr.Modes == nil || lr.Modes.CurrentModeID != sessionModePlan {
 		t.Fatalf("reloaded axes = approval:%+v modes:%+v", approval, lr.Modes)
 	}
-	if got := reloadedFactory.buildAt(t, 0).RuntimeProfile; got != "delivery" {
-		t.Fatalf("reloaded build profile = %q, want delivery", got)
+	if got := reloadedFactory.buildAt(t, 0).RuntimeProfile; got != "standard" {
+		t.Fatalf("reloaded build profile = %q, want standard", got)
 	}
 	promptCh := reloadedClient.callAsync("session/prompt", SessionPromptParams{
 		SessionID: sessionID,
@@ -1688,16 +1682,16 @@ func TestServeSessionLoadFallsBackFromStaleSavedModel(t *testing.T) {
 	if got := factory.buildAt(t, 0).Model; got != "fast" {
 		t.Fatalf("fallback build model = %q, want fast", got)
 	}
-	if got := factory.buildAt(t, 0).RuntimeProfile; got != "balanced" {
-		t.Fatalf("old metadata runtime profile = %q, want balanced", got)
+	if got := factory.buildAt(t, 0).RuntimeProfile; got != "standard" {
+		t.Fatalf("old metadata runtime profile = %q, want standard", got)
 	}
 	var loaded SessionLoadResult
 	if err := json.Unmarshal(loadResp.Result, &loaded); err != nil {
 		t.Fatalf("session/load result: %v", err)
 	}
 	approval, _ := findConfigOption(loaded.ConfigOptions, "tool_approval")
-	if approval.CurrentValue != control.ToolApprovalAsk || loaded.Modes == nil || loaded.Modes.CurrentModeID != sessionModeNormal {
-		t.Fatalf("old metadata axes = approval:%+v modes:%+v, want ask + normal", approval, loaded.Modes)
+	if approval.CurrentValue != control.ToolApprovalWorkspaceWrite || loaded.Modes == nil || loaded.Modes.CurrentModeID != sessionModeNormal {
+		t.Fatalf("old metadata axes = approval:%+v modes:%+v, want workspace-write + normal", approval, loaded.Modes)
 	}
 	meta, ok, err := loadACPMeta(path)
 	if err != nil || !ok {
@@ -1930,11 +1924,9 @@ func TestServeSessionClose(t *testing.T) {
 	}
 }
 
-func TestSessionDeleteWithStuckJobReturnsAfterSingleGrace(t *testing.T) {
+func TestSessionDeleteWithStuckJobWaitsOnlyForDestroyGrace(t *testing.T) {
 	dir := t.TempDir()
-	grace := time.Second
-	maxElapsed := grace + 750*time.Millisecond
-	factory := &teardownFactory{dir: dir, grace: grace}
+	factory := &teardownFactory{dir: dir, grace: 0}
 	client, stop := startServer(t, factory)
 	defer stop()
 
@@ -1951,14 +1943,13 @@ func TestSessionDeleteWithStuckJobReturnsAfterSingleGrace(t *testing.T) {
 	releaseJob := startNonCooperativeACPJob(t, factory.lastManager(t), path)
 	defer releaseJob()
 
-	start := time.Now()
 	resp := client.call(t, "session/delete", SessionDeleteParams{SessionID: nr.SessionID})
-	elapsed := time.Since(start)
 	if resp.Error != nil {
 		t.Fatalf("session/delete errored: %+v", resp.Error)
 	}
-	if elapsed > maxElapsed {
-		t.Fatalf("session/delete took %s, want one teardown grace plus scheduling slack", elapsed)
+	timeouts := factory.teardownTimeoutDetails()
+	if len(timeouts) != 1 || !strings.Contains(timeouts[0], "during destroy session") {
+		t.Fatalf("teardown timeout events = %q, want one destroy-session wait and no close wait", timeouts)
 	}
 	if !agent.IsCleanupPending(path) {
 		t.Fatalf("stuck ACP delete should mark cleanup pending")

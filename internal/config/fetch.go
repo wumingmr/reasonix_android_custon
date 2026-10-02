@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"reasonix/internal/netclient"
 	"reasonix/internal/provider"
 	"reasonix/internal/provider/openai"
 )
@@ -26,6 +27,35 @@ var knownModelFetchCompatSuffixes = []string{
 // FetchModels queries the provider's OpenAI-compatible GET /models endpoint and
 // returns the available model IDs, sorted alphabetically.
 func (e *ProviderEntry) FetchModels(ctx context.Context) ([]string, error) {
+	return e.FetchModelsWithProxy(ctx, netclient.ProxySpec{})
+}
+
+// FetchModelCatalog discovers model IDs together with adapter-owned input
+// modality metadata. FetchModelsWithProxy remains the compatibility wrapper
+// used by older callers.
+func (e *ProviderEntry) FetchModelCatalog(ctx context.Context) ([]provider.ModelInfo, error) {
+	return e.FetchModelCatalogWithProxy(ctx, netclient.ProxySpec{})
+}
+
+// FetchModelsWithProxy is FetchModels routed through the same network policy as
+// chat requests. Passing cfg.NetworkProxySpec() makes model discovery fail at
+// setup time when the proxy path is broken, instead of succeeding here and
+// stalling the first chat turn later (#9560).
+func (e *ProviderEntry) FetchModelsWithProxy(ctx context.Context, proxy netclient.ProxySpec) ([]string, error) {
+	catalog, err := e.FetchModelCatalogWithProxy(ctx, proxy)
+	if err != nil {
+		return nil, err
+	}
+	models := make([]string, 0, len(catalog))
+	for _, model := range catalog {
+		models = append(models, model.ID)
+	}
+	return models, nil
+}
+
+// FetchModelCatalogWithProxy is FetchModelsWithProxy with model capability
+// metadata preserved through the config/provider boundary.
+func (e *ProviderEntry) FetchModelCatalogWithProxy(ctx context.Context, proxy netclient.ProxySpec) ([]provider.ModelInfo, error) {
 	if e.BaseURL == "" {
 		return nil, fmt.Errorf("fetch models: provider %q has no base_url", e.Name)
 	}
@@ -41,12 +71,24 @@ func (e *ProviderEntry) FetchModels(ctx context.Context) ([]string, error) {
 	var firstHardErr error
 	authMode := modelFetchAuthMode(e)
 	for _, u := range candidates {
-		models, err := openai.FetchModelsWithOptions(ctx, u, key, openai.FetchModelsOptions{
+		models, err := openai.FetchModelCatalogWithOptions(ctx, u, key, openai.FetchModelsOptions{
 			Headers:  e.Headers,
 			AuthMode: authMode,
+			Proxy:    proxy,
 		})
 		if err == nil {
-			return provider.FilterOfficialOpenCodeGoModels(e.Kind, e.BaseURL, models), nil
+			allowed := provider.FilterOpenCodeGoRequestModels(e.Kind, e.BaseURL, e.RequestURL, e.ChatURL, modelInfoIDs(models))
+			keep := make(map[string]bool, len(allowed))
+			for _, id := range allowed {
+				keep[id] = true
+			}
+			filtered := make([]provider.ModelInfo, 0, len(models))
+			for _, model := range models {
+				if keep[model.ID] {
+					filtered = append(filtered, model)
+				}
+			}
+			return filtered, nil
 		}
 		lastErr = err
 		if !openai.IsModelFetchEndpointMiss(err) && firstHardErr == nil {
@@ -57,6 +99,14 @@ func (e *ProviderEntry) FetchModels(ctx context.Context) ([]string, error) {
 		return nil, firstHardErr
 	}
 	return nil, lastErr
+}
+
+func modelInfoIDs(models []provider.ModelInfo) []string {
+	ids := make([]string, 0, len(models))
+	for _, model := range models {
+		ids = append(ids, model.ID)
+	}
+	return ids
 }
 
 func modelFetchAuthMode(e *ProviderEntry) openai.ModelFetchAuthMode {

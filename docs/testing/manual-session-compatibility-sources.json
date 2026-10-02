@@ -1,0 +1,1339 @@
+{
+  "rollbackBaseline": "0d7a103fdd6fbeff3b8d69e31f0d395eef6b6666",
+  "testedMainV2": "f26283afb2f58c974e84f009dabd00718c188e22",
+  "releases": [
+    {
+      "tag": "desktop-v1.38.3",
+      "commit": "fa018e4109268c912063c8cc619302fccdb57d74",
+      "framedStorageRevision": null,
+      "workspaceRegistry": false,
+      "durableDrafts": false
+    },
+    {
+      "tag": "desktop-v1.38.4",
+      "commit": "680e00e5baaf6a7e125d19fba685f0c5605ee100",
+      "framedStorageRevision": null,
+      "workspaceRegistry": false,
+      "durableDrafts": false
+    },
+    {
+      "tag": "desktop-v1.38.5",
+      "commit": "95d02e52bd99471e29da0c3b0cf6306fcfc3d43d",
+      "framedStorageRevision": null,
+      "workspaceRegistry": false,
+      "durableDrafts": false
+    },
+    {
+      "tag": "desktop-v1.38.6",
+      "commit": "e2145b031deef603d9ec1acc9d30f9a1e1ac9325",
+      "framedStorageRevision": null,
+      "workspaceRegistry": false,
+      "durableDrafts": false
+    },
+    {
+      "tag": "desktop-v1.38.7",
+      "commit": "036c7c50c5c154f747419aee6b75667f9044c8fa",
+      "framedStorageRevision": null,
+      "workspaceRegistry": false,
+      "durableDrafts": false
+    },
+    {
+      "tag": "desktop-v1.38.8",
+      "commit": "7278072720a2dc7a31cce0eec18c1eacc149c0e0",
+      "framedStorageRevision": 1,
+      "workspaceRegistry": false,
+      "durableDrafts": false
+    },
+    {
+      "tag": "desktop-v1.38.9",
+      "commit": "dc915ab97bfdeb5d0e414916c0f58708dca80051",
+      "framedStorageRevision": 1,
+      "workspaceRegistry": true,
+      "durableDrafts": false
+    },
+    {
+      "tag": "desktop-v1.38.10",
+      "commit": "366e0eb6b86bbf4278547995eda0f42b4404242d",
+      "framedStorageRevision": 2,
+      "workspaceRegistry": true,
+      "durableDrafts": false
+    },
+    {
+      "tag": "desktop-v1.38.11",
+      "commit": "11f9705f083819f1dc9ad764d8352013a86ebd44",
+      "framedStorageRevision": 3,
+      "workspaceRegistry": true,
+      "durableDrafts": true
+    }
+  ],
+  "relevantChanges": [
+    {
+      "commit": "88b7649b3308c9c9133877ffeaefa800285f505b",
+      "pr": 9990,
+      "title": "Merge pull request #9990 from SivanCola/fix/composer-default-height-104",
+      "areas": [
+        "drafts-and-input"
+      ],
+      "firstRelease": "desktop-v1.38.4",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "674ebefbcd0e32ad24e8e9aad32a35a79c8d675e",
+      "pr": 9984,
+      "title": "Merge pull request #9984 from SivanCola/fix/running-composer-controls",
+      "areas": [
+        "workspace-and-lifecycle",
+        "drafts-and-input"
+      ],
+      "firstRelease": "desktop-v1.38.4",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "4d59e1e6a86f167c8592f24f4fca63acceabe78a",
+      "pr": 9988,
+      "title": "Merge pull request #9988 from SivanCola/feature/electron-desktop-shell",
+      "areas": [
+        "workspace-and-lifecycle",
+        "drafts-and-input",
+        "history-and-transcript",
+        "native-shell"
+      ],
+      "firstRelease": "desktop-v1.38.4",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "88170d995e78cc4e0f26f685b87d4265cf563fea",
+      "pr": 10014,
+      "title": "Merge pull request #10014 from SivanCola/fix/electron-app-zoom",
+      "areas": [
+        "native-shell"
+      ],
+      "firstRelease": "desktop-v1.38.4",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "44c92ffc7f74218991f531bf9d4feecb64ce4a7b",
+      "pr": 10015,
+      "title": "Merge pull request #10015 from SivanCola/feature/opencode-go-v10-electron-integration",
+      "areas": [
+        "session-storage"
+      ],
+      "firstRelease": "desktop-v1.38.4",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "f098d0f11a68f053cca1e9445fc1f71d6e5ae54a",
+      "pr": 10040,
+      "title": "Merge pull request #10040 from SivanCola/feature/hardware-acceleration",
+      "areas": [
+        "native-shell"
+      ],
+      "firstRelease": "desktop-v1.38.4",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "82a0d3693c8f24c454c04fe18a0f43c5c1b5edf8",
+      "pr": 10039,
+      "title": "Merge pull request #10039 from SivanCola/feature/durable-tool-recovery",
+      "areas": [
+        "session-storage",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.4",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "bddb9c80dca1412f4d60c9e3e3248362708623d2",
+      "pr": 10041,
+      "title": "Merge pull request #10041 from SivanCola/feature/right-dock-launcher-tabs",
+      "areas": [
+        "drafts-and-input",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.4",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "6b6b08cd224c9980d098089fb3ba11fae6f8e18a",
+      "pr": 10059,
+      "title": "Merge pull request #10059 from SivanCola/fix/turn-metrics-accuracy",
+      "areas": [
+        "drafts-and-input"
+      ],
+      "firstRelease": "desktop-v1.38.4",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "5fccca52ed38a36c9dcc9d4865823b4f7a429ba0",
+      "pr": 10089,
+      "title": "fix(desktop): read packaged build identity for startup handshake (#10089)",
+      "areas": [
+        "native-shell"
+      ],
+      "firstRelease": "desktop-v1.38.6",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "32664afeb55645cc26dc5cd0cdc5b9b3fb82b180",
+      "pr": 10080,
+      "title": "feat(desktop): add built-in browser control settings / 新增内置浏览器控制设置页 (#10080)",
+      "areas": [
+        "native-shell"
+      ],
+      "firstRelease": "desktop-v1.38.7",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "0c51e3ae64cd04e3f599b1f3045d17d19fb593d3",
+      "pr": 9915,
+      "title": "refactor(jobs): group Job's scalar state by lifetime (#9915)",
+      "areas": [
+        "session-storage"
+      ],
+      "firstRelease": "desktop-v1.38.7",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "27a45a260f865d50b2098e8e754fb3f3611fa051",
+      "pr": 9983,
+      "title": "fix(transcript): unify history snapshot and live event projection / 统一历史快照与实时事件的投影 (#9983)",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.7",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "35ed75bc696311c52bd8259e0496a198d11ad2f9",
+      "pr": 10124,
+      "title": "fix(desktop): bound profiling and diagnose memory growth / 限时性能采样并诊断内存增长 (#10124)",
+      "areas": [
+        "native-shell"
+      ],
+      "firstRelease": "desktop-v1.38.7",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "75727f227b7b53aa2ee54946c3655f1bfa7ad276",
+      "pr": 10120,
+      "title": "fix(desktop): build a session switch from one durable read (#10120)",
+      "areas": [
+        "workspace-and-lifecycle",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.7",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "20c6b86774576881a7bbadedd4e207e1a533a110",
+      "pr": 10115,
+      "title": "Fix Windows shell lifecycle recovery / 修复 Windows 壳生命周期恢复 (#10115)",
+      "areas": [
+        "native-shell"
+      ],
+      "firstRelease": "desktop-v1.38.7",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "f8758bb59139426f07358ed48cbff992391d3a4c",
+      "pr": 10128,
+      "title": "fix(desktop): persist the restore rectangle instead of the maximized frame / 修复 Windows 最大化后还原成超出屏幕的窗口 (#10128)",
+      "areas": [
+        "native-shell"
+      ],
+      "firstRelease": "desktop-v1.38.7",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "0055038b45cfb3bd11e1558f9292c2ab9a3b4773",
+      "pr": 10130,
+      "title": "fix(desktop): isolate Windows taskbar identity from Studio / 隔离 Reasonix 与 Studio 的 Windows 任务栏身份 (#10130)",
+      "areas": [
+        "native-shell"
+      ],
+      "firstRelease": "desktop-v1.38.7",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "fbc8a8f3688f1c0c4f6ea4751e7bdaed24b96ba1",
+      "pr": 10132,
+      "title": "fix(desktop): keep the /compact receipt visible outside the process fold (#10132)",
+      "areas": [
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.7",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "33f7bf3173ccf284011ca16884c580a63b921f96",
+      "pr": 10172,
+      "title": "fix(desktop): delay the startup hint without flashing fast boots (#10172)",
+      "areas": [
+        "native-shell"
+      ],
+      "firstRelease": "desktop-v1.38.8",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "e36ef93a2ffa4376c5c6b339860acc8262e08cec",
+      "pr": 10198,
+      "title": "Simplify execution and completion semantics / 精简执行与完成语义 (#10198)",
+      "areas": [
+        "workspace-and-lifecycle",
+        "drafts-and-input",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.8",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "986a6bc967017400e177b45e794414b1469d7cd2",
+      "pr": 10199,
+      "title": "Reduce CI runner overhead / 降低 CI Runner 开销 (#10199)",
+      "areas": [
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.8",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "ff27bdf3f4580219a74913b991fc6a312567d683",
+      "pr": 10215,
+      "title": "fix(desktop): let a directly launched shell find its service beside app/ / 修复直接启动 Reasonix.exe 时找不到 service (#10215)",
+      "areas": [
+        "native-shell"
+      ],
+      "firstRelease": "desktop-v1.38.8",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "4daa815be81a7ff12e0db5988169b3c7d73e35df",
+      "pr": 10209,
+      "title": "Refactor chat, permissions, and Windows sandbox around Harness / 以 Harness 重构聊天、权限与 Windows 沙箱 (#10209)",
+      "areas": [
+        "workspace-and-lifecycle",
+        "drafts-and-input",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.8",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "8d2259ee82ed170bb1e094dfa717d5e3bf600905",
+      "pr": 10223,
+      "title": "Replace evidence gates with live file observations / 以实时文件观察替换证据门禁 (#10223)",
+      "areas": [
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.8",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "36852da4dcf4c90ffad2c20fbb5f9ca20b644823",
+      "pr": 10241,
+      "title": "refactor: align sessions with DSH ownership / 对齐 DSH 会话所有权与持久化机制 (#10241)",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle",
+        "inbox-and-receipts",
+        "history-and-transcript",
+        "native-shell"
+      ],
+      "firstRelease": "desktop-v1.38.8",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "8679e1f0b614467ad57aea364b58c478b365e05a",
+      "pr": 10247,
+      "title": "feat: align Goal lifecycle with DSH runtime / 对齐 DSH 目标生命周期与统一运行时 (#10247)",
+      "areas": [
+        "workspace-and-lifecycle",
+        "drafts-and-input",
+        "inbox-and-receipts"
+      ],
+      "firstRelease": "desktop-v1.38.8",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "744c2e94ec77b577fbe3f1c93c769b1c3388bd21",
+      "pr": 10249,
+      "title": "Fix Goal lifecycle recovery and host controls / 修复目标生命周期恢复与宿主控制 (#10249)",
+      "areas": [
+        "workspace-and-lifecycle",
+        "drafts-and-input"
+      ],
+      "firstRelease": "desktop-v1.38.8",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "1e2d403eeca42c66f496364c1531c6c3794a6f7e",
+      "pr": 10257,
+      "title": "Merge pull request #10257 from SivanCola/feature/session-v4-capacity",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle",
+        "inbox-and-receipts",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.8",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "6cd0d021972cda5d80083118a4db6a65af0921e7",
+      "pr": 10260,
+      "title": "test: repair release CI environment and runtime cleanup / 修复发版 CI 环境与会话清理 (#10260)",
+      "areas": [
+        "session-storage"
+      ],
+      "firstRelease": "desktop-v1.38.8",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "42868fe65121ffbe72200726b54cd47c384ce509",
+      "pr": 10263,
+      "title": "fix(session): repair shutdown races and writer cleanup / 修复会话关闭竞争与句柄清理 (#10263)",
+      "areas": [
+        "session-storage"
+      ],
+      "firstRelease": "desktop-v1.38.8",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "c725dcbacc9f1ad19d43e202494f00357557fb35",
+      "pr": 10276,
+      "title": "Merge pull request #10276 from SivanCola/feature/turn-outline-navigation",
+      "areas": [
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.9",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "f3e8479fa72cebcd615c27b012caae989db1fc06",
+      "pr": 10267,
+      "title": "feat(session): add fast recovery and independent history / 增加快速恢复与独立历史 (#10267)",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.9",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "236db8c16b05802f399184aa4255ff445192c552",
+      "pr": 10275,
+      "title": "Merge pull request #10275 from SivanCola/fix/anchored-popover-lifecycle",
+      "areas": [
+        "drafts-and-input",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.9",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "98fb5610d728b1370fa6ead43c1a94c0179eccec",
+      "pr": 10277,
+      "title": "Resolve and preview files named in chat answers / 识别并预览回答中提到的文件 (#10277)",
+      "areas": [
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.9",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "3e33a03ebb135d4c56291bd6d3d8c7baa9b71c1b",
+      "pr": 10287,
+      "title": "Recover session history when model startup fails / 模型启动失败时仍可恢复会话历史 (#10287)",
+      "areas": [
+        "workspace-and-lifecycle",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.9",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "2553bb31c33a06234cc06fa014ebcbc97f08b402",
+      "pr": 10284,
+      "title": "Fork a completed turn from the persisted session log / 从持久化会话日志分叉已结束轮次 (#10284)",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.9",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "643ad752365bbaaf87c95ea00aa114e554a1d4f2",
+      "pr": 10295,
+      "title": "Bound desktop session resources / 限制桌面会话资源占用 (#10295)",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.9",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "faaaa1b790cca8f5ece4747ff82da02595c7bda0",
+      "pr": 10291,
+      "title": "Replace dual session turn authority with a Harness-style loop / 用 Harness 式 turn-loop 取代双重会话执行权威 (#10291)",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle",
+        "inbox-and-receipts"
+      ],
+      "firstRelease": "desktop-v1.38.9",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "b568386bccc74498169659a21d69658092cf629a",
+      "pr": 10321,
+      "title": "Repair the Windows test job: writer leases, watch helper, stream cost / 修复 Windows 测试任务：写者租约、监听 helper、流式开销 (#10321)",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.9",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "cbc05ce00b8b72ca74d7018cb77a9ef32dce3308",
+      "pr": 10327,
+      "title": "feat(bash): persist cwd and environment across foreground calls / 前台 bash 跨调用保留工作目录与环境 (#10327)",
+      "areas": [
+        "session-storage"
+      ],
+      "firstRelease": "desktop-v1.38.9",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "8f93ea2b2ed8b74a5af279642bcaf4eff45d6d08",
+      "pr": 10326,
+      "title": "Adopt SessionID-only Desktop persistence / 升级 Desktop SessionID 会话架构 (#10326)",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle",
+        "drafts-and-input",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.9",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "b752d4f95c8be83a5714384772e6c897561a292e",
+      "pr": 10354,
+      "title": "test(desktop): close session services before their store root is removed (#10354)",
+      "areas": [
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.9",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "e4bfeb67f9125af238aca4ff9bf69b21cb1df998",
+      "pr": 10358,
+      "title": "test(session): assert v5 header identity in platform-portable form / 修复 v5 头部测试的跨平台断言 (#10358)",
+      "areas": [
+        "session-storage"
+      ],
+      "firstRelease": "desktop-v1.38.9",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "b17c1b5c3be8a998a7df9108ecea5290dc66c0c4",
+      "pr": 10380,
+      "title": "Restore ProjectTree and integrate session recovery fixes / 恢复项目树并整合会话恢复修复 (#10380)",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle",
+        "drafts-and-input",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "5113a8c0bc89fda9e43f1f0d421ee5be4f994aff",
+      "pr": 10383,
+      "title": "Merge pull request #10383: append-only pause and recovery",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "f75ad320977ba7e938b2ae264a2c1a73e7a8694f",
+      "pr": 10382,
+      "title": "Fix background conversation attention notifications / 修复后台对话 Ask 与审批通知 (#10382)",
+      "areas": [
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "738e9b956efecc65c9bdb34af39d490081379af5",
+      "pr": 10385,
+      "title": "Unify transcript recovery and completion with Follow v2 / 统一会话同步与完成机制 (#10385)",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle",
+        "drafts-and-input",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "153e6e870fe04e3f138ec2d5d461de2d26a0e23b",
+      "pr": 10389,
+      "title": "Fix AI session rename to use canonical conversation storage (#10389)",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "0ce3d4262a6c776547d965c99b6140772eb00c74",
+      "pr": 10388,
+      "title": "Collapse the workspace dock when its last tab closes / 关闭最后一个标签页后自动收起工作区 (#10388)",
+      "areas": [
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "8b426dc870f8887a5e89067617e9a91380213ed5",
+      "pr": 10392,
+      "title": "Fix submission identity and persistent PowerShell / 修复消息身份、工具状态与持久 PowerShell (#10392)",
+      "areas": [
+        "session-storage",
+        "drafts-and-input",
+        "inbox-and-receipts",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "a4b83056a99ff1da1700a585e8b9da71fb872838",
+      "pr": 10395,
+      "title": "Restore legacy Desktop history without duplicate recovery copies / 完善旧版对话迁移并排除重复恢复副本 (#10395)",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "23b5d68ecfd39efb367289de00629a922af432e7",
+      "pr": 10396,
+      "title": "Unify session archive, trash and historical recovery / 统一会话归档、回收站与历史恢复 (#10396)",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle",
+        "drafts-and-input"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "db98cad26807c613bee61f04fc82d688c8015557",
+      "pr": 10414,
+      "title": "Show local history before runtime activation / 本地会话历史先于运行时显示 (#10414)",
+      "areas": [
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "41d2ae37fedb6ebda2191d6d3eeb8794ed0ca8fd",
+      "pr": 10409,
+      "title": "Decouple durable local session operations from runtime tabs / 本地会话持久化操作与运行时解耦 (#10409)",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "31c896e25feb597d44c9de3143507e0363b89e28",
+      "pr": 10423,
+      "title": "Fix canonical history reuse across reopened tabs / 修复重开会话的历史缓存复用 (#10423)",
+      "areas": [
+        "workspace-and-lifecycle",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "ec45635b5e6fd5c3d82c1beceae08bf89c586e8e",
+      "pr": 10424,
+      "title": "Fix unread state for canonical sessions (#10424)",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "7728dfb9bd130195218a7425f32aeb2ed7e2da1b",
+      "pr": 10430,
+      "title": "Preserve compacted context across restart and migration / 重启与迁移后保留压缩上下文 (#10430)",
+      "areas": [
+        "session-storage",
+        "inbox-and-receipts"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "1f598bc9d616248feb6f916e936a9ff6dd61ec82",
+      "pr": 10426,
+      "title": "Add expandable sessions and composer workspace context / 添加可展开会话与工作区上下文 (#10426)",
+      "areas": [
+        "workspace-and-lifecycle",
+        "drafts-and-input"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "81fe2f1fdec60a9bca0dcfa61ebe5f90a84b995f",
+      "pr": 10437,
+      "title": "Merge pull request #10437 from SivanCola/fix/trash-purge-restore-serialization",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "990bc4aa0bfd4526384532354ba209121648a25a",
+      "pr": 10438,
+      "title": "Fix user-message history pagination and display handoffs (#10438)",
+      "areas": [
+        "drafts-and-input",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "8e2e6ef0a2312fd2151415731d70a50b7a12f563",
+      "pr": 10440,
+      "title": "Fix independent session identity and lifecycle / 修复独立会话身份与生命周期 (#10440)",
+      "areas": [
+        "workspace-and-lifecycle",
+        "drafts-and-input",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "981d4b64cddb3764e5a619b61efd934f2b9d3e47",
+      "pr": 10442,
+      "title": "Reject Windows portable launches from remote storage / 拦截 Windows 便携版共享目录启动 (#10442)",
+      "areas": [
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "30bd8ae1ba4a034d914a4b96fcd596fb9a29c577",
+      "pr": 10459,
+      "title": "Fix Windows path URIs and legacy session upgrades / 修复 Windows 路径 URI 与旧会话升级 (#10459)",
+      "areas": [
+        "workspace-and-lifecycle",
+        "attachments-and-identity",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "9eb3ccc50d8d659180dae579e392732b5b2e20be",
+      "pr": 10460,
+      "title": "Unify model credential recovery across Desktop and CLI / 统一桌面端与 CLI 模型凭据恢复 (#10460)",
+      "areas": [
+        "workspace-and-lifecycle",
+        "drafts-and-input"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "1a6d490ec3be4af69d1ff99a38c60f01100d3452",
+      "pr": 10472,
+      "title": "Merge pull request #10472 from SivanCola/fix/release-source-identity-validation",
+      "areas": [
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.10",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "e8762acc9c3a53df83881f16691395304509cf44",
+      "pr": 10469,
+      "title": "Make local drafts durable and clean up legacy empty sessions / 持久化本地草稿并整理历史空会话 (#10469)",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle",
+        "drafts-and-input",
+        "inbox-and-receipts",
+        "history-and-transcript",
+        "native-shell"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "b1a4e016b39ac2d35dceb354e3e4e13226417c2a",
+      "pr": 10471,
+      "title": "Complete fixed-snapshot session exports / 完善固定快照会话导出 (#10471)",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle",
+        "inbox-and-receipts",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "bd0733b9729ca8015d54da6b87980700d9bb6640",
+      "pr": 10490,
+      "title": "Merge pull request #10490 from SivanCola/fix/archive-history-session-identity",
+      "areas": [
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "9b0cc56e5c0e60d92cb447b360ef8fa018c7c72b",
+      "pr": 10500,
+      "title": "Merge pull request #10500 from SivanCola/fix/reasoning-capability-resolution",
+      "areas": [
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "0c19f3b595fd77e26e04265a3dcc2757fd9f0b67",
+      "pr": 10501,
+      "title": "Merge pull request #10501 from SivanCola/fix/transcript-initialization-crash",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "b85ac51ce510348dbb1389066c9a69c0ded25ab8",
+      "pr": 10510,
+      "title": "Fix saved tab reconciliation on startup / 修复启动时保存会话恢复冲突 (#10510)",
+      "areas": [
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "f8d91b38525bba64e11b3c0249e3506f4ef6072e",
+      "pr": 10502,
+      "title": "Merge pull request #10502 from SivanCola/feature/release-candidate-pipeline",
+      "areas": [
+        "session-storage"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "161da6c35ceb1a8e46f07ead729b04ec0837dc8b",
+      "pr": 10507,
+      "title": "Merge pull request #10507 from SivanCola/fix/session-interaction-isolation",
+      "areas": [
+        "workspace-and-lifecycle",
+        "drafts-and-input"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "86d2424ce3a6bcb5eb2dd1d96d914569d8e2cd9a",
+      "pr": 10520,
+      "title": "Merge pull request #10520 from SivanCola/fix/diagnostics-lifecycle-v4",
+      "areas": [
+        "workspace-and-lifecycle",
+        "inbox-and-receipts",
+        "native-shell"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "fceba0407989ed7ca54bbc533b2d2100441aeac9",
+      "pr": 10518,
+      "title": "Merge pull request #10518 from SivanCola/fix/path-identity-lock-protocol",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle",
+        "drafts-and-input",
+        "inbox-and-receipts",
+        "native-shell"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "62874c47e11a9d0d6f50f646b67c03cb23bc2d8b",
+      "pr": 10545,
+      "title": "Merge pull request #10545 from SivanCola/feature/pr-10457-core",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle",
+        "drafts-and-input",
+        "inbox-and-receipts",
+        "attachments-and-identity",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "dd074f2f984b35a464de6cdc804760acc45568d5",
+      "pr": 10546,
+      "title": "Merge pull request #10546 from SivanCola/feature/pr-10457-reliability",
+      "areas": [
+        "inbox-and-receipts"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "8de94ca79b5efbd0d44a7f7d70500b134836ee1b",
+      "pr": 10547,
+      "title": "Merge pull request #10547 from SivanCola/feature/pr-10457-history-export",
+      "areas": [
+        "session-storage",
+        "drafts-and-input",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "5c6e248e97c0dc3184ac9aedf3b5c904d5a8deb3",
+      "pr": 10548,
+      "title": "Merge pull request #10548 from SivanCola/feature/pr-10457-performance",
+      "areas": [
+        "attachments-and-identity"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "7ff88a70f53ebf2926026cfb6227a2a00db1e12a",
+      "pr": 10554,
+      "title": "Merge pull request #10554 from SivanCola/fix/windows-workspace-runtime",
+      "areas": [
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "4756bc56ceec6359c5656d57c6d489ea8df7dc23",
+      "pr": 10550,
+      "title": "Merge pull request #10550 from SivanCola/fix/transcript-snapshot-record-identity",
+      "areas": [
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "eeb64391118d2f515813a624391c8a2148f63d93",
+      "pr": 10549,
+      "title": "Merge pull request #10549 from SivanCola/codex/fix-session-route-boundary",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle",
+        "inbox-and-receipts"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "31d84501eb67bc87c70c1ef137cc6a1de662dbb3",
+      "pr": 10555,
+      "title": "Merge pull request #10555 from SivanCola/codex/fix-restored-tab-lint",
+      "areas": [
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "071fba77ff4770e2209813eab3d3eccf92b44413",
+      "pr": 10552,
+      "title": "Merge pull request #10552 from SivanCola/fix/approval-confirm-freeze",
+      "areas": [
+        "drafts-and-input",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "92775eade90c33ca88cf65452b0d8785994922f8",
+      "pr": 10551,
+      "title": "Merge pull request #10551 from SivanCola/fix/draft-landing-surface",
+      "areas": [
+        "drafts-and-input"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "964da45fce7f4905f616b23233f9d1bc0111eb0c",
+      "pr": 10553,
+      "title": "Merge pull request #10553 from SivanCola/fix/windows-pwsh-workspace-runtime",
+      "areas": [
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "fcc339e8b14c15a0e475aea743c52342ef78421c",
+      "pr": 10558,
+      "title": "Merge pull request #10558 from SivanCola/fix/session-title-projection",
+      "areas": [
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "5f25014615b5536349301951ab8ff2798087ef43",
+      "pr": 10560,
+      "title": "Merge pull request #10560 from SivanCola/fix/draft-session-archive",
+      "areas": [
+        "workspace-and-lifecycle",
+        "drafts-and-input"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "2827393c9c84b539a1ba60d008ecf1974fed557e",
+      "pr": 10570,
+      "title": "Merge pull request #10570 from SivanCola/fix/workspace-duplicate-directory-owner",
+      "areas": [
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "9aa4ed1aa6a11cc97799c845c1ece61c2f1a1635",
+      "pr": 10572,
+      "title": "Merge pull request #10572 from SivanCola/fix/session-draft-default-model",
+      "areas": [
+        "workspace-and-lifecycle",
+        "drafts-and-input"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "26fa584800f2b56e19df65967caedc2099d96007",
+      "pr": 10320,
+      "title": "Merge pull request #10320 from XTLine/fix/sessionid-migration-gaps",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle",
+        "drafts-and-input",
+        "history-and-transcript"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "8bf4297b63e1f536a9cb260700bd3b36e44522bd",
+      "pr": 10566,
+      "title": "Merge pull request #10566 from SivanCola/fix/on-demand-history",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "6b93e0a6b901e6c5820ef35d26daf5b49f355946",
+      "pr": 10575,
+      "title": "Merge pull request #10575 from esengine/fix/ai-title-budget-ownership",
+      "areas": [
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "ec82bb3251550b03b43b83418a716f73fe758ffd",
+      "pr": 10580,
+      "title": "Merge pull request #10580 from SivanCola/fix/post-13810-integration",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "desktop-v1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "fe40c2b94c4336d2108a0c7a17771a602a1568c3",
+      "pr": 10593,
+      "title": "Merge pull request #10593 from SivanCola/fix/windows-close-transcript-diagnostics",
+      "areas": [
+        "history-and-transcript",
+        "native-shell"
+      ],
+      "firstRelease": "main-v2 after 1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "33d67cde9e99d9e1d941a609a24bb248236ea352",
+      "pr": 10594,
+      "title": "Merge pull request #10594 from SivanCola/fix/historical-session-branch-import",
+      "areas": [
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "main-v2 after 1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "3e8a80c65b2612a4eeb7d7696230ba8279065656",
+      "pr": 10596,
+      "title": "Merge pull request #10596 from SivanCola/feature/html-browser-deliverables",
+      "areas": [
+        "history-and-transcript"
+      ],
+      "firstRelease": "main-v2 after 1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "869e8d1d416f8919bae6b9eebf0ddcca6baa5bb0",
+      "pr": 10599,
+      "title": "Merge pull request #10599 from SivanCola/fix/session-loading-flicker",
+      "areas": [
+        "history-and-transcript"
+      ],
+      "firstRelease": "main-v2 after 1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "f0f11a676713ffdafe77254dff044257b3c430d0",
+      "pr": 10598,
+      "title": "Merge pull request #10598 from SivanCola/codex/compaction-maintenance",
+      "areas": [
+        "session-storage",
+        "drafts-and-input",
+        "inbox-and-receipts",
+        "history-and-transcript"
+      ],
+      "firstRelease": "main-v2 after 1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "355fa9fc122e8c802cab572084c670dbcdfa5230",
+      "pr": 10590,
+      "title": "Fix tool result identity, state handoff and historical projection (#10590)",
+      "areas": [
+        "drafts-and-input",
+        "history-and-transcript",
+        "native-shell"
+      ],
+      "firstRelease": "main-v2 after 1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "8ad1f01bdfb6c7a47e115335909654b51eceb82f",
+      "pr": 10603,
+      "title": "fix(desktop): reduce history and multi-session resource usage (#10603)",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle",
+        "history-and-transcript"
+      ],
+      "firstRelease": "main-v2 after 1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "5c4b343a4ab08a91de649c49542291db056e7875",
+      "pr": 10613,
+      "title": "fix(desktop): preserve legacy sidebar behavior on read-only snapshots / 保留只读快照的旧数据兼容性 (#10613)",
+      "areas": [
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "main-v2 after 1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "ba68484b00191f3adbc14518e6c2ae1b69478382",
+      "pr": 10615,
+      "title": "Fix browser runtime binding and capability status (#10615)",
+      "areas": [
+        "workspace-and-lifecycle"
+      ],
+      "firstRelease": "main-v2 after 1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "c84b4389bf147ba057484445bd32ba3804158232",
+      "pr": 10619,
+      "title": "Restore complete transcript turn navigation / 恢复完整会话轮次导航 (#10619)",
+      "areas": [
+        "session-storage",
+        "workspace-and-lifecycle",
+        "history-and-transcript"
+      ],
+      "firstRelease": "main-v2 after 1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "ea64efc8e38698713c5cee5344fa3e4e53dcbe16",
+      "pr": 10628,
+      "title": "Fix duplicate compaction admission and session receipts / 修复重复压缩与会话回执 (#10628)",
+      "areas": [
+        "drafts-and-input",
+        "history-and-transcript"
+      ],
+      "firstRelease": "main-v2 after 1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "45374931bdbf25098a9f91bbf320d2e46c99bb3b",
+      "pr": 10626,
+      "title": "Edit and reorder queued guidance / 编辑并调整待处理消息顺序 (#10626)",
+      "areas": [
+        "drafts-and-input",
+        "inbox-and-receipts"
+      ],
+      "firstRelease": "main-v2 after 1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "c625bf5e40894be4dc8cb06f8765560f22b47675",
+      "pr": 10621,
+      "title": "Merge pull request #10621 from SivanCola/fix/read-snapshot-pagination",
+      "areas": [
+        "workspace-and-lifecycle",
+        "history-and-transcript"
+      ],
+      "firstRelease": "main-v2 after 1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "b8e2523f095efb73cb861166a6628554158a3376",
+      "pr": 10631,
+      "title": "fix(desktop): support safe removal of new conversations (#10631)",
+      "areas": [
+        "workspace-and-lifecycle",
+        "drafts-and-input"
+      ],
+      "firstRelease": "main-v2 after 1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "548b541ef01ff20328ce2c6d01d5783ae9ae3a39",
+      "pr": 10634,
+      "title": "Fix desktop history lifecycle and shutdown recovery / 修复桌面历史会话生命周期与关闭恢复 (#10634)",
+      "areas": [
+        "workspace-and-lifecycle",
+        "inbox-and-receipts"
+      ],
+      "firstRelease": "main-v2 after 1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "0d7a103fdd6fbeff3b8d69e31f0d395eef6b6666",
+      "pr": 10635,
+      "title": "Upgrade browser runtime and session diagnostics / 升级内置浏览器运行时与会话诊断 (#10635)",
+      "areas": [
+        "workspace-and-lifecycle",
+        "drafts-and-input",
+        "native-shell"
+      ],
+      "firstRelease": "main-v2 after 1.38.11",
+      "inRollbackBaseline": true
+    },
+    {
+      "commit": "a785237e6022d62e7570ef161bd9e4ef1297414c",
+      "pr": 10639,
+      "title": "fix(transcript): keep the user row ahead of its live output / 修复用户消息被本轮输出插到前面 (#10639)",
+      "areas": [
+        "drafts-and-input",
+        "history-and-transcript"
+      ],
+      "firstRelease": "main-v2 after 1.38.11",
+      "inRollbackBaseline": false
+    },
+    {
+      "commit": "bb0d0cbc15b1c020e3aa311a091fb20c33b91cdd",
+      "pr": 10641,
+      "title": "fix(desktop): preserve macOS Dock icon scale (#10641)",
+      "areas": [
+        "native-shell"
+      ],
+      "firstRelease": "main-v2 after 1.38.11",
+      "inRollbackBaseline": false
+    },
+    {
+      "commit": "0d1e6da2ea2459c683c17aecf33ebe51062715ed",
+      "pr": 10642,
+      "title": "Fix /compact feedback and history detection / 修复压缩反馈与历史判定 (#10642)",
+      "areas": [
+        "drafts-and-input",
+        "inbox-and-receipts",
+        "history-and-transcript"
+      ],
+      "firstRelease": "main-v2 after 1.38.11",
+      "inRollbackBaseline": false
+    },
+    {
+      "commit": "f26283afb2f58c974e84f009dabd00718c188e22",
+      "pr": 10644,
+      "title": "Add native graphics fault recovery for Desktop (#10644)",
+      "areas": [
+        "native-shell"
+      ],
+      "firstRelease": "main-v2 after 1.38.11",
+      "inRollbackBaseline": false
+    }
+  ]
+}

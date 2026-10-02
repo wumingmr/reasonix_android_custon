@@ -27,6 +27,16 @@ export function applyHydrateErrorState<
   };
 }
 
+/** The recovery detail for a failed history read: the summary, then the reader's own identity and cause. */
+export function hydrateFailureDetail(summary: string, cause: unknown): string {
+  const message = (cause instanceof Error ? cause.message : typeof cause === "string" ? cause : "").trim();
+  const failure = cause as { stage?: unknown; reason?: unknown } | undefined;
+  const identity = cause instanceof Error && typeof failure?.stage === "string" && typeof failure.reason === "string"
+    ? `${failure.stage}.${failure.reason}` : "";
+  const line = [identity, message].filter(Boolean).join(": ");
+  return line ? `${summary}\n${line}` : summary;
+}
+
 export function hydratePlaceholderItems<TItem>(
   optionsItems: TItem[] | undefined,
 ): TItem[] | undefined {

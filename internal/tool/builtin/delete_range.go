@@ -2,8 +2,6 @@ package builtin
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -51,6 +49,15 @@ func (d deleteRange) DeclareWriteAccess(args json.RawMessage) (tool.WriteAccessD
 }
 
 func (d deleteRange) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	var target struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(args, &target); err != nil {
+		return "", fmt.Errorf("invalid args: %w", err)
+	}
+	path := resolveIn(d.workDir, target.Path)
+	unlock := lockMutationPath(path)
+	defer unlock()
 	change, src, err := d.preview(ctx, args)
 	if err != nil {
 		return "", err
@@ -58,6 +65,9 @@ func (d deleteRange) Execute(ctx context.Context, args json.RawMessage) (string,
 	// preview ran the non-approving boundary check; the actual write needs the
 	// full one, which can gate a Reasonix-managed config target on user approval.
 	if err := confineWrite(ctx, effectiveWriteRoots(ctx, d.rootSet, d.roots), d.guard, d.managed, change.Path); err != nil {
+		return "", err
+	}
+	if err := src.requireObserved(ctx, d.overlay, change.Path); err != nil {
 		return "", err
 	}
 	// src carries the route and encoding the read came from, so the rewrite
@@ -189,25 +199,6 @@ func (d deleteRange) preview(ctx context.Context, args json.RawMessage) (diff.Ch
 	}
 
 	return diff.Build(target.path, target.original, newContent, diff.Modify), target.source, nil
-}
-
-// ResolveAnchoredTextTarget exposes the same validated target used by Preview
-// and Execute, without adding anything to the provider-visible tool contract.
-func (d deleteRange) ResolveAnchoredTextTarget(ctx context.Context, args json.RawMessage) (tool.AnchoredTextTargetInfo, error) {
-	target, err := d.resolveTarget(ctx, args)
-	if err != nil {
-		return tool.AnchoredTextTargetInfo{}, err
-	}
-	hashes := make([]string, 0, target.endLine-target.startLine+1)
-	for _, line := range target.lines[target.startLine : target.endLine+1] {
-		sum := sha256.Sum256([]byte(line))
-		hashes = append(hashes, hex.EncodeToString(sum[:]))
-	}
-	return tool.AnchoredTextTargetInfo{
-		Path: target.path, Inclusive: target.inclusive,
-		StartLine: target.startLine + 1, EndLine: target.endLine + 1,
-		LineHashes: hashes,
-	}, nil
 }
 
 // findUniqueLine returns the index of the line that equals target.

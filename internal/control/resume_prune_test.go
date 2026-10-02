@@ -33,7 +33,7 @@ func coldResumeFixture(t *testing.T, threshold time.Duration) (*agent.Session, s
 	}
 
 	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{ContextWindow: 1000, RecentKeep: 2, ArchiveDir: dir}, event.Discard)
-	c := New(Options{Executor: exec, SessionDir: dir, Label: "test"})
+	c := newOwnedTestController(t, Options{Executor: exec, SessionDir: dir, Label: "test"})
 	if threshold == 0 {
 		c.testCacheColdAfter = -1 // force cold
 	} else {
@@ -89,7 +89,7 @@ func TestColdResumeAfterClonedHistoryStaysInPlace(t *testing.T) {
 	resumed := loaded.CloneWithMessages(msgs)
 
 	exec := agent.New(nil, nil, agent.NewSession("new sys"), agent.Options{ContextWindow: 1000, RecentKeep: 2, ArchiveDir: dir}, event.Discard)
-	c := New(Options{Executor: exec, SessionDir: dir, Label: "test"})
+	c := newOwnedTestController(t, Options{Executor: exec, SessionDir: dir, Label: "test"})
 	c.testCacheColdAfter = -1 // force cold
 	c.Resume(resumed, path)
 

@@ -20,9 +20,9 @@ var supersededAppUpdateAfterBackupArchive = func(string) {}
 
 // ArchiveSupersededPendingAppBundleUpdate retires a legacy macOS transaction
 // only after a healthy desktop is already running from the transaction's exact
-// target bundle. It is intentionally limited to the two unrecoverable legacy
-// shapes: the rollback backup identity was never recorded, or the recorded
-// backup no longer exists. A surviving backup is content-bound and moved aside;
+// target bundle, and only for records the health commit cannot settle: no
+// recorded backup identity, a recorded backup that is gone, or a target already
+// reached whose record no longer verifies. A surviving backup is moved aside;
 // the original transaction is archived under Reasonix repair state. Neither is
 // deleted, so support can still inspect or manually recover the old bundle.
 func ArchiveSupersededPendingAppBundleUpdate(runningVersion string) (bool, error) {
@@ -142,10 +142,10 @@ func validateSupersededPendingAppBundleUpdate(tx *UpdateTransaction, runningVers
 	if err := validateUpdateTransaction(tx); err != nil {
 		return false, fmt.Errorf("archive superseded app update: invalid transaction: %w", err)
 	}
-	// A normal update prepares the transaction before this process shuts down;
-	// its backup is intentionally absent until the detached helper performs the
-	// swap. Never mistake that fresh handoff for a stale missing-backup record.
-	if tx.HandoffOwnerPID == os.Getpid() {
+	// A fresh handoff has no backup until the detached helper swaps the bundle.
+	// Its owner is this process under Wails and the Electron parent in host mode
+	// (desktop updateHandoffOwnerPID); either one means the record is live.
+	if tx.HandoffOwnerPID > 0 && (tx.HandoffOwnerPID == os.Getpid() || tx.HandoffOwnerPID == os.Getppid()) {
 		return false, nil
 	}
 	running := canonicalSemver(runningVersion)
@@ -165,7 +165,15 @@ func validateSupersededPendingAppBundleUpdate(tx *UpdateTransaction, runningVers
 	} else if err != nil {
 		return false, fmt.Errorf("archive superseded app update: inspect rollback backup: %w", err)
 	}
-	return false, nil
+	if semver.Compare(running, to) < 0 {
+		return false, nil
+	}
+	// The health commit owns a record it can still prove. One it cannot, such as
+	// a backup Finder wrote .DS_Store into, would pin every later update.
+	if semver.Compare(running, to) == 0 && pendingUpdateInstalledForHealth(tx) {
+		return false, nil
+	}
+	return true, nil
 }
 
 func archiveSupersededAppBundleBackup(tx *UpdateTransaction, transactionID string) (string, string, error) {

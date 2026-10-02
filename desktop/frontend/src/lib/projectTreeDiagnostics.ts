@@ -1,5 +1,5 @@
 import { asArray } from "./array";
-import { isRuntimeSessionNode, isTopicNode, projectTreeTopicRecoveryCopyCount } from "./projectTreeTopic";
+import { isRuntimeSessionNode, isTopicNode } from "./projectTreeTopic";
 import type { ProjectNode } from "./types";
 
 export type ProjectTreeSessionDiagnosticSummary = {
@@ -28,10 +28,12 @@ export type ProjectTreeSessionDiagnosticOptions = {
   tree: ProjectNode[];
   visibleTree: ProjectNode[];
   expanded: ReadonlySet<string>;
-  showAllTopics: ReadonlySet<string>;
-  classicTruncationActive: boolean;
   queryActive: boolean;
-  timeFilterActive: boolean;
+  expandedWindowCount?: number;
+  folderProjection?: (folder: ProjectNode, children: ProjectNode[]) => {
+    visible: ProjectNode[];
+    collapsed?: ProjectNode[];
+  };
   projectNodeKey: (node: ProjectNode, depth: number) => string;
   isActive?: (node: ProjectNode) => boolean;
   isUnread?: (node: ProjectNode) => boolean;
@@ -69,11 +71,6 @@ function collectCounters(
       if (isRuntimeSessionNode(node)) counters.runtimeSessions += 1;
       if (node.runtimeOnly) counters.runtimeOnlySessions += 1;
       if (node.recoveryState === "recovery_only") counters.recoveryOnlySessions += 1;
-      const recoveryCopies = projectTreeTopicRecoveryCopyCount(node);
-      if (recoveryCopies > 0) {
-        counters.recoveryCopySessions += 1;
-        counters.recoveryCopies += recoveryCopies;
-      }
       if (node.running) counters.runningSessions += 1;
       if (isUnread(node)) counters.unreadSessions += 1;
       if (node.pinned) counters.pinnedSessions += 1;
@@ -113,13 +110,13 @@ function collectVisible(
     }
 
     let childNodes = children;
-    if (isFolder(node) && options.classicTruncationActive) {
-      const showAll = options.showAllTopics.has(key);
-      const windowed = children.length <= 5 || showAll ? children : children.slice(0, 5);
-      if (windowed.length !== children.length) {
-        counters.hiddenByTruncation += countSessionRows(children.slice(windowed.length));
-      }
-      childNodes = windowed;
+    if (isFolder(node) && options.folderProjection) {
+      const projection = options.folderProjection(node, children);
+      const visibleKeys = new Set(projection.visible.map((child) => child.key));
+      const collapsedKeys = new Set((projection.collapsed ?? []).map((child) => child.key));
+      counters.hiddenByCollapsed += countSessionRows(children.filter((child) => collapsedKeys.has(child.key)));
+      counters.hiddenByTruncation += countSessionRows(children.filter((child) => !visibleKeys.has(child.key) && !collapsedKeys.has(child.key)));
+      childNodes = projection.visible;
     }
     collectVisible(childNodes, depth + 1, visible, options, counters);
   }
@@ -154,14 +151,13 @@ export function summarizeProjectTreeSessions(options: ProjectTreeSessionDiagnost
   const hiddenByFilter = Math.max(0, counters.workspaceSessions - countSessionRows(options.visibleTree));
   const hiddenSessions = Math.max(0, counters.workspaceSessions - visible.visibleSessions);
   let expandedFolders = 0;
-  let showAllFolders = 0;
+  const showAllFolders = options.expandedWindowCount ?? 0;
   for (const node of options.tree) {
     const walk = (current: ProjectNode[], depth: number) => {
       for (const item of current) {
         if (isFolder(item)) {
           const key = options.projectNodeKey(item, depth);
           if (options.queryActive || options.expanded.has(key)) expandedFolders += 1;
-          if (options.showAllTopics.has(key)) showAllFolders += 1;
         }
         walk(asArray(item.children), depth + 1);
       }

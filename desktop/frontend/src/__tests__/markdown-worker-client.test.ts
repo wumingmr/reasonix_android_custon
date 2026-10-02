@@ -7,11 +7,11 @@
 
 import {
   MarkdownWorkerClient,
-  type MarkdownParseRequest,
   type MarkdownParseResponse,
   type MarkdownWorkerLike,
 } from "../lib/markdownWorkerClient";
 import type { MarkdownBlock, MarkdownParseResult } from "../lib/markdownPipeline";
+import type { MarkdownWorkerRequest } from "../lib/markdownWorkerProtocol";
 
 let passed = 0;
 let failed = 0;
@@ -42,9 +42,9 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 class FakeWorker implements MarkdownWorkerLike {
   onmessage: ((event: MessageEvent<MarkdownParseResponse>) => void) | null = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
-  sent: MarkdownParseRequest[] = [];
+  sent: MarkdownWorkerRequest[] = [];
   terminated = 0;
-  postMessage(request: MarkdownParseRequest): void {
+  postMessage(request: MarkdownWorkerRequest): void {
     this.sent.push(request);
   }
   respond(id: number, result: MarkdownParseResult): void {
@@ -63,7 +63,13 @@ class FakeWorker implements MarkdownWorkerLike {
   }
 }
 
-const BLOCKS: MarkdownBlock[] = [{ key: "b0", children: [{ type: "text", value: "hi" }] }];
+function sentAt(worker: FakeWorker, index: number): MarkdownWorkerRequest {
+  const request = worker.sent[index];
+  if (!request) throw new Error(`missing worker request ${index}`);
+  return request;
+}
+
+const BLOCKS: MarkdownBlock[] = [{ key: "b0", fingerprint: 1, children: [{ type: "text", value: "hi" }] }];
 const RESULT: MarkdownParseResult = { blocks: BLOCKS, selectionText: "hi", selectionRevision: 1 };
 
 console.log("\nmarkdown worker client");
@@ -79,6 +85,78 @@ console.log("\nmarkdown worker client");
   const result = await handle.promise;
   eq(result, RESULT, "response resolves with the full parse result");
   eq(client.pendingCount, 0, "pending map drains after a response");
+}
+
+// ── retained document protocol avoids full-source transfer and worker churn ─
+{
+  const worker = new FakeWorker();
+  const client = new MarkdownWorkerClient({ createWorker: () => Promise.resolve(worker) });
+  const open = client.parseDocument("doc-a", "hello", { priority: "interactive" });
+  await tick();
+  eq(sentAt(worker, 0).op, "open", "first document parse opens worker state");
+  worker.respond(sentAt(worker, 0).id, RESULT);
+  await open.promise;
+
+  const append = client.parseDocument("doc-a", "hello world", { priority: "interactive" });
+  await tick();
+  const appendRequest = sentAt(worker, 1);
+  eq(appendRequest.op, "append", "prefix growth uses append protocol");
+  eq("text" in appendRequest ? appendRequest.text : undefined, " world", "append transfers only the new suffix");
+  worker.respond(appendRequest.id, RESULT);
+  await append.promise;
+
+  const replace = client.parseDocument("doc-a", "reset", { priority: "visible" });
+  await tick();
+  eq(sentAt(worker, 2).op, "replace", "non-prefix edits replace worker state");
+  worker.respond(sentAt(worker, 2).id, RESULT);
+  await replace.promise;
+
+  const finalize = client.parseDocument("doc-a", "reset!", { final: true });
+  await tick();
+  eq(sentAt(worker, 3).op, "finalize", "settled content finalizes with an authoritative snapshot");
+  worker.respond(sentAt(worker, 3).id, RESULT);
+  await finalize.promise;
+  client.releaseDocument("doc-a");
+  eq(sentAt(worker, 4).op, "release", "unmounted document releases worker-owned state");
+}
+
+// ── a superseded live document drops stale output without respawning worker ─
+{
+  const worker = new FakeWorker();
+  const client = new MarkdownWorkerClient({ createWorker: () => Promise.resolve(worker) });
+  const stale = client.parseDocument("doc-live", "one", { priority: "interactive" });
+  await tick();
+  const first = sentAt(worker, 0);
+  stale.cancel();
+  eq(await stale.promise, undefined, "superseded document parse settles quietly");
+  const current = client.parseDocument("doc-live", "one two", { priority: "interactive" });
+  eq(worker.terminated, 0, "superseding a live document keeps the worker alive");
+  worker.respond(first.id, RESULT);
+  await tick();
+  const second = sentAt(worker, 1);
+  eq(second.op, "append", "newest snapshot resumes from worker-owned prefix");
+  worker.respond(second.id, RESULT);
+  eq(await current.promise, RESULT, "newest live parse publishes normally");
+}
+
+// ── interactive work overtakes queued background history ───────────────────
+{
+  const worker = new FakeWorker();
+  const client = new MarkdownWorkerClient({ createWorker: () => Promise.resolve(worker) });
+  const active = client.parse("active");
+  await tick();
+  const background = client.parseDocument("doc-bg", "background", { priority: "background" });
+  const interactive = client.parseDocument("doc-live", "interactive", { priority: "interactive" });
+  worker.respond(sentAt(worker, 0).id, RESULT);
+  await active.promise;
+  await tick();
+  const prioritized = sentAt(worker, 1);
+  eq("documentId" in prioritized ? prioritized.documentId : undefined, "doc-live", "interactive document overtakes background parse");
+  worker.respond(prioritized.id, RESULT);
+  await interactive.promise;
+  await tick();
+  worker.respond(sentAt(worker, 2).id, RESULT);
+  await background.promise;
 }
 
 // ── cancellation drops the stale response ────────────────────────────────────

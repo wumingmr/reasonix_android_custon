@@ -63,7 +63,7 @@ func TestMixedContextualBatchExecutesAvailableCallsOnce(t *testing.T) {
 	}
 }
 
-func TestRepeatedMixedContextualBatchStopsAllCalls(t *testing.T) {
+func TestRepeatedMixedContextualBatchKeepsIndependentCallsRunning(t *testing.T) {
 	var executions int32
 	reg := tool.NewRegistry()
 	reg.Add(unavailableTool{fakeTool: fakeTool{name: "phase_tool", readOnly: true}, calls: &executions})
@@ -71,32 +71,39 @@ func TestRepeatedMixedContextualBatchStopsAllCalls(t *testing.T) {
 	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
 		{toolCallChunk("phase-1", "phase_tool", `{}`), toolCallChunk("read-1", "read_file", `{}`), {Type: provider.ChunkDone}},
 		{toolCallChunk("phase-2", "phase_tool", `{}`), toolCallChunk("read-2", "read_file", `{}`), {Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "answer after repeated local failures"}, {Type: provider.ChunkDone}},
 	}}
 	a := New(prov, reg, NewSession("sys"), Options{}, event.Discard)
-	err := a.Run(context.Background(), "inspect the file")
-	if err == nil || !strings.Contains(err.Error(), "context-unavailable tools") {
-		t.Fatalf("repeated contextual batch error = %v", err)
+	if err := a.Run(context.Background(), "inspect the file"); err != nil {
+		t.Fatalf("repeated contextual batch failed: %v", err)
 	}
-	if got := atomic.LoadInt32(&executions); got != 1 {
-		t.Fatalf("available tool was re-executed after repair: %d", got)
+	if got := atomic.LoadInt32(&executions); got != 2 {
+		t.Fatalf("available tool executions = %d, want both independent calls", got)
 	}
-	if got := lastToolResult(a.Session(), "read_file"); !strings.Contains(got, "called again") {
-		t.Fatalf("second legal call was not paired with stop result: %q", got)
+	if got := lastToolResult(a.Session(), "phase_tool"); !strings.Contains(got, "unavailable") {
+		t.Fatalf("second unavailable call result = %q", got)
+	}
+	if prov.call != 3 {
+		t.Fatalf("provider calls = %d, want a normal final round", prov.call)
 	}
 }
 
-func TestRepeatedPureContextualCallWithVisibleAnswerFinishes(t *testing.T) {
+func TestRepeatedPureContextualCallWithAnswerRemainsRecoverable(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Add(unavailableTool{fakeTool: fakeTool{name: "phase_tool", readOnly: true}})
 	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
 		{toolCallChunk("phase-1", "phase_tool", `{}`), {Type: provider.ChunkDone}},
-		{{Type: provider.ChunkText, Text: "visible answer"}, toolCallChunk("phase-2", "phase_tool", `{}`), {Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "占位 Lorem 占位 ipsum — the request is fully handled."}, toolCallChunk("phase-2", "phase_tool", `{}`), {Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "final answer"}, {Type: provider.ChunkDone}},
 	}}
 	a := New(prov, reg, NewSession("sys"), Options{}, event.Discard)
 	if err := a.Run(context.Background(), "answer normally"); err != nil {
-		t.Fatalf("visible answer after repeated contextual call failed: %v", err)
+		t.Fatalf("repeated contextual call failed: %v", err)
 	}
-	if got := lastAssistantContent(a.Session()); got != "visible answer" {
-		t.Fatalf("final answer = %q", got)
+	if prov.call != 3 {
+		t.Fatalf("provider calls = %d, want a normal final round", prov.call)
+	}
+	if got := lastToolResult(a.Session(), "phase_tool"); !strings.Contains(got, "unavailable") {
+		t.Fatalf("second unavailable call result = %q", got)
 	}
 }

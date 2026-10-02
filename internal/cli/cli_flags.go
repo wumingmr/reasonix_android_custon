@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -127,21 +128,21 @@ func normalizeOptionalResumeArg(args []string) []string {
 	return out
 }
 
-func resolveSessionQuery(dir, query string) (string, error) {
+func resolveSessionQuery(dir, query string) (cliResumeTarget, error) {
 	query = strings.TrimSpace(query)
 	if query == "" || query == resumePickerSentinel {
-		return "", nil
+		return cliResumeTarget{}, nil
 	}
 	if info, err := os.Stat(query); err == nil && !info.IsDir() {
 		abs, absErr := filepath.Abs(query)
 		if absErr != nil {
-			return "", absErr
+			return cliResumeTarget{}, absErr
 		}
-		return abs, nil
+		return cliResumeTarget{path: abs}, nil
 	}
 	sessions, err := agent.ListSessions(dir)
 	if err != nil {
-		return "", fmt.Errorf("list sessions: %w", err)
+		return cliResumeTarget{}, fmt.Errorf("list sessions: %w", err)
 	}
 	// Opaque machine session IDs (session_<hex>) are what --events-jsonl and
 	// `session show --json` expose. Match them before preview/partial search so
@@ -149,42 +150,71 @@ func resolveSessionQuery(dir, query string) (string, error) {
 	if looksLikeMachineSessionID(query) {
 		key, keyErr := loadMachineIdentityKey()
 		if keyErr != nil {
-			return "", fmt.Errorf("machine identity is unavailable: %w", keyErr)
+			return cliResumeTarget{}, fmt.Errorf("machine identity is unavailable: %w", keyErr)
 		}
 		for _, session := range sessions {
 			if machineSessionIDWithKey(agent.BranchID(session.Path), key) == query {
-				return session.Path, nil
+				return cliResumeTarget{path: session.Path}, nil
 			}
 		}
-		return "", fmt.Errorf("no session matches %q", query)
+		return cliResumeTarget{}, fmt.Errorf("no session matches %q", query)
 	}
-	lower := strings.ToLower(query)
-	var exact []string
-	var partial []string
+	// Final-format sessions are the same universe the picker offers: engine
+	// mirrors folded and migrated sources hidden, so a transcript and the
+	// identity it was imported under never compete as two matches.
+	scan := scanWorkspaceResume(context.Background(), dir)
+	var exact []resumeEntry
 	for _, session := range sessions {
 		id := agent.BranchID(session.Path)
 		base := filepath.Base(session.Path)
 		if query == id || query == base || query == session.Path {
-			exact = append(exact, session.Path)
-			continue
+			exact = append(exact, resumeEntry{session: session, target: cliResumeTarget{path: session.Path}})
 		}
-		haystack := strings.ToLower(strings.Join([]string{id, base, session.CustomTitle, session.TopicTitle, session.Preview}, "\n"))
-		if strings.Contains(haystack, lower) {
-			partial = append(partial, session.Path)
+	}
+	for _, entry := range scan.canonical {
+		if id := entry.target.ref.SessionID; query == id || query == cliCanonicalRoute(id) {
+			exact = append(exact, entry)
 		}
 	}
 	matches := exact
 	if len(matches) == 0 {
-		matches = partial
+		lower := strings.ToLower(query)
+		for _, session := range scan.legacy {
+			haystack := strings.ToLower(strings.Join([]string{
+				agent.BranchID(session.Path), filepath.Base(session.Path), session.CustomTitle, session.TopicTitle, session.Preview,
+			}, "\n"))
+			if strings.Contains(haystack, lower) {
+				matches = append(matches, resumeEntry{session: session, target: cliResumeTarget{path: session.Path}})
+			}
+		}
+		for _, entry := range scan.canonical {
+			haystack := strings.ToLower(strings.Join([]string{
+				entry.target.ref.SessionID, entry.session.CustomTitle, entry.session.Preview,
+			}, "\n"))
+			if strings.Contains(haystack, lower) {
+				matches = append(matches, entry)
+			}
+		}
 	}
 	switch len(matches) {
 	case 0:
-		return "", fmt.Errorf("no session matches %q", query)
+		return cliResumeTarget{}, fmt.Errorf("no session matches %q", query)
 	case 1:
-		return matches[0], nil
+		return matches[0].target, nil
 	default:
-		return "", fmt.Errorf("session query %q is ambiguous (%d matches)", query, len(matches))
+		return cliResumeTarget{}, &ambiguousSessionQueryError{query: query, matches: matches}
 	}
+}
+
+// ambiguousSessionQueryError carries the conversations a --resume query
+// matched, so the caller can list them or offer them in the picker.
+type ambiguousSessionQueryError struct {
+	query   string
+	matches []resumeEntry
+}
+
+func (e *ambiguousSessionQueryError) Error() string {
+	return fmt.Sprintf("session query %q is ambiguous (%d matches)", e.query, len(e.matches))
 }
 
 // looksLikeMachineSessionID reports whether query is the opaque HMAC form

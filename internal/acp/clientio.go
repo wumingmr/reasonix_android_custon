@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -22,13 +23,14 @@ type requester interface {
 // a missing capability or a transport/client error, so the tools fall back to
 // their local implementations instead of failing the call.
 type clientIO struct {
-	conn      requester
-	sessionID string
-	caps      ClientCapabilities
+	recoveryID string
+	conn       requester
+	sessionID  string
+	caps       ClientCapabilities
 }
 
 func newClientIO(conn requester, sessionID string, caps ClientCapabilities) *clientIO {
-	return &clientIO{conn: conn, sessionID: sessionID, caps: caps}
+	return &clientIO{recoveryID: fmt.Sprintf("%d:%d", os.Getpid(), time.Now().UnixNano()), conn: conn, sessionID: sessionID, caps: caps}
 }
 
 // hasAny reports whether the client offered anything clientIO can use; callers
@@ -45,6 +47,12 @@ func (c *clientIO) fileOverlay() *clientIO {
 		return c
 	}
 	return nil
+}
+
+// FileOverlayIdentity binds structured file observations to this exact ACP
+// connection/session instance. A rebuilt clientIO gets a fresh recoveryID.
+func (c *clientIO) FileOverlayIdentity() string {
+	return "acp:" + c.sessionID + ":" + c.recoveryID
 }
 
 // terminalRunner returns c when the client offers terminals, else nil.
@@ -189,3 +197,6 @@ func (c *clientIO) terminalOutput(ctx context.Context, id TerminalIDParams) (str
 	}
 	return out, res.ExitStatus
 }
+
+// RecoveryIdentity scopes verification to the original live ACP transport.
+func (c *clientIO) RecoveryIdentity() string { return c.recoveryID }

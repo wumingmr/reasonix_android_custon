@@ -69,20 +69,6 @@ func TestRenderEmitsOnlyStepsAsListItems(t *testing.T) {
 	}
 }
 
-func TestRenderListItemsMatchTheProjectedTodos(t *testing.T) {
-	p := richPlan()
-	items := listItems(Render(p))
-	todos := ProjectTodos(p)
-	if len(items) != len(todos) {
-		t.Fatalf("rendered %d list items but projected %d todos", len(items), len(todos))
-	}
-	for i := range todos {
-		if items[i] != todos[i].Content {
-			t.Errorf("item %d = %q, todo = %q", i, items[i], todos[i].Content)
-		}
-	}
-}
-
 func TestRenderKeepsStepDetailOffTheList(t *testing.T) {
 	out := Render(richPlan())
 	for _, want := range []string{

@@ -11,6 +11,11 @@ import (
 	"time"
 )
 
+// A loaded Windows runner can take far longer than the shell's own work to echo
+// a marker or reap a ConPTY child. Keep the outer responsiveness bound generous;
+// the test still fails if the process never responds.
+const conptySmokeWait = 30 * time.Second
+
 func TestWindowsTerminalProcessConPTYSmoke(t *testing.T) {
 	available, reason := terminalPlatformAvailable()
 	if !available {
@@ -38,40 +43,42 @@ func TestWindowsTerminalProcessConPTYSmoke(t *testing.T) {
 
 	const marker = "reasonix-conpty-smoke"
 	readResult := make(chan error, 1)
+	markerSeen := make(chan struct{})
 	go func() {
 		var output bytes.Buffer
 		buf := make([]byte, 4096)
+		seen := false
 		for {
 			n, readErr := proc.Read(buf)
 			if n > 0 {
 				output.Write(buf[:n])
-				if bytes.Contains(output.Bytes(), []byte(marker)) {
-					readResult <- nil
-					return
+				if !seen && bytes.Contains(output.Bytes(), []byte(marker)) {
+					seen = true
+					close(markerSeen)
 				}
 			}
 			if readErr != nil {
-				readResult <- fmt.Errorf("read ConPTY output: %w", readErr)
+				if !seen {
+					readResult <- fmt.Errorf("read ConPTY output: %w", readErr)
+				} else {
+					readResult <- nil
+				}
 				return
 			}
 		}
 	}()
 
-	if _, err := proc.Write([]byte("echo " + marker + "\r\n")); err != nil {
+	// Queue exit with the marker command so seeing terminal input echo cannot
+	// race a second write. Continue draining output until the process is closed.
+	if _, err := proc.Write([]byte("echo " + marker + "\r\nexit\r\n")); err != nil {
 		t.Fatalf("write ConPTY command: %v", err)
 	}
 	select {
-	case err := <-readResult:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(10 * time.Second):
+	case <-markerSeen:
+	case <-time.After(conptySmokeWait):
 		t.Fatal("timed out waiting for ConPTY output")
 	}
 
-	if _, err := proc.Write([]byte("exit\r\n")); err != nil {
-		t.Fatalf("write ConPTY exit: %v", err)
-	}
 	waitResult := make(chan error, 1)
 	go func() {
 		_, waitErr := proc.Wait()
@@ -82,7 +89,18 @@ func TestWindowsTerminalProcessConPTYSmoke(t *testing.T) {
 		if err != nil {
 			t.Fatalf("wait for ConPTY exit: %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(conptySmokeWait):
 		t.Fatal("timed out waiting for ConPTY process exit")
+	}
+	if err := proc.Close(); err != nil {
+		t.Fatalf("close ConPTY process: %v", err)
+	}
+	select {
+	case err := <-readResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(conptySmokeWait):
+		t.Fatal("timed out waiting for ConPTY reader to finish")
 	}
 }

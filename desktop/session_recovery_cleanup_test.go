@@ -172,7 +172,7 @@ func TestRecoveryCopyCleanupRevalidatesInBackend(t *testing.T) {
 	}
 
 	purgeParent, purgeBranch, purgeMsgs := forkDesktopRecoveryBranch(t, dir, "purge-guard")
-	if err := app.DeleteSession(purgeBranch); err != nil {
+	if err := app.deleteSession(purgeBranch); err != nil {
 		t.Fatalf("DeleteSession divergent branch: %v", err)
 	}
 	purgeTrashPath := filepath.Join(dir, sessionTrashDir, filepath.Base(purgeBranch), filepath.Base(purgeBranch))

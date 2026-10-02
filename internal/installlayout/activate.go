@@ -8,26 +8,35 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
 	"time"
 
-	"reasonix/internal/filelock"
+	filelock "reasonix/internal/identitylock"
 )
 
 const activationLockName = ".reasonix-activate.lock"
 
 // Member is one file to publish into a version directory.
 type Member struct {
-	// Name is a base name only (no directories). Must be on the allow-list.
+	// Name is a forward-slash path relative to the version directory: a
+	// whitelisted base name, or app/... for the shell tree.
 	Name string
 	// Path is a regular file on the same volume as the install root (preferred)
 	// or any readable regular file that will be copied.
 	Path string
 	// Mode is the destination file mode. Zero defaults to 0o755.
 	Mode os.FileMode
+}
+
+// WindowsRootEntrySources maps verified payload files to installed entry points.
+// The payload keeps its historical names for already installed update helpers.
+type WindowsRootEntrySources struct {
+	LauncherPath string
+	CLIEntryPath string
 }
 
 // ActivationRequest describes a one-shot version publish + pointer swap.
@@ -38,8 +47,8 @@ type ActivationRequest struct {
 	// share a global pending file.
 	RequestID string
 	Members   []Member
-	// RequiredNames, when non-empty, is the exact member whitelist. Defaults to
-	// the platform desktop release unit.
+	// RequiredNames, when non-empty, is the exact member whitelist and may list
+	// app/ tree members. Defaults to the platform desktop release unit.
 	RequiredNames []string
 	// RootMembers are stable entry points published at InstallRoot before the
 	// current.json commit. They are rolled back if any later step fails.
@@ -47,6 +56,14 @@ type ActivationRequest struct {
 	// RequiredRootNames is the exact root-entry whitelist when RootMembers is
 	// non-empty. Callers must provide it explicitly.
 	RequiredRootNames []string
+	// WindowsRootEntries selects canonical entries and preserves an existing
+	// legacy launcher under the activation lock. Mutually exclusive with the
+	// explicit RootMembers/RequiredRootNames fields.
+	WindowsRootEntries *WindowsRootEntrySources
+	// CheckProcesses runs under the activation lock before file replacement and
+	// immediately before pointer publication. The caller owns its coordination
+	// lock first. A late failure rolls back the staged version and root entries.
+	CheckProcesses func() error
 }
 
 // AllowedVersionMembers returns the default files inside versions/<version>/.
@@ -71,38 +88,26 @@ func StagingDirName(version, nonce string) string {
 // finally swaps current.json. Any failure before the pointer swap leaves the
 // previous active version unchanged.
 func ActivateVersion(req ActivationRequest) error {
-	installRoot, err := cleanInstallRoot(req.InstallRoot)
+	return activateVersion(req, filelock.Acquire)
+}
+
+func activateVersion(req ActivationRequest, acquireLock func(context.Context, string) (func(), error)) error {
+	installRoot, required, err := validateActivationRequest(req)
 	if err != nil {
 		return err
-	}
-	if err := ValidateVersionName(req.Version); err != nil {
-		return err
-	}
-	required := req.RequiredNames
-	if len(required) == 0 {
-		required = AllowedVersionMembers()
-	}
-	if err := validateMembers(req.Members, required); err != nil {
-		return err
-	}
-	if len(req.RootMembers) > 0 {
-		if len(req.RequiredRootNames) == 0 {
-			return fmt.Errorf("installlayout: root member whitelist is required")
-		}
-		if err := validateMembers(req.RootMembers, req.RequiredRootNames); err != nil {
-			return fmt.Errorf("installlayout: root entries: %w", err)
-		}
-	} else if len(req.RequiredRootNames) > 0 {
-		return fmt.Errorf("installlayout: root member whitelist provided without root members")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	unlock, err := filelock.Acquire(ctx, filepath.Join(installRoot, activationLockName))
+	unlock, err := acquireLock(ctx, filepath.Join(installRoot, activationLockName))
 	if err != nil {
 		return fmt.Errorf("installlayout: acquire activation lock: %w", err)
 	}
 	defer unlock()
+
+	if err := resolveWindowsRootEntries(&req, installRoot); err != nil {
+		return err
+	}
 
 	versionsRoot := filepath.Join(installRoot, VersionsDirName)
 	if err := os.MkdirAll(versionsRoot, 0o755); err != nil {
@@ -119,9 +124,10 @@ func ActivateVersion(req ActivationRequest) error {
 	stagingName := StagingDirName(req.Version, nonce)
 	stagingPath := filepath.Join(versionsRoot, stagingName)
 	rootStagingPath := filepath.Join(versionsRoot, ".root-"+stagingName)
-	// Always start clean for this request id/nonce.
-	_ = os.RemoveAll(stagingPath)
-	_ = os.RemoveAll(rootStagingPath)
+	// Always start clean for this request id/nonce: a retried installer reuses
+	// both names, so a lingering scanner lock here would fail every attempt.
+	_ = removeAllRetry(stagingPath)
+	_ = removeAllRetry(rootStagingPath)
 	if err := os.Mkdir(stagingPath, 0o755); err != nil {
 		return fmt.Errorf("installlayout: create staging dir: %w", err)
 	}
@@ -138,16 +144,8 @@ func ActivateVersion(req ActivationRequest) error {
 			return err
 		}
 	}
-	// Ensure every required name exists as a regular file (no symlinks).
-	for _, name := range required {
-		path := filepath.Join(stagingPath, name)
-		info, err := os.Lstat(path)
-		if err != nil {
-			return fmt.Errorf("installlayout: staged member %s: %w", name, err)
-		}
-		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("installlayout: staged member %s is not a regular file", name)
-		}
+	if err := verifyStagedMembers(stagingPath, required); err != nil {
+		return err
 	}
 	if len(req.RootMembers) > 0 {
 		if err := os.Mkdir(rootStagingPath, 0o755); err != nil {
@@ -160,6 +158,11 @@ func ActivateVersion(req ActivationRequest) error {
 		}
 	}
 
+	if req.CheckProcesses != nil {
+		if err := req.CheckProcesses(); err != nil {
+			return err
+		}
+	}
 	finalRel := VersionDirRelative(req.Version)
 	finalPath := filepath.Join(installRoot, filepath.FromSlash(finalRel))
 	var versionBackup string
@@ -167,32 +170,21 @@ func ActivateVersion(req ActivationRequest) error {
 		// A previous partial publish of the same version is replaced only from
 		// staging after validation. Never swap current.json first.
 		versionBackup = finalPath + ".replaced-" + nonce
-		_ = os.RemoveAll(versionBackup)
-		if err := os.Rename(finalPath, versionBackup); err != nil {
+		_ = removeAllRetry(versionBackup)
+		if err := renameRetry(finalPath, versionBackup); err != nil {
 			return fmt.Errorf("installlayout: displace existing version dir: %w", err)
 		}
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("installlayout: inspect version dir: %w", err)
 	}
 
-	if err := os.Rename(stagingPath, finalPath); err != nil {
+	if err := renameRetry(stagingPath, finalPath); err != nil {
 		if versionBackup != "" {
-			_ = os.Rename(versionBackup, finalPath)
+			_ = renameRetry(versionBackup, finalPath)
 		}
 		return fmt.Errorf("installlayout: publish version directory: %w", err)
 	}
-	rollbackVersion := func() error {
-		var rollbackErr error
-		if err := os.RemoveAll(finalPath); err != nil {
-			rollbackErr = errors.Join(rollbackErr, err)
-		}
-		if versionBackup != "" {
-			if err := os.Rename(versionBackup, finalPath); err != nil {
-				rollbackErr = errors.Join(rollbackErr, err)
-			}
-		}
-		return rollbackErr
-	}
+	rollbackVersion := versionRollback(finalPath, versionBackup)
 
 	rollbackRoots, commitRoots, err := publishRootEntries(installRoot, rootStagingPath, req.RootMembers)
 	if err != nil {
@@ -207,6 +199,11 @@ func ActivateVersion(req ActivationRequest) error {
 		ActiveVersion: req.Version,
 		ActiveDir:     finalRel,
 	}
+	if req.CheckProcesses != nil {
+		if err := req.CheckProcesses(); err != nil {
+			return errors.Join(err, rollbackRoots(), rollbackVersion())
+		}
+	}
 	if err := WriteCurrent(installRoot, ptr); err != nil {
 		rootErr := rollbackRoots()
 		versionErr := rollbackVersion()
@@ -219,9 +216,93 @@ func ActivateVersion(req ActivationRequest) error {
 	committed = true
 	commitRoots()
 	if versionBackup != "" {
-		_ = os.RemoveAll(versionBackup)
+		_ = removeAllRetry(versionBackup)
 	}
 	return nil
+}
+
+func validateActivationRequest(req ActivationRequest) (string, []string, error) {
+	if req.WindowsRootEntries != nil && (len(req.RootMembers) != 0 || len(req.RequiredRootNames) != 0) {
+		return "", nil, fmt.Errorf("installlayout: Windows root entries and explicit root members are mutually exclusive")
+	}
+	installRoot, err := cleanInstallRoot(req.InstallRoot)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := ValidateVersionName(req.Version); err != nil {
+		return "", nil, err
+	}
+	required := req.RequiredNames
+	if len(required) == 0 {
+		required = AllowedVersionMembers()
+	}
+	if err := validateMembers(req.Members, required, true); err != nil {
+		return "", nil, err
+	}
+	if len(req.RootMembers) > 0 {
+		if len(req.RequiredRootNames) == 0 {
+			return "", nil, fmt.Errorf("installlayout: root member whitelist is required")
+		}
+		if err := validateMembers(req.RootMembers, req.RequiredRootNames, false); err != nil {
+			return "", nil, fmt.Errorf("installlayout: root entries: %w", err)
+		}
+	} else if len(req.RequiredRootNames) > 0 {
+		return "", nil, fmt.Errorf("installlayout: root member whitelist provided without root members")
+	}
+	return installRoot, required, nil
+}
+
+func resolveWindowsRootEntries(req *ActivationRequest, installRoot string) error {
+	if req.WindowsRootEntries == nil {
+		return nil
+	}
+	// Inspect only after acquiring the same lock that protects publication.
+	// A concurrent activation must not make the preserve decision stale.
+	rootMembers, requiredRootNames, err := windowsRootMembers(installRoot, *req.WindowsRootEntries)
+	if err != nil {
+		return err
+	}
+	if err := validateMembers(rootMembers, requiredRootNames, false); err != nil {
+		return fmt.Errorf("installlayout: Windows root entries: %w", err)
+	}
+	req.RootMembers = rootMembers
+	req.RequiredRootNames = requiredRootNames
+	return nil
+}
+
+func windowsRootMembers(root string, sources WindowsRootEntrySources) ([]Member, []string, error) {
+	members := []Member{
+		{Name: "Reasonix.exe", Path: sources.LauncherPath},
+		{Name: "reasonix-cli.exe", Path: sources.CLIEntryPath},
+	}
+	names := []string{"Reasonix.exe", "reasonix-cli.exe"}
+	const legacy = "reasonix-launcher.exe"
+	info, err := os.Lstat(filepath.Join(root, legacy))
+	if err == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, nil, fmt.Errorf("installlayout: legacy launcher is not a regular file")
+		}
+		members = append(members, Member{Name: legacy, Path: sources.LauncherPath})
+		names = append(names, legacy)
+	} else if !os.IsNotExist(err) {
+		return nil, nil, fmt.Errorf("installlayout: inspect legacy launcher: %w", err)
+	}
+	return members, names, nil
+}
+
+func versionRollback(finalPath, versionBackup string) func() error {
+	return func() error {
+		var rollbackErr error
+		if err := removeAllRetry(finalPath); err != nil {
+			rollbackErr = errors.Join(rollbackErr, err)
+		}
+		if versionBackup != "" {
+			if err := renameRetry(versionBackup, finalPath); err != nil {
+				rollbackErr = errors.Join(rollbackErr, err)
+			}
+		}
+		return rollbackErr
+	}
 }
 
 func publishRootEntries(installRoot, stagingRoot string, members []Member) (rollback func() error, commit func(), err error) {
@@ -242,11 +323,11 @@ func publishRootEntries(installRoot, stagingRoot string, members []Member) (roll
 		var rollbackErr error
 		for _, v := range slices.Backward(replacements) {
 			r := v
-			if err := os.Remove(r.destination); err != nil && !os.IsNotExist(err) {
+			if err := removeRetry(r.destination); err != nil && !os.IsNotExist(err) {
 				rollbackErr = errors.Join(rollbackErr, err)
 			}
 			if r.hadOriginal {
-				if err := os.Rename(r.backup, r.destination); err != nil {
+				if err := renameRetry(r.backup, r.destination); err != nil {
 					rollbackErr = errors.Join(rollbackErr, err)
 				}
 			}
@@ -263,7 +344,7 @@ func publishRootEntries(installRoot, stagingRoot string, members []Member) (roll
 				_ = rollbackFn()
 				return nil, nil, fmt.Errorf("installlayout: root entry %s is not a regular file", name)
 			}
-			if err := os.Rename(destination, r.backup); err != nil {
+			if err := renameRetry(destination, r.backup); err != nil {
 				_ = rollbackFn()
 				return nil, nil, fmt.Errorf("installlayout: back up root entry %s: %w", name, err)
 			}
@@ -273,7 +354,7 @@ func publishRootEntries(installRoot, stagingRoot string, members []Member) (roll
 			return nil, nil, fmt.Errorf("installlayout: inspect root entry %s: %w", name, statErr)
 		}
 		replacements = append(replacements, r)
-		if err := os.Rename(source, destination); err != nil {
+		if err := renameRetry(source, destination); err != nil {
 			rollbackErr := rollbackFn()
 			return nil, nil, errors.Join(
 				fmt.Errorf("installlayout: publish root entry %s: %w", name, err),
@@ -281,7 +362,7 @@ func publishRootEntries(installRoot, stagingRoot string, members []Member) (roll
 			)
 		}
 	}
-	return rollbackFn, func() { _ = os.RemoveAll(backupRoot) }, nil
+	return rollbackFn, func() { _ = removeAllRetry(backupRoot) }, nil
 }
 
 func wrapRollbackError(label string, err error) error {
@@ -291,7 +372,28 @@ func wrapRollbackError(label string, err error) error {
 	return fmt.Errorf("installlayout: %s: %w", label, err)
 }
 
-func validateMembers(members []Member, required []string) error {
+// ValidateMemberName accepts a base name or a forward-slash path under app/
+// whose segments are never empty, ".", "..", or contain a backslash or colon.
+func ValidateMemberName(name string) error {
+	invalid := fmt.Errorf("installlayout: member name %q is invalid", name)
+	if name == "" || name != strings.TrimSpace(name) || strings.ContainsAny(name, "\\:\x00") {
+		return invalid
+	}
+	if path.IsAbs(name) || filepath.IsAbs(name) || path.Clean(name) != name {
+		return invalid
+	}
+	for part := range strings.SplitSeq(name, "/") {
+		if part == "" || part == "." || part == ".." {
+			return invalid
+		}
+	}
+	if strings.Contains(name, "/") && !strings.HasPrefix(name, AppShellDirName+"/") {
+		return fmt.Errorf("installlayout: member %q must be under %s/", name, AppShellDirName)
+	}
+	return nil
+}
+
+func validateMembers(members []Member, required []string, allowTree bool) error {
 	if len(members) == 0 {
 		return fmt.Errorf("installlayout: no members to activate")
 	}
@@ -301,9 +403,12 @@ func validateMembers(members []Member, required []string) error {
 	}
 	seen := make(map[string]struct{}, len(members))
 	for _, m := range members {
+		if err := ValidateMemberName(m.Name); err != nil {
+			return err
+		}
 		name := normalizeMemberName(m.Name)
-		if name == "" || name != filepath.Base(name) || strings.Contains(name, `\`) {
-			return fmt.Errorf("installlayout: member name %q is invalid", m.Name)
+		if !allowTree && strings.Contains(name, "/") {
+			return fmt.Errorf("installlayout: member %q must be a base name", m.Name)
 		}
 		if _, ok := allowed[name]; !ok {
 			return fmt.Errorf("installlayout: member %q is not allowed", m.Name)
@@ -335,6 +440,23 @@ func normalizeMemberName(name string) string {
 	return name
 }
 
+func verifyStagedMembers(stagingPath string, required []string) error {
+	for _, name := range required {
+		rel := filepath.FromSlash(name)
+		if err := rejectSymlinkPathComponents(stagingPath, rel); err != nil {
+			return fmt.Errorf("installlayout: staged member %s: %w", name, err)
+		}
+		info, err := os.Lstat(filepath.Join(stagingPath, rel))
+		if err != nil {
+			return fmt.Errorf("installlayout: staged member %s: %w", name, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("installlayout: staged member %s is not a regular file", name)
+		}
+	}
+	return nil
+}
+
 func publishMember(stagingDir string, m Member) error {
 	src := filepath.Clean(strings.TrimSpace(m.Path))
 	info, err := os.Lstat(src)
@@ -348,7 +470,10 @@ func publishMember(stagingDir string, m Member) error {
 	if mode == 0 {
 		mode = 0o755
 	}
-	dst := filepath.Join(stagingDir, filepath.Base(m.Name))
+	dst := filepath.Join(stagingDir, filepath.FromSlash(m.Name))
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return fmt.Errorf("installlayout: create %s parent: %w", m.Name, err)
+	}
 	if err := copyFileRegular(src, dst, mode); err != nil {
 		return fmt.Errorf("installlayout: copy %s: %w", m.Name, err)
 	}
@@ -361,8 +486,11 @@ func copyFileRegular(src, dst string, mode os.FileMode) error {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
-	if err != nil {
+	var out *os.File
+	if err := retryTransient(func() (openErr error) {
+		out, openErr = os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+		return openErr
+	}); err != nil {
 		return err
 	}
 	closed := false
@@ -418,8 +546,9 @@ func stagingNonce(requestID string) (string, error) {
 	return hex.EncodeToString(raw[:]), nil
 }
 
-// CleanupStaleStaging removes versions/.staging-* directories older than maxAge.
-// Safe to call anytime; never touches published version directories or current.json.
+// CleanupStaleStaging removes versions/.staging-* and *.replaced-* directories
+// older than maxAge. Safe to call anytime; never touches published version
+// directories or current.json.
 func CleanupStaleStaging(installRoot string, maxAge time.Duration) error {
 	installRoot, err := cleanInstallRoot(installRoot)
 	if err != nil {
@@ -439,7 +568,7 @@ func CleanupStaleStaging(installRoot string, maxAge time.Duration) error {
 	cutoff := time.Now().Add(-maxAge)
 	for _, e := range entries {
 		name := e.Name()
-		if !strings.HasPrefix(name, ".staging-") {
+		if !strings.HasPrefix(name, ".staging-") && !strings.Contains(name, ".replaced-") {
 			continue
 		}
 		path := filepath.Join(versionsRoot, name)

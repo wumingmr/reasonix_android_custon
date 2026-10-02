@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"reasonix/internal/evidence"
-	"reasonix/internal/taskcontract"
 )
 
 // Verdict is the report's headline. Partial is terminal: the work is proven
@@ -33,15 +32,6 @@ func (v Verdict) String() string {
 	}
 }
 
-// Criterion is one acceptance criterion and the proof the ledger attached.
-type Criterion struct {
-	ID       string
-	Text     string
-	Required bool
-	Status   taskcontract.Status
-	Proofs   int // successful evidence refs attached to it
-}
-
 // Change is one path the turn mutated. Reviewed reports whether the changed
 // result was inspected after the last write to it.
 type Change struct {
@@ -53,9 +43,12 @@ type Change struct {
 // means it last ran before the newest mutation, so it proves nothing about
 // the current tree.
 type Verification struct {
-	Command string
-	Passed  bool
-	Stale   bool
+	Command     string
+	Passed      bool
+	Stale       bool
+	ToolCallID  string
+	Interrupted bool
+	ExitCode    *int
 }
 
 // GapKind classifies one thing the report refuses to present as verified.
@@ -105,12 +98,12 @@ type Gap struct {
 
 // Report is the host's completion record for one turn.
 type Report struct {
-	Verdict Verdict
-	Risk    taskcontract.Risk
+	// AssessmentKind distinguishes observed facts from historical quality assessments.
+	AssessmentKind string
+	Verdict        Verdict
 	// Mutations counts every successful mutating receipt, including ones that
 	// named no path; Changes lists only the paths.
 	Mutations     int
-	Criteria      []Criterion
 	Changes       []Change
 	Verifications []Verification
 	Gaps          []Gap
@@ -120,53 +113,18 @@ type Report struct {
 	Risks   []string
 }
 
-// Build derives the report from a contract and the turn's receipts. Both may
-// be nil: a nil contract means nothing declared acceptance criteria, which
-// leaves the ledger alone to speak.
-func Build(c *taskcontract.Contract, ledger *evidence.Ledger) Report {
-	return BuildAt(c, ledger, "", nil)
-}
-
-// BuildAt is Build with an explicit workspace so absolute project paths stay
-// workspace mutations and scratch paths do not.
-func BuildAt(c *taskcontract.Contract, ledger *evidence.Ledger, workspaceRoot string, scratchRoots []string) Report {
+// BuildFacts records observations and model declarations without assigning a
+// quality verdict or inventing checks that were never run.
+func BuildFacts(ledger *evidence.Ledger, workspaceRoot string, scratchRoots []string) Report {
 	receipts := ledger.Receipts()
 	rep := Report{
-		Mutations:     mutationsOf(receipts, workspaceRoot, scratchRoots),
-		Criteria:      criteriaOf(c),
-		Changes:       changesOf(ledger, receipts, workspaceRoot, scratchRoots),
-		Verifications: verificationsOf(receipts, workspaceRoot, scratchRoots),
+		AssessmentKind: "facts",
+		Verdict:        VerdictUnknown,
+		Mutations:      mutationsOf(receipts, workspaceRoot, scratchRoots),
+		Changes:        changesOf(ledger, receipts, workspaceRoot, scratchRoots),
+		Verifications:  verificationsOf(receipts, workspaceRoot, scratchRoots),
 	}
-	if c != nil {
-		rep.Risk = c.Risk
-	}
-	rep.Gaps = gapsOf(rep, c)
-	rep = reconcile(rep, claimOf(receipts), receipts)
-	rep.Verdict = verdictOf(rep, c)
-	return rep
-}
-
-func criteriaOf(c *taskcontract.Contract) []Criterion {
-	if c == nil {
-		return nil
-	}
-	out := make([]Criterion, 0, len(c.Requirements))
-	for _, req := range c.Requirements {
-		proofs := 0
-		for _, ref := range req.Evidence {
-			if ref.Success {
-				proofs++
-			}
-		}
-		out = append(out, Criterion{
-			ID:       req.ID,
-			Text:     req.Text,
-			Required: req.Required,
-			Status:   req.Status,
-			Proofs:   proofs,
-		})
-	}
-	return out
+	return reconcile(rep, claimOf(receipts), receipts)
 }
 
 // changesOf lists mutated paths in first-write order and asks the ledger
@@ -223,110 +181,27 @@ func verificationsOf(receipts []evidence.Receipt, workspaceRoot string, scratchR
 	at := map[string]int{}
 	for i, r := range receipts {
 		command := strings.TrimSpace(r.Command)
-		if command == "" || !evidence.IsVerificationCommand(command) {
+		if command == "" || r.Verification == evidence.VerificationNotVerification || r.Verification == evidence.VerificationNotRun || !evidence.IsVerificationCommand(command) {
 			continue
 		}
 		if _, seen := at[command]; !seen {
 			at[command] = len(out)
 			out = append(out, Verification{Command: command})
 		}
-		out[at[command]].Passed = r.Success
+		out[at[command]].Passed = r.Success && (r.ExitCode == nil || *r.ExitCode == 0) && r.Verification != evidence.VerificationFailed
 		out[at[command]].Stale = i < lastMutation
+		out[at[command]].ToolCallID = r.ToolCallID
+		out[at[command]].Interrupted = r.Interrupted
+		out[at[command]].ExitCode = r.ExitCode
 	}
 	return out
 }
 
-func gapsOf(rep Report, c *taskcontract.Contract) []Gap {
-	var gaps []Gap
-	for _, cr := range rep.Criteria {
-		if cr.Required && cr.Status != taskcontract.Satisfied {
-			gaps = append(gaps, Gap{GapUnprovenCriterion, fmt.Sprintf("%s: %s", cr.ID, cr.Text)})
-		}
-	}
-	missingCheck := false
-	if c != nil {
-		for _, check := range c.Checks {
-			if check.Status == taskcontract.Satisfied {
-				continue
-			}
-			missingCheck = true
-			gaps = append(gaps, Gap{GapMissingCheck, checkLabel(check)})
-		}
-	}
-	proven := false
-	for _, v := range rep.Verifications {
-		if v.Passed && !v.Stale {
-			proven = true
-		}
-	}
-	for _, v := range rep.Verifications {
-		switch {
-		case !v.Passed:
-			gaps = append(gaps, Gap{GapFailedVerification, v.Command})
-		case v.Stale && !proven:
-			// Superseded commands matter only while nothing fresh has proven
-			// the tree; listing them after a green run is the pedantry that
-			// teaches people to skip receipts.
-			gaps = append(gaps, Gap{GapStaleVerification, v.Command})
-		}
-	}
-	// Only report the blanket gap when no declared check already said it: a
-	// contract with checks states the same absence in more specific words.
-	if rep.Mutations > 0 && !proven && !missingCheck {
-		gaps = append(gaps, Gap{GapUnverifiedChange, "no verification passed after the latest change"})
-	}
-	for _, ch := range rep.Changes {
-		if !ch.Reviewed {
-			gaps = append(gaps, Gap{GapUnreviewedChange, ch.Path})
-		}
-	}
-	return gaps
-}
-
-func checkLabel(check taskcontract.Check) string {
-	switch {
-	case check.Command != "":
-		return check.Command
-	case check.Kind == taskcontract.CheckMutation:
-		return "the required change"
-	default:
-		return "any verification"
-	}
-}
-
-func verdictOf(rep Report, c *taskcontract.Contract) Verdict {
-	declared := c != nil && (len(c.Requirements) > 0 || len(c.Checks) > 0)
-	switch {
-	case !declared && rep.Mutations == 0 && len(rep.Verifications) == 0 && rep.Claimed.Empty():
-		return VerdictUnknown
-	case c != nil && !c.Complete():
-		return VerdictIncomplete
-	case len(rep.Gaps) > 0:
-		return VerdictPartial
-	default:
-		return VerdictDone
-	}
-}
-
-// Summary is the one-line report headline for logs and host notes.
+// Summary describes observed quantities without assigning quality.
 func (r Report) Summary() string {
-	satisfied := 0
-	required := 0
-	for _, cr := range r.Criteria {
-		if !cr.Required {
-			continue
-		}
-		required++
-		if cr.Status == taskcontract.Satisfied {
-			satisfied++
-		}
-	}
-	return fmt.Sprintf("%s · criteria %d/%d · changes %d · verifications %d · gaps %d",
-		r.Verdict, satisfied, required, len(r.Changes), len(r.Verifications), len(r.Gaps))
+	return fmt.Sprintf("%d changes, %d checks", len(r.Changes), len(r.Verifications))
 }
 
-// GapKinds lists the distinct gap kinds present, in declaration order, so a
-// content-free audit can carry what kind of proof is missing.
 func (r Report) GapKinds() []string {
 	seen := map[GapKind]bool{}
 	var out []string

@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"hash/crc32"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -58,6 +60,43 @@ func TestResolveMarkdownImageForTabWorkspaceAndRemotePolicy(t *testing.T) {
 	}
 	if blocked := app.ResolveMarkdownImageForTab("", "http://localhost/private.png"); blocked.ErrorCode != "blocked-remote" || blocked.URL != "" {
 		t.Fatalf("localhost image was not blocked: %+v", blocked)
+	}
+}
+
+func TestResolveMarkdownImageSelectsPercentAndSpaceNamesExactly(t *testing.T) {
+	original, _ := os.Getwd()
+	defer os.Chdir(original)
+	workspace := t.TempDir()
+	if err := os.Chdir(workspace); err != nil {
+		t.Fatal(err)
+	}
+	percentBody := append(append([]byte(nil), markdownImageTestPNG...), []byte("percent-file")...)
+	spaceBody := append(append([]byte(nil), markdownImageTestPNG...), []byte("space-file")...)
+	if err := os.WriteFile("raw%20name.png", percentBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("raw name.png", spaceBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	handler := app.workspaceMediaMiddleware()(http.NotFoundHandler())
+	for _, tc := range []struct {
+		source string
+		name   string
+		body   []byte
+	}{
+		{source: "raw%2520name.png", name: "raw%20name.png", body: percentBody},
+		{source: "raw%20name.png", name: "raw name.png", body: spaceBody},
+	} {
+		view := app.ResolveMarkdownImageForTab("", tc.source)
+		if view.ErrorCode != "" || view.Filename != tc.name {
+			t.Fatalf("resolve %q = %+v", tc.source, view)
+		}
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, view.URL, nil))
+		if recorder.Code != http.StatusOK || !bytes.Equal(recorder.Body.Bytes(), tc.body) {
+			t.Fatalf("GET %q = %d %q, want exact %q", view.URL, recorder.Code, recorder.Body.Bytes(), tc.body)
+		}
 	}
 }
 

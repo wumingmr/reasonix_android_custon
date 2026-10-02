@@ -3,10 +3,10 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
-import { installGlobalCrashHandlers, installPerformancePressureMonitor } from "./lib/crash";
-import { installWailsNonFileDragErrorSuppression } from "./lib/bridge";
+import { installPerformancePressureMonitor } from "./lib/crash";
+import { installGlobalCrashHandlers } from "./lib/globalCrashHandlers";
+import { desktopHost } from "./lib/desktopHost";
 import { installBreadcrumbConsoleHook } from "./lib/breadcrumbs";
-import { installMessageSelectionCopy } from "./lib/messageSelectionCopy";
 import { installPerfDebugHook } from "./lib/perfDebug";
 import { LocaleProvider, preloadDetectedLocale } from "./lib/i18n";
 import { ToastProvider } from "./lib/toast";
@@ -19,7 +19,6 @@ import appShellStylesheetURL from "./styles.css?url";
 
 // Install first so startup/runtime failures paint a useful error instead of a
 // featureless webview background, with the recent console trail attached.
-installWailsNonFileDragErrorSuppression();
 installGlobalCrashHandlers();
 installBreadcrumbConsoleHook();
 installPerformancePressureMonitor();
@@ -68,17 +67,16 @@ function prewarmFontFallbacks() {
 }
 prewarmFontFallbacks();
 
-installMessageSelectionCopy(document);
 
-// Inside the Wails shell, suppress the webview's default right-click menu — its
+// Inside the desktop shell, suppress the webview's default right-click menu — its
 // Reload / Back / Inspect entries are easy to hit by accident and can reset or
 // navigate away from the app. Text inputs keep their native Cut/Copy/Paste menu;
 // the terminal area is exempt so its own context menu can offer copy/paste.
 // Left alone in a plain browser (pnpm dev) so devtools stay reachable.
-if (typeof window !== "undefined" && window.runtime) {
+if (desktopHost().kind !== "none") {
   window.addEventListener("contextmenu", (e) => {
     const target = e.target as HTMLElement | null;
-    if (!target?.closest("input, textarea") && !target?.closest(".terminal-view")) e.preventDefault();
+    if (!target?.closest("input, textarea, .chat-transcript") && !target?.closest(".terminal-view")) e.preventDefault();
   });
 }
 

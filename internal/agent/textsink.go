@@ -9,6 +9,7 @@ import (
 	"reasonix/internal/billing"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
+	"reasonix/internal/tool"
 )
 
 // TextSink renders a turn's event stream to ANSI text on an io.Writer. It is
@@ -97,7 +98,7 @@ func (s *TextSink) Emit(e event.Event) {
 			name := e.Tool.Name
 			if e.Tool.Name == "use_capability" {
 				name = textSinkToolHead(e.Tool.Name, e.Tool.Args)
-			} else if e.Tool.Name == "bash" && e.Tool.Execution != nil && e.Tool.Execution.Shell != "" {
+			} else if tool.IsShellToolName(e.Tool.Name) && e.Tool.Execution != nil && e.Tool.Execution.Shell != "" {
 				name = e.Tool.Execution.Shell
 				switch e.Tool.Execution.Shell {
 				case "powershell":
@@ -175,6 +176,14 @@ func (s *TextSink) Emit(e event.Event) {
 }
 
 func textSinkToolHead(name, args string) string {
+	if strings.EqualFold(strings.TrimSpace(name), "pwsh") {
+		var call struct {
+			Description string `json:"description"`
+		}
+		if json.Unmarshal([]byte(args), &call) == nil && strings.TrimSpace(call.Description) != "" {
+			return "pwsh " + strings.TrimSpace(call.Description)
+		}
+	}
 	if name != "use_capability" {
 		return name + " " + CompactArgs(args)
 	}

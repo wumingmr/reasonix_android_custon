@@ -9,14 +9,14 @@ import (
 	"sync"
 	"time"
 
-	"reasonix/internal/filelock"
 	"reasonix/internal/fileutil"
+	filelock "reasonix/internal/identitylock"
 	"reasonix/internal/mcplaunch"
 )
 
-// MCP activation is the durable enable/disable switch for installed servers.
-// Install remains the authorization action; this file only records whether an
-// already authorized server is currently enabled for the catalog.
+// MCP activation is the durable enable/disable switch for configured servers.
+// For a user-installed server install is the authorization; for one a project
+// declares, the enable decision recorded here is.
 
 const (
 	mcpActivationVersion  = 1
@@ -40,6 +40,7 @@ type MCPActivationOverride struct {
 	Owner     string             `json:"owner,omitempty"`
 	Server    string             `json:"server"`
 	Enabled   bool               `json:"enabled"`
+	Identity  string             `json:"identity,omitempty"` // approved declaration digest, project servers only
 }
 
 // MCPActivationFile is the on-disk shape of $REASONIX_HOME/mcp-activation.json.
@@ -165,51 +166,45 @@ func (s *MCPActivationStore) Clear(override MCPActivationOverride) error {
 
 // Lookup reports whether an override exists and its enabled value.
 func (s *MCPActivationStore) Lookup(scope MCPActivationScope, workspace, source, owner, server string) (enabled bool, found bool, err error) {
-	file, err := s.Load()
-	if err != nil {
-		return false, false, err
-	}
-	want := activationKey(normalizeActivationOverride(MCPActivationOverride{
+	row, found, err := s.lookupRow(MCPActivationOverride{
 		Scope:     scope,
 		Workspace: workspace,
 		Source:    source,
 		Owner:     owner,
 		Server:    server,
-	}))
-	for _, existing := range file.Overrides {
-		if activationKey(existing) == want {
-			return existing.Enabled, true, nil
-		}
-	}
-	return false, false, nil
+	})
+	return row.Enabled, found, err
 }
 
-// IsEnabled resolves the product enable state for one plugin entry.
-// An explicit activation override wins; otherwise auto_start=false maps to
-// disabled and true/nil map to enabled.
-func (s *MCPActivationStore) IsEnabled(entry PluginEntry, workspace string) (bool, error) {
-	scope, workspaceFP, source, owner := ActivationIdentity(entry, workspace)
-	if s != nil {
-		if enabled, found, err := s.Lookup(scope, workspaceFP, source, owner, entry.Name); err != nil {
-			return false, err
-		} else if found {
-			return enabled, nil
+func (s *MCPActivationStore) lookupRow(want MCPActivationOverride) (MCPActivationOverride, bool, error) {
+	file, err := s.Load()
+	if err != nil {
+		return MCPActivationOverride{}, false, err
+	}
+	key := activationKey(normalizeActivationOverride(want))
+	for _, existing := range file.Overrides {
+		if activationKey(existing) == key {
+			return existing, true, nil
 		}
 	}
-	return entry.ShouldAutoStart(), nil
+	return MCPActivationOverride{}, false, nil
 }
 
 // SetServerEnabled records a durable enable/disable override for entry.
 func (s *MCPActivationStore) SetServerEnabled(entry PluginEntry, workspace string, enabled bool) error {
 	scope, workspaceFP, source, owner := ActivationIdentity(entry, workspace)
-	return s.SetEnabled(MCPActivationOverride{
+	override := MCPActivationOverride{
 		Scope:     scope,
 		Workspace: workspaceFP,
 		Source:    source,
 		Owner:     owner,
 		Server:    entry.Name,
 		Enabled:   enabled,
-	})
+	}
+	if scope == MCPActivationWorkspace {
+		override.Identity = projectDeclarationDigest(entry, workspace)
+	}
+	return s.SetEnabled(override)
 }
 
 // ClearServer removes the activation override for entry, restoring defaults.
@@ -269,7 +264,9 @@ func activationIdentity(entry PluginEntry, workspace string) (MCPActivationScope
 		owner = strings.TrimSpace(source)
 		return MCPActivationGlobal, "", source, owner
 	}
-	if entry.Source.ProjectScoped() || source == "workspace_config" || source == "project" || source == ".mcp.json" {
+	// Unknown provenance counts as repository-declared: Source is assigned only
+	// by a plugin merge that succeeded.
+	if entry.Source.ProjectScoped() || source == "" || source == "workspace_config" || source == "project" || source == ".mcp.json" {
 		return MCPActivationWorkspace, mcplaunch.WorkspaceFingerprint(workspace), source, owner
 	}
 	return MCPActivationGlobal, "", source, owner
@@ -280,6 +277,7 @@ func normalizeActivationOverride(o MCPActivationOverride) MCPActivationOverride 
 	o.Source = strings.TrimSpace(o.Source)
 	o.Owner = strings.TrimSpace(o.Owner)
 	o.Workspace = strings.TrimSpace(o.Workspace)
+	o.Identity = strings.TrimSpace(o.Identity)
 	switch o.Scope {
 	case MCPActivationWorkspace:
 		// keep

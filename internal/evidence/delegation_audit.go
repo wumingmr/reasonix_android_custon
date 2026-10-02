@@ -14,8 +14,8 @@ type DelegationAudit struct {
 	ClaimViolations int
 	// HasReport is false when the child ended in prose instead of a typed claim.
 	HasReport bool
-	// AdjudicatedStatus is the status the host was willing to back, and
-	// Downgrades counts the criterion claims it refused.
+	// Historical host judgments; retained for old records only. New runs leave
+	// these unset and display the model's report separately from execution facts.
 	AdjudicatedStatus string
 	Downgrades        int
 	// ParentScopeHints counts directories the delegation narrowed the search to.

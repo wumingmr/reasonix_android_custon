@@ -49,6 +49,11 @@ func PrepareArgs(spec Spec, args []string, sessionTemp string) Prepared {
 	}
 }
 
+// PrepareShellArgs is the interactive-shell counterpart of PrepareShell.
+func PrepareShellArgs(spec Spec, args []string, sessionTemp string) Prepared {
+	return PrepareArgs(spec, args, sessionTemp)
+}
+
 func withSessionTemp(spec Spec, sessionTemp string) Spec {
 	if sessionTemp == "" {
 		return spec

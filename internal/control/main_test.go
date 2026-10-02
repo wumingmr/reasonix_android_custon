@@ -1,6 +1,7 @@
 package control
 
 import (
+	"fmt"
 	"os"
 	"testing"
 
@@ -18,6 +19,14 @@ func TestMain(m *testing.M) {
 		_ = os.Setenv("REASONIX_CREDENTIALS_STORE", "file")
 	}
 	goleak.VerifyTestMain(m, goleak.Cleanup(func(exitCode int) {
+		// A controller test that never closes its session service keeps the
+		// writer lease, which only Windows reports as a t.TempDir failure.
+		if leak := testenv.VerifyNoLeakedFileLocks(); leak != nil {
+			fmt.Fprintln(os.Stderr, leak)
+			if exitCode == 0 {
+				exitCode = 1
+			}
+		}
 		cleanupUserState()
 		os.Exit(exitCode)
 	}))

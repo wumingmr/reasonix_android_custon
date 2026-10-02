@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"reasonix/internal/config"
-	"reasonix/internal/filelock"
+	filelock "reasonix/internal/identitylock"
 )
 
 // StartupState is the legacy startup-state.json shape written by v1.18-v1.19.

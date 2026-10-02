@@ -3,6 +3,15 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  contributorLogins,
+  creditSuffix,
+  githubRefLookup,
+  reportWarnings,
+  resolveCredits,
+  tokenFromEnvironment,
+  unresolvedError,
+} from "./release-credits.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const defaultCatalogPath = resolve(repoRoot, "release-notes/releases.json");
@@ -12,6 +21,9 @@ const changeKinds = ["new", "improved", "fixed"];
 const itemKinds = new Set(["new", "improved", "fixed", "security"]);
 const releaseChannels = new Set(["stable", "prerelease"]);
 const releaseStatuses = new Set(["reviewed", "published"]);
+const releaseTargetOrder = ["desktop", "cli", "site", "service"];
+const releaseTargets = new Set(releaseTargetOrder);
+const releaseTargetingRequiredFrom = "1.31.4";
 
 function invariant(condition, message) {
   if (!condition) throw new Error(message);
@@ -34,19 +46,49 @@ function validateRefs(refs, path) {
   for (const ref of refs) invariant(Number.isInteger(ref) && ref > 0, `${path} contains invalid PR number ${ref}`);
 }
 
-function validateItem(item, path, { kind = false, href = false, level = false } = {}) {
+function validateItem(item, path, { kind = false, href = false, level = false, targets = false } = {}) {
   invariant(isObject(item), `${path} must be an object`);
   for (const field of localizedFields) validateLocalized(item[field], `${path}.${field}`);
   if (kind) invariant(itemKinds.has(item.kind), `${path}.kind is invalid`);
   if (href) invariant(typeof item.href === "string" && /^https:\/\//.test(item.href), `${path}.href must be HTTPS`);
   if (level) invariant(item.level === "info" || item.level === "warning", `${path}.level is invalid`);
+  if (targets || item.targets !== undefined) {
+    invariant(Array.isArray(item.targets) && item.targets.length > 0, `${path}.targets must be a non-empty array`);
+    invariant(new Set(item.targets).size === item.targets.length, `${path}.targets contains duplicates`);
+    for (const target of item.targets) invariant(releaseTargets.has(target), `${path}.targets contains invalid target ${target}`);
+    const sorted = releaseTargetOrder.filter((target) => item.targets.includes(target));
+    invariant(sorted.every((target, index) => target === item.targets[index]), `${path}.targets must use canonical order`);
+  }
   validateRefs(item.refs, `${path}.refs`);
+}
+
+function releaseItems(release) {
+  return [
+    ...release.highlights,
+    ...changeKinds.flatMap((kind) => release.changes[kind]),
+    ...release.upgrade,
+    ...release.risks,
+  ];
+}
+
+function itemTargetsUnion(release) {
+  const targets = new Set(releaseItems(release).flatMap((item) => item.targets || []));
+  return releaseTargetOrder.filter((target) => targets.has(target));
 }
 
 function semverParts(version) {
   const match = String(version).match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/);
   invariant(match, `invalid version ${version}`);
   return [Number(match[1]), Number(match[2]), Number(match[3]), match[4] || ""];
+}
+
+function isCoreVersionAtLeast(version, minimum) {
+  const current = semverParts(version);
+  const floor = semverParts(minimum);
+  for (let index = 0; index < 3; index += 1) {
+    if (current[index] !== floor[index]) return current[index] > floor[index];
+  }
+  return true;
 }
 
 export function compareVersionsDesc(a, b) {
@@ -126,6 +168,16 @@ export function validateCatalog(catalog) {
         );
       }
     }
+    const targetingRequiredByVersion = isCoreVersionAtLeast(release.version, releaseTargetingRequiredFrom);
+    if (targetingRequiredByVersion) {
+      invariant(
+        release.targetingVersion === 1,
+        `${path}.targetingVersion must be 1 for v${releaseTargetingRequiredFrom} and newer`,
+      );
+    } else if (release.targetingVersion !== undefined) {
+      invariant(release.targetingVersion === 1, `${path}.targetingVersion is invalid`);
+    }
+    const targetsRequired = release.targetingVersion === 1;
     validateLocalized(release.title, `${path}.title`);
     validateLocalized(release.summary, `${path}.summary`);
     invariant(Array.isArray(release.surfaces) && release.surfaces.length > 0, `${path}.surfaces must not be empty`);
@@ -133,18 +185,36 @@ export function validateCatalog(catalog) {
     invariant(Array.isArray(release.guides), `${path}.guides must be an array`);
     release.guides.forEach((item, itemIndex) => validateItem(item, `${path}.guides[${itemIndex}]`, { href: true }));
     invariant(Array.isArray(release.highlights) && release.highlights.length > 0, `${path}.highlights must not be empty`);
-    release.highlights.forEach((item, itemIndex) => validateItem(item, `${path}.highlights[${itemIndex}]`, { kind: true }));
+    release.highlights.forEach((item, itemIndex) =>
+      validateItem(item, `${path}.highlights[${itemIndex}]`, { kind: true, targets: targetsRequired }),
+    );
     invariant(isObject(release.changes), `${path}.changes must be an object`);
     for (const changeKind of changeKinds) {
       invariant(Array.isArray(release.changes[changeKind]), `${path}.changes.${changeKind} must be an array`);
       release.changes[changeKind].forEach((item, itemIndex) =>
-        validateItem(item, `${path}.changes.${changeKind}[${itemIndex}]`),
+        validateItem(item, `${path}.changes.${changeKind}[${itemIndex}]`, { targets: targetsRequired }),
       );
     }
     invariant(Array.isArray(release.upgrade), `${path}.upgrade must be an array`);
-    release.upgrade.forEach((item, itemIndex) => validateItem(item, `${path}.upgrade[${itemIndex}]`, { level: true }));
+    release.upgrade.forEach((item, itemIndex) =>
+      validateItem(item, `${path}.upgrade[${itemIndex}]`, { level: true, targets: targetsRequired }),
+    );
     invariant(Array.isArray(release.risks), `${path}.risks must be an array`);
-    release.risks.forEach((item, itemIndex) => validateItem(item, `${path}.risks[${itemIndex}]`));
+    release.risks.forEach((item, itemIndex) =>
+      validateItem(item, `${path}.risks[${itemIndex}]`, { targets: targetsRequired }),
+    );
+    if (targetsRequired) {
+      const derivedTargets = itemTargetsUnion(release);
+      invariant(
+        derivedTargets.includes("desktop") || derivedTargets.includes("cli"),
+        `${path} must contain at least one Desktop or CLI update`,
+      );
+      invariant(
+        derivedTargets.length === release.surfaces.length &&
+          derivedTargets.every((target, index) => target === release.surfaces[index]),
+        `${path}.surfaces must equal the canonical union of item targets`,
+      );
+    }
     invariant(Array.isArray(release.contributors), `${path}.contributors must be an array`);
     invariant(isObject(release.links), `${path}.links must be an object`);
     for (const link of ["github", "compare", "download"]) {
@@ -176,18 +246,91 @@ function localized(value, lang) {
   return value[lang] || value.en;
 }
 
-function refsSuffix(refs = []) {
+function refsSuffix(refs = [], credits) {
   if (!refs.length) return "";
-  return ` (${refs.map((ref) => `[#${ref}](https://github.com/esengine/DeepSeek-Reasonix/pull/${ref})`).join(", ")})`;
+  return ` (${refs
+    .map((ref) => `[#${ref}](https://github.com/esengine/DeepSeek-Reasonix/pull/${ref})${creditSuffix(credits.get(ref))}`)
+    .join(", ")})`;
 }
 
-function renderItems(items, lang) {
+function targetLabel(target) {
+  return { desktop: "Desktop", cli: "CLI", site: "Site", service: "Service" }[target] || target;
+}
+
+function targetsPrefix(item) {
+  if (!item.targets?.length) return "";
+  return `**[${item.targets.map(targetLabel).join(" · ")}]** `;
+}
+
+function renderItems(items, lang, credits) {
   return items
-    .map((item) => `- **${localized(item.title, lang)}** — ${localized(item.body, lang)}${refsSuffix(item.refs)}`)
+    .map(
+      (item) =>
+        `- ${targetsPrefix(item)}**${localized(item.title, lang)}** — ${localized(item.body, lang)}${refsSuffix(item.refs, credits)}`,
+    )
     .join("\n");
 }
 
-export function renderGitHubRelease(release, lang = "zh") {
+function hasTarget(item, target) {
+  return item.targets?.includes(target) || false;
+}
+
+function targetItemCount(release, target) {
+  return releaseItems(release).filter((item) => hasTarget(item, target)).length;
+}
+
+function appendTargetSection(lines, release, target, lang, credits) {
+  const isZh = lang === "zh";
+  const title = target === "desktop"
+    ? (isZh ? "桌面端更新" : "Desktop updates")
+    : (isZh ? "CLI 端更新" : "CLI updates");
+  lines.push(`## ${title}`, "");
+
+  const highlights = release.highlights.filter((item) => hasTarget(item, target));
+  if (highlights.length) {
+    lines.push(`### ${isZh ? "重点内容" : "Highlights"}`, "", renderItems(highlights, lang, credits), "");
+  }
+  const headings = {
+    new: isZh ? "新增" : "New",
+    improved: isZh ? "改进" : "Improved",
+    fixed: isZh ? "修复" : "Fixed",
+  };
+  for (const kind of changeKinds) {
+    const items = release.changes[kind].filter((item) => hasTarget(item, target));
+    if (items.length) lines.push(`### ${headings[kind]}`, "", renderItems(items, lang, credits), "");
+  }
+
+  if (!highlights.length && !changeKinds.some((kind) => release.changes[kind].some((item) => hasTarget(item, target)))) {
+    const noTargetedItems = targetItemCount(release, target) === 0;
+    lines.push(
+      target === "cli" && noTargetedItems
+        ? (isZh ? "本版本没有 CLI 相关功能、改进或修复，CLI 用户可按需跳过。" : "This release has no CLI features, improvements, or fixes; CLI users may skip it if preferred.")
+        : (isZh ? "此板块没有功能或修复条目；相关说明请查看下方升级提醒和风险提示。" : "No feature or fix entries are listed here; see the upgrade and risk notes below."),
+      "",
+    );
+  }
+}
+
+function appendOtherTargetSection(lines, release, lang, credits) {
+  const isZh = lang === "zh";
+  const isOtherOnly = (item) => item.targets?.length && !hasTarget(item, "desktop") && !hasTarget(item, "cli");
+  const highlights = release.highlights.filter(isOtherOnly);
+  const changes = Object.fromEntries(changeKinds.map((kind) => [kind, release.changes[kind].filter(isOtherOnly)]));
+  if (!highlights.length && !changeKinds.some((kind) => changes[kind].length)) return;
+
+  lines.push(`## ${isZh ? "其他项目更新" : "Other project updates"}`, "");
+  if (highlights.length) lines.push(renderItems(highlights, lang, credits), "");
+  for (const kind of changeKinds) {
+    if (changes[kind].length) lines.push(renderItems(changes[kind], lang, credits), "");
+  }
+}
+
+export function releaseRefs(release) {
+  return releaseItems(release).flatMap((item) => item.refs || []);
+}
+
+// credits maps a ref to its lookup result; a ref absent from it renders plain.
+export function renderGitHubRelease(release, lang = "zh", credits = new Map()) {
   const isZh = lang === "zh";
   const isPreview = release.channel === "prerelease";
   const channelLabel = isPreview ? (isZh ? "预览版" : "Preview") : (isZh ? "稳定版" : "Stable");
@@ -219,43 +362,39 @@ export function renderGitHubRelease(release, lang = "zh") {
     "",
     `${isZh ? "发布日期" : "Released"}：${release.date}`,
     "",
-    `## ${isZh ? "重点内容" : "Highlights"}`,
-    "",
-    renderItems(release.highlights, lang),
-    "",
   );
 
-  const headings = {
-    new: isZh ? "新功能" : "New",
-    improved: isZh ? "改进" : "Improved",
-    fixed: isZh ? "修复" : "Fixed",
-  };
-  for (const kind of changeKinds) {
-    const items = release.changes[kind];
-    if (!items.length) continue;
-    lines.push(`## ${headings[kind]}`, "", renderItems(items, lang), "");
+  if (release.targetingVersion === 1) {
+    lines.push(
+      `**Desktop ${targetItemCount(release, "desktop")} · CLI ${targetItemCount(release, "cli")}**`,
+      "",
+    );
+    appendTargetSection(lines, release, "desktop", lang, credits);
+    appendTargetSection(lines, release, "cli", lang, credits);
+    appendOtherTargetSection(lines, release, lang, credits);
+  } else {
+    lines.push(`## ${isZh ? "重点内容" : "Highlights"}`, "", renderItems(release.highlights, lang, credits), "");
+    const headings = {
+      new: isZh ? "新功能" : "New",
+      improved: isZh ? "改进" : "Improved",
+      fixed: isZh ? "修复" : "Fixed",
+    };
+    for (const kind of changeKinds) {
+      const items = release.changes[kind];
+      if (!items.length) continue;
+      lines.push(`## ${headings[kind]}`, "", renderItems(items, lang, credits), "");
+    }
   }
 
   lines.push(`## ${isZh ? "升级提醒" : "Upgrade notes"}`, "");
-  if (release.upgrade.length) lines.push(renderItems(release.upgrade, lang));
+  if (release.upgrade.length) lines.push(renderItems(release.upgrade, lang, credits));
   else lines.push(isZh ? "本版本无需手动迁移。" : "No manual migration is required.");
   lines.push("");
 
   lines.push(`## ${isZh ? "风险提示" : "Risk notes"}`, "");
-  if (release.risks.length) lines.push(renderItems(release.risks, lang));
+  if (release.risks.length) lines.push(renderItems(release.risks, lang, credits));
   else lines.push(isZh ? "当前没有需要额外操作的已知风险。" : "There are no known risks requiring extra action.");
   lines.push("");
-
-  if (release.contributors.length) {
-    lines.push(
-      `## ${isZh ? "致谢" : "Thanks"}`,
-      "",
-      `${isZh ? "感谢本版本的贡献者" : "Thanks to the contributors in this release"}：${release.contributors
-        .map((name) => `[@${name}](https://github.com/${name})`)
-        .join("、")}`,
-      "",
-    );
-  }
 
   lines.push(
     `## ${isZh ? "下载与安装" : "Download and install"}`,
@@ -264,6 +403,18 @@ export function renderGitHubRelease(release, lang = "zh") {
     `- [${isZh ? "查看完整差异" : "Full comparison"}](${release.links.compare})`,
     "",
   );
+
+  const contributors = contributorLogins(releaseRefs(release), credits);
+  if (contributors.length) {
+    lines.push(
+      `## ${isZh ? "贡献者" : "Contributors"}`,
+      "",
+      `${isZh ? "感谢本版本的贡献者：" : "Thanks to the contributors in this release: "}${contributors
+        .map((login) => `@${login}`)
+        .join(isZh ? "、" : ", ")}`,
+      "",
+    );
+  }
   return `${lines.join("\n").trim()}\n`;
 }
 
@@ -303,14 +454,18 @@ async function main() {
   invariant(args.version, "render requires --version");
   invariant(args.output, "render requires --output");
   const release = releaseForVersion(catalog, args.version);
+  const lookup = githubRefLookup({ token: tokenFromEnvironment() });
+  const { credits, failures, warnings } = await resolveCredits(releaseRefs(release), lookup);
+  reportWarnings(warnings);
   const output = resolve(args.output);
-  await writeFile(output, renderGitHubRelease(release, args.lang === "en" ? "en" : "zh"));
+  await writeFile(output, renderGitHubRelease(release, args.lang === "en" ? "en" : "zh", credits));
+  if (failures.length) throw unresolvedError(failures);
   console.log(`Rendered v${release.version} release notes to ${output}`);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
-    console.error(error.message);
+    console.error(error.code ? `${error.code}: ${error.message}` : error.message);
     process.exitCode = 1;
   });
 }

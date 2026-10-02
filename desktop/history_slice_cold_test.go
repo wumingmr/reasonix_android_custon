@@ -6,8 +6,47 @@ import (
 	"path/filepath"
 	"testing"
 
+	"reasonix/internal/config"
 	"reasonix/internal/provider"
 )
+
+func TestColdCompatibilityReadersResolveOriginalGlobalDirectory(t *testing.T) {
+	app := historySliceTestApp(t)
+	t.Cleanup(app.closeHistoryReaders)
+	tab := newColdHistoryTab(t, app)
+	tab.WorkspaceRoot = globalWorkspaceRoot()
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	tab.SessionPath = filepath.Join(dir, "global-before-workspaces.jsonl")
+	body := []byte("{\"role\":\"user\",\"content\":\"original global history\"}\n")
+	if err := os.WriteFile(tab.SessionPath, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	page := app.HistoryPageForTab(tab.ID, 0, 10)
+	if len(page.Messages) != 1 || page.Messages[0].Content != "original global history" {
+		t.Fatalf("legacy page lost its original source: %+v", page)
+	}
+	messages := app.HistoryForTab(tab.ID)
+	if len(messages) != 1 || messages[0].Content != "original global history" {
+		t.Fatalf("legacy history lost its original source: %+v", messages)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.jsonl")
+	if err := os.WriteFile(outside, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{outside, filepath.Join(dir, "escape.jsonl")} {
+		if source != outside {
+			if err := os.Symlink(outside, source); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, _, err := app.historyReadSource(tabSessionDir(tab), source); err == nil {
+			t.Fatalf("accepted a source outside known roots: %s", source)
+		}
+	}
+}
 
 func TestHistorySliceColdPathBeforeControllerReady(t *testing.T) {
 	isolateDesktopUserDirs(t)

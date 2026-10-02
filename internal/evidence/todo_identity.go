@@ -30,10 +30,17 @@ func MatchStepID(stepID string, todos []TodoItem) (TodoStepMatch, bool) {
 	if stepID == "" {
 		return TodoStepMatch{}, false
 	}
+	found := -1
 	for i, todo := range todos {
 		if todo.StepID == stepID {
-			return todoMatchAt(i+1, todo), true
+			if found >= 0 {
+				return TodoStepMatch{}, false
+			}
+			found = i
 		}
+	}
+	if found >= 0 {
+		return todoMatchAt(found+1, todos[found]), true
 	}
 	return TodoStepMatch{}, false
 }

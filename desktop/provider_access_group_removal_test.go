@@ -85,7 +85,7 @@ func TestRemoveProviderAccessesRemovesGroupedOpenCodeGoRoutesAtomically(t *testi
 		}
 	}
 	wantFallback := "mimo-pro"
-	if got.DefaultModel != wantFallback || got.Agent.PlannerModel != wantFallback || got.Agent.RecoveryModel != wantFallback || got.Agent.SubagentModel != wantFallback || got.Agent.SubagentModels["review"] != wantFallback {
+	if got.DefaultModel != wantFallback || got.Agent.PlannerModel != wantFallback || got.Agent.RecoveryModel != "" || got.Agent.SubagentModel != wantFallback || got.Agent.SubagentModels["review"] != wantFallback {
 		t.Fatalf("provider refs were not retargeted: default=%q planner=%q recovery=%q subagent=%q skills=%+v", got.DefaultModel, got.Agent.PlannerModel, got.Agent.RecoveryModel, got.Agent.SubagentModel, got.Agent.SubagentModels)
 	}
 	if got.Agent.VisionModel != "" {
@@ -94,9 +94,9 @@ func TestRemoveProviderAccessesRemovesGroupedOpenCodeGoRoutesAtomically(t *testi
 	if got.Bot.Model != wantFallback || got.Bot.QQ.Model != wantFallback || got.Bot.Dingtalk.Model != wantFallback || len(got.Bot.Routes) != 1 || got.Bot.Routes[0].Model != wantFallback || len(got.Bot.Connections) != 2 || got.Bot.Connections[0].Model != wantFallback || got.Bot.Connections[1].Model != "mimo-pro/mimo-v2.5-pro" {
 		t.Fatalf("bot refs were not retargeted selectively: model=%q qq=%q dingtalk=%q routes=%+v connections=%+v", got.Bot.Model, got.Bot.QQ.Model, got.Bot.Dingtalk.Model, got.Bot.Routes, got.Bot.Connections)
 	}
-	for _, tab := range tabs {
-		if tab.model != "mimo-pro/mimo-v2.5-pro" {
-			t.Fatalf("tab %q model = %q, want mimo-pro/mimo-v2.5-pro", tab.ID, tab.model)
+	for index, tab := range tabs {
+		if tab.model != []string{cfg.DefaultModel, cfg.Agent.PlannerModel, cfg.Agent.SubagentModel}[index] {
+			t.Fatalf("saving grouped removal changed tab %q model = %q", tab.ID, tab.model)
 		}
 	}
 }
@@ -114,7 +114,6 @@ func TestProviderRemovalStateFingerprintCoversAuxiliaryModelReferences(t *testin
 	}{
 		{name: "vision", mutate: func(cfg *config.Config) { cfg.Agent.VisionModel = "provider/model" }},
 		{name: "guardian", mutate: func(cfg *config.Config) { cfg.Agent.GuardianModel = "provider/model" }},
-		{name: "recovery", mutate: func(cfg *config.Config) { cfg.Agent.RecoveryModel = "provider/model" }},
 		{name: "bot default", mutate: func(cfg *config.Config) { cfg.Bot.Model = "provider/model" }},
 		{name: "qq", mutate: func(cfg *config.Config) { cfg.Bot.QQ.Model = "provider/model" }},
 		{name: "dingtalk", mutate: func(cfg *config.Config) { cfg.Bot.Dingtalk.Model = "provider/model" }},

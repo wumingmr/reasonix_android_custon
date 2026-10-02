@@ -2,10 +2,10 @@
 
 import { JSDOM } from "jsdom";
 import React, { act } from "react";
-import { createRoot } from "react-dom/client";
 import { ModelSwitcher, normalizeModelInfo } from "../components/ModelSwitcher";
 import { LocaleProvider } from "../lib/i18n";
 import type { ModelInfo } from "../lib/types";
+import { installDesktopHostStub } from "./desktopHostStub";
 
 class TestResizeObserver {
   observe() {}
@@ -22,12 +22,16 @@ const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body>
   pretendToBeVisual: true,
   url: "http://localhost/",
 });
+dom.window.localStorage.clear();
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 globalThis.window = dom.window as unknown as Window & typeof globalThis;
 globalThis.document = dom.window.document;
+globalThis.localStorage = dom.window.localStorage;
 globalThis.Event = dom.window.Event;
 globalThis.MouseEvent = dom.window.MouseEvent;
 globalThis.HTMLElement = dom.window.HTMLElement;
+globalThis.HTMLInputElement = dom.window.HTMLInputElement;
+globalThis.Node = dom.window.Node;
 globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserver;
 globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
 globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
@@ -46,6 +50,7 @@ Object.defineProperty(window, "matchMedia", {
     dispatchEvent: () => false,
   }),
 });
+const { createRoot } = await import("react-dom/client");
 
 const stale = deferred<ModelInfo[]>();
 const fresh = deferred<ModelInfo[]>();
@@ -65,7 +70,7 @@ if (normalizedNullMetadata.provider !== "" || normalizedNullMetadata.model !== "
 let currentCatalog: ModelInfo[] = [
   { ref: "glm-cn/glm-5.2", provider: "glm-cn", model: "glm-5.2", current: true },
 ];
-(window as unknown as { go: { main: { App: Record<string, unknown> } } }).go = {
+installDesktopHostStub(({
   main: {
     App: {
       ModelsForTab: async () => {
@@ -77,14 +82,18 @@ let currentCatalog: ModelInfo[] = [
       },
     },
   },
-};
+}).main.App);
 
 const root = createRoot(document.getElementById("root")!);
-const renderSwitcher = (label: string, tabId: string) => (
+const renderSwitcher = (label: string, tabId: string, ready = true, sessionKey?: string, disabled = false, dismissSignal?: number) => (
   <LocaleProvider>
     <ModelSwitcher
       label={label}
       tabId={tabId}
+      ready={ready}
+      sessionKey={sessionKey}
+      disabled={disabled}
+      dismissSignal={dismissSignal}
       onPick={(ref) => {
         picked.push(ref);
         return pickGates.shift()?.promise ?? Promise.resolve(true);
@@ -111,7 +120,7 @@ await act(async () => {
 });
 
 const options = Array.from(document.querySelectorAll<HTMLElement>("[role='option']")).map((item) => item.textContent?.trim());
-if (JSON.stringify(options) !== JSON.stringify(["glm-5.2"])) {
+if (options.length !== 1 || !options[0]?.includes("glm-5.2") || !options[0]?.includes("glm-cn")) {
   throw new Error(`model catalog did not keep the fresh result: ${JSON.stringify(options)}`);
 }
 if (calls < 3) throw new Error(`expected mount, settings refresh, and open loads; got ${calls}`);
@@ -339,6 +348,118 @@ const nullSafeOptions = Array.from(document.querySelectorAll<HTMLElement>("[role
 if (nullSafeOptions.length !== 2) {
   throw new Error(`null model metadata prevented catalog rendering: ${nullSafeOptions.length}`);
 }
+
+// Connection order and duplicate model IDs must survive selection and renaming.
+currentCatalog = [
+  { ref: "z/shared", provider: "z", displayName: "First connection", model: "shared", current: false },
+  { ref: "a/shared", provider: "a", displayName: "Second connection", model: "shared", current: true },
+];
+await act(async () => {
+  window.dispatchEvent(new Event("reasonix:model-catalog-changed"));
+  await new Promise(resolve => setTimeout(resolve, 0));
+});
+const connectionLabels = Array.from(document.querySelectorAll(".modelsw__meta"), el => el.textContent);
+if (connectionLabels.join("|") !== "First connection|Second connection · Current model") {
+  throw new Error(`connection labels or catalog order differ: ${connectionLabels}`);
+}
+if (document.querySelectorAll("[role='option']").length !== 2) {
+  throw new Error("same model ID in separate connections was merged");
+}
+
+// Favorites are keyed by the full provider/model ref, remain in the open menu,
+// and can be used as a rail filter without switching the active model.
+const firstFavorite = document.querySelector<HTMLButtonElement>(".modelsw__favorite");
+if (!firstFavorite) throw new Error("favorite control was not rendered");
+const pickedBeforeFavorite = picked.length;
+await act(async () => { firstFavorite.click(); });
+if (picked.length !== pickedBeforeFavorite) throw new Error("favorite action triggered a model switch");
+if (localStorage.getItem("reasonix-model-favorites-v1") !== JSON.stringify(["z/shared"])) {
+  throw new Error(`favorite ref was not persisted: ${localStorage.getItem("reasonix-model-favorites-v1")}`);
+}
+const favoriteFilter = document.querySelector<HTMLButtonElement>('.modelsw__rail-item[aria-label="Favorites"]');
+if (!favoriteFilter) throw new Error("favorites rail filter was not rendered");
+await act(async () => { favoriteFilter.click(); });
+const favoriteOptions = Array.from(document.querySelectorAll<HTMLElement>("[role='option']"));
+if (favoriteOptions.length !== 1 || !favoriteOptions[0]?.textContent?.includes("First connection")) {
+  throw new Error(`favorites filter did not isolate the saved connection: ${favoriteOptions.map(el => el.textContent)}`);
+}
+const allFilter = document.querySelector<HTMLButtonElement>('.modelsw__rail-item[aria-label="All models"]');
+await act(async () => { allFilter?.click(); });
+
+// Search is catalog-wide even when the user was browsing one provider. The
+// top-level field moves back to All models before applying its keyword.
+currentCatalog = [
+  { ref: "deepseek/deepseek-v4-flash", provider: "deepseek", displayName: "DeepSeek Official", model: "deepseek-v4-flash", current: true },
+  { ref: "moonshot/kimi-k2", provider: "moonshot", displayName: "Moonshot", model: "kimi-k2", current: false },
+];
+await act(async () => {
+  window.dispatchEvent(new Event("reasonix:model-catalog-changed"));
+  await new Promise(resolve => setTimeout(resolve, 0));
+});
+const deepseekFilter = document.querySelector<HTMLButtonElement>('.modelsw__rail-item[aria-label="DeepSeek Official"]');
+if (!deepseekFilter) throw new Error("DeepSeek provider filter was not rendered");
+await act(async () => { deepseekFilter.click(); });
+if (document.querySelectorAll("[role='option']").length !== 1) {
+  throw new Error("provider browsing did not narrow the model catalog");
+}
+const catalogSearch = document.querySelector<HTMLInputElement>(".modelsw__search-input");
+if (!catalogSearch) throw new Error("catalog search input was not rendered");
+await act(async () => {
+  Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(catalogSearch, "kimi");
+  catalogSearch.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  await new Promise(resolve => setTimeout(resolve, 0));
+});
+const globalSearchOptions = Array.from(document.querySelectorAll<HTMLElement>("[role='option']"));
+if (globalSearchOptions.length !== 1 || !globalSearchOptions[0]?.textContent?.includes("kimi-k2")) {
+  throw new Error(`provider filter constrained global search: ${globalSearchOptions.map(item => item.textContent)}`);
+}
+if (allFilter?.getAttribute("aria-pressed") !== "true") {
+  throw new Error("global search did not activate the All models rail state");
+}
+
+currentCatalog = [
+  { ref: "z/shared", provider: "z", displayName: "First connection", model: "shared", current: false },
+  { ref: "a/shared", provider: "a", displayName: "Second connection", model: "shared", current: true },
+];
+await act(async () => {
+  Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(catalogSearch, "");
+  catalogSearch.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  window.dispatchEvent(new Event("reasonix:model-catalog-changed"));
+  await new Promise(resolve => setTimeout(resolve, 0));
+});
+
+// Cold restoration can finish after the initial catalog read while retaining
+// the same tab and model label. Readiness and session identity must refresh
+// the connection without requiring the user to open the menu.
+await act(async () => {
+  (document.querySelector(".modelsw__trigger") as HTMLButtonElement).click();
+  currentCatalog = currentCatalog.map(m => ({ ...m, current: m.provider === "z" }));
+  root.render(renderSwitcher("shared", "tab-restored", false, "session-one"));
+});
+await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+const restoredLabel = () => document.querySelector(".modelsw__trigger")?.getAttribute("aria-label") ?? "";
+if (!restoredLabel().includes("First connection")) throw new Error("cold catalog fixture did not load");
+await act(async () => {
+  currentCatalog = currentCatalog.map(m => ({ ...m, current: m.provider === "a" }));
+  root.render(renderSwitcher("shared", "tab-restored", true, "session-one"));
+});
+await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+if (!restoredLabel().includes("Second connection")) throw new Error("ready session retained the startup connection label");
+await act(async () => {
+  currentCatalog = currentCatalog.map(m => ({ ...m, current: m.provider === "z" }));
+  root.render(renderSwitcher("shared", "tab-restored", true, "session-two"));
+});
+await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+if (!restoredLabel().includes("First connection")) throw new Error("resumed session retained another session's connection label");
+
+await act(async () => {
+  (document.querySelector(".modelsw__trigger") as HTMLButtonElement).click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+});
+if (!document.querySelector(".modelsw__menu")) throw new Error("model menu did not open before suspension");
+await act(async () => { root.render(renderSwitcher("shared", "tab-restored", true, "session-two", true, 1)); });
+await act(async () => { root.render(renderSwitcher("shared", "tab-restored", true, "session-two", false, 1)); });
+if (document.querySelector(".modelsw__menu")) throw new Error("suspended model menu reopened after recovery");
 
 await act(async () => root.unmount());
 console.log("model switcher refresh: PASS");

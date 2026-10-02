@@ -9,27 +9,51 @@ import (
 	"reasonix/internal/sessioninbox"
 )
 
-const inboxWailsErrorPrefix = "reasonix_error:"
+const inboxBridgeErrorPrefix = "reasonix_error:"
 
 type inboxCodedError struct {
 	code  string
 	cause error
+	// transient marks a fence that clears by itself (session switching,
+	// reconnecting, route adoption). Callers keep the message and retry
+	// instead of failing it with an unrecoverable-looking error.
+	transient bool
 }
 
-func (e *inboxCodedError) Error() string { return inboxWailsErrorPrefix + e.code }
+func (e *inboxCodedError) Error() string { return inboxBridgeErrorPrefix + e.code }
 func (e *inboxCodedError) Unwrap() error { return e.cause }
 
-// inboxWailsError keeps backend errors machine-stable across the Wails boundary.
+// RPCErrorData lets the renderer branch on a transient fence without parsing
+// the message text.
+func (e *inboxCodedError) RPCErrorData() map[string]any {
+	if e.transient {
+		return map[string]any{"transient": true}
+	}
+	return nil
+}
+
+// inboxTargetTransient reports a fence that settles by itself: the message was
+// not submitted and the same request will land once the tab settles.
+func inboxTargetTransient(cause error) error {
+	return &inboxCodedError{code: inboxTransientCode, cause: cause, transient: true}
+}
+
+// inboxBridgeError keeps backend errors machine-stable across the desktop bridge.
 // The frontend translates known product states at display time; unknown errors
 // stay untouched so useful diagnostic details are not discarded.
-func inboxWailsError(err error) error {
+func inboxBridgeError(err error) error {
 	if err == nil {
 		return nil
+	}
+	var imageFailures control.ImageReferenceFailures
+	if errors.As(err, &imageFailures) {
+		return &inboxCodedError{code: "image_attachment_unreadable", cause: err}
 	}
 	known := []struct {
 		target error
 		code   string
 	}{
+		{control.ErrInboxSessionChanged, "inbox_not_submitted"},
 		{sessioninbox.ErrCapacityItems, "inbox_capacity_items"},
 		{sessioninbox.ErrCapacityBytes, "inbox_capacity_bytes"},
 		{sessioninbox.ErrItemTooLarge, "inbox_item_too_large"},
@@ -58,7 +82,7 @@ func inboxWailsError(err error) error {
 	}
 }
 
-// InboxItemView is the Wails-facing metadata row (never full body).
+// InboxItemView is the bridge-facing metadata row (never full body).
 type InboxItemView struct {
 	ID          string `json:"id"`
 	Intent      string `json:"intent"`
@@ -71,18 +95,20 @@ type InboxItemView struct {
 	Position    int    `json:"position"`
 }
 
-// InboxSnapshotView is the Wails-facing queue snapshot.
+// InboxSnapshotView is the bridge-facing queue snapshot.
 type InboxSnapshotView struct {
-	Revision    int64           `json:"revision"`
-	Paused      bool            `json:"paused"`
-	Recovered   bool            `json:"recovered"`
-	RecoveredN  int             `json:"recoveredCount,omitempty"`
-	SessionPath string          `json:"sessionPath,omitempty"`
-	Items       []InboxItemView `json:"items"`
-	ItemsCount  int             `json:"itemsCount"`
-	Bytes       int64           `json:"bytes"`
-	MaxItems    int             `json:"maxItems"`
-	MaxBytes    int64           `json:"maxBytes"`
+	Readonly           bool            `json:"readonly,omitempty"`
+	MutationsSupported bool            `json:"mutationsSupported"`
+	Revision           int64           `json:"revision"`
+	Paused             bool            `json:"paused"`
+	Recovered          bool            `json:"recovered"`
+	RecoveredN         int             `json:"recoveredCount,omitempty"`
+	SessionPath        string          `json:"sessionPath,omitempty"`
+	Items              []InboxItemView `json:"items"`
+	ItemsCount         int             `json:"itemsCount"`
+	Bytes              int64           `json:"bytes"`
+	MaxItems           int             `json:"maxItems"`
+	MaxBytes           int64           `json:"maxBytes"`
 }
 
 // InboxReceiptView is returned after durable enqueue/steer.
@@ -132,32 +158,37 @@ func inboxSnapshotView(snap sessioninbox.InboxSnapshot) InboxSnapshotView {
 		})
 	}
 	return InboxSnapshotView{
-		Revision:    snap.Revision,
-		Paused:      snap.Paused,
-		Recovered:   snap.Recovered,
-		RecoveredN:  snap.RecoveredN,
-		SessionPath: snap.SessionPath,
-		Items:       items,
-		ItemsCount:  len(items),
-		Bytes:       snap.Capacity.Bytes,
-		MaxItems:    snap.Capacity.MaxItems,
-		MaxBytes:    snap.Capacity.MaxBytes,
+		Readonly:           snap.Readonly,
+		MutationsSupported: true,
+		Revision:           snap.Revision,
+		Paused:             snap.Paused,
+		Recovered:          snap.Recovered,
+		RecoveredN:         snap.RecoveredN,
+		SessionPath:        snap.SessionPath,
+		Items:              items,
+		ItemsCount:         len(items),
+		Bytes:              snap.Capacity.Bytes,
+		MaxItems:           snap.Capacity.MaxItems,
+		MaxBytes:           snap.Capacity.MaxBytes,
 	}
 }
 
 func (a *App) inboxCtrl(tabID string) (control.SessionAPI, error) {
 	tab, ctrl := a.tabAndCtrlByID(tabID)
 	if a.tabIsReadOnly(tab) {
-		return nil, inboxWailsError(readOnlyChannelErr())
+		return nil, inboxBridgeError(readOnlyChannelErr())
 	}
 	if ctrl == nil {
-		return nil, inboxWailsError(a.workspaceNotReadyErr(tab))
+		return nil, inboxBridgeError(a.workspaceNotReadyErr(tab))
 	}
 	return ctrl, nil
 }
 
 // InboxSnapshot returns durable inbox metadata for a tab (no bodies).
 func (a *App) InboxSnapshot(tabID string) (InboxSnapshotView, error) {
+	if a.isRemoteTab(tabID) {
+		return a.remoteInboxSnapshot(tabID)
+	}
 	ctrl, err := a.inboxCtrl(tabID)
 	if err != nil {
 		return InboxSnapshotView{}, err
@@ -181,6 +212,27 @@ func (a *App) EnqueueInboxSteer(tabID, display, submit, idempotency string) (Inb
 	return a.enqueueInbox(tabID, sessioninbox.IntentSteer, display, submit, nil, idempotency, true)
 }
 
+// EnqueueInboxSteerForTurn durably records guidance while ensuring its
+// mid-turn injection is fenced to the exact turn observed by the frontend.
+// This legacy tab-only API cannot establish ownership after the observed turn
+// ends, so it must reject that case. New callers use InboxQueueForTarget for
+// session-fenced durable follow-up fallback even after turn completion.
+func (a *App) EnqueueInboxSteerForTurn(tabID, turnID, display, submit, idempotency string) (InboxReceiptView, error) {
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		return InboxReceiptView{}, fmt.Errorf("turnId is required")
+	}
+	ctrl, err := a.inboxCtrl(tabID)
+	if err != nil {
+		return InboxReceiptView{}, err
+	}
+	status := ctrl.RuntimeStatus()
+	if status.TurnID != turnID || !status.Running {
+		return InboxReceiptView{}, fmt.Errorf("turn %q is not the active turn for tab %q", turnID, tabID)
+	}
+	return a.enqueueInboxWithController(tabID, ctrl, sessioninbox.IntentSteer, display, submit, nil, idempotency, true, turnID, "")
+}
+
 // SteerInboxItem attempts to apply an existing durable queue item to the
 // current turn. It never creates a second entry for the same instruction.
 func (a *App) SteerInboxItem(tabID, itemID string) (InboxReceiptView, error) {
@@ -190,7 +242,7 @@ func (a *App) SteerInboxItem(tabID, itemID string) (InboxReceiptView, error) {
 	}
 	rec, err := ctrl.TrySteerInboxItem(strings.TrimSpace(itemID))
 	if err != nil {
-		err = inboxWailsError(err)
+		err = inboxBridgeError(err)
 		return InboxReceiptView{Error: err.Error()}, err
 	}
 	a.emitInboxChanged(tabID)
@@ -203,6 +255,39 @@ func (a *App) SteerInboxItem(tabID, itemID string) (InboxReceiptView, error) {
 	}, nil
 }
 
+// SteerInboxItemForTurn is the exact-turn counterpart for an existing durable
+// guidance item.
+func (a *App) SteerInboxItemForTurn(tabID, turnID, itemID string) (InboxReceiptView, error) {
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		return InboxReceiptView{}, fmt.Errorf("turnId is required")
+	}
+	ctrl, err := a.inboxCtrl(tabID)
+	if err != nil {
+		return InboxReceiptView{}, err
+	}
+	status := ctrl.RuntimeStatus()
+	if status.TurnID != turnID || !status.Running {
+		return InboxReceiptView{}, fmt.Errorf("turn %q is not the active turn for tab %q", turnID, tabID)
+	}
+	exact, ok := ctrl.(interface {
+		TrySteerInboxItemForTurn(string, string) (sessioninbox.InboxReceipt, error)
+	})
+	if !ok {
+		return InboxReceiptView{}, fmt.Errorf("exact-turn steer is unavailable")
+	}
+	rec, err := exact.TrySteerInboxItemForTurn(turnID, strings.TrimSpace(itemID))
+	if err != nil {
+		err = inboxBridgeError(err)
+		return InboxReceiptView{Error: err.Error()}, err
+	}
+	a.emitInboxChanged(tabID)
+	return InboxReceiptView{
+		ItemID: rec.ItemID, Disposition: string(rec.Disposition), Position: rec.Position,
+		Paused: rec.Paused, Idempotent: rec.Idempotent,
+	}, nil
+}
+
 // CancelTabWithInboxItems cancels the turn and atomically discards only the
 // durable pending items currently shown by that tab's Composer.
 func (a *App) CancelTabWithInboxItems(tabID string, itemIDs []string) error {
@@ -211,7 +296,7 @@ func (a *App) CancelTabWithInboxItems(tabID string, itemIDs []string) error {
 		return err
 	}
 	if err := ctrl.CancelWithInboxItems(itemIDs, "desktop"); err != nil {
-		return inboxWailsError(err)
+		return inboxBridgeError(err)
 	}
 	a.emitInboxChanged(tabID)
 	return nil
@@ -227,7 +312,7 @@ func (a *App) CancelTabWithInboxItemsResult(tabID string, itemIDs []string) (Inb
 	}
 	result, err := ctrl.CancelWithInboxItemsResult(itemIDs, "desktop")
 	if err != nil {
-		return view, inboxWailsError(err)
+		return view, inboxBridgeError(err)
 	}
 	view.DiscardedItemIDs = append(view.DiscardedItemIDs, result.DiscardedItemIDs...)
 	view.Warning = result.Warning
@@ -236,10 +321,20 @@ func (a *App) CancelTabWithInboxItemsResult(tabID string, itemIDs []string) (Inb
 }
 
 func (a *App) enqueueInbox(tabID string, intent sessioninbox.InboxIntent, display, submit string, invocations []InvocationRequest, idempotency string, trySteer bool) (InboxReceiptView, error) {
+	a.remoteTabMu.Lock()
+	remote := a.remoteTabs[tabID] != nil
+	a.remoteTabMu.Unlock()
+	if remote && !trySteer {
+		return a.enqueueRemoteFollowup(tabID, display, submit, invocations, idempotency)
+	}
 	ctrl, err := a.inboxCtrl(tabID)
 	if err != nil {
 		return InboxReceiptView{}, err
 	}
+	return a.enqueueInboxWithController(tabID, ctrl, intent, display, submit, invocations, idempotency, trySteer, "", "")
+}
+
+func (a *App) enqueueInboxWithController(tabID string, ctrl control.SessionAPI, intent sessioninbox.InboxIntent, display, submit string, invocations []InvocationRequest, idempotency string, trySteer bool, turnID, expectedPath string) (InboxReceiptView, error) {
 	if ensurer, ok := ctrl.(interface{ EnsureSessionPath() }); ok {
 		ensurer.EnsureSessionPath()
 	}
@@ -252,22 +347,36 @@ func (a *App) enqueueInbox(tabID string, intent sessioninbox.InboxIntent, displa
 		display = submit
 	}
 	req := control.InboxRequest{
-		Intent:      intent,
-		Display:     display,
-		Raw:         submit,
-		Submit:      submit,
-		Source:      "desktop",
-		Idempotency: strings.TrimSpace(idempotency),
-		Invocations: controlInvocationRequests(invocations),
+		ExpectedSessionPath: expectedPath,
+		Intent:              intent,
+		Display:             display,
+		Raw:                 submit,
+		Submit:              submit,
+		Source:              "desktop",
+		Idempotency:         strings.TrimSpace(idempotency),
+		Invocations:         controlInvocationRequests(invocations),
 	}
-	var rec sessioninbox.InboxReceipt
+	var (
+		rec sessioninbox.InboxReceipt
+		err error
+	)
 	if trySteer {
-		rec, err = ctrl.TryEnqueueAndSteer(req)
+		if turnID != "" {
+			exact, ok := ctrl.(interface {
+				TryEnqueueAndSteerForTurn(string, control.InboxRequest) (sessioninbox.InboxReceipt, error)
+			})
+			if !ok {
+				return InboxReceiptView{}, fmt.Errorf("exact-turn steer is unavailable")
+			}
+			rec, err = exact.TryEnqueueAndSteerForTurn(turnID, req)
+		} else {
+			rec, err = ctrl.TryEnqueueAndSteer(req)
+		}
 	} else {
 		rec, err = ctrl.TryEnqueueFollowup(req)
 	}
 	if err != nil {
-		err = inboxWailsError(err)
+		err = inboxBridgeError(err)
 		return InboxReceiptView{Error: err.Error()}, err
 	}
 	a.emitInboxChanged(tabID)
@@ -288,7 +397,7 @@ func (a *App) ReadInboxItem(tabID, id string) (InboxEnvelopeView, error) {
 	}
 	meta, env, err := ctrl.ReadInboxItem(id)
 	if err != nil {
-		return InboxEnvelopeView{}, inboxWailsError(err)
+		return InboxEnvelopeView{}, inboxBridgeError(err)
 	}
 	return InboxEnvelopeView{
 		ID:          meta.ID,
@@ -305,7 +414,7 @@ func (a *App) UpdateInboxItem(tabID, id, display, submit string) error {
 		return err
 	}
 	if _, err := ctrl.UpdateInboxItem(id, display, submit, submit); err != nil {
-		return inboxWailsError(err)
+		return inboxBridgeError(err)
 	}
 	a.emitInboxChanged(tabID)
 	return nil
@@ -318,7 +427,7 @@ func (a *App) DeleteInboxItem(tabID, id string) error {
 		return err
 	}
 	if err := ctrl.DeleteInboxItem(id); err != nil {
-		return inboxWailsError(err)
+		return inboxBridgeError(err)
 	}
 	a.emitInboxChanged(tabID)
 	return nil
@@ -331,7 +440,7 @@ func (a *App) MoveInboxItem(tabID, id string, toIndex int) error {
 		return err
 	}
 	if err := ctrl.MoveInboxItem(id, toIndex); err != nil {
-		return inboxWailsError(err)
+		return inboxBridgeError(err)
 	}
 	a.emitInboxChanged(tabID)
 	return nil
@@ -344,7 +453,7 @@ func (a *App) SetInboxPaused(tabID string, paused bool) error {
 		return err
 	}
 	if err := ctrl.SetInboxPaused(paused); err != nil {
-		return inboxWailsError(err)
+		return inboxBridgeError(err)
 	}
 	a.emitInboxChanged(tabID)
 	return nil
@@ -357,7 +466,7 @@ func (a *App) RetryInboxItem(tabID, id string) error {
 		return err
 	}
 	if err := ctrl.RetryInboxItem(id); err != nil {
-		return inboxWailsError(err)
+		return inboxBridgeError(err)
 	}
 	a.emitInboxChanged(tabID)
 	return nil
@@ -370,7 +479,7 @@ func (a *App) RefreshInboxItem(tabID, id string) error {
 		return err
 	}
 	if err := ctrl.RefreshInboxReferences(id); err != nil {
-		return inboxWailsError(err)
+		return inboxBridgeError(err)
 	}
 	a.emitInboxChanged(tabID)
 	return nil
@@ -392,12 +501,4 @@ func (a *App) InboxHasItems(tabID string) (bool, error) {
 		return false, err
 	}
 	return len(ctrl.InboxSnapshot().Items) > 0, nil
-}
-
-// FormatInboxRecoveryNotice builds the recovery banner text.
-func FormatInboxRecoveryNotice(n int) string {
-	if n <= 0 {
-		return ""
-	}
-	return fmt.Sprintf("Recovered %d pending instruction(s). Inbox is paused — review before resuming.", n)
 }

@@ -3,9 +3,12 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"reasonix/internal/event"
+	"reasonix/internal/i18n"
 	"reasonix/internal/provider"
+	"reasonix/internal/tool"
 )
 
 // landCause is why a turn was told to finalize. kind selects the pause the Run
@@ -21,6 +24,52 @@ type landCause struct {
 // data, so no provider-generated prose acknowledgement is needed afterwards.
 type turnFinalizer interface {
 	finalizesTurn()
+}
+
+func (a *Agent) providerToolSchemas() []provider.ToolSchema {
+	if a == nil || a.svc.tools == nil || !provider.SupportsTools(a.svc.prov) {
+		return []provider.ToolSchema{}
+	}
+	schemas := a.svc.tools.Schemas()
+	visible := schemas[:0]
+	for _, schema := range schemas {
+		if !retiredTool(schema.Name) {
+			visible = append(visible, schema)
+		}
+	}
+	schemas = visible
+	if !provider.NativeToolSearchEnabled(a.svc.prov) {
+		return schemas
+	}
+	return provider.ApplyNativeToolSearch(schemas, deferredMCPSchemas(a.svc.tools), a.svc.prov)
+}
+
+func deferredMCPSchemas(reg *tool.Registry) []provider.ToolSchema {
+	if reg == nil {
+		return nil
+	}
+	var extra []provider.ToolSchema
+	for _, name := range reg.AllNames() {
+		if retiredTool(name) {
+			continue
+		}
+		if !strings.HasPrefix(name, "mcp__") {
+			continue
+		}
+		if reg.ProviderVisible(name) {
+			continue
+		}
+		target, ok := reg.Get(name)
+		if !ok {
+			continue
+		}
+		extra = append(extra, provider.ToolSchema{
+			Name:        target.Name(),
+			Description: target.Description(),
+			Parameters:  target.Schema(),
+		})
+	}
+	return extra
 }
 
 func (a *Agent) singleTurnFinalizer(calls []provider.ToolCall) bool {
@@ -73,7 +122,7 @@ func (c landCause) nudge(state *turnRuntime, submitPlan bool) string {
 
 func (c landCause) noticeText() string {
 	if c.kind == "task_budget" {
-		return "This task reached its spend budget; asking for a final answer."
+		return i18n.M.TaskBudget
 	}
 	return toolBudgetNoticeText()
 }
@@ -82,16 +131,19 @@ func (c landCause) noticeText() string {
 // The grace round it sets — not the wording — is what enforces that: research
 // calls in the next round are paired and refused by stopUnexecutedBoundaryCalls;
 // a host-consumed structured finalizer is the only exception.
-func (a *Agent) armFinalizationRound(ctx context.Context, state *turnRuntime, cause landCause) {
+func (a *Agent) armFinalizationRound(ctx context.Context, state *turnRuntime, cause landCause) error {
 	if state.graceRound {
-		return
+		return nil
 	}
 	state.graceRound = true
 	state.landCause = cause
 	_, canSubmitPlan := planSubmissionFromContext(ctx)
-	a.sess.conversation.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(cause.nudge(state, canSubmitPlan))})
+	if err := a.appendCommittedMessages(ctx, "finalization-nudge", HostGeneratedUserMessage(a.withTurnPreferences(cause.nudge(state, canSubmitPlan)))); err != nil {
+		return err
+	}
 	a.svc.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Code: event.NoticeCodeToolBudget,
 		Text: cause.noticeText(), Detail: cause.detail})
+	return nil
 }
 
 // gracePause is the resumable stop a finalized turn ends with, chosen by what

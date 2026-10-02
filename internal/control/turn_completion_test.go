@@ -49,7 +49,7 @@ func (r *gatedTurnRunner) Run(ctx context.Context, _ string) error {
 
 func TestSynchronousControllerRunsRecordCompletion(t *testing.T) {
 	sink := &completionCountingSink{}
-	c := New(Options{Runner: noOpTurnRunner{}, Sink: sink})
+	c := newOwnedTestController(t, Options{Runner: noOpTurnRunner{}, Sink: sink})
 
 	if err := c.Run(context.Background(), "headless"); err != nil {
 		t.Fatal(err)
@@ -65,7 +65,7 @@ func TestSynchronousControllerRunsRecordCompletion(t *testing.T) {
 func TestRejectedRunTurnDoesNotRecordCompletion(t *testing.T) {
 	runner := &gatedTurnRunner{started: make(chan struct{}), release: make(chan struct{})}
 	sink := &completionCountingSink{}
-	c := New(Options{Runner: runner, Sink: sink})
+	c := newOwnedTestController(t, Options{Runner: runner, Sink: sink})
 	done := make(chan error, 1)
 	go func() { done <- c.RunTurn(context.Background(), "first") }()
 	<-runner.started

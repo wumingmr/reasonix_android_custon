@@ -22,10 +22,22 @@ import "strings"
 // of filepath.Ext.
 func IsSessionTranscriptName(name string) bool {
 	name = strings.TrimSpace(name)
-	return strings.HasSuffix(name, ".jsonl") &&
-		!strings.HasSuffix(name, ".events.jsonl") &&
-		!strings.HasSuffix(name, ".conflicts.jsonl") &&
-		!strings.HasSuffix(name, ".guardian.jsonl")
+	if !strings.HasSuffix(name, ".jsonl") {
+		return false
+	}
+	for _, suffix := range sessionJSONLSidecars {
+		if strings.HasSuffix(name, suffix) {
+			return false
+		}
+	}
+	return true
+}
+
+// sessionJSONLSidecars end in .jsonl beside a transcript without being one.
+// The last three are written by Reasonix 2.x, which shares this directory.
+var sessionJSONLSidecars = []string{
+	".events.jsonl", ".turns.jsonl", ".conflicts.jsonl", ".guardian.jsonl",
+	".wire.jsonl", ".adjudication.jsonl", ".execution.jsonl",
 }
 
 // SessionRecoveryState is the persisted Auto-mode recovery checkpoint state
@@ -38,6 +50,15 @@ func SessionRecoveryState(sessionPath string) string {
 	return sessionStem(sessionPath) + ".recovery.json"
 }
 
+// SessionTranscriptProjection stores display-only records and their exact
+// committed event coverage; it never supplies provider-visible messages.
+func SessionTranscriptProjection(sessionPath string) string {
+	if strings.TrimSpace(sessionPath) == "" {
+		return ""
+	}
+	return sessionStem(sessionPath) + ".transcript-projection.json"
+}
+
 // SessionContext is the context-projection / compaction-state sidecar
 // (<id>.context.json). It holds the model-visible projection and cache
 // telemetry; transcript authority remains with the native event log once one
@@ -48,6 +69,17 @@ func SessionContext(sessionPath string) string {
 		return ""
 	}
 	return sessionStem(sessionPath) + ".context.json"
+}
+
+// SessionPinnedContext is the optional desktop pinned-workspace-context
+// sidecar (<id>.pinned-context.json). Older versions ignore it while keeping
+// the primary transcript fully readable.
+func SessionPinnedContext(sessionPath string) string {
+	sessionPath = strings.TrimSpace(sessionPath)
+	if sessionPath == "" {
+		return ""
+	}
+	return sessionStem(sessionPath) + ".pinned-context.json"
 }
 
 // sessionStem strips the .jsonl suffix so a sidecar sits beside the session as
@@ -92,6 +124,35 @@ func SessionEventLogDamaged(sessionPath string) string {
 		return ""
 	}
 	return SessionEventLog(sessionPath) + ".damaged"
+}
+
+// SessionEventLogRotating marks a schema-2 log whose rotation is between
+// reading the old file and publishing the new one; unlocked appenders wait
+// for it to clear before trusting that their bytes reached the current log.
+func SessionEventLogRotating(sessionPath string) string {
+	if sessionPath == "" {
+		return ""
+	}
+	return SessionEventLog(sessionPath) + ".rotating"
+}
+
+// SessionTurnEventLog is the append-only local runtime lifecycle ledger
+// (<id>.turns.jsonl). It is independent from the provider transcript so old
+// readers can continue to consume the primary session unchanged.
+func SessionTurnEventLog(sessionPath string) string {
+	if sessionPath == "" {
+		return ""
+	}
+	return sessionStem(sessionPath) + ".turns.jsonl"
+}
+
+// SessionTurnEventLogDamaged preserves a corrupt/torn ledger tail before the
+// valid prefix is truncated back into service.
+func SessionTurnEventLogDamaged(sessionPath string) string {
+	if sessionPath == "" {
+		return ""
+	}
+	return SessionTurnEventLog(sessionPath) + ".damaged"
 }
 
 // SessionEventIndex is the listing/checkpoint index for the event log
@@ -187,7 +248,8 @@ func SessionCleanupPending(sessionPath string) string {
 }
 
 // SessionSidecarFiles returns every regular-file sidecar owned by a session
-// transcript: branch meta, goal state, event/index logs, and diagnostic logs.
+// transcript: branch meta, goal state, event/index logs, pinned context, and
+// diagnostic logs.
 // Every surface that deletes a session (desktop trash, /clear, serve, ACP)
 // must remove all of these — the event log is the authoritative transcript, so
 // leaving it behind both leaks the "deleted" conversation and lets LoadSession
@@ -203,10 +265,15 @@ func SessionSidecarFiles(sessionPath string) []string {
 		SessionGoalState(sessionPath),
 		SessionEventLog(sessionPath),
 		SessionEventLogDamaged(sessionPath),
+		SessionEventLogRotating(sessionPath),
+		SessionTurnEventLog(sessionPath),
+		SessionTurnEventLogDamaged(sessionPath),
 		SessionEventIndex(sessionPath),
 		SessionDisplayIndex(sessionPath),
+		SessionTranscriptProjection(sessionPath),
 		SessionConflictLog(sessionPath),
 		SessionRecoveryState(sessionPath),
 		SessionContext(sessionPath),
+		SessionPinnedContext(sessionPath),
 	}
 }

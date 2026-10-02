@@ -20,7 +20,11 @@ func (a *App) recordPreviousRunDiagnostics() {
 		}
 	}
 	for _, lifecycle := range a.lifecycle.previousRuns {
-		_ = writePendingReport(desktopLifecycleReport(lifecycle), true)
+		persisted := writePendingReport(desktopLifecycleReport(lifecycle), true)
+		a.lifecycle.tracker.finalizeObservation(lifecycle, persisted)
+		if !persisted {
+			continue
+		}
 		if m := a.metrics.Load(); m != nil {
 			m.inc("desktop_exit", "abnormal")
 			m.inc("desktop_exit_phase", metricBucket(lifecycle.Phase))
@@ -54,20 +58,33 @@ update transition: %s`,
 		update,
 	)
 	report := baseCrashReport("crash")
-	report.SchemaVersion = 2
+	report.SchemaVersion = 4
 	report.Source = "native.lifecycle.legacy"
 	report.Label = "desktop.legacy_abnormal_exit"
 	report.ErrorType = "LegacyAbnormalDesktopExit"
 	report.ErrorMessage = "A legacy startup record was consumed once after its owner stopped."
 	report.TopFrame = "desktop.lifecycle.legacy." + phase
 	report.FingerprintHint = "desktop.legacy_abnormal_exit." + runtime.GOOS + "." + phase
-	report.OccurredAt = time.Now().UTC().Format(time.RFC3339)
+	report.Diagnostics = &crashDiagnostics{
+		SubjectVersion: previous.Version, ObserverVersion: version, ObserverBuildCommit: buildCommit(),
+		ProcessRole: "service", LastPhase: phase, ObservedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		TerminationReason: "unknown", CleanupOutcome: "unknown", Evidence: "observed",
+		Category: "historical_record", LegacyParsed: true,
+	}
 	report.Message = sanitizeCrashText(message, maxCrashDetailBytes)
 	return report
 }
 
 func desktopLifecycleReport(previous desktopLifecycleObservation) crashReport {
 	phase := metricBucket(previous.Phase)
+	category := "unclean_exit"
+	processRole := previous.ProcessRole
+	if processRole == "" {
+		processRole = "service"
+	}
+	if previous.TerminationReason == shutdownReasonStartupFailure {
+		category = "startup_failure"
+	}
 	message := fmt.Sprintf(`[desktop.abnormal_exit.v2]
 
 Reasonix found a per-process lifecycle record whose desktop process was no longer running.
@@ -85,14 +102,20 @@ last phase update: %s`,
 		sanitizeCrashField(previous.UpdatedAt, 64),
 	)
 	report := baseCrashReport("crash")
-	report.SchemaVersion = 3
+	report.SchemaVersion = 4
 	report.Source = "native.lifecycle"
 	report.Label = "desktop.abnormal_exit.v2"
 	report.ErrorType = "AbnormalDesktopExit"
 	report.ErrorMessage = "A per-process lifecycle record remained after its desktop process stopped."
 	report.TopFrame = "desktop.lifecycle.v2." + phase
 	report.FingerprintHint = "desktop.abnormal_exit.v2." + runtime.GOOS + "." + phase
-	report.OccurredAt = sanitizeCrashField(previous.UpdatedAt, 64)
+	report.Diagnostics = &crashDiagnostics{
+		SubjectVersion: previous.Version, SubjectBuildCommit: previous.BuildCommit, SubjectChannel: previous.Channel,
+		ObserverVersion: version, ObserverBuildCommit: buildCommit(), RunID: previous.RunID, IncidentID: previous.IncidentID,
+		ProcessRole: processRole, LastPhase: phase, LastPhaseAt: previous.UpdatedAt,
+		ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), TerminationReason: previous.TerminationReason,
+		CleanupOutcome: previous.CleanupOutcome, Evidence: "observed", Category: category,
+	}
 	report.Message = sanitizeCrashText(message, maxCrashDetailBytes)
 	return report
 }

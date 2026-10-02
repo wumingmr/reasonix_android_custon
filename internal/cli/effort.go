@@ -16,12 +16,12 @@ func (m *chatTUI) runEffortCommand(input string) tea.Cmd {
 		return nil
 	}
 	cap := config.EffortCapabilityForEntry(entry)
-	if !cap.Supported {
+	args := tokenizeArgs(input)
+	if !cap.Supported && !(len(args) == 2 && args[1] == "auto") {
 		m.notice(fmt.Sprintf("effort is not configurable for %s", entry.Name))
 		return nil
 	}
 
-	args := tokenizeArgs(input)
 	if len(args) < 2 {
 		current := config.EffortDisplay(entry)
 		options := strings.Join(cap.Levels, "|")

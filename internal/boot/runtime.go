@@ -17,6 +17,7 @@ import (
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/skill"
+	"reasonix/internal/skill/skillwatch"
 	"reasonix/internal/tool"
 )
 
@@ -73,6 +74,8 @@ type BuildResult struct {
 	// controller pointer (no control.New / BuildRuntime). Callers must not
 	// Close the "old" controller when it is the same pointer as Controller.
 	ReusedController bool
+	// SkillWatchService exposes content-free resource counters to doctor/UI.
+	SkillWatchService *skillwatch.Service
 }
 
 // runtimeGeneration is the process-wide build generation counter. The first

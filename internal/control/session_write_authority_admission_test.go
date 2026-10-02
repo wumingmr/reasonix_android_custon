@@ -16,7 +16,7 @@ func TestStaleWriteAuthorityBlocksAsyncAdmission(t *testing.T) {
 	sess := agent.NewSession("sys")
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
 	events := make(chan event.Event, 1)
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Executor:    exec,
 		SessionPath: path,
 		Sink: event.FuncSink(func(e event.Event) {
@@ -54,7 +54,7 @@ func TestStaleWriteAuthorityBlocksSynchronousRun(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	sess := agent.NewSession("sys")
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
-	c := New(Options{Executor: exec, SessionPath: path, Sink: event.Discard})
+	c := newOwnedTestController(t, Options{Executor: exec, SessionPath: path, Sink: event.Discard})
 	lease, err := agent.TryAcquireSessionLease(path)
 	if err != nil {
 		t.Fatal(err)

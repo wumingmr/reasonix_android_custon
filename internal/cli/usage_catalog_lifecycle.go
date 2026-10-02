@@ -13,4 +13,5 @@ func closeCLIUsageCatalogs() {
 	defer cancel()
 	_ = stats.Flush(ctx, config.StatsDir())
 	_ = stats.CloseUsageCatalogs(ctx)
+	_ = stats.CloseRecordDispatchers(ctx)
 }

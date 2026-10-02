@@ -54,6 +54,41 @@ func TestProjectNodeFromCatalogTopicFiltersIdleRecoveryCopies(t *testing.T) {
 	}
 }
 
+func TestProjectNodesFromCatalogTopicKeepsSharedTopicSessionsIndependent(t *testing.T) {
+	app := &App{tabs: map[string]*WorkspaceTab{}, detachedSessions: map[string]*WorkspaceTab{}}
+	dir := t.TempDir()
+	pathA := filepath.Join(dir, "a.jsonl")
+	pathB := filepath.Join(dir, "b.jsonl")
+	topic := sessioncatalog.TopicRecord{
+		Scope: "global", TopicID: "shared", Title: "Shared title", Turns: 5,
+		TurnsState: sessioncatalog.TurnsValid, Health: sessioncatalog.HealthOK,
+		Sessions: []sessioncatalog.SessionRecord{
+			{Path: pathA, CustomTitle: "A", Turns: 5, TurnsState: sessioncatalog.TurnsValid, Health: sessioncatalog.HealthOK, LastActivityAt: 100},
+			{Path: pathB, CustomTitle: "B", Turns: 2, TurnsState: sessioncatalog.TurnsValid, Health: sessioncatalog.HealthOK, LastActivityAt: 90},
+		},
+	}
+	overlays := map[string]catalogRuntimeOverlay{
+		sessionRuntimeKey(pathA): {open: true, running: true, status: topicStatusThinking},
+	}
+	nodes := app.projectNodesFromCatalogTopic(topic, map[string]catalogRuntimeOverlay{}, overlays, nil)
+	if len(nodes) != 2 {
+		t.Fatalf("nodes = %#v, want two independent rows", nodes)
+	}
+	byPath := map[string]ProjectNode{}
+	for _, node := range nodes {
+		byPath[node.SessionPath] = node
+	}
+	if !byPath[pathA].Running || byPath[pathA].Label != "A" {
+		t.Fatalf("A = %+v, want its own runtime and title", byPath[pathA])
+	}
+	if byPath[pathB].Running || byPath[pathB].Label != "B" {
+		t.Fatalf("B = %+v, must not inherit A runtime", byPath[pathB])
+	}
+	if byPath[pathA].Key == byPath[pathB].Key {
+		t.Fatal("shared-topic sessions must have distinct row keys")
+	}
+}
+
 func TestProjectNodeFromCatalogTopicShowsNonEmptyRecoveryOnlyTopic(t *testing.T) {
 	app := &App{tabs: map[string]*WorkspaceTab{}, detachedSessions: map[string]*WorkspaceTab{}}
 	topic := sessioncatalog.TopicRecord{
@@ -143,12 +178,12 @@ func TestProjectNodeFromCatalogTopicCollapsesDivergedForksToOne(t *testing.T) {
 	if len(node.Children) != 0 {
 		t.Fatalf("children = %d, want collapsed parent-only row, children=%+v", len(node.Children), node.Children)
 	}
-	if node.RecoveryCopyCount != 2 {
-		t.Fatalf("recoveryCopyCount = %d, want 2 folded diverged forks", node.RecoveryCopyCount)
+	if node.RecoveryCopyCount != 0 {
+		t.Fatalf("recoveryCopyCount = %d, want compatibility field hidden from ordinary tree", node.RecoveryCopyCount)
 	}
 }
 
-func TestProjectNodeFromCatalogTopicCountsFoldedCoveredCopies(t *testing.T) {
+func TestProjectNodeFromCatalogTopicHidesFoldedCoveredCopyCount(t *testing.T) {
 	app := &App{tabs: map[string]*WorkspaceTab{}, detachedSessions: map[string]*WorkspaceTab{}}
 	topic := sessioncatalog.TopicRecord{
 		Scope: "global", TopicID: "t1", Title: "Topic", Turns: 3,
@@ -165,12 +200,8 @@ func TestProjectNodeFromCatalogTopicCountsFoldedCoveredCopies(t *testing.T) {
 	if !ok {
 		t.Fatal("topic with parent should stay visible")
 	}
-	if node.RecoveryCopyCount != 2 {
-		t.Fatalf("recoveryCopyCount = %d, want 2 folded covered copies", node.RecoveryCopyCount)
-	}
-	// The visible parent itself is never counted as a copy.
-	if node.SessionPath != "" && node.RecoveryCopyCount > 2 {
-		t.Fatalf("count inflated beyond folded copies: %+v", node)
+	if node.RecoveryCopyCount != 0 {
+		t.Fatalf("recoveryCopyCount = %d, want compatibility field hidden from ordinary tree", node.RecoveryCopyCount)
 	}
 }
 

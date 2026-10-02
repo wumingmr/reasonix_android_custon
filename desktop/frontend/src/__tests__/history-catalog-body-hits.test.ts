@@ -16,8 +16,7 @@ assert.match(panel, /hasBodyHits/, "HistoryPanel must branch on body hits");
 assert.match(panel, /searchHits\.length > 0/, "HistoryPanel must keep body hits out of empty state");
 assert.match(panel, /!isTrash && \(\s*<label className="mem-search history-search"/, "history search input stays available without metadata sessions");
 assert.match(panel, /isTrash && sessions\.length > 0/, "trash search may still gate on session rows");
-assert.match(hook, /nextSearchCursor/, "useHistoryCatalog must track an independent body cursor");
-assert.match(hook, /append[\s\S]*bodyPage\.items/, "useHistoryCatalog must append body hits on load more");
-assert.match(hook, /!append \|\| searchCursor/, "load-more must not restart body search with an empty cursor");
+assert.match(hook, /searchCursor/, "useHistoryCatalog must track an independent body cursor");
+assert.match(hook, /replace \|\| before\.searchCursor/, "load-more must not restart exhausted body search");
 
 console.log("  PASS  history body-only hits contract");

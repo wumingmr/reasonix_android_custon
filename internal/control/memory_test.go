@@ -16,7 +16,7 @@ import (
 // the memoryManager (off-c.mu) extraction must preserve.
 func TestMemoryWriteReflectsInSnapshot(t *testing.T) {
 	dir := t.TempDir()
-	c := New(Options{Memory: memory.Load(memory.Options{CWD: dir})})
+	c := newOwnedTestController(t, Options{Memory: memory.Load(memory.Options{CWD: dir})})
 
 	before := c.Memory()
 	if before == nil {
@@ -45,14 +45,14 @@ func TestMemoryWriteReflectsInSnapshot(t *testing.T) {
 	}
 }
 
-func TestSaveMemoryQueuesFullBodyForCurrentSession(t *testing.T) {
+func TestSaveMemoryRefreshesBackgroundSnapshotWithoutLegacyUpdate(t *testing.T) {
 	root := t.TempDir()
 	userDir := filepath.Join(root, "user")
 	cwd := filepath.Join(root, "project")
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	c := New(Options{Memory: memory.Load(memory.Options{CWD: cwd, UserDir: userDir})})
+	c := newOwnedTestController(t, Options{Memory: memory.Load(memory.Options{CWD: cwd, UserDir: userDir})})
 
 	body := "Always answer in Chinese unless the user explicitly asks for English.\nKeep technical terms precise."
 	if _, err := c.SaveMemory(memory.Memory{
@@ -65,16 +65,16 @@ func TestSaveMemoryQueuesFullBodyForCurrentSession(t *testing.T) {
 		t.Fatalf("SaveMemory: %v", err)
 	}
 
-	composed := c.Compose("hello")
-	if !strings.Contains(composed, "Saved memory \"response-language\"") || !strings.Contains(composed, body) {
-		t.Fatalf("saved memory name and body should ride the next turn:\n%s", composed)
+	background := c.Memory().BackgroundDataBlock()
+	if !strings.Contains(background, "response-language") || !strings.Contains(background, body) {
+		t.Fatalf("saved memory missing from refreshed background snapshot:\n%s", background)
 	}
-	if again := c.Compose("again"); strings.Contains(again, body) || strings.Contains(again, "<memory-update>") {
-		t.Fatalf("saved memory update should drain after one turn: %q", again)
+	if composed := c.Compose("hello"); strings.Contains(composed, "<memory-update>") || composed != "hello" {
+		t.Fatalf("background save generated legacy update: %q", composed)
 	}
 }
 
-func TestForgetMemoryRevokesLoadedGlobalGuidanceForCurrentSession(t *testing.T) {
+func TestForgetMemoryRefreshesBackgroundSnapshotWithoutLegacyUpdate(t *testing.T) {
 	root := t.TempDir()
 	userDir := filepath.Join(root, "user")
 	cwd := filepath.Join(root, "project")
@@ -92,7 +92,7 @@ func TestForgetMemoryRevokesLoadedGlobalGuidanceForCurrentSession(t *testing.T) 
 	}); err != nil {
 		t.Fatal(err)
 	}
-	c := New(Options{Memory: memory.Load(memory.Options{CWD: cwd, UserDir: userDir})})
+	c := newOwnedTestController(t, Options{Memory: memory.Load(memory.Options{CWD: cwd, UserDir: userDir})})
 	if before := c.Memory().Block(); !strings.Contains(before, body) {
 		t.Fatalf("test setup did not load global guidance:\n%s", before)
 	}
@@ -104,14 +104,12 @@ func TestForgetMemoryRevokesLoadedGlobalGuidanceForCurrentSession(t *testing.T) 
 		t.Fatalf("reloaded snapshot retained forgotten global guidance:\n%s", after)
 	}
 	composed := c.Compose("hello")
-	for _, want := range []string{"Forgot memory \"no-emoji\"", "disregard its loaded guidance", "background-index entry"} {
-		if !strings.Contains(composed, want) {
-			t.Fatalf("forget update missing %q:\n%s", want, composed)
-		}
+	if strings.Contains(composed, "<memory-update>") || composed != "hello" {
+		t.Fatalf("forget generated legacy update: %q", composed)
 	}
 }
 
-func TestRestoreArchivedMemoryQueuesFullBodyForCurrentSession(t *testing.T) {
+func TestRestoreArchivedMemoryRefreshesBackgroundSnapshotWithoutLegacyUpdate(t *testing.T) {
 	root := t.TempDir()
 	userDir := filepath.Join(root, "user")
 	cwd := filepath.Join(root, "project")
@@ -129,7 +127,7 @@ func TestRestoreArchivedMemoryQueuesFullBodyForCurrentSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := New(Options{Memory: memory.Load(memory.Options{CWD: cwd, UserDir: userDir})})
+	c := newOwnedTestController(t, Options{Memory: memory.Load(memory.Options{CWD: cwd, UserDir: userDir})})
 
 	restored, err := c.RestoreArchivedMemory(archivePath)
 	if err != nil {
@@ -138,11 +136,12 @@ func TestRestoreArchivedMemoryQueuesFullBodyForCurrentSession(t *testing.T) {
 	if restored.ID != first.Memory.ID || restored.Revision != 2 {
 		t.Fatalf("restored memory = %+v", restored)
 	}
-	composed := c.Compose("continue")
-	for _, want := range []string{"Recovered archived memory", "build-contract", "Run the focused package tests"} {
-		if !strings.Contains(composed, want) {
-			t.Fatalf("recovery update missing %q:\n%s", want, composed)
-		}
+	background := c.Memory().BackgroundDataBlock()
+	if !strings.Contains(background, "build-contract") || !strings.Contains(background, "project build contract") {
+		t.Fatalf("restored memory missing from refreshed background snapshot:\n%s", background)
+	}
+	if composed := c.Compose("continue"); strings.Contains(composed, "<memory-update>") || composed != "continue" {
+		t.Fatalf("archived restore generated legacy update: %q", composed)
 	}
 }
 
@@ -153,7 +152,7 @@ func TestRestoreArchivedMemoryQueuesFullBodyForCurrentSession(t *testing.T) {
 // note lands.
 func TestMemoryWritesConcurrencySafe(t *testing.T) {
 	dir := t.TempDir()
-	c := New(Options{Memory: memory.Load(memory.Options{CWD: dir})})
+	c := newOwnedTestController(t, Options{Memory: memory.Load(memory.Options{CWD: dir})})
 
 	const writers = 8
 	const each = 5
@@ -203,9 +202,9 @@ func TestMemoryWritesConcurrencySafe(t *testing.T) {
 	}
 }
 
-func TestRestoreMemoryQueuesAuditedRevisionForNextTurn(t *testing.T) {
+func TestRestoreMemoryRefreshesBackgroundSnapshotWithoutLegacyUpdate(t *testing.T) {
 	dir := t.TempDir()
-	c := New(Options{Memory: memory.Load(memory.Options{CWD: dir, UserDir: t.TempDir()})})
+	c := newOwnedTestController(t, Options{Memory: memory.Load(memory.Options{CWD: dir, UserDir: t.TempDir()})})
 	store := c.Memory().Store
 	first, err := store.SaveWithOptions(memory.Memory{Name: "release-target", Description: "v1", Body: "main-v2"}, memory.SaveOptions{})
 	if err != nil {
@@ -226,8 +225,11 @@ func TestRestoreMemoryQueuesAuditedRevisionForNextTurn(t *testing.T) {
 	if revisions := c.MemoryRevisions(first.Memory.ID); len(revisions) < 2 {
 		t.Fatalf("revision history = %+v", revisions)
 	}
-	composed := c.Compose("continue")
-	if !strings.Contains(composed, "Restored memory") || !strings.Contains(composed, "revision 3") {
-		t.Fatalf("restore note did not ride next turn: %q", composed)
+	background := c.Memory().BackgroundDataBlock()
+	if !strings.Contains(background, "release-target") || !strings.Contains(background, "v1") {
+		t.Fatalf("restored revision missing from refreshed background snapshot: %q", background)
+	}
+	if composed := c.Compose("continue"); strings.Contains(composed, "<memory-update>") || composed != "continue" {
+		t.Fatalf("revision restore generated legacy update: %q", composed)
 	}
 }

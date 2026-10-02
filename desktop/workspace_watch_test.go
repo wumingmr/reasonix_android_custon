@@ -24,6 +24,11 @@ func TestWorkspaceChangeHubSharesRootRevisionsAndIsolatesSessions(t *testing.T) 
 	t.Cleanup(func() { app.workspaceHub.close() })
 	app.tabs["a"] = &WorkspaceTab{ID: "a", WorkspaceRoot: root}
 	app.tabs["b"] = &WorkspaceTab{ID: "b", WorkspaceRoot: root}
+	// This tests revision routing, not OS watcher delivery. Seed the shared
+	// root so startup events cannot race the two independent reads.
+	key := canonicalWorkspaceRoot(root)
+	app.workspaceHub.roots[key] = &workspaceWatchRoot{key: key, root: key,
+		state: event.WorkspaceWatchActive, pending: make(map[string]event.WorkspacePathChange)}
 
 	beforeA := app.WorkspaceRevisionForTab("a")
 	beforeB := app.WorkspaceRevisionForTab("b")

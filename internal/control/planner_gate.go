@@ -58,8 +58,8 @@ func plannerTurnMetadataFromContext(ctx context.Context) (plannerTurnMetadata, b
 func (c *Controller) withPlannerTurnMetadata(ctx context.Context, userText string, synthetic bool, priorMessages int) context.Context {
 	text := strings.TrimSpace(agent.StripTransientUserBlocks(userText))
 	constraints := runtimepolicy.ParseConstraints(runtimepolicy.StripQuotedConstraints(text))
-	constraints.PolicyFloor = c.qualityFloorConstraint()
-	if c.PlanMode() {
+	planMode := c.PlanMode()
+	if planMode {
 		constraints.PlanModeReadOnly = true
 		constraints.ForbidMutation = true
 	}
@@ -67,7 +67,7 @@ func (c *Controller) withPlannerTurnMetadata(ctx context.Context, userText strin
 	return withPlannerTurnMetadata(ctx, plannerTurnMetadata{
 		UserText:               userText,
 		Synthetic:              synthetic,
-		ExplicitPlanMode:       c.PlanMode(),
+		ExplicitPlanMode:       planMode,
 		ExplicitGoalStart:      c.consumeExplicitGoalStart(),
 		HasConversationContext: priorMessages > 1,
 	})
@@ -87,7 +87,9 @@ func DecidePlannerRoute(ctx context.Context, input string) agent.PlannerDecision
 	if meta.ExplicitPlanMode || strings.HasPrefix(composedText, PlanModeMarker) {
 		return plannerExecutorDecision(plannerReasonExplicitPlanMode)
 	}
-	if meta.Synthetic || IsSyntheticUserMessage(text) {
+	// Current turns carry trusted origin metadata. Text recognition is only a
+	// compatibility fallback for direct/legacy callers that have no metadata.
+	if meta.Synthetic || (!hasMeta && IsSyntheticUserMessage(text)) {
 		return plannerExecutorDecision(plannerReasonSynthetic)
 	}
 	if text == "" {

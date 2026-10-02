@@ -18,7 +18,6 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/projectiondb"
-	"reasonix/internal/retrieval"
 	"reasonix/internal/store"
 )
 
@@ -304,11 +303,18 @@ func (c *Catalog) drainPending(ctx context.Context) {
 			delete(c.paths, path)
 			c.mu.Unlock()
 			_ = c.indexPath(ctx, queued.root, path, 0, queued.appendFrom)
+		case path := <-c.rootCh:
+			c.mu.Lock()
+			root, ok := c.roots[path]
+			c.mu.Unlock()
+			if ok {
+				_ = c.reconcileRoot(ctx, root)
+			}
 		default:
 			c.mu.Lock()
 			empty := len(c.paths) == 0 && len(c.dirtyRoots) == 0
 			c.mu.Unlock()
-			if empty && len(c.queue) == 0 {
+			if empty && len(c.queue) == 0 && len(c.rootCh) == 0 {
 				return
 			}
 			// Another goroutine may have enqueued between checks; yield once.
@@ -316,7 +322,7 @@ func (c *Catalog) drainPending(ctx context.Context) {
 			c.mu.Lock()
 			empty = len(c.paths) == 0 && len(c.dirtyRoots) == 0
 			c.mu.Unlock()
-			if empty && len(c.queue) == 0 {
+			if empty && len(c.queue) == 0 && len(c.rootCh) == 0 {
 				return
 			}
 		}
@@ -597,112 +603,6 @@ func bump(ctx context.Context, tx *sql.Tx) (uint64, error) {
 	return revision, err
 }
 
-func (c *Catalog) Search(ctx context.Context, req SearchRequest) (SearchResult, error) {
-	out := SearchResult{Items: []Candidate{}, Revision: c.revision.Load(), Partial: c.Status().Pending > 0}
-	terms, err := retrieval.QueryTerms(req.Query)
-	if err != nil {
-		return out, err
-	}
-	limit := req.Limit
-	if limit <= 0 {
-		limit = DefaultLimit
-	}
-	if limit > MaxLimit {
-		limit = MaxLimit
-	}
-	match := make([]string, 0, len(terms))
-	for _, term := range terms {
-		match = append(match, `"`+strings.ReplaceAll(term, `"`, `""`)+`"`)
-	}
-	where := []string{`history_fts MATCH ?`, `s.health='ok'`, `s.missing_since=0`}
-	args := []any{strings.Join(match, " OR ")}
-	if req.Scope == "project" {
-		where = append(where, `s.scope='project'`, `s.workspace_root=?`)
-		args = append(args, strings.TrimSpace(req.WorkspaceRoot))
-	}
-	if len(req.Kinds) > 0 {
-		placeholders := make([]string, len(req.Kinds))
-		for i, kind := range req.Kinds {
-			placeholders[i] = "?"
-			args = append(args, kind)
-		}
-		where = append(where, `d.kind IN (`+strings.Join(placeholders, ",")+`)`)
-	}
-	if tool := strings.TrimSpace(req.ToolName); tool != "" {
-		where = append(where, `d.tool_name=?`)
-		args = append(args, tool)
-	}
-	if len(req.Roots) > 0 {
-		placeholders := make([]string, 0, len(req.Roots))
-		for _, root := range req.Roots {
-			if strings.TrimSpace(root) == "" {
-				continue
-			}
-			placeholders = append(placeholders, "?")
-			args = append(args, filepath.Clean(root))
-		}
-		if len(placeholders) > 0 {
-			where = append(where, `s.root IN (`+strings.Join(placeholders, ",")+`)`)
-		}
-	}
-	baseQuery := `SELECT d.id AS id,d.source_path AS source_path,s.root AS root,s.source AS source,s.scope AS scope,
-		s.workspace_root AS workspace_root,s.content_digest AS content_digest,d.message_index AS message_index,
-		d.part_index AS part_index,d.role AS role,d.kind AS kind,d.tool_name AS tool_name,bm25(history_fts) AS rank,
-		s.custom_title AS custom_title,s.topic_title AS topic_title,s.last_activity_at AS last_activity_at
-        FROM history_fts JOIN history_documents d ON d.id=history_fts.rowid JOIN history_sources s ON s.path=d.source_path
-		WHERE ` + strings.Join(where, ` AND `)
-	query := baseQuery + ` ORDER BY bm25(history_fts),d.source_path,d.message_index,d.part_index,d.id LIMIT ?`
-	if after := req.After; after != nil {
-		query = `WITH ranked AS MATERIALIZED (` + baseQuery + `)
-			SELECT * FROM ranked WHERE rank>? OR (rank=? AND source_path>?) OR
-			(rank=? AND source_path=? AND message_index>?) OR
-			(rank=? AND source_path=? AND message_index=? AND part_index>?) OR
-			(rank=? AND source_path=? AND message_index=? AND part_index=? AND id>?)
-			ORDER BY rank,source_path,message_index,part_index,id LIMIT ?`
-		args = append(args, after.Rank, after.Rank, after.SessionPath,
-			after.Rank, after.SessionPath, after.MessageIndex,
-			after.Rank, after.SessionPath, after.MessageIndex, after.PartIndex,
-			after.Rank, after.SessionPath, after.MessageIndex, after.PartIndex, after.RowID)
-	}
-	args = append(args, limit)
-	rows, err := c.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return out, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var item Candidate
-		if err := rows.Scan(&item.RowID, &item.SessionPath, &item.Root, &item.Source, &item.Scope, &item.WorkspaceRoot, &item.ContentDigest,
-			&item.MessageIndex, &item.PartIndex, &item.Role, &item.Kind, &item.ToolName, &item.Rank,
-			&item.SessionTitle, &item.TopicTitle, &item.LastActivityAt); err != nil {
-			return out, err
-		}
-		if !catalogPathWithin(item.SessionPath, item.Root) {
-			continue
-		}
-		if item.Rank < 0 {
-			item.Score = -item.Rank
-		} else {
-			item.Score = 1 / (1 + item.Rank)
-		}
-		out.Items = append(out.Items, item)
-	}
-	return out, rows.Err()
-}
-
-func catalogPathWithin(path, root string) bool {
-	absPath, err := filepath.Abs(filepath.Clean(strings.TrimSpace(path)))
-	if err != nil {
-		return false
-	}
-	absRoot, err := filepath.Abs(filepath.Clean(strings.TrimSpace(root)))
-	if err != nil {
-		return false
-	}
-	rel, err := filepath.Rel(absRoot, absPath)
-	return err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))))
-}
-
 func (c *Catalog) Purge(ctx context.Context, path string) error {
 	if c == nil {
 		return nil
@@ -744,10 +644,13 @@ func (c *Catalog) refreshStatus(ctx context.Context) {
 	c.status.Revision = c.revision.Load()
 	c.statusMu.Unlock()
 }
-
 func (c *Catalog) publish(revision uint64, roots []string, reason string) {
 	c.revision.Store(revision)
-	c.refreshStatus(context.Background())
+	statusCtx := c.ctx
+	if statusCtx == nil {
+		statusCtx = context.Background()
+	}
+	c.refreshStatus(statusCtx)
 	if c.opts.OnRevision != nil {
 		c.opts.OnRevision(c.Status(), roots, reason)
 	}

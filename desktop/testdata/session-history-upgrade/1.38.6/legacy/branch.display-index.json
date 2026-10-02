@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "revision": 1,
+  "revision_known": true,
+  "content_digest": "37833ba420f462d8b39eb47ac18f1a5519b7a85d920986886e05d6ef2e03d8bf",
+  "transcript_size": 74491,
+  "message_count": 6,
+  "authored_turns": 2,
+  "listing_preview": "中文历史问题 # %20",
+  "listing_preview_known": true,
+  "entries": [
+    {
+      "index": 0,
+      "offset": 0,
+      "length": 79,
+      "role": "system",
+      "authored_turn": 0
+    },
+    {
+      "index": 1,
+      "offset": 79,
+      "length": 197,
+      "role": "user",
+      "authored_turn": 1,
+      "starts_turn": true,
+      "has_images": true
+    },
+    {
+      "index": 2,
+      "offset": 276,
+      "length": 248,
+      "role": "assistant",
+      "authored_turn": 1,
+      "has_tool_calls": true
+    },
+    {
+      "index": 3,
+      "offset": 524,
+      "length": 73821,
+      "role": "tool",
+      "authored_turn": 1,
+      "tool_result": true
+    },
+    {
+      "index": 4,
+      "offset": 74345,
+      "length": 71,
+      "role": "assistant",
+      "authored_turn": 1
+    },
+    {
+      "index": 5,
+      "offset": 74416,
+      "length": 75,
+      "role": "user",
+      "authored_turn": 2,
+      "starts_turn": true
+    }
+  ],
+  "updated_at": "2026-09-22T04:47:38.997605Z"
+}

@@ -13,13 +13,13 @@ import (
 	"time"
 
 	"reasonix/internal/config"
-	"reasonix/internal/filelock"
 	"reasonix/internal/fileutil"
+	filelock "reasonix/internal/identitylock"
 	"reasonix/internal/repair"
 )
 
 const (
-	desktopLifecycleSchemaVersion = 2
+	desktopLifecycleSchemaVersion = 3
 	desktopLifecycleRetention     = 30 * 24 * time.Hour
 	maxDesktopLifecycleRecords    = 20
 	desktopLifecycleReadRetries   = 12
@@ -27,22 +27,35 @@ const (
 )
 
 type desktopLifecycleState struct {
-	SchemaVersion int    `json:"schemaVersion"`
-	PID           int    `json:"pid"`
-	RunID         string `json:"runId"`
-	Version       string `json:"version,omitempty"`
-	Channel       string `json:"channel,omitempty"`
-	Phase         string `json:"phase"`
-	StartedAt     string `json:"startedAt"`
-	UpdatedAt     string `json:"updatedAt"`
+	SchemaVersion     int    `json:"schemaVersion"`
+	PID               int    `json:"pid"`
+	RunID             string `json:"runId"`
+	IncidentID        string `json:"incidentId,omitempty"`
+	Version           string `json:"version,omitempty"`
+	BuildCommit       string `json:"buildCommit,omitempty"`
+	Channel           string `json:"channel,omitempty"`
+	Phase             string `json:"phase"`
+	TerminationReason string `json:"terminationReason,omitempty"`
+	CleanupOutcome    string `json:"cleanupOutcome,omitempty"`
+	ProcessRole       string `json:"processRole,omitempty"`
+	StartedAt         string `json:"startedAt"`
+	UpdatedAt         string `json:"updatedAt"`
 }
 
 type desktopLifecycleObservation struct {
-	Version   string
-	Channel   string
-	Phase     string
-	StartedAt string
-	UpdatedAt string
+	RunID             string
+	IncidentID        string
+	Version           string
+	BuildCommit       string
+	Channel           string
+	Phase             string
+	TerminationReason string
+	CleanupOutcome    string
+	ProcessRole       string
+	StartedAt         string
+	UpdatedAt         string
+	claimedPath       string
+	originalPath      string
 }
 
 type desktopLifecycleRuntime struct {
@@ -77,7 +90,10 @@ func newDesktopLifecycleTracker(root, appVersion, appChannel string) *desktopLif
 			SchemaVersion: desktopLifecycleSchemaVersion,
 			PID:           os.Getpid(),
 			RunID:         runID,
+			IncidentID:    newDesktopLifecycleRunID(),
 			Version:       appVersion,
+			BuildCommit:   buildCommit(),
+			ProcessRole:   "service",
 			Channel:       appChannel,
 			Phase:         "starting",
 			StartedAt:     now.Format(time.RFC3339Nano),
@@ -92,7 +108,7 @@ func newDesktopLifecycleTracker(root, appVersion, appChannel string) *desktopLif
 }
 
 func prepareDesktopDiagnostics(app *App) {
-	if app == nil || app.remoteWindowTicket != "" || version == "dev" {
+	if app == nil || version == "dev" {
 		return
 	}
 	root := config.MemoryUserDir()
@@ -137,13 +153,9 @@ func (a *App) releaseDesktopDiagnosticsOwnership() {
 }
 
 func initializeLifecycleDiagnostics(app *App) {
-	if app == nil || app.remoteWindowTicket != "" {
+	if app == nil {
 		return
 	}
-	// Native WebKit recovery is a reliability mechanism, not telemetry. Always
-	// install it; the flag only controls whether sanitized diagnostics upload.
-	telemetry := app.diagnosticsOwner && app.diagnosticsConfigLoaded && version != "dev" && app.diagnosticsTelemetry
-	installWebKitProcessObserver(app, telemetry)
 	if !app.diagnosticsOwner {
 		return
 	}
@@ -160,9 +172,6 @@ func initializeLifecycleDiagnostics(app *App) {
 		app.lifecycle.previousRun = legacy
 	}
 	app.lifecycle.previousRuns = tracker.consumePrevious(enabled)
-	if enabled {
-		refreshWebRuntimeContext()
-	}
 }
 
 func (a *App) markDesktopHealthy() {
@@ -238,6 +247,15 @@ func (t *desktopLifecycleTracker) markAsync(phase string) {
 	}
 }
 
+func (t *desktopLifecycleTracker) incidentID() string {
+	if t == nil {
+		return ""
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.state.IncidentID
+}
+
 func (t *desktopLifecycleTracker) stopWriter() {
 	if t == nil {
 		return
@@ -268,6 +286,22 @@ func (t *desktopLifecycleTracker) mark(phase string) {
 	_ = t.writeStateLocked()
 }
 
+func (t *desktopLifecycleTracker) markShutdown(reason, phase, outcome string) {
+	if t == nil || t.path == "" {
+		return
+	}
+	t.stopWriter()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.state.TerminationReason = normalizeShutdownReason(reason)
+	t.state.CleanupOutcome = strings.TrimSpace(outcome)
+	if strings.TrimSpace(phase) != "" {
+		t.state.Phase = strings.TrimSpace(phase)
+	}
+	t.state.UpdatedAt = t.now().Format(time.RFC3339Nano)
+	_ = t.writeStateLocked()
+}
+
 func (t *desktopLifecycleTracker) clean() {
 	if t == nil || t.path == "" {
 		return
@@ -293,8 +327,8 @@ func (t *desktopLifecycleTracker) writeStateLocked() error {
 }
 
 // consumePrevious atomically owns every dead per-process record before
-// returning it. When emit is false (telemetry opt-out), records are consumed
-// without exposing their contents to the reporting path.
+// returning it. Emitted records remain claimed until their pending event is
+// durably written; finalizeObservation then deletes or restores the evidence.
 func (t *desktopLifecycleTracker) consumePrevious(emit bool) []desktopLifecycleObservation {
 	if t == nil || t.dir == "" {
 		return nil
@@ -320,7 +354,7 @@ func (t *desktopLifecycleTracker) consumePrevious(emit bool) []desktopLifecycleO
 		// A newer Desktop may own a lifecycle schema this version cannot safely
 		// interpret. Preserve it verbatim so a downgrade never consumes or prunes
 		// future-format evidence.
-		if state.SchemaVersion != desktopLifecycleSchemaVersion {
+		if state.SchemaVersion != 2 && state.SchemaVersion != desktopLifecycleSchemaVersion {
 			continue
 		}
 		if state.PID <= 0 || state.Phase == "" {
@@ -340,23 +374,40 @@ func (t *desktopLifecycleTracker) consumePrevious(emit bool) []desktopLifecycleO
 			continue
 		}
 		state, readErr = readClaimedLifecycleState(claimed)
-		if readErr != nil || state.SchemaVersion != desktopLifecycleSchemaVersion {
+		if readErr != nil || (state.SchemaVersion != 2 && state.SchemaVersion != desktopLifecycleSchemaVersion) {
 			// The file changed between inspection and claim. Put it back when
 			// possible instead of deleting data that may belong to another schema.
 			_ = os.Rename(claimed, path)
 			continue
 		}
-		_ = os.Remove(claimed)
 		if !emit {
+			_ = os.Remove(claimed)
 			continue
 		}
 		observations = append(observations, desktopLifecycleObservation{
-			Version: state.Version, Channel: state.Channel, Phase: state.Phase,
-			StartedAt: state.StartedAt, UpdatedAt: state.UpdatedAt,
+			RunID: state.RunID, IncidentID: state.IncidentID,
+			Version: state.Version, BuildCommit: state.BuildCommit, Channel: state.Channel, Phase: state.Phase,
+			TerminationReason: state.TerminationReason, CleanupOutcome: state.CleanupOutcome,
+			ProcessRole: state.ProcessRole,
+			StartedAt:   state.StartedAt, UpdatedAt: state.UpdatedAt,
+			claimedPath: claimed, originalPath: path,
 		})
 	}
 	t.pruneRecords()
 	return observations
+}
+
+func (t *desktopLifecycleTracker) finalizeObservation(observation desktopLifecycleObservation, persisted bool) {
+	if observation.claimedPath == "" {
+		return
+	}
+	if persisted {
+		_ = os.Remove(observation.claimedPath)
+		return
+	}
+	if observation.originalPath != "" {
+		_ = os.Rename(observation.claimedPath, observation.originalPath)
+	}
 }
 
 // readClaimedLifecycleState re-reads a just-claimed record. Winning the rename

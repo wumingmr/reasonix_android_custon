@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { useT } from "../lib/i18n";
@@ -79,6 +80,7 @@ export function BlankProjectDialog({
 
   return createPortal(
     <div
+      data-app-overlay=""
       className="modal-backdrop blank-project-backdrop"
       role="presentation"
       onMouseDown={(event) => {
@@ -118,7 +120,7 @@ export function BlankProjectDialog({
             </p>
           ) : null}
           <div className="blank-project-dialog__error" id={errorId} role={visibleError ? "alert" : undefined}>
-            {visibleError || "\u00a0"}
+            {visibleError ? <ErrorMessage error={visibleError} /> : "\u00a0"}
           </div>
           <div className="modal__actions blank-project-dialog__actions">
             <button className="btn btn--small" type="button" disabled={busy} onClick={onCancel}>

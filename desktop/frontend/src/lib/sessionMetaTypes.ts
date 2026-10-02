@@ -1,6 +1,14 @@
 // SessionMeta is one saved session for the history panel.
 export interface SessionMeta {
+  source?: import("../generated/desktopContract.generated").SessionSourceRef;
+  historical?: boolean;
+  historicalBranch?: boolean;
+  preparationStatus?: string;
   path: string;
+  sessionId?: string;
+  hostId?: string;
+  codec?: string;
+  error?: string;
   preview: string;
   title?: string; // user-chosen name; falls back to preview when empty
   turns: number;
@@ -28,4 +36,7 @@ export interface SessionMeta {
   recoveryGroupId?: string;
   recoveryRole?: string; // normal|covered_copy|adopted|diverged
   recoveryCanonical?: boolean;
+  versionKind?: "normal" | "recovery" | "subagent" | string;
+  versionState?: "active" | "pending" | "resolved" | "trashed" | string;
+  parentVersionId?: string;
 }

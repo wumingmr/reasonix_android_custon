@@ -2,6 +2,8 @@ import type { PendingGuidance } from "../components/ComposerGuidanceShelf";
 import { asArray } from "./array";
 
 export type InboxSnapshotLike = {
+	readonly?: boolean;
+	mutationsSupported?: boolean;
   paused?: boolean;
   recovered?: boolean;
   recoveredCount?: number;
@@ -13,6 +15,7 @@ export type InboxSnapshotLike = {
     state?: string;
     intent?: string;
     source?: string;
+    blockReason?: string;
   }>;
 };
 
@@ -43,6 +46,7 @@ export function guidanceFromInboxSnapshot(snap: InboxSnapshotLike | null | undef
     state: it.state,
     intent: it.intent,
     source: it.source,
+    blockReason: it.blockReason,
     paused: Boolean(snap?.paused),
     recoveredCount: snap?.paused && snap?.recovered
       ? visible.length

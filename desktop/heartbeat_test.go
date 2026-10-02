@@ -125,7 +125,7 @@ func TestHeartbeatLoadTasksDecodesGB18030Config(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(engine.configPath()), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(engine.configPath(), fileencoding.Encode(body, fileencoding.GB18030), 0o644); err != nil {
+	if err := os.WriteFile(engine.configPath(), fileencoding.MustEncode(body, fileencoding.GB18030), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -412,7 +412,7 @@ func TestHeartbeatExecuteTaskPersistsFreshConversationTopicID(t *testing.T) {
 		}
 	}()
 
-	got := engine.executeTask(seed)
+	got := engine.executeTaskWithLease(seed, nil)
 
 	if got.TopicID == "" {
 		t.Fatal("fresh conversation task should return the newly created topic ID")
@@ -423,8 +423,8 @@ func TestHeartbeatExecuteTaskPersistsFreshConversationTopicID(t *testing.T) {
 	if len(ctrl.submitted) != 1 || ctrl.submitted[0] != "ping" {
 		t.Fatalf("submitted prompts = %v, want [ping]", ctrl.submitted)
 	}
-	if ctrl.approvalMode != "auto" {
-		t.Fatalf("approval mode = %q, want auto", ctrl.approvalMode)
+	if ctrl.approvalMode != "workspace-write" {
+		t.Fatalf("permission preset = %q, want workspace-write", ctrl.approvalMode)
 	}
 	pending := engine.pendingTopics["fresh"]
 	if pending.TopicID != got.TopicID || !pending.Submitted {
@@ -498,7 +498,7 @@ func TestHeartbeatExecuteTaskSkipsPendingPrompt(t *testing.T) {
 		}
 	}()
 
-	got := engine.executeTask(seed)
+	got := engine.executeTaskWithLease(seed, nil)
 
 	if got.LastRunAt != 0 {
 		t.Fatalf("pending prompt should not mark heartbeat run complete, LastRunAt=%d", got.LastRunAt)

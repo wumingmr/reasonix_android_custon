@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"reasonix/internal/config"
+	"reasonix/internal/control"
 )
 
 // topic_activation.go implements the two-phase topic activation used by the
@@ -52,11 +53,12 @@ const (
 // resolves to its latest session. RequestID is optional — the backend
 // generates one when empty.
 type TopicActivationRequest struct {
-	Scope         string `json:"scope"`
-	WorkspaceRoot string `json:"workspaceRoot"`
-	TopicID       string `json:"topicId"`
-	SessionPath   string `json:"sessionPath"`
-	RequestID     string `json:"requestId"`
+	Selector      *SessionSelector `json:"selector,omitempty"`
+	Scope         string           `json:"scope"`
+	WorkspaceRoot string           `json:"workspaceRoot"`
+	TopicID       string           `json:"topicId"`
+	SessionPath   string           `json:"sessionPath"`
+	RequestID     string           `json:"requestId"`
 }
 
 // TopicActivationTicket is returned synchronously by StartTopicActivation. The
@@ -81,6 +83,15 @@ type TopicActivationEvent struct {
 	TabID     string `json:"tabId"`
 	Phase     string `json:"phase"` // "starting" | "ready" | "failed" | "cancelled"
 	Error     string `json:"error,omitempty"`
+}
+
+// Guarded by App.mu. Readiness can finish the public request before background
+// pruning releases its generation, so terminal ownership is tracked separately.
+type topicActivationState struct {
+	activationGen             uint64
+	latestActivationRequestID string
+	pendingActivationTabID    string
+	activationTerminalClaimed bool
 }
 
 func newTopicActivationRequestID() string {
@@ -120,6 +131,10 @@ func (a *App) emitTopicActivation(ev TopicActivationEvent) {
 func (a *App) supersedePendingTopicActivationLocked(exceptTabID string, cancelBuild bool) (string, string) {
 	reqID := a.latestActivationRequestID
 	tabID := a.pendingActivationTabID
+	if a.activationTerminalClaimed {
+		reqID = ""
+	}
+	a.activationTerminalClaimed = false
 	a.activationGen++
 	a.latestActivationRequestID = ""
 	a.pendingActivationTabID = ""
@@ -162,13 +177,31 @@ func (a *App) finishTopicActivation(gen uint64, requestID string) {
 // the same generation, so interleaved legacy and ticketed calls resolve
 // deterministically to the last call.
 func (a *App) StartTopicActivation(req TopicActivationRequest) (TopicActivationTicket, error) {
+	// Claim intent before source resolution can block. A later request must not
+	// be displaced by this request finishing its I/O last.
+	intent := a.desktopSessions.navigationSeq.Add(1)
+	if req.Selector != nil {
+		target, err := a.resolveSessionTarget(*req.Selector)
+		if err != nil {
+			return TopicActivationTicket{}, err
+		}
+		req.Scope, req.WorkspaceRoot, req.TopicID, req.SessionPath = target.Scope, target.WorkspaceRoot, target.TopicID, target.SessionPath
+		if target.SessionRef.SessionID != "" {
+			req.SessionPath = sessionRoute(target.SessionRef.SessionID)
+		} else if target.Source != nil {
+			req.SessionPath = nativeSessionSourceRoute(target.Source)
+		}
+	}
 	a.singleSurfaceMu.Lock()
 	defer a.singleSurfaceMu.Unlock()
+	if a.desktopSessions.navigationSeq.Load() != intent {
+		return TopicActivationTicket{}, errSessionNavigationSuperseded
+	}
 
 	var meta TabMeta
 	var err error
 	if strings.TrimSpace(req.SessionPath) != "" {
-		meta, err = a.openTopicSession(req.Scope, req.WorkspaceRoot, req.TopicID, req.SessionPath)
+		meta, err = a.openTopicSessionWithNavigation(req.Scope, req.WorkspaceRoot, req.TopicID, req.SessionPath, intent)
 	} else if strings.TrimSpace(req.Scope) == "project" {
 		meta, err = a.openProjectTab(req.WorkspaceRoot, req.TopicID)
 	} else {
@@ -180,6 +213,12 @@ func (a *App) StartTopicActivation(req TopicActivationRequest) (TopicActivationT
 		// untouched on error.
 		return TopicActivationTicket{}, err
 	}
+	// The ticket publishes the local surface before the asynchronous prune.
+	// Clear the remote selection now so ListTabs cannot reselect the old remote
+	// tab while the local controller is still becoming ready.
+	a.remoteTabMu.Lock()
+	a.remoteTabLayout.activeID = ""
+	a.remoteTabMu.Unlock()
 
 	requestID := strings.TrimSpace(req.RequestID)
 	if requestID == "" {
@@ -241,7 +280,8 @@ func (a *App) runTopicActivationCompletion(gen uint64, requestID, tabID string) 
 	// through singleSurfaceMu: either this completion runs entirely before the
 	// next activation's synchronous phase (its tabs are not there to prune),
 	// or after it (the generation no longer matches and nothing is pruned).
-	a.singleSurfaceMu.Lock()
+	unlockRuntime := a.lockTopicActivationPrune()
+	defer unlockRuntime()
 	defer a.singleSurfaceMu.Unlock()
 
 	a.mu.RLock()
@@ -254,7 +294,9 @@ func (a *App) runTopicActivationCompletion(gen uint64, requestID, tabID string) 
 		return
 	}
 
-	if _, err := a.keepOnlyVisibleTab(tabID); err != nil {
+	_, err := a.pruneVisibleTabsRuntimeAdmissionHeld(tabID)
+	unlockRuntime()
+	if err != nil {
 		a.finishTopicActivation(gen, requestID)
 		if !emittedReady {
 			a.emitTopicActivation(TopicActivationEvent{
@@ -268,6 +310,7 @@ func (a *App) runTopicActivationCompletion(gen uint64, requestID, tabID string) 
 		}
 		return
 	}
+	a.emitProjectTreeRuntimeChangedWithLegacy()
 
 	if emittedReady {
 		a.finishTopicActivation(gen, requestID)
@@ -307,13 +350,18 @@ func (a *App) runTopicActivationCompletion(gen uint64, requestID, tabID string) 
 }
 
 func (a *App) emitTopicActivationReadyIfCurrent(gen uint64, requestID, tabID string) bool {
-	a.mu.RLock()
+	a.mu.Lock()
 	tab := a.tabs[tabID]
 	ok := a.activationGen == gen &&
 		a.latestActivationRequestID == requestID &&
 		a.pendingActivationTabID == tabID &&
-		tab != nil && tab.Ready && tab.Ctrl != nil
-	a.mu.RUnlock()
+		!a.activationTerminalClaimed && tab != nil && tab.Ready && tab.Ctrl != nil
+	if ok {
+		// Claim the terminal event atomically with supersession. Keep the
+		// request identity until prune completes, but never cancel it again.
+		a.activationTerminalClaimed = true
+	}
+	a.mu.Unlock()
 	if !ok {
 		return false
 	}
@@ -356,6 +404,8 @@ type TabMetaRefreshEvent struct {
 // image-input computation so a model switch invalidates it without
 // invalidating the (root-scoped) git branch or fallback setting.
 type tabMetaExtras struct {
+	controller            control.SessionAPI
+	modelSettingsPending  bool
 	workspaceRoot         string
 	model                 string
 	gitBranch             string
@@ -421,6 +471,8 @@ func (a *App) refreshTabMetaExtras(tab *WorkspaceTab) {
 	}
 	root := tab.WorkspaceRoot
 	model := tab.model
+	ctrl := tab.Ctrl
+	snapshotModel, snapshotRoot := model, root
 	a.mu.RUnlock()
 	if root == "" {
 		root, _ = os.Getwd()
@@ -428,7 +480,9 @@ func (a *App) refreshTabMetaExtras(tab *WorkspaceTab) {
 
 	gitBranch := ""
 	if root != "" {
-		gitBranch = workspaceGitBranch(root)
+		if repo, err := workspaceRepo(root, ctrl); err == nil {
+			gitBranch = workspaceGitBranch(repo)
+		}
 	}
 	imageInputEnabled := false
 	visionFallbackEnabled := false
@@ -441,13 +495,21 @@ func (a *App) refreshTabMetaExtras(tab *WorkspaceTab) {
 		}
 		visionFallbackEnabled = strings.TrimSpace(cfg.Agent.VisionModel) != ""
 	}
+	if snapshot, ok := ctrl.(interface{ ImageInputSnapshot() (bool, bool, bool) }); ok {
+		if enabled, fallback, available := snapshot.ImageInputSnapshot(); available {
+			imageInputEnabled, visionFallbackEnabled = enabled, fallback
+		}
+	}
 
+	pending, _ := modelSettingsNeedApply(ctrl)
 	a.mu.Lock()
-	if a.tabs[tab.ID] != tab {
+	if a.tabs[tab.ID] != tab || tab.Ctrl != ctrl || tab.model != snapshotModel || tab.WorkspaceRoot != snapshotRoot {
 		a.mu.Unlock()
 		return
 	}
 	tab.metaExtras.Store(&tabMetaExtras{
+		controller:            ctrl,
+		modelSettingsPending:  pending,
 		workspaceRoot:         root,
 		model:                 model,
 		gitBranch:             gitBranch,

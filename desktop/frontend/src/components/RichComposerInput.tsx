@@ -17,6 +17,7 @@ import {
   type ComposerInvocation,
 } from "../lib/invocationDisplay";
 import { activeRefTokenRe } from "../lib/refToken";
+import { newComposerInvocationID } from "../lib/composerInvocationIdentity";
 import type { CommandInfo } from "../lib/types";
 import { InvocationBadge } from "./InvocationBadge";
 
@@ -483,7 +484,6 @@ export function slashQueryAt(text: string, selection: RichComposerSelection): Ri
   return { from: slashOffset, to: tokenEnd, query: match[1].toLowerCase() };
 }
 
-let nextInvocationID = 1;
 
 export const RichComposerInput = forwardRef<RichComposerInputHandle, {
   text: string;
@@ -619,7 +619,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, {
     replaceRange,
     insertInvocation: (command, query) => {
       const next = replaceInvocationTextRange(text, invocations, query.from, query.to, "");
-      const id = `invocation-${nextInvocationID++}`;
+      const id = newComposerInvocationID(invocations);
       const invocation: ComposerInvocation = { id, offset: query.from, command };
       const afterSelection = { start: query.from, end: query.from, afterInvocationId: id };
       pendingSelectionRef.current = afterSelection;

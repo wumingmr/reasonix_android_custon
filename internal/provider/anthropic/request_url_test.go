@@ -63,3 +63,55 @@ func TestLegacyChatURLRemainsIgnored(t *testing.T) {
 		t.Fatalf("requestURL = %q, want legacy base-derived endpoint", got)
 	}
 }
+
+func TestRequestURLEqualToBaseRootIsIgnored(t *testing.T) {
+	p, err := New(provider.Config{
+		BaseURL: "https://base.example.com/api",
+		Model:   "model",
+		Extra:   map[string]any{"request_url": "https://base.example.com/api"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := p.(*client).requestURL; got != "https://base.example.com/api/v1/messages" {
+		t.Fatalf("requestURL = %q, want base-derived /v1/messages endpoint", got)
+	}
+}
+
+func TestRequestURLEqualToV1BaseIsIgnored(t *testing.T) {
+	p, err := New(provider.Config{
+		BaseURL: "https://base.example.com/v1",
+		Model:   "model",
+		Extra:   map[string]any{"request_url": "https://base.example.com/v1"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := p.(*client).requestURL; got != "https://base.example.com/v1/messages" {
+		t.Fatalf("requestURL = %q, want base-derived /v1/messages endpoint", got)
+	}
+}
+
+func TestRequestURLRepeatingBaseComparesSchemeAndHostCaseInsensitively(t *testing.T) {
+	for _, override := range []string{"HTTPS://Base.Example.com/api", "https://BASE.example.com/api/v1/"} {
+		p, err := New(provider.Config{BaseURL: "https://base.example.com/api", Model: "model", Extra: map[string]any{"request_url": override}})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if got := p.(*client).requestURL; got != "https://base.example.com/api/v1/messages" {
+			t.Errorf("request_url %q resolved to %q, want the derived /v1/messages endpoint", override, got)
+		}
+	}
+}
+
+func TestRequestURLWithQueryOrFragmentStaysVerbatim(t *testing.T) {
+	for _, override := range []string{"https://base.example.com/api?token=1", "https://base.example.com/api/v1#debug", "https://base.example.com/API"} {
+		p, err := New(provider.Config{BaseURL: "https://base.example.com/api", Model: "model", Extra: map[string]any{"request_url": override}})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if got := p.(*client).requestURL; got != override {
+			t.Errorf("request_url %q resolved to %q, want it verbatim", override, got)
+		}
+	}
+}

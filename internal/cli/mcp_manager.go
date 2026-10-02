@@ -90,6 +90,24 @@ type mcpActionItem struct {
 	label string
 }
 
+// mcpConnectCause is which request started a background connect; it decides
+// the notice the result posts.
+type mcpConnectCause int
+
+const (
+	mcpConnectRetry mcpConnectCause = iota
+	mcpConnectMode
+	mcpConnectAuth
+)
+
+type mcpConnectDoneMsg struct {
+	server string
+	cause  mcpConnectCause
+	entry  *config.PluginEntry // the saved entry when cause is mcpConnectMode
+	tools  int
+	err    error
+}
+
 type mcpExternalDoneMsg struct {
 	label  string
 	target string
@@ -358,7 +376,7 @@ func (m chatTUI) buildMCPSnapshot() mcpSnapshot {
 		}
 		v := mcpServerView{Name: p.Name}
 		switch {
-		case m.mcpDisabled[p.Name] || !p.ShouldAutoStart():
+		case m.mcpDisabled[p.Name] || !config.MCPServerEnabled(p, workspace):
 			v.Status = "disabled"
 		default:
 			v.Status = "deferred"

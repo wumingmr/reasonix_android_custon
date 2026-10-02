@@ -57,15 +57,10 @@ func sessionsCommand(args []string) int {
 		return printSessionCatalogRebuild(status, *jsonOut)
 	}
 	targets := make([]sessioncatalog.DirectoryTarget, 0, len(dirs))
-	seen := map[string]bool{}
 	for _, dir := range dirs {
-		dir = filepath.Clean(strings.TrimSpace(dir))
-		if dir == "." || dir == "" || seen[dir] {
-			continue
-		}
-		seen[dir] = true
 		targets = append(targets, sessioncatalog.DirectoryTarget{Path: dir, Scope: "global"})
 	}
+	targets = sessioncatalog.UniqueDirectoryTargets(targets)
 	status, err := sessioncatalog.Rebuild(context.Background(), sessioncatalog.DefaultPath(), targets)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -87,6 +82,10 @@ type sessionRecoveryReport struct {
 	CleanupEligible   int      `json:"cleanupEligible"`
 	MovedToTrash      int      `json:"movedToTrash"`
 	Busy              int      `json:"busy"`
+	SessionLogs       int      `json:"sessionLogs"` // schema-2 logs; their versions are heads, never copies
+	Heads             int      `json:"heads"`
+	CoveredHeads      int      `json:"coveredHeads"`
+	RetiredHeads      int      `json:"retiredHeads"`
 	Errors            []string `json:"errors"`
 	DryRun            bool     `json:"dryRun"`
 }
@@ -117,6 +116,11 @@ func sessionsRecoveryCommand(args []string, cleanup bool) int {
 			dirs = append(dirs, target.Path)
 		}
 	}
+	targets := make([]sessioncatalog.DirectoryTarget, 0, len(dirs))
+	for _, dir := range dirs {
+		targets = append(targets, sessioncatalog.DirectoryTarget{Path: dir, Scope: "global"})
+	}
+	targets = sessioncatalog.UniqueDirectoryTargets(targets)
 	report := sessionRecoveryReport{Errors: []string{}, DryRun: !cleanup || !*apply}
 	persisted, persistedErr := sessioncatalog.Open(context.Background(), sessioncatalog.Options{
 		Path: sessioncatalog.DefaultPath(), DisableRepair: true,
@@ -126,28 +130,12 @@ func sessionsRecoveryCommand(args []string, cleanup bool) int {
 	} else {
 		defer persisted.Close(context.Background())
 	}
-	seen := map[string]bool{}
-	for _, rawDir := range dirs {
-		dir := filepath.Clean(strings.TrimSpace(rawDir))
-		if dir == "." || dir == "" || seen[dir] {
-			continue
-		}
-		seen[dir] = true
+	for _, target := range targets {
+		dir := target.Path
 		report.Directories++
 		inspectSessionRecoveryDirectory(context.Background(), dir, persisted, &report)
 	}
-	if *jsonOut {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		_ = enc.Encode(report)
-	} else {
-		fmt.Printf("source sessions: %d; indexed sessions: %d; unindexed: %d; stale directories: %d\n", report.SourceSessions, report.IndexedSessions, report.UnindexedSessions, report.StaleDirectories)
-		fmt.Printf("recovery groups: %d (%d adopted, %d diverged)\n", report.Groups, report.AdoptedGroups, report.DivergedGroups)
-		fmt.Printf("recovery branches: %d; safe cleanup: %d; moved: %d; busy: %d\n", report.Branches, report.CleanupEligible, report.MovedToTrash, report.Busy)
-		if report.DryRun && cleanup {
-			fmt.Println("dry run; pass --apply to move safe branches to recoverable trash")
-		}
-	}
+	printSessionRecoveryReport(report, *jsonOut, cleanup)
 	for _, message := range report.Errors {
 		fmt.Fprintln(os.Stderr, "warning:", message)
 	}
@@ -155,6 +143,25 @@ func sessionsRecoveryCommand(args []string, cleanup bool) int {
 		return 1
 	}
 	return 0
+}
+
+func printSessionRecoveryReport(report sessionRecoveryReport, jsonOut, cleanup bool) {
+	if jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(report)
+		return
+	}
+	fmt.Printf("source sessions: %d; indexed sessions: %d; unindexed: %d; stale directories: %d\n", report.SourceSessions, report.IndexedSessions, report.UnindexedSessions, report.StaleDirectories)
+	fmt.Printf("recovery groups: %d (%d adopted, %d diverged)\n", report.Groups, report.AdoptedGroups, report.DivergedGroups)
+	fmt.Printf("recovery branches: %d; safe cleanup: %d; moved: %d; busy: %d\n", report.Branches, report.CleanupEligible, report.MovedToTrash, report.Busy)
+	fmt.Printf("session logs: %d; heads: %d (%d covered, %d retired)\n", report.SessionLogs, report.Heads, report.CoveredHeads, report.RetiredHeads)
+	if cleanup && report.CoveredHeads > 0 {
+		fmt.Println("covered heads live inside their session log; retire them from the app's session versions dialog")
+	}
+	if report.DryRun && cleanup {
+		fmt.Println("dry run; pass --apply to move safe branches to recoverable trash")
+	}
 }
 
 func inspectSessionRecoveryDirectory(ctx context.Context, dir string, persisted *sessioncatalog.Catalog, report *sessionRecoveryReport) {
@@ -186,6 +193,7 @@ func updateSessionRecoveryCounts(ctx context.Context, dir string, persisted *ses
 		return
 	}
 	report.SourceSessions += len(source)
+	countSessionLogHeads(source, report)
 	if persisted == nil {
 		return
 	}
@@ -289,14 +297,8 @@ func defaultSessionCatalogTargets() []sessioncatalog.DirectoryTarget {
 	if data, err := os.ReadFile(filepath.Join(home, "desktop-projects.json")); err == nil {
 		_ = json.Unmarshal(data, &saved)
 	}
-	seen := map[string]bool{}
 	targets := make([]sessioncatalog.DirectoryTarget, 0, len(saved.Projects)+2)
 	add := func(target sessioncatalog.DirectoryTarget) {
-		target.Path = filepath.Clean(strings.TrimSpace(target.Path))
-		if target.Path == "." || target.Path == "" || seen[target.Path] {
-			return
-		}
-		seen[target.Path] = true
 		targets = append(targets, target)
 	}
 	add(sessioncatalog.DirectoryTarget{Path: config.SessionDir(), Scope: "global"})
@@ -313,5 +315,26 @@ func defaultSessionCatalogTargets() []sessioncatalog.DirectoryTarget {
 			Path: config.ProjectSessionDir(root), Scope: "project", WorkspaceRoot: root,
 		})
 	}
-	return targets
+	return sessioncatalog.UniqueDirectoryTargets(targets)
+}
+
+// countSessionLogHeads reports schema-2 logs by their heads. Such logs never
+// join recovery groups, so cleanup has nothing to move for them.
+func countSessionLogHeads(source []agent.SessionOrderInfo, report *sessionRecoveryReport) {
+	for _, info := range source {
+		heads, err := agent.ListSessionHeads(info.Path)
+		if err != nil || len(heads) == 0 {
+			continue
+		}
+		report.SessionLogs++
+		for _, head := range heads {
+			report.Heads++
+			switch {
+			case head.Retired:
+				report.RetiredHeads++
+			case head.Covered:
+				report.CoveredHeads++
+			}
+		}
+	}
 }

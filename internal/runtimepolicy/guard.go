@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 
 	"reasonix/internal/evidence"
-	"reasonix/internal/taskcontract"
 )
 
 // GuardAction is one monotonic preflight verdict.
@@ -19,10 +18,9 @@ const (
 
 // GuardDecision is one guard's immutable snapshot.
 type GuardDecision struct {
-	Action        GuardAction
-	Preconditions []taskcontract.Obligation
-	Reasons       []taskcontract.ReasonCode
-	Message       string
+	Action  GuardAction
+	Reasons []string
+	Message string
 }
 
 // CallContext is the resolved, already-identified tool call.
@@ -32,8 +30,6 @@ type CallContext struct {
 	Profile              evidence.EffectProfile
 	PlanReadOnly         bool
 	Interactive          bool
-	HasTodo              bool
-	HasCriteria          bool
 	Verification         bool
 	TestsForbidden       bool
 	WorkspaceRoot        string
@@ -50,26 +46,10 @@ type ResultContext struct {
 	TestsForbidden bool
 }
 
-// StopContext is the host-visible state at a proposed stop.
-type StopContext struct {
-	GoalActive     bool
-	ApprovedPlan   bool
-	Opts           taskcontract.StopOptions
-	IncompleteTodo bool
-}
-
-// StopDecision is the composed stop stance plus any user-visible note.
-type StopDecision struct {
-	Disposition taskcontract.StopDisposition
-	Message     string
-	Advisory    []taskcontract.Obligation
-}
-
 // Guard is one monotonic pipeline stage.
 type Guard interface {
 	BeforeTool(CallContext) GuardDecision
 	AfterTool(ResultContext) []evidence.Receipt
-	BeforeStop(StopContext) StopDecision
 }
 
 // MergeDecisions applies Deny > Ask > Allow > Abstain and concatenates
@@ -85,7 +65,6 @@ func MergeDecisions(decisions ...GuardDecision) GuardDecision {
 		} else if out.Message == "" && d.Message != "" && d.Action == out.Action {
 			out.Message = d.Message
 		}
-		out.Preconditions = append(out.Preconditions, d.Preconditions...)
 		out.Reasons = append(out.Reasons, d.Reasons...)
 	}
 	return out

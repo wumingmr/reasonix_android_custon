@@ -30,7 +30,11 @@ assert.equal(projectTreeApplyRuntimeTopics(overlaid, [
     key: "known", kind: "topic", label: "Known live", root: "/a", topicId: "known", running: true, children: [],
   } },
 ], new Set(["known"]))[0]?.children?.length, 0);
-assert.equal(projectTreeApplyRuntimeTopics(overlaid, [])[0]?.children?.[0]?.children?.length, 0);
+const settled = projectTreeApplyRuntimeTopics(overlaid, []);
+assert.equal(settled[0]?.children?.[0]?.children?.length, 2,
+  "clearing runtime state preserves the topic's durable session children");
+assert.equal(settled[0]?.children?.[0]?.children?.some((session) => session.open || session.running), false,
+  "clearing runtime state removes only transient session status");
 
 const projects: ProjectNode[] = Array.from({ length: 100 }, (_, index) => ({
   key: `p-${index}`, kind: "project", label: `P ${index}`, root: `/p/${index}`, children: [],
@@ -117,3 +121,22 @@ const afterPrune = pruningProjection.apply(emptyPruningCatalog, [{
 assert.equal(afterPrune[0]?.children?.[0]?.label, "Fresh runtime", "deleted resident metadata is not resurrected");
 assert.equal(afterPrune[0]?.children?.[0]?.createdAt, undefined, "deleted resident timestamps are released");
 console.log("  PASS  project tree runtime projection");
+
+// The backend owns the placeholder -> tab binding. A pathless startup must
+// replace that exact placeholder, not add a second conversation to the folder.
+const placeholder: ProjectNode = { key: "topic-draft", kind: "topic", label: "New session", topicId: "draft", children: [] };
+const draftTree: ProjectNode[] = [{ key: "draft-project", kind: "project", label: "Draft", root: "/draft", children: [placeholder] }];
+const startingDraft = projectTreeApplyRuntimeTopics(draftTree, [{
+  scope: "project", workspaceRoot: "/draft", node: {
+    ...placeholder, key: "tab-starting", tabId: "starting", open: true,
+    identityAliases: ["topic\u0000draft"],
+  },
+}]);
+assert.equal(startingDraft[0].children?.length, 1, "an owned pathless tab and its placeholder render once");
+assert.equal(startingDraft[0].children?.[0].open, true);
+const branches = projectTreeApplyRuntimeTopics(draftTree, ["one", "two"].map(id => ({
+  scope: "project", workspaceRoot: "/draft", node: {
+    ...placeholder, key: id, session: { hostId: "local", sessionId: id }, sessionPath: `session:${id}`, open: true,
+  },
+})));
+assert.equal(branches[0].children?.filter(row => row.session).length, 2, "sharing a topic does not merge distinct sessions");

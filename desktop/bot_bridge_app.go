@@ -29,6 +29,12 @@ func (a *App) newBotBridge() *botBridgeHub {
 	})
 }
 
+func (a *App) stopBotBridge() {
+	if a.botBridge != nil {
+		a.botBridge.Close()
+	}
+}
+
 // bridgeSessions 枚举所有 live 会话：可见 tab 用完整 TabMeta，后台 detached
 // 会话补一份轻量快照（controller 仍存活，审批/问答仍可路由）。
 func (a *App) bridgeSessions() []bot.DesktopSessionInfo {
@@ -138,7 +144,10 @@ func (a *App) bridgeDrive(tabID, text string, route bot.DesktopWatchRoute) error
 		ChatType: route.ChatType,
 	}
 	generation := tab.sink.SetBotSink(newBotEventForwarder(a.botRuntime, []botForwardTarget{target}))
-	a.ensureTabTopicIndexedForUserTurn(tab)
+	if err := a.ensureTabTopicIndexedForUserTurn(tab); err != nil {
+		tab.sink.clearBotSink(generation)
+		return err
+	}
 	ctrl.SubmitDisplay(text, text)
 	// Confirm the submit actually started a turn. If nothing is running now, the
 	// controller was rotating and the submit no-oped — detach this exact

@@ -112,7 +112,7 @@ func TestRunThemeSubcommandSwitchesAccentAndTextarea(t *testing.T) {
 	configureCLIThemeWithStyle("dark", "graphite")
 
 	m := newTestChatTUI()
-	m.ctrl = control.New(control.Options{})
+	m.ctrl = newOwnedTestController(t, control.Options{})
 	if cmd := m.runThemeSubcommand("/theme aurora"); cmd == nil {
 		t.Fatal("a real theme change should start the sweep")
 	}

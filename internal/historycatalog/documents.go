@@ -4,6 +4,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"reasonix/internal/agent"
 	"reasonix/internal/provider"
 	"reasonix/internal/retrieval"
 )
@@ -56,6 +57,9 @@ func documents(messages []provider.Message) []indexedDocument {
 		out = append(out, indexedDocument{message: message, part: part, role: role, kind: kind, tool: tool, terms: strings.Join(terms, " "), count: len(terms)})
 	}
 	for i, msg := range messages {
+		if agent.IsPinnedContextRevision(msg) {
+			continue
+		}
 		switch msg.Role {
 		case provider.RoleUser:
 			appendDoc(i, 0, string(msg.Role), "user_text", "", msg.Content)
@@ -65,8 +69,8 @@ func documents(messages []provider.Message) []indexedDocument {
 				appendDoc(i, part, string(msg.Role), "tool_input", call.Name, truncateToolText(call.Name+" "+call.Arguments))
 			}
 		case provider.RoleTool:
-			// Index both tool_error and tool_output so explicit kind filters stay
-			// honest. Default search kinds still exclude tool_output.
+			// Every tool result is a tool_output document; errors are also
+			// tool_error so a caller can ask for failures alone.
 			text := truncateToolText(msg.Name + " " + msg.Content)
 			lower := strings.ToLower(strings.TrimSpace(msg.Content))
 			if strings.HasPrefix(lower, "error:") || strings.HasPrefix(lower, "blocked:") || strings.Contains(lower, "permission denied") {

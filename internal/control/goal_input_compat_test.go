@@ -6,7 +6,7 @@ import (
 )
 
 func TestGoalAutoResearchCanBeForcedOrDisabled(t *testing.T) {
-	c := New(Options{})
+	c := newOwnedTestController(t, Options{})
 	c.SetGoalWithResearchMode("fix the typo and add a test", GoalResearchOn)
 	if got := c.Compose("start"); strings.Contains(strings.ToLower(got), "autoresearch") || c.goals.budgetClass != budgetClassResearch {
 		t.Fatalf("forced research Goal should select the research class: %q %q", got, c.goals.budgetClass)
@@ -25,7 +25,7 @@ func TestGoalAutoResearchCanBeForcedOrDisabled(t *testing.T) {
 }
 
 func TestGoalCommandPreservesResearchModeFlags(t *testing.T) {
-	c := New(Options{})
+	c := newOwnedTestController(t, Options{})
 	if !c.applyGoalCommand("/goal --research fix the typo", "") {
 		t.Fatal("goal command was not parsed")
 	}
@@ -36,7 +36,7 @@ func TestGoalCommandPreservesResearchModeFlags(t *testing.T) {
 		t.Fatalf("/goal --research selected a turn quota: %+v", c.GoalRuntime())
 	}
 
-	c = New(Options{})
+	c = newOwnedTestController(t, Options{})
 	if !c.applyGoalCommand("/goal --simple 持续排查这个线上卡顿直到根因明确", "") {
 		t.Fatal("goal command was not parsed")
 	}

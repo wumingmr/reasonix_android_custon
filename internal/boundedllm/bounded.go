@@ -49,7 +49,7 @@ type Config struct {
 	// MaxTokens caps the completion. Zero uses DefaultMaxTokens.
 	MaxTokens int
 	// EffortOverride optionally requests a lower or higher reasoning depth for
-	// this independent call. Provider adapters ignore unsupported values.
+	// this independent call. Provider adapters reject unsupported values.
 	EffortOverride string
 	// MaxOutputBytes aborts the stream once exceeded. Zero uses DefaultMaxOutputBytes.
 	MaxOutputBytes int
@@ -130,7 +130,7 @@ func Call(ctx context.Context, cfg Config, system, evidence string) (string, err
 		}
 	}()
 
-	ch, err := cfg.Provider.Stream(callCtx, req)
+	ch, err := provider.StreamForModel(callCtx, cfg.Provider, req, cfg.ModelRef)
 	if err != nil {
 		return "", err
 	}

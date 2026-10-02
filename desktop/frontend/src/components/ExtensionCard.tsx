@@ -1,3 +1,4 @@
+import { ErrorMessage } from "./ErrorMessage";
 import { useState } from "react";
 import { Puzzle } from "lucide-react";
 import { app } from "../lib/bridge";
@@ -87,7 +88,7 @@ export function ExtensionCard({ item, tabId }: { item: ExtensionItem; tabId?: st
         </div>
       ) : null}
       {result ? (
-        <div className={`extension-card__result${result.error ? " extension-card__result--error" : ""}`}>{result.text}</div>
+        <div className={`extension-card__result${result.error ? " extension-card__result--error" : ""}`}>{result.error ? <ErrorMessage error={result.text} /> : result.text}</div>
       ) : null}
     </div>
   );

@@ -64,6 +64,10 @@ type botBridgeHub struct {
 	lastPersistSeq uint64
 
 	queue chan desktopBridgeNotification
+	// closed 终止 run worker；queue 本身不能 close——observe 仍可能在
+	// controller 事件 goroutine 上并发 enqueue，向已关闭 channel 发送会 panic。
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
 type desktopPendingPrompt struct {
@@ -135,9 +139,15 @@ func newBotBridgeHub(deps botBridgeDeps) *botBridgeHub {
 		takeovers:       make(map[string]bot.DesktopWatchRoute),
 		takeoverTabs:    make(map[string]string),
 		queue:           make(chan desktopBridgeNotification, botBridgeQueueSize),
+		closed:          make(chan struct{}),
 	}
 	go h.run()
 	return h
+}
+
+// Close 停掉通知 worker goroutine。幂等；App 关停时调用。
+func (h *botBridgeHub) Close() {
+	h.closeOnce.Do(func() { close(h.closed) })
 }
 
 // observe 接收某个桌面会话的一条事件。在 controller 事件 goroutine 上运行，
@@ -154,7 +164,7 @@ func (h *botBridgeHub) observe(tabID string, e event.Event) {
 		})
 		watching := len(h.watchers) > 0
 		h.mu.Unlock()
-		if watching {
+		if watching && !e.Replayed {
 			h.enqueue(h.approvalNotification(tabID, e.Approval))
 		}
 	case event.AskRequest:
@@ -166,7 +176,7 @@ func (h *botBridgeHub) observe(tabID string, e event.Event) {
 		})
 		watching := len(h.watchers) > 0
 		h.mu.Unlock()
-		if watching {
+		if watching && !e.Replayed {
 			h.enqueue(h.askNotification(tabID, e.Ask))
 		}
 	case event.TurnDone:
@@ -209,8 +219,13 @@ func (h *botBridgeHub) enqueue(n desktopBridgeNotification) {
 }
 
 func (h *botBridgeHub) run() {
-	for n := range h.queue {
-		h.deliver(n)
+	for {
+		select {
+		case <-h.closed:
+			return
+		case n := <-h.queue:
+			h.deliver(n)
+		}
 	}
 }
 
@@ -361,9 +376,18 @@ func (h *botBridgeHub) askNotification(tabID string, ask event.Ask) desktopBridg
 
 func (h *botBridgeHub) turnDoneNotification(tabID string, e event.Event) desktopBridgeNotification {
 	label := h.tabLabel(tabID)
+	if e.Outcome == event.TurnOutcomeIncompleteRead {
+		return desktopBridgeNotification{text: constText(fmt.Sprintf("⏸️ 桌面会话「%s」的读取任务尚未完成，已保留当前结果。请补充读取范围后继续。", label))}
+	}
 	if e.Outcome == event.TurnOutcomeRecoveryPaused {
 		return desktopBridgeNotification{text: constText(fmt.Sprintf(
 			"⏸️ 桌面会话「%s」已暂停自动重试。已完成的工作会保留；发送“继续”即可开始新一轮，也可以补充要求调整方向。",
+			label,
+		))}
+	}
+	if e.Outcome == event.TurnOutcomeCompletionUncertain {
+		return desktopBridgeNotification{text: constText(fmt.Sprintf(
+			"⏸️ 桌面会话「%s」本轮完成状态未确认。当前结果和已完成工作均已保留；发送“继续”可接着完成，也可以补充说明需要调整的内容。",
 			label,
 		))}
 	}

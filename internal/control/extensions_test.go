@@ -130,7 +130,7 @@ func TestInputReceiveContinue(t *testing.T) {
 	client := &fakeExtClient{}
 	d := newExtensionTestDispatcher(client, []extension.InterceptorPoint{extension.PointInputReceive}, nil)
 	runner := &fakeTurnRunner{}
-	c := New(Options{Runner: runner, Extensions: d})
+	c := newOwnedTestController(t, Options{Runner: runner, Extensions: d})
 
 	if err := runTestTurn(c, "hello world"); err != nil {
 		t.Fatal(err)
@@ -154,7 +154,7 @@ func TestInputReceiveReplace(t *testing.T) {
 	}
 	d := newExtensionTestDispatcher(client, []extension.InterceptorPoint{extension.PointInputReceive}, nil)
 	runner := &fakeTurnRunner{}
-	c := New(Options{Runner: runner, Extensions: d})
+	c := newOwnedTestController(t, Options{Runner: runner, Extensions: d})
 
 	if err := runTestTurn(c, "original"); err != nil {
 		t.Fatal(err)
@@ -176,7 +176,7 @@ func TestInputReceiveBlock(t *testing.T) {
 	d := newExtensionTestDispatcher(client, []extension.InterceptorPoint{extension.PointInputReceive}, nil)
 	runner := &fakeTurnRunner{}
 	sink := &recordingSink{}
-	c := New(Options{Runner: runner, Sink: sink, Extensions: d})
+	c := newOwnedTestController(t, Options{Runner: runner, Sink: sink, Extensions: d})
 
 	if err := runTestTurn(c, "do something"); err != nil {
 		t.Fatal(err)
@@ -203,7 +203,7 @@ func TestInputReceiveBlock(t *testing.T) {
 
 func TestInputReceiveNilDispatcherUntouched(t *testing.T) {
 	runner := &fakeTurnRunner{}
-	c := New(Options{Runner: runner})
+	c := newOwnedTestController(t, Options{Runner: runner})
 	if sinkHasFrontendWrapper(c.sink) {
 		t.Fatal("sink wrapped without a dispatcher — the nil fast path must stay unwrapped")
 	}
@@ -226,7 +226,7 @@ func TestInputReceiveInterceptedOnHeadlessRun(t *testing.T) {
 	}
 	d := newExtensionTestDispatcher(client, []extension.InterceptorPoint{extension.PointInputReceive}, nil)
 	runner := &fakeTurnRunner{}
-	c := New(Options{Runner: runner, Extensions: d})
+	c := newOwnedTestController(t, Options{Runner: runner, Extensions: d})
 
 	if err := c.Run(context.Background(), "original"); err != nil {
 		t.Fatal(err)
@@ -240,7 +240,7 @@ func TestSetExtensionsInstallsDispatcher(t *testing.T) {
 	client := &fakeExtClient{}
 	d := newExtensionTestDispatcher(client, []extension.InterceptorPoint{extension.PointInputReceive}, nil)
 	runner := &fakeTurnRunner{}
-	c := New(Options{Runner: runner})
+	c := newOwnedTestController(t, Options{Runner: runner})
 
 	c.SetExtensions(nil) // no-op
 	if _, wrapped := c.sink.(*frontendEventSink); wrapped {
@@ -287,7 +287,7 @@ func newSessionController(t *testing.T, d *dispatch.Dispatcher, sink event.Sink)
 	if sink != nil {
 		opts.Sink = sink
 	}
-	return New(opts), path
+	return newOwnedTestController(t, opts), path
 }
 
 func TestSessionEventsFireAtLifecyclePoints(t *testing.T) {
@@ -400,7 +400,7 @@ func TestSessionStrategyAdjustsObservedPayload(t *testing.T) {
 func TestFrontendEventObserved(t *testing.T) {
 	client := &fakeExtClient{}
 	d := newExtensionTestDispatcher(client, []extension.InterceptorPoint{extension.PointFrontendEvent}, nil)
-	c := New(Options{Runner: &fakeTurnRunner{}, Extensions: d})
+	c := newOwnedTestController(t, Options{Runner: &fakeTurnRunner{}, Extensions: d})
 
 	c.notice("hello frontend")
 	payloads := client.notifyPayloadsFor(protocol.EventFrontendEvent)
@@ -430,7 +430,7 @@ func TestFrontendEventStrategyRewrite(t *testing.T) {
 		[]extension.InterceptorPoint{extension.PointFrontendEvent},
 		map[extension.Slot]string{extension.SlotFrontendEvents: extensionTestPlugin})
 	sink := &recordingSink{}
-	c := New(Options{Runner: &fakeTurnRunner{}, Sink: sink, Extensions: d})
+	c := newOwnedTestController(t, Options{Runner: &fakeTurnRunner{}, Sink: sink, Extensions: d})
 
 	c.noticeDetail("original", "original detail")
 	events := sink.all()
@@ -458,7 +458,7 @@ func TestFrontendEventStrategyKindChangeRejected(t *testing.T) {
 		[]extension.InterceptorPoint{extension.PointFrontendEvent},
 		map[extension.Slot]string{extension.SlotFrontendEvents: extensionTestPlugin})
 	sink := &recordingSink{}
-	c := New(Options{Runner: &fakeTurnRunner{}, Sink: sink, Extensions: d})
+	c := newOwnedTestController(t, Options{Runner: &fakeTurnRunner{}, Sink: sink, Extensions: d})
 
 	c.notice("original")
 	events := sink.all()
@@ -477,7 +477,7 @@ func TestFrontendEventStrategyBlockSuppresses(t *testing.T) {
 		[]extension.InterceptorPoint{extension.PointFrontendEvent},
 		map[extension.Slot]string{extension.SlotFrontendEvents: extensionTestPlugin})
 	sink := &recordingSink{}
-	c := New(Options{Runner: &fakeTurnRunner{}, Sink: sink, Extensions: d})
+	c := newOwnedTestController(t, Options{Runner: &fakeTurnRunner{}, Sink: sink, Extensions: d})
 
 	c.notice("suppressed")
 	if events := sink.all(); len(events) != 0 {
@@ -494,7 +494,7 @@ func TestSetExtensionsPropagatesToExecutor(t *testing.T) {
 	d := newExtensionTestDispatcher(client, []extension.InterceptorPoint{extension.PointAgentBeforeStart}, nil)
 	mp := testutil.NewMock("p", testutil.Turn{Text: "hi"})
 	exec := agent.New(mp, tool.NewRegistry(), agent.NewSession("sys"), agent.Options{}, event.Discard)
-	c := New(Options{Runner: &fakeTurnRunner{}, Executor: exec})
+	c := newOwnedTestController(t, Options{Runner: &fakeTurnRunner{}, Executor: exec})
 
 	c.SetExtensions(d)
 	if err := c.Executor().Run(context.Background(), "hello"); err != nil {
@@ -517,7 +517,7 @@ func TestSetExtensionsPropagatesToExecutor(t *testing.T) {
 func TestApplyExtensionSystemPrompt(t *testing.T) {
 	dir := t.TempDir()
 	exec := agent.New(nil, tool.NewRegistry(), agent.NewSession("HOST PROMPT"), agent.Options{}, event.Discard)
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Runner:       &fakeTurnRunner{},
 		Executor:     exec,
 		SessionDir:   dir,
@@ -553,8 +553,14 @@ func sinkHasFrontendWrapper(s event.Sink) bool {
 	case *frontendEventSink:
 		return true
 	case *inboxEventSink:
-		_, ok := t.inner.(*frontendEventSink)
-		return ok
+		if _, ok := t.inner.(*frontendEventSink); ok {
+			return true
+		}
+		if lifecycle, ok := t.inner.(*turnEventSink); ok {
+			_, wrapped := lifecycle.inner.(*frontendEventSink)
+			return wrapped
+		}
+		return false
 	default:
 		return false
 	}

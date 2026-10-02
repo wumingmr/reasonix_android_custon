@@ -2,23 +2,28 @@
 
 package sandbox
 
-// Command returns the native shell invocation unwrapped. Windows currently has
-// no Reasonix OS-level Bash sandbox; config.BashModeForGOOS keeps the effective
-// product setting fixed to off. Returning wrapped=false also preserves the
-// fail-closed contract for any internal caller that constructs an enforce Spec
-// directly.
-func Command(spec Spec, sh Shell, command string) ([]string, bool) {
+// Windows has no OS-level shell sandbox (see OSSandboxSupported), so every
+// launch runs unwrapped as the current OS user.
+
+// Command returns the shell invocation unwrapped.
+func Command(_ Spec, sh Shell, command string) ([]string, bool) {
 	return sh.argv(command), false
 }
 
-// CommandArgs is like Command but accepts the command as raw argv instead of a
-// shell command string.
-func CommandArgs(spec Spec, args []string) ([]string, bool) {
+// CommandArgs returns the raw argv unwrapped.
+func CommandArgs(_ Spec, args []string) ([]string, bool) {
 	return args, false
 }
 
-// Available reports that Reasonix does not currently ship an OS-level Bash
-// sandbox on Windows.
-func Available() bool {
-	return false
-}
+// Available is always false on Windows.
+func Available() bool { return false }
+
+// writableDirsForSpec is empty: no Windows backend confines writes, so there
+// is no boundary for Git metadata protection to sit inside.
+func writableDirsForSpec(Spec) []string { return nil }
+
+func gitMetadataRoots(spec Spec) []string { return spec.WriteRoots }
+
+// HostWritableDirs is empty: Windows runs commands unjailed, so nothing here
+// narrows where a command may write.
+func HostWritableDirs() []string { return nil }

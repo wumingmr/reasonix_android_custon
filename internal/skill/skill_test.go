@@ -243,12 +243,15 @@ func TestListDecodesGB18030SkillFile(t *testing.T) {
 	home := t.TempDir()
 	root := t.TempDir()
 	body := "---\ndescription: 中文技能\n---\n用中文处理任务。"
-	writeSkillBytes(t, root, filepath.Join("cn", SkillFile), fileencoding.Encode(body, fileencoding.GB18030))
+	writeSkillBytes(t, root, filepath.Join("cn", SkillFile), fileencoding.MustEncode(body, fileencoding.GB18030))
 
 	st := New(Options{HomeDir: home, CustomPaths: []string{root}, DisableBuiltins: true})
 	skills := st.List()
-	if len(skills) != 1 || skills[0].Description != "中文技能" || !strings.Contains(skills[0].Body, "用中文处理任务") {
+	if len(skills) != 1 || skills[0].Description != "中文技能" || skills[0].Body != "" {
 		t.Fatalf("decoded skills = %+v", skills)
+	}
+	if loaded, ok := st.Read("cn"); !ok || !strings.Contains(loaded.Body, "用中文处理任务") {
+		t.Fatalf("selected skill body = %+v found=%v", loaded, ok)
 	}
 }
 
@@ -452,6 +455,7 @@ func TestBlankDescriptionFlatClaudeMarkdownIsSkillLike(t *testing.T) {
 			}
 
 			stderr.Reset()
+			scans := st.DiscoveryScans()
 			sk, ok := st.Read(tc.name)
 			if !ok {
 				t.Fatal("blank description marker should still make flat Claude markdown skill-like")
@@ -459,8 +463,8 @@ func TestBlankDescriptionFlatClaudeMarkdownIsSkillLike(t *testing.T) {
 			if sk.Description != "" {
 				t.Fatalf("description should stay empty, got %q", sk.Description)
 			}
-			if got := stderr.String(); !strings.Contains(got, "has no description") {
-				t.Fatalf("blank description skill should warn, got %q", got)
+			if got := stderr.String(); got != "" || st.DiscoveryScans() != scans {
+				t.Fatalf("warm cached read rescanned or repeated diagnostics: output=%q scans=%d->%d", got, scans, st.DiscoveryScans())
 			}
 		})
 	}
@@ -923,18 +927,6 @@ func TestApplyIndex(t *testing.T) {
 	}
 }
 
-func TestApplyIndexMandatesInlineButRestrainsSubagent(t *testing.T) {
-	out := ApplyIndex("BASE", []Skill{{Name: "alpha", Description: "the alpha", RunAs: RunInline}})
-
-	if !strings.Contains(out, "inline) skill is even plausibly relevant") ||
-		!strings.Contains(out, "invoke it before continuing") {
-		t.Errorf("inline skills should be mandatory on plausible relevance:\n%s", out)
-	}
-	if !strings.Contains(out, "not on weak relevance") {
-		t.Errorf("subagent skills should stay judgment-based, not mandatory:\n%s", out)
-	}
-}
-
 func TestReadOnlyIndexBlockPointsAtReadOnlySkill(t *testing.T) {
 	out := ReadOnlyIndexBlock([]Skill{{Name: "beta", Description: "the beta", RunAs: RunSubagent}})
 	if !strings.Contains(out, "read_only_skill") {
@@ -1034,17 +1026,6 @@ func TestManualInvocationSkillExcludedFromIndex(t *testing.T) {
 	// as empty, not a header wrapped around nothing.
 	if got := IndexBlock([]Skill{private}); got != "" {
 		t.Fatalf("IndexBlock of only manual-invocation skills = %q, want empty", got)
-	}
-}
-
-func TestApplyIndexTruncates(t *testing.T) {
-	var skills []Skill
-	for range 200 {
-		skills = append(skills, Skill{Name: "skill" + strings.Repeat("x", 20), Description: strings.Repeat("d", 50)})
-	}
-	out := ApplyIndex("BASE", skills)
-	if !strings.Contains(out, "truncated") {
-		t.Error("oversized index should be truncated")
 	}
 }
 

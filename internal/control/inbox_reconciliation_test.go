@@ -11,6 +11,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/sessioninbox"
 	"reasonix/internal/tool"
+	"reasonix/internal/transcript"
 )
 
 func TestSteerEventFollowsDurableConsumedTransition(t *testing.T) {
@@ -18,6 +19,7 @@ func TestSteerEventFollowsDurableConsumedTransition(t *testing.T) {
 	prov := &inboxSteerProvider{started: make(chan struct{}), release: make(chan struct{})}
 	exec := agent.New(prov, tool.NewRegistry(), agent.NewSession("sys"), agent.Options{}, event.Discard)
 	observed := make(chan sessioninbox.InboxState, 1)
+	steerEvents := make(chan event.Event, 1)
 	done := make(chan struct{})
 	var c *Controller
 	sink := event.FuncSink(func(e event.Event) {
@@ -30,6 +32,7 @@ func TestSteerEventFollowsDurableConsumedTransition(t *testing.T) {
 				}
 			}
 			observed <- state
+			steerEvents <- e
 		}
 		if e.Kind == event.TurnDone {
 			select {
@@ -39,19 +42,19 @@ func TestSteerEventFollowsDurableConsumedTransition(t *testing.T) {
 			}
 		}
 	})
-	c = New(Options{
+	c = newOwnedTestController(t, Options{
 		Runner:      exec,
 		Executor:    exec,
 		Sink:        sink,
 		SessionDir:  dir,
 		SessionPath: filepath.Join(dir, "s.jsonl"),
 	})
+	t.Cleanup(func() {
+		c.Close()
+		c.autosaveWG.Wait()
+	})
 	c.Submit("initial turn")
-	select {
-	case <-prov.started:
-	case <-time.After(time.Second):
-		t.Fatal("initial provider turn did not start")
-	}
+	prov.awaitStarted(t, c)
 	rec, err := c.EnqueueInbox(InboxRequest{Intent: sessioninbox.IntentSteer, Submit: "durable steer"})
 	if err != nil {
 		t.Fatal(err)
@@ -73,13 +76,29 @@ func TestSteerEventFollowsDurableConsumedTransition(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for turn completion")
 	}
+	e := <-steerEvents
+	if e.MessageID == "" || e.ItemID != rec.ItemID {
+		t.Fatalf("steer receipt lacks message/inbox identity: %+v", e)
+	}
+	var count int
+	for _, row := range transcript.History(exec.Session().Snapshot(), transcript.HistoryOptions{}) {
+		if row.MessageID == e.MessageID {
+			count++
+			if row.RecordID != "m:"+e.MessageID || row.Role != "notice" || row.Content != "↪ durable steer" {
+				t.Fatalf("steer receipt and history disagree: %+v", row)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("steer receipt owns %d canonical rows, want 1", count)
+	}
 }
 
 func TestCancelWithInboxItemsResultRestoresOnlyUnconsumedItems(t *testing.T) {
 	dir := t.TempDir()
 	session := filepath.Join(dir, "s.jsonl")
 	_ = os.WriteFile(session, []byte("{}\n"), 0o644)
-	c := New(Options{SessionPath: session, SessionDir: dir, Sink: event.Discard})
+	c := newOwnedTestController(t, Options{SessionPath: session, SessionDir: dir, Sink: event.Discard})
 	accepted, err := c.EnqueueInbox(InboxRequest{Submit: "accepted", Source: "desktop"})
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +135,7 @@ func TestDeleteInboxItemDoesNotOverwriteConsumedSteer(t *testing.T) {
 	dir := t.TempDir()
 	session := filepath.Join(dir, "s.jsonl")
 	_ = os.WriteFile(session, []byte("{}\n"), 0o644)
-	c := New(Options{SessionPath: session, SessionDir: dir, Sink: event.Discard})
+	c := newOwnedTestController(t, Options{SessionPath: session, SessionDir: dir, Sink: event.Discard})
 	rec, err := c.EnqueueInbox(InboxRequest{Intent: sessioninbox.IntentSteer, Submit: "consumed"})
 	if err != nil {
 		t.Fatal(err)
@@ -159,7 +178,7 @@ func (s *inboxChangedCapture) InboxChanged(snap sessioninbox.InboxSnapshot) {
 func TestInboxStoreChangesReachOptionalSink(t *testing.T) {
 	dir := t.TempDir()
 	sink := &inboxChangedCapture{changed: make(chan sessioninbox.InboxSnapshot, 1)}
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		SessionPath: filepath.Join(dir, "s.jsonl"),
 		SessionDir:  dir,
 		Sink:        sink,

@@ -50,7 +50,7 @@ func TestSlashCompletionFilterAndAccept(t *testing.T) {
 	}
 	// The common commands keep their stable order; explicit readiness recovery
 	// is discoverable after them and fails safely when no card is pending.
-	want := []string{"/compact", "/context", "/copy", "/continue-checks"}
+	want := []string{"/compact", "/context", "/copy", "/continue-checks", "/recover-context"}
 	if got := labels(m.completion.items); !slices.Equal(got, want) {
 		t.Fatalf("filter = %v, want %v", got, want)
 	}
@@ -329,7 +329,7 @@ func TestFileItemsSubdirUsesWorkspaceRoot(t *testing.T) {
 	}
 
 	m := newTestChatTUI()
-	m.ctrl = control.New(control.Options{SessionDir: t.TempDir(), WorkspaceRoot: workspace})
+	m.ctrl = newOwnedTestController(t, control.Options{SessionDir: t.TempDir(), WorkspaceRoot: workspace})
 	items := m.fileItems("src/")
 
 	if !hasLabel(items, "workspace.go") {
@@ -510,7 +510,7 @@ func TestEnterOnMCPWithTrailingSpaceSubmitsManager(t *testing.T) {
 
 func TestEnterOnExactSlashArgSubmitsWhenPrefixAlsoMatches(t *testing.T) {
 	m := newTestChatTUI()
-	m.ctrl = control.New(control.Options{SessionDir: t.TempDir()})
+	m.ctrl = newOwnedTestController(t, control.Options{SessionDir: t.TempDir()})
 	m.input.SetValue("/resume 1")
 	m.completion = completion{
 		active:      true,
@@ -546,7 +546,7 @@ func TestSlashArgCompletionSwitchBranches(t *testing.T) {
 	dir := t.TempDir()
 	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
 	exec.Session().Add(provider.Message{Role: provider.RoleUser, Content: "root prompt"})
-	ctrl := control.New(control.Options{Executor: exec, SessionDir: dir, Label: "test"})
+	ctrl := newOwnedTestController(t, control.Options{Executor: exec, SessionDir: dir, Label: "test"})
 	rootPath := filepath.Join(dir, "root.jsonl")
 	ctrl.SetSessionPath(rootPath)
 	if err := ctrl.Snapshot(); err != nil {

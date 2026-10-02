@@ -29,19 +29,10 @@ func TestTargetedTurnReturnsIncompleteReceiptInsteadOfReadinessRecovery(t *testi
 		t.Fatalf("targeted Run returned a readiness recovery: %v", err)
 	}
 	receipt := a.CompletionReceipt()
-	if receipt == nil || receipt.Verdict != "incomplete" {
+	if receipt == nil || receipt.Verdict != "unknown" {
 		t.Fatalf("completion receipt = %+v, want incomplete", receipt)
 	}
-	foundCheck := false
-	for _, gap := range receipt.Gaps {
-		if gap.Kind == "missing_check" && gap.Detail == "go test ./..." {
-			foundCheck = true
-		}
-	}
-	if !foundCheck {
-		t.Fatalf("completion gaps = %+v, want missing project check", receipt.Gaps)
-	}
-	if len(sink.summaries) != 1 || !containsString(sink.summaries[0].GapKinds, "missing_check") {
-		t.Fatalf("completion summaries = %+v, want a user-visible missing-check warning", sink.summaries)
+	if len(receipt.Gaps) != 0 || len(sink.summaries) != 0 {
+		t.Fatalf("host invented requirements: %+v summaries=%+v", receipt.Gaps, sink.summaries)
 	}
 }

@@ -7,12 +7,13 @@
 // demand. Discovery scans several conventions (.reasonix / .agents / .agent /
 // .claude under the project root and the home dir — see config.ConventionDirs) so
 // skills authored for other agent tools migrate in unchanged. Directory skills
-// use <name>/SKILL.md; flat <name>.md files from Claude roots are loaded only
-// when they carry skill frontmatter. Discovery follows symlinks, so linked
-// skills are picked up like real ones.
+// use <name>/SKILL.md; flat <name>.md files from Claude and plugin-package
+// roots are loaded only when they carry skill frontmatter. Discovery follows
+// symlinks, so linked skills are picked up like real ones.
 package skill
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -22,9 +23,11 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
+
+	"github.com/fsnotify/fsnotify"
 
 	"reasonix/internal/config"
-	"reasonix/internal/fileutil"
 	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/frontmatter"
 	"reasonix/internal/tool"
@@ -65,7 +68,7 @@ const (
 // Skill is a loaded playbook.
 type Skill struct {
 	Name        string // canonical identifier; matches the directory / filename stem
-	Description string // one-liner shown in the pinned index
+	Description string // one-liner shown in the session-context catalog
 	Body        string // full markdown body (post-frontmatter), loaded eagerly
 	Scope       Scope  // where it came from
 	Path        string // absolute path to the SKILL.md / <name>.md, or "(builtin)"
@@ -89,14 +92,14 @@ type Skill struct {
 	// tool-boundary contract, not a prompt promise.
 	ReadOnly bool
 	Color    string // optional display tag for UI surfaces (frontmatter `color:`); no runtime effect
-	// Invocation gates whether this skill enters the pinned Skills index the
+	// Invocation gates whether this skill enters the Skills catalog the
 	// model reads every turn. "auto" (default) behaves like every skill always
 	// has. "manual" keeps the skill invocable by name (/<name>, run_skill) but
 	// invisible to model-initiated discovery — for user-authored subagent
 	// profiles meant to be triggered deliberately, not autonomously.
 	Invocation string // auto | manual (frontmatter `invocation:`)
-	// Routing metadata is intentionally kept out of the cache-stable Skills
-	// index; it feeds per-turn capability hints only.
+	// Routing metadata is intentionally kept out of the session-context Skills
+	// catalog; it feeds per-turn capability hints only.
 	Triggers         []string
 	NegativeTriggers []string
 	AutoUse          string // off | suggest | prefer | require
@@ -144,6 +147,11 @@ type Options struct {
 	DisabledNames    []string
 	MaxDepth         int
 	DisableBuiltins  bool // suppress shipped built-ins (test-only knob)
+	// Watch keeps long-lived catalogs current through filesystem events. Hosts
+	// that own the Store lifecycle set this and call Close during teardown.
+	Watch bool
+	// WatchService shares physical watches across stores when Watch is enabled.
+	WatchService *WatchService
 	// DisableDiscovery returns an empty store without probing project, custom,
 	// global, plugin, or built-in skill sources. It is a test-only isolation knob.
 	DisableDiscovery bool
@@ -155,21 +163,60 @@ type Options struct {
 
 // Store resolves skills across the configured roots.
 type Store struct {
-	homeDir          string
-	reasonixHomeDir  string
-	projectRoot      string
-	customPaths      []string
-	pluginPaths      map[string][]string
-	pluginAgentPaths map[string][]string
-	excludedPaths    map[string]bool
-	disabled         map[string]bool
-	maxDepth         int
-	disableBuiltins  bool
-	disableDiscovery bool
-	stderr           io.Writer
-	runtimeProfile   string
-	requiresReady    func([]string) []string
-	toolBindings     func(Skill) []tool.MCPBinding
+	homeDir           string
+	reasonixHomeDir   string
+	projectRoot       string
+	customPaths       []string
+	pluginPaths       map[string][]string
+	pluginAgentPaths  map[string][]string
+	excludedPaths     map[string]bool
+	disabled          map[string]bool
+	maxDepth          int
+	disableBuiltins   bool
+	disableDiscovery  bool
+	autoWatch         bool
+	stderr            io.Writer
+	runtimeProfile    string
+	requiresReady     func([]string) []string
+	toolBindings      func(Skill) []tool.MCPBinding
+	catalogMu         sync.Mutex
+	catalogGen        uint64
+	catalog           *catalogSnapshot
+	catalogFlight     *catalogFlight
+	discoveryScans    uint64
+	hostWatch         hostWatchState
+	watcherMu         sync.Mutex
+	watcher           *fsnotify.Watcher
+	watcherDone       chan struct{}
+	watcherLifecycle  watcherLifecycle
+	watcherGeneration uint64
+	closed            bool
+}
+
+// CatalogSnapshot is an immutable, stable-order view of one discovery
+// generation. Complete is false when cancellation or sustained invalidation
+// forces the caller to receive the last complete snapshot instead.
+type CatalogSnapshot struct {
+	Version    uint64
+	Complete   bool
+	Stale      bool
+	Candidates []Skill
+}
+
+type catalogSnapshot struct {
+	version    uint64
+	rootSig    string
+	discovered []Skill
+	enabled    []Skill
+	byName     map[string]Skill
+	slash      []Skill
+	builtins   map[string]Skill
+}
+
+type catalogFlight struct {
+	generation uint64
+	done       chan struct{}
+	cancel     context.CancelFunc
 }
 
 // New builds a Store. Relative custom paths and a relative project root are made
@@ -224,7 +271,10 @@ func New(opts Options) *Store {
 		maxDepth:         normalizeMaxDepth(opts.MaxDepth),
 		disableBuiltins:  opts.DisableBuiltins,
 		disableDiscovery: opts.DisableDiscovery,
+		autoWatch:        opts.Watch,
+		hostWatch:        hostWatchState{service: opts.WatchService},
 		stderr:           stderr,
+		catalogGen:       1,
 	}
 }
 
@@ -286,9 +336,6 @@ func (s *Store) Prepare(sk Skill) Skill {
 	sk.Body = b.String()
 	return sk
 }
-
-// Render prepares and renders a skill for a direct slash invocation.
-func (s *Store) Render(sk Skill, args string) string { return Render(s.Prepare(sk), args) }
 
 func bindAllowedTools(refs []string, bindings []tool.MCPBinding) []string {
 	if len(refs) == 0 {
@@ -488,7 +535,7 @@ func (s *Store) roots() []discoveryRoot {
 		key := config.CanonicalSkillPath(d.dir)
 		out = append(out, discoveryRoot{
 			Root:              Root{Dir: d.dir, Scope: d.scope, Priority: len(out), Status: pathStatus(d.dir)},
-			requireFlatMarker: d.requireFlatMarker,
+			requireFlatMarker: d.requireFlatMarker || len(s.pluginPaths[key]) > 0 || len(s.pluginAgentPaths[key]) > 0,
 			plugins:           append([]string(nil), s.pluginPaths[key]...),
 			forceSubagent:     len(s.pluginAgentPaths[key]) > 0,
 		})
@@ -581,70 +628,34 @@ func pathStatus(dir string) PathStatus {
 	return StatusOK
 }
 
-func (s *Store) discoveredSkills() []Skill {
-	if s == nil || s.disableDiscovery {
-		return nil
-	}
-	var out []Skill
-	for _, r := range s.roots() {
-		if r.Status != StatusOK {
-			continue
-		}
-		for _, sk := range s.discoverRoot(r) {
-			if s.disabledName(sk.Name) {
-				continue
-			}
-			if len(r.plugins) == 0 {
-				out = append(out, sk)
-				continue
-			}
-			for _, plugin := range r.plugins {
-				owned := sk
-				owned.Plugin = plugin
-				if r.forceSubagent {
-					owned.SlashPrefix = plugin + ":agent"
-				}
-				out = append(out, owned)
-			}
-		}
-	}
-	if !s.disableBuiltins {
-		for _, sk := range builtinSkills() {
-			if !s.disabledName(sk.Name) {
-				out = append(out, sk)
-			}
-		}
-	}
-	return out
-}
-
-func (s *Store) enabledSkills() []Skill {
-	byName := map[string]Skill{}
-	for _, sk := range s.discoveredSkills() {
-		if _, dup := byName[sk.Name]; !dup {
-			byName[sk.Name] = sk
-		}
-	}
-	out := make([]Skill, 0, len(byName))
-	for _, sk := range byName {
-		out = append(out, sk)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
-}
-
-// List returns every model-visible skill, deduped by its bare internal name
-// (first/highest-priority root wins) and sorted for a cache-stable index.
-// Role-setting profiles do not filter this surface.
 func (s *Store) List() []Skill {
 	return s.enabledSkills()
+}
+
+// Candidate resolves metadata from the immutable catalog without reading the
+// selected SKILL.md body or its references/scripts.
+func (s *Store) Candidate(name string) (Skill, bool) {
+	if !IsValidName(name) || s == nil || s.disabledName(name) {
+		return Skill{}, false
+	}
+	snapshot := s.catalogSnapshot()
+	if snapshot == nil {
+		return Skill{}, false
+	}
+	candidate, ok := snapshot.byName[name]
+	return cloneSkill(candidate), ok
 }
 
 // SlashList returns the visible user-facing skill directory. Plugin skills are
 // retained per package under /<plugin>:<name>, even when their bare names
 // collide; non-plugin skills keep their existing short names.
 func (s *Store) SlashList() []Skill {
-	return VisibleSlashSkills(s.discoveredSkills())
+	s.invalidateChangedRoots()
+	snapshot := s.catalogSnapshot()
+	if snapshot == nil {
+		return nil
+	}
+	return cloneSkills(snapshot.slash)
 }
 
 // VisibleSlashSkills deduplicates skills by their user-facing slash name and
@@ -704,32 +715,127 @@ func ResolveSlashSkill(skills []Skill, name string) (Skill, bool) {
 	return winner, true
 }
 
-// Read resolves one skill by name, scanning the roots in priority order then the
-// built-ins. ok is false when no such skill exists or the file is unreadable.
+// Read resolves one skill by name from the current catalog index and reads only
+// that selected body. ok is false when no such skill exists or the file is
+// unreadable.
 func (s *Store) Read(name string) (Skill, bool) {
+	return s.Load(context.Background(), name)
+}
+
+// Load resolves one selected candidate using a caller-owned cancellation
+// context. Discovery wait and the one allowed stale-target refresh both stop
+// when the owning turn is cancelled.
+func (s *Store) Load(ctx context.Context, name string) (Skill, bool) {
 	if !IsValidName(name) {
 		return Skill{}, false
 	}
 	if s.disabledName(name) {
 		return Skill{}, false
 	}
-	for _, sk := range s.enabledSkills() {
-		if sk.Name == name {
-			return sk, true
+	for range 2 {
+		snapshot, err := s.Snapshot(ctx)
+		if err != nil {
+			return Skill{}, false
 		}
+		candidate, internal, versionMatched, ok := s.candidateAtVersion(name, snapshot.Version)
+		if !versionMatched {
+			// Invalidation raced the public snapshot copy. Resolve once more from a
+			// single generation rather than walking a possibly obsolete slice.
+			continue
+		}
+		if !ok {
+			return Skill{}, false
+		}
+		return s.loadCandidateContext(ctx, candidate, internal)
 	}
 	return Skill{}, false
+}
+
+// candidateAtVersion resolves an exact identity in O(1) from the same immutable
+// generation returned to the caller. The internal catalog remains immutable
+// after publication, so it is safe to retain its pointer after releasing the
+// catalog lock.
+func (s *Store) candidateAtVersion(name string, version uint64) (Skill, *catalogSnapshot, bool, bool) {
+	s.catalogMu.Lock()
+	defer s.catalogMu.Unlock()
+	snapshot := s.catalog
+	if snapshot == nil || snapshot.version != version {
+		return Skill{}, nil, false, false
+	}
+	candidate, ok := snapshot.byName[name]
+	return cloneSkill(candidate), snapshot, true, ok
 }
 
 // ReadSlash resolves a user-entered slash identifier without changing the
 // bare identifiers accepted by Read/run_skill.
 func (s *Store) ReadSlash(name string) (Skill, bool) {
-	return ResolveSlashSkill(s.discoveredSkills(), name)
+	candidate, ok := ResolveSlashSkill(s.discoveredSkills(), name)
+	if !ok {
+		return Skill{}, false
+	}
+	snapshot := s.catalogSnapshot()
+	return s.loadCandidate(candidate, snapshot)
 }
 
-func (s *Store) discoverRoot(r discoveryRoot) []Skill {
+func (s *Store) loadCandidate(candidate Skill, snapshot *catalogSnapshot) (Skill, bool) {
+	return s.loadCandidateContext(context.Background(), candidate, snapshot)
+}
+
+func (s *Store) loadCandidateContext(ctx context.Context, candidate Skill, snapshot *catalogSnapshot) (Skill, bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return Skill{}, false
+	}
+	if strings.HasPrefix(candidate.Path, "(builtin") {
+		if snapshot != nil {
+			if builtin, ok := snapshot.builtins[candidate.Name]; ok {
+				return cloneSkill(builtin), true
+			}
+		}
+		return Skill{}, false
+	}
+	loaded, ok := s.parseSkill(candidate.Path, candidate.Name, candidate.Scope, false, true)
+	if ctx.Err() != nil {
+		return Skill{}, false
+	}
+	if ok && loaded.Name == candidate.Name && loaded.Path == candidate.Path {
+		// The catalog candidate deliberately carries metadata only. Use the
+		// freshly parsed selected file as the source of truth so an edit cannot
+		// return a stale description/model/tool policy merely because discovery
+		// was already warm. Source attribution is assigned by discovery rather
+		// than frontmatter and therefore remains attached to the candidate.
+		loaded.Scope = candidate.Scope
+		loaded.Plugin = candidate.Plugin
+		loaded.SlashPrefix = candidate.SlashPrefix
+		if candidate.RunAs == RunSubagent && candidate.SlashPrefix != "" {
+			loaded.RunAs = RunSubagent
+			loaded.Invocation = "manual"
+			loaded.AllowedTools = mapClaudeAgentTools(loaded.AllowedTools)
+			if isClaudeModelAlias(loaded.Model) {
+				loaded.Model = ""
+			}
+		}
+		return loaded, true
+	}
+	// The selected identity changed after the snapshot. Refresh once and resolve
+	// the name again instead of executing the stale target.
+	s.Invalidate("selected skill changed")
+	refreshed, err := s.Snapshot(ctx)
+	if err != nil {
+		return Skill{}, false
+	}
+	next, internal, versionMatched, found := s.candidateAtVersion(candidate.Name, refreshed.Version)
+	if versionMatched && found && next.Path != candidate.Path {
+		return s.loadCandidateContext(ctx, next, internal)
+	}
+	return Skill{}, false
+}
+
+func (s *Store) discoverRoot(ctx context.Context, r discoveryRoot) []Skill {
 	var out []Skill
-	s.scanDir(r.Dir, r.Scope, r.requireFlatMarker, 1, map[string]bool{}, &out)
+	s.scanDir(ctx, r.Dir, r.Scope, r.requireFlatMarker, 1, map[string]bool{}, &out)
 	if r.forceSubagent {
 		for i := range out {
 			out[i].RunAs = RunSubagent
@@ -743,7 +849,10 @@ func (s *Store) discoverRoot(r discoveryRoot) []Skill {
 	return out
 }
 
-func (s *Store) scanDir(dir string, scope Scope, requireFlatMarker bool, depth int, seen map[string]bool, out *[]Skill) {
+func (s *Store) scanDir(ctx context.Context, dir string, scope Scope, requireFlatMarker bool, depth int, seen map[string]bool, out *[]Skill) {
+	if ctx.Err() != nil {
+		return
+	}
 	key := filepath.Clean(dir)
 	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
 		key = filepath.Clean(resolved)
@@ -758,6 +867,9 @@ func (s *Store) scanDir(dir string, scope Scope, requireFlatMarker bool, depth i
 		return
 	}
 	for _, e := range entries {
+		if ctx.Err() != nil {
+			return
+		}
 		sk, ok := s.readEntry(dir, scope, requireFlatMarker, e)
 		if ok {
 			if depth == 1 || strings.TrimSpace(sk.Description) != "" {
@@ -768,7 +880,7 @@ func (s *Store) scanDir(dir string, scope Scope, requireFlatMarker bool, depth i
 		if depth >= s.maxDepth || !s.canScanChildDir(dir, e) {
 			continue
 		}
-		s.scanDir(filepath.Join(dir, e.Name()), scope, requireFlatMarker, depth+1, seen, out)
+		s.scanDir(ctx, filepath.Join(dir, e.Name()), scope, requireFlatMarker, depth+1, seen, out)
 	}
 }
 
@@ -846,17 +958,17 @@ func (s *Store) readEntry(dir string, scope Scope, requireFlatMarker bool, e os.
 // filename stem when valid; a missing `description:` is a warning, not a failure
 // (the skill loads but won't appear in the model's index).
 func (s *Store) parse(path, stem string, scope Scope) (Skill, bool) {
-	return s.parseSkill(path, stem, scope, false)
+	return s.parseSkill(path, stem, scope, false, false)
 }
 
 // parseFlat reads a flat <name>.md skill candidate. Claude skill roots can also
 // contain ordinary documentation, so those flat files need explicit skill
 // frontmatter before they are treated as skills.
 func (s *Store) parseFlat(path, stem string, scope Scope, requireSkillMarker bool) (Skill, bool) {
-	return s.parseSkill(path, stem, scope, requireSkillMarker)
+	return s.parseSkill(path, stem, scope, requireSkillMarker, false)
 }
 
-func (s *Store) parseSkill(path, stem string, scope Scope, requireSkillMarker bool) (Skill, bool) {
+func (s *Store) parseSkill(path, stem string, scope Scope, requireSkillMarker, loadBody bool) (Skill, bool) {
 	b, err := fileencoding.ReadFileUTF8(path)
 	if err != nil {
 		return Skill{}, false
@@ -872,13 +984,17 @@ func (s *Store) parseSkill(path, stem string, scope Scope, requireSkillMarker bo
 		name = v
 	}
 	desc := strings.TrimSpace(fm[skillFrontmatterDescription])
-	if desc == "" {
+	if desc == "" && !loadBody {
 		fmt.Fprintf(s.stderr, "warning: skill %q at %s has no description: — it will load but won't appear in the skills index\n", name, path)
+	}
+	bodyText := ""
+	if loadBody {
+		bodyText = loadBodyWithScripts(path, loadBodyWithReferences(path, strings.TrimSpace(body)))
 	}
 	sk := Skill{
 		Name:         name,
 		Description:  desc,
-		Body:         loadBodyWithScripts(path, loadBodyWithReferences(path, strings.TrimSpace(body))),
+		Body:         bodyText,
 		Scope:        scope,
 		Path:         path,
 		AllowedTools: parseAllowedTools(firstNonEmptySkillValue(fm[skillFrontmatterAllowedTools], fm["tools"])),
@@ -1020,171 +1136,6 @@ func isSkillMarkerFrontmatterKey(key string) bool {
 }
 
 // Create scaffolds a new skill stub at the chosen scope. Refuses to overwrite.
-func (s *Store) Create(name string, scope Scope) (string, error) {
-	return s.CreateWithContent(name, scope, stubBody(name))
-}
-
-// CreateWithContent writes caller-supplied file contents as a canonical
-// <name>/SKILL.md skill, refusing to clobber an existing directory-layout or
-// legacy flat skill of the same name. Returns the written path.
-func (s *Store) CreateWithContent(name string, scope Scope, content string) (string, error) {
-	if !IsValidName(name) {
-		return "", fmt.Errorf("invalid skill name %q — use letters, digits, '_', '-', '.'", name)
-	}
-	var root string
-	switch scope {
-	case ScopeProject:
-		if s.projectRoot == "" {
-			return "", fmt.Errorf("project scope requires a workspace — run from a project directory, or use global scope")
-		}
-		root = filepath.Join(s.projectRoot, ".reasonix", SkillsDirname)
-	default:
-		root = s.globalSkillsRoot()
-	}
-	flat := filepath.Join(root, name+".md")
-	folder := filepath.Join(root, name, SkillFile)
-	if _, err := os.Stat(flat); err == nil {
-		return "", fmt.Errorf("skill %q already exists at %s", name, flat)
-	}
-	if _, err := os.Stat(folder); err == nil {
-		return "", fmt.Errorf("skill %q already exists at %s", name, folder)
-	}
-	if err := os.MkdirAll(filepath.Dir(folder), 0o755); err != nil {
-		return "", err
-	}
-	// O_EXCL so a concurrent create (or an existing file) is reported, not clobbered.
-	f, err := os.OpenFile(folder, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if err != nil {
-		if os.IsExist(err) {
-			return "", fmt.Errorf("skill %q already exists at %s", name, folder)
-		}
-		return "", err
-	}
-	defer f.Close()
-	if _, err := f.WriteString(content); err != nil {
-		return "", err
-	}
-	return folder, nil
-}
-
-// UpdateContent overwrites an existing user-authored skill's file contents in
-// place. Refuses built-ins and a scope mismatch, mirroring Delete's rules —
-// see Delete for why a mismatch must refuse rather than silently target the
-// wrong file.
-func (s *Store) UpdateContent(name string, scope Scope, content string) error {
-	if scope == ScopeBuiltin {
-		return fmt.Errorf("skill %q is built in and cannot be edited", name)
-	}
-	sk, ok := s.Read(name)
-	if !ok {
-		return fmt.Errorf("skill %q not found", name)
-	}
-	if sk.Scope != scope {
-		return fmt.Errorf("skill %q resolves at scope %q, not %q — refusing to edit a different scope's file", name, sk.Scope, scope)
-	}
-	if sk.Path == "" || sk.Path == "(builtin)" {
-		return fmt.Errorf("skill %q has no file to update", name)
-	}
-	if err := s.validateMutablePath(sk.Path, scope); err != nil {
-		return fmt.Errorf("skill %q cannot be edited: %w", name, err)
-	}
-	info, err := os.Stat(sk.Path)
-	if err != nil {
-		return err
-	}
-	return fileutil.AtomicWriteFile(sk.Path, []byte(content), info.Mode().Perm())
-}
-
-// validateMutablePath rejects writes through linked files or directories. Skill
-// discovery intentionally follows symlinks for read compatibility, but editing
-// one must never replace content outside the configured scope root.
-func (s *Store) validateMutablePath(path string, scope Scope) error {
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return err
-	}
-	for _, root := range s.roots() {
-		if root.Scope != scope {
-			continue
-		}
-		absRoot, err := filepath.Abs(root.Dir)
-		if err != nil {
-			continue
-		}
-		rel, err := filepath.Rel(absRoot, absPath)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			continue
-		}
-		current := absRoot
-		parts := []string{"."}
-		if rel != "." {
-			parts = strings.Split(rel, string(filepath.Separator))
-		}
-		for _, part := range parts {
-			if part != "." {
-				current = filepath.Join(current, part)
-			}
-			info, err := os.Lstat(current)
-			if err != nil {
-				return err
-			}
-			if info.Mode()&os.ModeSymlink != 0 {
-				return fmt.Errorf("path uses symbolic link %s", current)
-			}
-		}
-		realRoot, err := filepath.EvalSymlinks(absRoot)
-		if err != nil {
-			return err
-		}
-		realPath, err := filepath.EvalSymlinks(absPath)
-		if err != nil {
-			return err
-		}
-		realRel, err := filepath.Rel(realRoot, realPath)
-		if err != nil || realRel == ".." || strings.HasPrefix(realRel, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("resolved path is outside scope root %s", absRoot)
-		}
-		return nil
-	}
-	return fmt.Errorf("path is outside configured %s skill roots", scope)
-}
-
-// Delete removes a user-authored skill. Refuses built-ins (no file backs
-// them) and refuses when the resolved skill's actual scope doesn't match the
-// requested one — e.g. a project-scope delete for a name that only resolves
-// at global scope, which would otherwise silently no-op against the wrong
-// file while a same-named project-scope shadow kept showing up in List().
-func (s *Store) Delete(name string, scope Scope) error {
-	if scope == ScopeBuiltin {
-		return fmt.Errorf("skill %q is built in and cannot be deleted", name)
-	}
-	sk, ok := s.Read(name)
-	if !ok {
-		return fmt.Errorf("skill %q not found", name)
-	}
-	if sk.Scope != scope {
-		return fmt.Errorf("skill %q resolves at scope %q, not %q — refusing to delete a different scope's file", name, sk.Scope, scope)
-	}
-	if sk.Path == "" || sk.Path == "(builtin)" {
-		return fmt.Errorf("skill %q has no file to delete", name)
-	}
-	if filepath.Base(sk.Path) == SkillFile {
-		return os.RemoveAll(filepath.Dir(sk.Path)) // directory-layout skill: <name>/SKILL.md + siblings
-	}
-	return os.Remove(sk.Path) // legacy flat <name>.md skill
-}
-
-func (s *Store) globalSkillsRoot() string {
-	if s.reasonixHomeDir != "" {
-		return filepath.Join(s.reasonixHomeDir, SkillsDirname)
-	}
-	return filepath.Join(s.homeDir, ".reasonix", SkillsDirname)
-}
-
-// loadBodyWithReferences appends a directory-layout skill's sibling
-// references/*.md files to its body (Anthropic Skills compatibility), so depth
-// material is available without on-demand resolution. Flat skills have no
-// references dir and are returned unchanged.
 func loadBodyWithReferences(skillPath, body string) string {
 	if filepath.Base(skillPath) != SkillFile {
 		return body

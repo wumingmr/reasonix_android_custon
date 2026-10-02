@@ -3,10 +3,11 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
-	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"reasonix/internal/agent"
@@ -39,6 +40,9 @@ type serveFrontendOptions struct {
 	pidFile     string
 	openBrowser bool
 	hasSession  bool
+	// launchTokenPath names where the launch token is, so the
+	// terminal shows a path rather than the secret.
+	launchTokenPath string
 }
 
 type serveFrontendResources struct {
@@ -112,6 +116,12 @@ func runServeFrontend(ctrl *control.Controller, srv *serve.Server, cfg config.Se
 	}
 	defer resources.release(false)
 	srv.EnableProviderSetupForListener(resources.displayAddr)
+	if srv.AuthMode() == "none" || srv.AuthMode() == "token" {
+		if opts.launchTokenPath, err = launchTokenLocation(srv.AuthToken(), opts, resources); err != nil {
+			fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
+			return 1
+		}
+	}
 	reportServeFrontend(ctrl, srv, cfg, resources.displayAddr, opts)
 	startServeBalanceDiagnostics(ctrl)
 	return serveFrontendLoop(ctrl, srv, resources, opts)
@@ -119,19 +129,24 @@ func runServeFrontend(ctrl *control.Controller, srv *serve.Server, cfg config.Se
 
 func reportServeFrontend(ctrl *control.Controller, srv *serve.Server, cfg config.ServeConfig, address string, opts serveFrontendOptions) {
 	fmt.Printf("reasonix %s — %s on http://%s\n", opts.command, ctrl.Label(), address)
-	if srv.AuthMode() == "token" {
-		fmt.Println("  auth: token")
-		// Supervised Serve already owns the token file, so avoid logging its value.
-		if opts.portFile != "" && opts.tokenFile != "" {
-			fmt.Printf("  share: http://%s/ (token in %s)\n", address, opts.tokenFile)
-		} else {
-			fmt.Printf("  share: http://%s/#token=%s\n", address, url.QueryEscape(srv.AuthToken()))
-		}
-	} else if srv.AuthMode() == "password" {
-		fmt.Printf("  auth: password (login at http://%s/login)\n", address)
-	}
+	reportServeAuth(os.Stdout, srv, address, opts)
 	if warning := serve.PlainHTTPAuthWarning(cfg, address); warning != "" {
 		fmt.Fprintf(os.Stderr, "  %s\n", warning)
+	}
+}
+
+// reportServeAuth names the file holding the launch token, never the token: a
+// sandboxed command can read back a terminal multiplexer's scrollback.
+func reportServeAuth(w io.Writer, srv *serve.Server, address string, opts serveFrontendOptions) {
+	switch srv.AuthMode() {
+	case "token":
+		fmt.Fprintln(w, "  auth: token")
+		fmt.Fprintf(w, "  share: http://%s/#token=<token> (token in %s)\n", address, opts.launchTokenPath)
+	case "password":
+		fmt.Fprintf(w, "  auth: password (login at http://%s/login)\n", address)
+	case "none":
+		fmt.Fprintln(w, "  auth: none (changes and approvals still require the launch token)")
+		fmt.Fprintf(w, "  approvals: http://%s/#token=<token> (token in %s)\n", address, opts.launchTokenPath)
 	}
 }
 
@@ -166,9 +181,9 @@ func serveFrontendLoop(ctrl *control.Controller, srv *serve.Server, resources *s
 		serveErr = runServeListenerAfterReady(ctx, srv, resources.listener, resources.displayAddr, func() {
 			browserURL, err := launchWebBrowser(srv, resources.displayAddr, sessionID)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "  browser: could not open %s — %v\n", browserURL, err)
+				fmt.Fprintf(os.Stderr, "  browser: could not open %s — %v\n", withoutFragment(browserURL), err)
 			} else {
-				fmt.Printf("  browser: %s\n", browserURL)
+				fmt.Printf("  browser: %s\n", withoutFragment(browserURL))
 			}
 		})
 	} else {
@@ -179,4 +194,10 @@ func serveFrontendLoop(ctrl *control.Controller, srv *serve.Server, resources *s
 		return 1
 	}
 	return 0
+}
+
+// withoutFragment drops a #token= fragment before a URL reaches the terminal.
+func withoutFragment(raw string) string {
+	before, _, _ := strings.Cut(raw, "#")
+	return before
 }

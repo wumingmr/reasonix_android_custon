@@ -37,10 +37,9 @@ func IsDeepSeek(baseURL string) bool {
 	return matchesVendorHost(baseURL, "deepseek.com", "api.deepseek.com")
 }
 
-// OfficialDeepSeekVisionModel is the only official DeepSeek chat SKU that
-// accepts image input. Flash and Pro remain text-only; a future name that
-// merely contains "vision" must not inherit this contract.
-const OfficialDeepSeekVisionModel = "deepseek-v4-flash-vision-exp"
+// OfficialDeepSeekVisionModel has built-in image support. Unknown models need
+// capability metadata or an explicit declaration, not a name-based guess.
+const OfficialDeepSeekVisionModel = provider.OfficialDeepSeekVisionModel
 
 // IsOfficialDeepSeekVisionModel reports whether model is the pinned official
 // DeepSeek vision SKU. Matching is case-insensitive and trims surrounding space.
@@ -48,10 +47,32 @@ func IsOfficialDeepSeekVisionModel(model string) bool {
 	return strings.EqualFold(strings.TrimSpace(model), OfficialDeepSeekVisionModel)
 }
 
+// The official DeepSeek model lists live in the provider package so the local
+// model catalog can consult them without an openai import cycle.
+func IsOfficialDeepSeekImageModel(model string) bool {
+	return provider.IsOfficialDeepSeekImageModel(model)
+}
+
+func IsOfficialDeepSeekTextModel(model string) bool {
+	return provider.IsOfficialDeepSeekTextModel(model)
+}
+
+// DeepSeekImageInputAllowed applies the official endpoint hard limit after a
+// provider has resolved its configured or catalog-derived image capability.
+func DeepSeekImageInputAllowed(officialBase bool, requestURL, model string, metadataProvided, enabled bool) bool {
+	if !officialBase && !IsDeepSeek(requestURL) {
+		return enabled
+	}
+	if IsOfficialDeepSeekTextModel(model) {
+		return false
+	}
+	return enabled || (!metadataProvided && IsOfficialDeepSeekImageModel(model))
+}
+
 // OfficialDeepSeekAllowsVision reports whether this official DeepSeek endpoint
 // may serialize image parts for the selected model. Custom gateways never match.
 func OfficialDeepSeekAllowsVision(baseURL, model string) bool {
-	return IsDeepSeek(baseURL) && IsOfficialDeepSeekVisionModel(model)
+	return IsDeepSeek(baseURL) && IsOfficialDeepSeekImageModel(model)
 }
 
 // IsOpenAI reports whether baseURL points at OpenAI's official API host. Keep
@@ -122,6 +143,19 @@ func normalizeModelID(baseURL, model string) string {
 	model = strings.TrimSpace(model)
 	if IsGeminiAPI(baseURL) {
 		model = strings.TrimPrefix(model, "models/")
+	}
+	return model
+}
+
+// Explicit official beta alias verified against Chat Completions. Keep
+// configuration identity exact; never case-fold arbitrary IDs or gateway calls.
+func deepSeekChatWireModel(endpoint, model string) string {
+	u, err := url.Parse(endpoint)
+	if err == nil && u.Scheme == "https" && u.Host == "api.deepseek.com" &&
+		u.User == nil && u.RawQuery == "" && u.Fragment == "" &&
+		(u.Path == "/chat/completions" || u.Path == "/v1/chat/completions") &&
+		model == "DeepSeek-V4.1-Flash-Expires-On-0910" {
+		return "deepseek-v4.1-flash-expires-on-0910"
 	}
 	return model
 }

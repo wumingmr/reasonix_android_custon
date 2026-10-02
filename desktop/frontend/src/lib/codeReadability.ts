@@ -51,27 +51,27 @@ const BASE_SURFACES: Record<string, Record<CodeReadabilityMode, { bg: string; co
 };
 
 const DARK_SYNTAX = {
-  keyword: "#c678dd",
-  string: "#98c379",
-  number: "#d19a66",
-  comment: "#6a6a72",
-  function: "#61afef",
-  type: "#e5c07b",
-  builtin: "#56b6c2",
-  meta: "#7f848e",
+  keyword: "#faa2c1",
+  string: "#69db7c",
+  number: "#4dabf7",
+  comment: "#adb5bd",
+  function: "#b197fc",
+  type: "#ffa94d",
+  builtin: "#66d9e8",
+  meta: "#adb5bd",
   addition: "#74b87a",
   deletion: "#e0696a",
 };
 
 const LIGHT_SYNTAX = {
-  keyword: "#cf222e",
-  string: "#0a3069",
-  number: "#0550ae",
-  comment: "#6e7781",
-  function: "#8250df",
-  type: "#116329",
-  builtin: "#0550ae",
-  meta: "#6e7781",
+  keyword: "#d6336c",
+  string: "#2f9e44",
+  number: "#1c7ed6",
+  comment: "#868e96",
+  function: "#6741d9",
+  type: "#e8590c",
+  builtin: "#0b7285",
+  meta: "#868e96",
   addition: "#15803d",
   deletion: "#dc2626",
 };

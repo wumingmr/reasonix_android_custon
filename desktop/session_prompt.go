@@ -55,6 +55,16 @@ func withFreshSystemPrompt(messages []provider.Message, system string) []provide
 	return append([]provider.Message{{Role: provider.RoleSystem, Content: system}}, out...)
 }
 
+func noteLegacyPinnedSystemMigration(session *agent.Session, persisted, fresh string) {
+	if session == nil || persisted == "" || fresh == "" || persisted == fresh {
+		return
+	}
+	// The resumed Session already contains the refreshed bytes, so this is only a
+	// diagnostics boundary. Do not increment RewriteVersion: the persistence
+	// baseline must remain compatible with the session loaded from disk.
+	session.NoteContentRewrite("legacy_pinned_system_migration")
+}
+
 func sessionWithFreshSystemPrompt(session *agent.Session, system string) *agent.Session {
 	if session == nil {
 		return nil
@@ -65,7 +75,9 @@ func sessionWithFreshSystemPrompt(session *agent.Session, system string) *agent.
 		return session
 	}
 	logSystemPromptSwap(persisted, system, "")
-	return session.CloneWithMessages(withFreshSystemPrompt(messages, system))
+	resumed := session.CloneWithMessages(withFreshSystemPrompt(messages, system))
+	noteLegacyPinnedSystemMigration(resumed, persisted, system)
+	return resumed
 }
 
 func resumeWithFreshSystemPrompt(ctrl interface {
@@ -78,17 +90,21 @@ func resumeWithFreshSystemPrompt(ctrl interface {
 	}
 	if len(messages) > 0 {
 		fresh := systemPromptFrom(ctrl.History())
-		logSystemPromptSwap(systemPromptFrom(messages), fresh, path)
+		persisted := systemPromptFrom(messages)
+		logSystemPromptSwap(persisted, fresh, path)
 		next := withFreshSystemPrompt(messages, fresh)
 		if path != "" {
 			if loaded, err := agent.LoadSession(path); err == nil && loaded != nil {
 				if resumed, ok := loaded.CloneWithMessagesIfCompatible(next); ok {
+					noteLegacyPinnedSystemMigration(resumed, persisted, fresh)
 					ctrl.Resume(resumed, path)
 					return
 				}
 			}
 		}
-		ctrl.Resume(agent.NewSession("").CloneWithMessages(next), path)
+		resumed := agent.NewSession("").CloneWithMessages(next)
+		noteLegacyPinnedSystemMigration(resumed, persisted, fresh)
+		ctrl.Resume(resumed, path)
 		return
 	}
 	if path != "" {
@@ -106,7 +122,9 @@ func resumeWithFreshSystemPromptAndGoal(ctrl control.SessionAPI, messages []prov
 	_, sidecarErr := os.Stat(store.SessionGoalState(path))
 	resumeWithFreshSystemPrompt(ctrl, messages, path)
 	if os.IsNotExist(sidecarErr) && strings.TrimSpace(legacyGoal) != "" {
-		ctrl.SetGoal(strings.TrimSpace(legacyGoal))
+		if loader, ok := ctrl.(interface{ LoadInactiveGoal(string) }); ok {
+			loader.LoadInactiveGoal(strings.TrimSpace(legacyGoal))
+		}
 	}
 }
 
@@ -117,7 +135,9 @@ func resumeLoadedSessionAndGoal(ctrl control.SessionAPI, session *agent.Session,
 	_, sidecarErr := os.Stat(store.SessionGoalState(path))
 	ctrl.Resume(sessionWithFreshSystemPrompt(session, systemPromptFrom(ctrl.History())), path)
 	if os.IsNotExist(sidecarErr) && strings.TrimSpace(legacyGoal) != "" {
-		ctrl.SetGoal(strings.TrimSpace(legacyGoal))
+		if loader, ok := ctrl.(interface{ LoadInactiveGoal(string) }); ok {
+			loader.LoadInactiveGoal(strings.TrimSpace(legacyGoal))
+		}
 	}
 }
 
@@ -150,7 +170,9 @@ func normalizeRestoredControllerRuntime(ctrl control.SessionAPI, requested norma
 	if plan && ctrl.GoalStatus() == control.GoalStatusRunning {
 		// Explicit Plan wins over inconsistent legacy data. Clearing the running
 		// Goal also prevents a stale scope from being executed after approval.
-		ctrl.ClearGoal()
+		if err := ctrl.SetGoalDurable(""); err != nil {
+			return normalizedTabRuntime{}, fmt.Errorf("clear goal for Plan mode: %w", err)
+		}
 	}
 
 	actual := requested

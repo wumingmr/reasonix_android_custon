@@ -32,6 +32,7 @@ export async function waitFor(label: string, predicate: () => boolean) {
 
 export function baseSettings(displayMode: "standard" | "compact" = "standard"): SettingsView {
   return {
+    modelSettingsFingerprint: "test-model-settings-revision",
     defaultModel: "",
     plannerModel: "",
     visionModel: "",
@@ -42,7 +43,7 @@ export function baseSettings(displayMode: "standard" | "compact" = "standard"): 
     officialProviders: [],
     providerPresets: [],
     permissions: { mode: "ask", allow: [], ask: [], deny: [] },
-    sandbox: { bash: "enforce", network: false, workspaceRoot: "", allowWrite: [], effectiveWorkspaceRoot: "/work", effectiveWriteRoots: ["/work"], shell: "auto" },
+    sandbox: { bash: "enforce", network: false, workspaceRoot: "", allowWrite: [], effectiveWorkspaceRoot: "/work", effectiveWriteRoots: ["/work"], shell: "auto", shellCapabilities: [{ id: "bash", variant: "system", available: true, path: "/bin/bash", source: "path" }] },
     network: { proxyMode: "auto", proxyUrl: "", noProxy: "", proxy: { type: "socks5", server: "", port: 0, username: "", password: "" } },
     agent: { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, maxSubagentConcurrency: 6, maxParallelWriters: 3, systemPrompt: "", reasoningLanguage: "auto", compactRatio: 0.80 },
     bot: {
@@ -96,7 +97,6 @@ export function baseSettings(displayMode: "standard" | "compact" = "standard"): 
       connections: [],
     },
     desktopLanguage: "en",
-    desktopLayoutStyle: "workbench",
     desktopTheme: "auto",
     desktopThemeStyle: "graphite",
     desktopTerminalTheme: "auto",
@@ -108,6 +108,7 @@ export function baseSettings(displayMode: "standard" | "compact" = "standard"): 
     statusBarItems: ["model", "workspace", "git_branch", "cache", "balance"],
     defaultToolApprovalMode: "auto",
     checkUpdates: true,
+    updaterEnabled: true,
     updateChannel: "stable",
     telemetry: true,
     metrics: true,

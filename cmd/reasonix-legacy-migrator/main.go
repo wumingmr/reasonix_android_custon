@@ -19,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"reasonix/internal/config"
+	"reasonix/internal/desktopinstance"
 	"reasonix/internal/desktoplauncher"
 	"reasonix/internal/fileutil"
 	"reasonix/internal/installlayout"
@@ -52,8 +54,11 @@ func run(args []string) int {
 	activeVersion := strings.TrimSpace(version)
 	activateStaging := ""
 	relaunch := true
+	interactive := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--interactive-recovery":
+			interactive = true
 		case "--install-root":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "error: --install-root requires a path")
@@ -103,9 +108,9 @@ func run(args []string) int {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return 1
 		}
-		if err := activateInstallerStaging(installRoot, activeVersion, activateStaging); err != nil {
+		if err := activateInstallerStagingWithRecovery(installRoot, activeVersion, activateStaging, interactive); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
-			return 1
+			return desktopinstance.ExitCode(err)
 		}
 		if relaunch {
 			_ = startLauncher(installRoot)
@@ -118,10 +123,6 @@ func run(args []string) int {
 		return 1
 	}
 	return 0
-}
-
-func migrate(installRoot, activeVersion string) error {
-	return migrateWithRelaunch(installRoot, activeVersion, true)
 }
 
 func migrateWithRelaunch(installRoot, activeVersion string, relaunch bool) error {
@@ -162,6 +163,7 @@ func migrateWithRelaunch(installRoot, activeVersion string, relaunch bool) error
 
 	desktopName := installlayout.DesktopBinaryName()
 	cliName := installlayout.CLIBinaryName()
+	flatCLIName := installlayout.FlatCLIBinaryName()
 	helperName := installlayout.UpdateHelperBinaryName()
 	flatDesktop := filepath.Join(installRoot, desktopName)
 	if _, err := os.Lstat(flatDesktop); err != nil {
@@ -171,13 +173,12 @@ func migrateWithRelaunch(installRoot, activeVersion string, relaunch bool) error
 	members := []installlayout.Member{
 		{Name: desktopName, Path: flatDesktop},
 	}
-	if p := optionalRegular(filepath.Join(installRoot, cliName)); p != "" {
+	// The flat root ships the CLI under its portable name; the version
+	// directory whitelist only admits the versioned member name.
+	if p := optionalRegular(filepath.Join(installRoot, flatCLIName)); p != "" {
 		members = append(members, installlayout.Member{Name: cliName, Path: p})
 	} else {
-		// CLI may be absent on some portable trees; synthesize from desktop only
-		// is not allowed — require the whitelist. Prefer copying desktop as a
-		// last-resort placeholder is forbidden; fail closed.
-		return fmt.Errorf("migrate: flat CLI binary %s is required", cliName)
+		return fmt.Errorf("migrate: flat CLI binary %s is required", flatCLIName)
 	}
 	requiredNames := []string{desktopName, cliName}
 	if runtime.GOOS == "windows" {
@@ -187,6 +188,14 @@ func migrateWithRelaunch(installRoot, activeVersion string, relaunch bool) error
 		} else {
 			return fmt.Errorf("migrate: flat update helper %s is required", helperName)
 		}
+	}
+	shellMembers, err := installlayout.ShellMembers(installRoot, runtime.GOOS)
+	if err != nil || len(shellMembers) == 0 {
+		return refuseShellMissing(installRoot, activeVersion, relaunch, err)
+	}
+	for _, member := range shellMembers {
+		members = append(members, member)
+		requiredNames = append(requiredNames, member.Name)
 	}
 
 	// Old Linux updaters only publish desktop, CLI, and the compatibility
@@ -247,6 +256,10 @@ func normalizeActiveVersion(activeVersion string) (string, error) {
 }
 
 func activateInstallerStaging(installRoot, activeVersion, stagingRoot string) error {
+	return activateInstallerStagingWithRecovery(installRoot, activeVersion, stagingRoot, false)
+}
+
+func activateInstallerStagingWithRecovery(installRoot, activeVersion, stagingRoot string, interactive bool) error {
 	installRoot = filepath.Clean(strings.TrimSpace(installRoot))
 	stagingRoot = filepath.Clean(strings.TrimSpace(stagingRoot))
 	if !pathWithinInstallRoot(installRoot, stagingRoot) || stagingRoot == installRoot {
@@ -270,28 +283,63 @@ func activateInstallerStaging(installRoot, activeVersion, stagingRoot string) er
 	for _, name := range requiredNames {
 		members = append(members, installlayout.Member{Name: name, Path: filepath.Join(stagingRoot, name)})
 	}
+	shellMembers, err := installlayout.ShellMembers(stagingRoot, runtime.GOOS)
+	if err != nil {
+		return fmt.Errorf("installer shell: %w", err)
+	}
+	if len(shellMembers) == 0 {
+		return fmt.Errorf("installer shell is missing; use the complete installer")
+	}
+	for _, member := range shellMembers {
+		members = append(members, member)
+		requiredNames = append(requiredNames, member.Name)
+	}
 
 	launcherName := installlayout.LauncherBinaryName()
 	launcherSource := filepath.Join(stagingRoot, launcherName)
+	cliEntrySource := filepath.Join(stagingRoot, "app", "resources", "bin", "reasonix-cli-launcher.exe")
+	if info, entryErr := os.Lstat(cliEntrySource); entryErr != nil {
+		if !os.IsNotExist(entryErr) {
+			return fmt.Errorf("inspect CLI entry: %w", entryErr)
+		}
+		cliEntrySource = filepath.Join(stagingRoot, cliName)
+	} else if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("CLI entry is not a regular file")
+	}
 	rootMembers := []installlayout.Member{
 		{Name: launcherName, Path: launcherSource},
-		{Name: cliName, Path: filepath.Join(stagingRoot, cliName)},
+		{Name: cliName, Path: cliEntrySource},
 	}
 	requiredRootNames := []string{launcherName, cliName}
-	if alias := installlayout.PortableAliasName(); alias != "" {
-		rootMembers = append(rootMembers, installlayout.Member{Name: alias, Path: launcherSource})
-		requiredRootNames = append(requiredRootNames, alias)
-	}
 
-	if err := installlayout.ActivateVersion(installlayout.ActivationRequest{
+	home := config.ReasonixHomeDir()
+	release, err := desktopinstance.PrepareInstall(installRoot, home, interactive)
+	if err != nil {
+		return err
+	}
+	defer release()
+	// The installer only shows an exit code; the recovery log keeps the reason.
+	finish := desktopinstance.AttemptLog(home, "activate-staging", installRoot)
+	request := installlayout.ActivationRequest{
 		InstallRoot:       installRoot,
 		Version:           activeVersion,
 		RequestID:         "signed-installer-" + activeVersion,
+		CheckProcesses:    func() error { return desktopinstance.CheckInstallVacant(installRoot, home) },
 		Members:           members,
 		RequiredNames:     requiredNames,
 		RootMembers:       rootMembers,
 		RequiredRootNames: requiredRootNames,
-	}); err != nil {
+	}
+	if runtime.GOOS == "windows" {
+		request.RootMembers, request.RequiredRootNames = nil, nil
+		request.WindowsRootEntries = &installlayout.WindowsRootEntrySources{
+			LauncherPath: launcherSource,
+			CLIEntryPath: cliEntrySource,
+		}
+	}
+	err = installlayout.ActivateVersion(request)
+	finish(err)
+	if err != nil {
 		return fmt.Errorf("activate signed installer staging: %w", err)
 	}
 	return nil
@@ -302,7 +350,8 @@ func runningAsLauncher() bool {
 	if err != nil {
 		return false
 	}
-	return strings.EqualFold(filepath.Base(exe), installlayout.LauncherBinaryName())
+	return strings.EqualFold(filepath.Base(exe), installlayout.LauncherBinaryName()) ||
+		strings.EqualFold(filepath.Base(exe), installlayout.CanonicalLauncherBinaryName())
 }
 
 func optionalRegular(path string) string {
@@ -338,6 +387,22 @@ func acquireMigrationLock(installRoot string) (func(), error) {
 }
 
 func ensureLauncherEntry(installRoot string) error {
+	if runtime.GOOS == "windows" {
+		for _, name := range []string{installlayout.CanonicalLauncherBinaryName(), installlayout.LauncherBinaryName()} {
+			info, err := os.Lstat(filepath.Join(installRoot, name))
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("migrate: inspect launcher %s: %w", name, err)
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("migrate: thin launcher %s is not a regular file", name)
+			}
+			return nil
+		}
+		return fmt.Errorf("migrate: thin launcher is missing; install a signed package")
+	}
 	launcher := installlayout.LauncherBinaryName()
 	path := filepath.Join(installRoot, launcher)
 	if info, err := os.Lstat(path); err == nil {
@@ -346,14 +411,6 @@ func ensureLauncherEntry(installRoot string) error {
 		}
 		return nil
 	}
-	// On Windows also accept Reasonix.exe as the alias.
-	if runtime.GOOS == "windows" {
-		if _, err := os.Lstat(filepath.Join(installRoot, "Reasonix.exe")); err == nil {
-			return nil
-		}
-		return fmt.Errorf("migrate: thin launcher %s is missing; install a signed package", launcher)
-	}
-
 	// Legacy Linux archives cannot deliver a fourth member through the old
 	// updater. Copy this signed multicall migrator as the permanent thin launcher.
 	exe, err := os.Executable()
@@ -374,24 +431,34 @@ func ensureLauncherEntry(installRoot string) error {
 	return nil
 }
 
-func finalizeLegacyPendingUpdate(installRoot, activeVersion string) error {
+// readLegacyPendingUpdate returns the transaction an old file updater left for
+// this install and version, or nil when there is none.
+func readLegacyPendingUpdate(installRoot, activeVersion string) (*repair.UpdateTransaction, error) {
 	tx, err := repair.ReadPendingUpdate()
 	if os.IsNotExist(err) {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		return fmt.Errorf("migrate: read legacy pending update: %w", err)
+		return nil, fmt.Errorf("migrate: read legacy pending update: %w", err)
 	}
 	if tx.TargetKind != "file" {
-		return fmt.Errorf("migrate: legacy pending update target kind %q is not supported", tx.TargetKind)
+		return nil, fmt.Errorf("migrate: legacy pending update target kind %q is not supported", tx.TargetKind)
 	}
 	if strings.TrimSpace(tx.ToVersion) != strings.TrimSpace(activeVersion) {
-		return fmt.Errorf("migrate: pending update targets %s, not %s", tx.ToVersion, activeVersion)
+		return nil, fmt.Errorf("migrate: pending update targets %s, not %s", tx.ToVersion, activeVersion)
 	}
 	for _, target := range append([]repair.UpdateTransactionFile{{TargetPath: tx.TargetPath}}, tx.Files...) {
 		if !pathWithinInstallRoot(installRoot, target.TargetPath) {
-			return fmt.Errorf("migrate: pending update target escapes install root")
+			return nil, fmt.Errorf("migrate: pending update target escapes install root")
 		}
+	}
+	return tx, nil
+}
+
+func finalizeLegacyPendingUpdate(installRoot, activeVersion string) error {
+	tx, err := readLegacyPendingUpdate(installRoot, activeVersion)
+	if err != nil || tx == nil {
+		return err
 	}
 	id := repair.UpdateTransactionID(tx)
 	if err := repair.MarkUpdateHealthyExact(activeVersion, tx.CreatedAt, id); err != nil {
@@ -426,7 +493,7 @@ func cleanupLegacyFlatFiles(installRoot string) error {
 	// active. Never delete the thin launcher or current.json.
 	names := []string{
 		installlayout.DesktopBinaryName(),
-		installlayout.CLIBinaryName(),
+		installlayout.FlatCLIBinaryName(),
 		installlayout.UpdateHelperBinaryName(),
 	}
 	if runtime.GOOS == "windows" {
@@ -488,17 +555,14 @@ func archiveInstallRootLegacyMarkers(installRoot string) error {
 }
 
 func startLauncher(installRoot string) error {
-	launcher := "reasonix-launcher"
-	if runtime.GOOS == "windows" {
-		launcher += ".exe"
-	}
-	path := filepath.Join(installRoot, launcher)
-	if _, err := os.Lstat(path); err != nil {
-		if runtime.GOOS == "windows" {
-			path = filepath.Join(installRoot, "Reasonix.exe")
+	path := ""
+	for _, name := range []string{installlayout.CanonicalLauncherBinaryName(), installlayout.LauncherBinaryName()} {
+		if candidate := optionalRegular(filepath.Join(installRoot, name)); candidate != "" {
+			path = candidate
+			break
 		}
 	}
-	if _, err := os.Lstat(path); err != nil {
+	if path == "" {
 		// Migration succeeded; user can start manually.
 		return nil
 	}

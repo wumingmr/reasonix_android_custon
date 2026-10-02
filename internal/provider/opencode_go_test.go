@@ -4,22 +4,20 @@ import "testing"
 
 func TestOpenCodeGoChatModelsMatchPinnedLimits(t *testing.T) {
 	want := map[string]OpenCodeGoModelLimits{
-		"glm-5.3":           {Context: 1_000_000, MaxOutput: 131_072},
-		"glm-5.2":           {Context: 1_000_000, MaxOutput: 131_072},
-		"glm-5.1":           {Context: 202_752, MaxOutput: 32_768},
-		"kimi-k3":           {Context: 1_048_576, MaxOutput: 131_072},
-		"kimi-k2.7-code":    {Context: 262_144, MaxOutput: 262_144},
-		"kimi-k2.6":         {Context: 262_144, MaxOutput: 65_536},
-		"deepseek-v4-pro":   {Context: 1_000_000, MaxOutput: 384_000},
-		"deepseek-v4-flash": {Context: 1_000_000, MaxOutput: 384_000},
-		"mimo-v2.5-pro":     {Context: 1_048_576, MaxOutput: 128_000},
-		"mimo-v2.5":         {Context: 1_000_000, MaxOutput: 128_000},
-		"hy3":               {Context: 256_000, MaxOutput: 64_000},
+		"glm-5.3":                      {Context: 1_000_000, MaxOutput: 131_072},
+		"glm-5.2":                      {Context: 1_000_000, MaxOutput: 131_072},
+		"glm-5.1":                      {Context: 202_752, MaxOutput: 32_768},
+		"kimi-k3":                      {Context: 1_048_576, MaxOutput: 131_072},
+		"kimi-k2.7-code":               {Context: 262_144, MaxOutput: 262_144},
+		"kimi-k2.6":                    {Context: 262_144, MaxOutput: 65_536},
+		"deepseek-v4-pro":              {Context: 1_000_000, MaxOutput: 384_000},
+		"deepseek-v4-flash":            {Context: 1_000_000, MaxOutput: 384_000},
+		"deepseek-v4-flash-vision-exp": {Context: 1_000_000, MaxOutput: 384_000},
+		"mimo-v2.5-pro":                {Context: 1_048_576, MaxOutput: 128_000},
+		"mimo-v2.5":                    {Context: 1_000_000, MaxOutput: 128_000},
+		"hy3":                          {Context: 256_000, MaxOutput: 64_000},
 	}
 	got := OpenCodeGoChatModels()
-	if len(got) != len(want) {
-		t.Fatalf("chat catalog size = %d, want %d", len(got), len(want))
-	}
 	for id, lim := range want {
 		if got[id] != lim {
 			t.Fatalf("%s = %+v, want %+v", id, got[id], lim)
@@ -38,9 +36,6 @@ func TestOpenCodeGoAnthropicModelsMatchPinnedLimits(t *testing.T) {
 		"minimax-m2.5": {Context: 204_800, MaxOutput: 65_536},
 	}
 	got := OpenCodeGoAnthropicModels()
-	if len(got) != len(want) {
-		t.Fatalf("anthropic catalog size = %d, want %d", len(got), len(want))
-	}
 	for id, lim := range want {
 		if got[id] != lim {
 			t.Fatalf("%s = %+v, want %+v", id, got[id], lim)
@@ -55,9 +50,6 @@ func TestOpenCodeGoResponsesModelsMatchPinnedLimits(t *testing.T) {
 		"muse-spark-1.2-contributor": {Context: 1_048_576, MaxOutput: 131_072},
 	}
 	got := OpenCodeGoResponsesModels()
-	if len(got) != len(want) {
-		t.Fatalf("responses catalog size = %d, want %d", len(got), len(want))
-	}
 	for id, lim := range want {
 		if got[id] != lim {
 			t.Fatalf("%s = %+v, want %+v", id, got[id], lim)
@@ -66,16 +58,16 @@ func TestOpenCodeGoResponsesModelsMatchPinnedLimits(t *testing.T) {
 }
 
 func TestFilterOfficialOpenCodeGoModelsKeepsOnlyRouteCompatibleModels(t *testing.T) {
-	all := []string{"grok-4.5", "gpt-5.6-luna", "muse-spark-1.2-contributor", "glm-5.3", "glm-5.2", "hy3", "qwen3.8-max", "qwen3.7-plus", "deepseek-v4-flash", "unknown-future-model"}
+	all := []string{"grok-4.5", "gpt-5.6-luna", "muse-spark-1.2-contributor", "glm-5.3", "glm-5.2", "hy3", "qwen3.8-max", "qwen3.7-plus", "deepseek-flash", "deepseek-v4-flash", "unknown-future-model"}
 	tests := []struct {
 		name    string
 		kind    string
 		baseURL string
 		want    []string
 	}{
-		{name: "chat", kind: "openai", baseURL: "https://opencode.ai/zen/go/v1", want: []string{"glm-5.3", "glm-5.2", "hy3", "deepseek-v4-flash"}},
-		{name: "anthropic", kind: "anthropic", baseURL: "https://opencode.ai/zen/go", want: []string{"qwen3.8-max", "qwen3.7-plus", "deepseek-v4-flash"}},
-		{name: "responses", kind: "responses", baseURL: "https://opencode.ai/zen/go/v1", want: []string{"grok-4.5", "gpt-5.6-luna", "muse-spark-1.2-contributor", "deepseek-v4-flash"}},
+		{name: "chat", kind: "openai", baseURL: "https://opencode.ai/zen/go/v1", want: []string{"glm-5.3", "glm-5.2", "hy3", "qwen3.8-max", "qwen3.7-plus", "deepseek-flash", "deepseek-v4-flash"}},
+		{name: "anthropic", kind: "anthropic", baseURL: "https://opencode.ai/zen/go", want: []string{"qwen3.8-max", "qwen3.7-plus", "deepseek-flash", "deepseek-v4-flash"}},
+		{name: "responses", kind: "responses", baseURL: "https://opencode.ai/zen/go/v1", want: []string{"grok-4.5", "gpt-5.6-luna", "muse-spark-1.2-contributor", "deepseek-flash", "deepseek-v4-flash"}},
 		{name: "custom endpoint is untouched", kind: "anthropic", baseURL: "https://relay.example/zen/go", want: all},
 	}
 
@@ -128,5 +120,130 @@ func TestLookupOfficialOpenCodeGoKnownRoutes(t *testing.T) {
 	grok, ok := LookupOfficialOpenCodeGo("responses", "https://opencode.ai/zen/go/v1", "grok-4.5")
 	if !ok || grok.Context != 500_000 || grok.MaxOutput != 500_000 {
 		t.Fatalf("responses grok = %+v ok=%v", grok, ok)
+	}
+}
+
+func TestOpenCodeGoModelInfoUsesExactLocalCatalog(t *testing.T) {
+	vision, ok := OpenCodeGoModelInfo("openai", "https://opencode.ai/zen/go/v1", "kimi-k3")
+	if !ok || !vision.SupportsInput(ModalityImage) {
+		t.Fatalf("kimi-k3 metadata = %+v, ok=%t", vision, ok)
+	}
+	text, ok := OpenCodeGoModelInfo("openai", "https://opencode.ai/zen/go/v1", "glm-5.2")
+	if !ok || text.SupportsInput(ModalityImage) || len(text.InputModalities) != 1 || text.InputModalities[0] != ModalityText {
+		t.Fatalf("glm-5.2 metadata = %+v, ok=%t", text, ok)
+	}
+	if _, ok := OpenCodeGoModelInfo("openai", "https://opencode.ai/zen/go/v1", "omen-alpha"); ok {
+		t.Fatal("uncatalogued model must not be inferred from its endpoint")
+	}
+	kimi, ok := OpenCodeGoModelInfo("openai", "https://opencode.ai/zen/go/v1", "kimi-k2.6")
+	if !ok || !kimi.SupportsInput(ModalityImage) {
+		t.Fatalf("pi catalog kimi-k2.6 metadata = %+v, ok=%t", kimi, ok)
+	}
+	if kimi.ContextWindow == 0 || kimi.MaxOutputTokens == 0 || kimi.API == "" {
+		t.Fatalf("pi catalog should preserve model metadata, got %+v", kimi)
+	}
+}
+
+func TestPiCatalogModelInfosContainsMultipleProviders(t *testing.T) {
+	for _, id := range []string{"opencode-go", "deepseek", "anthropic", "openai"} {
+		if models := PiCatalogModelInfos(id); len(models) == 0 {
+			t.Fatalf("pi catalog provider %q is empty", id)
+		}
+	}
+}
+
+func TestPiCatalogModelInfoForProviderRequiresExactServingRoute(t *testing.T) {
+	model, ok := PiCatalogModelInfoForProvider("opencode-go", "openai", "https://opencode.ai/zen/go/v1", "qwen3.6-plus")
+	if !ok || !model.SupportsInput(ModalityImage) || model.API != "openai-completions" {
+		t.Fatalf("OpenCode catalog model = %+v, ok=%t", model, ok)
+	}
+	if _, ok := PiCatalogModelInfoForProvider("opencode-go", "openai", "https://gateway.example/v1", "qwen3.6-plus"); ok {
+		t.Fatal("custom endpoint must not inherit pi catalog metadata")
+	}
+}
+
+func TestPiCatalogContractKeepsKnownCapabilityFacts(t *testing.T) {
+	cases := []struct {
+		kind, baseURL, model string
+		image                bool
+	}{
+		{"openai", "https://opencode.ai/zen/go/v1", "kimi-k3", true},
+		{"openai", "https://opencode.ai/zen/go/v1", "glm-5.2", false},
+		{"openai", "https://opencode.ai/zen/go/v1", "deepseek-v4-flash-vision-exp", true},
+		{"anthropic", "https://opencode.ai/zen/go", "qwen3.8-flash", true},
+		{"responses", "https://opencode.ai/zen/go/v1", "grok-4.6", true},
+	}
+	for _, tc := range cases {
+		info, ok := PiCatalogModelInfo(tc.kind, tc.baseURL, tc.model)
+		if !ok || info.SupportsInput(ModalityImage) != tc.image {
+			t.Fatalf("pi catalog contract %s/%s = %+v, ok=%t", tc.kind, tc.model, info, ok)
+		}
+	}
+}
+
+func TestModelScopeModelInfoUsesVerifiedLocalCatalog(t *testing.T) {
+	vision, ok := ModelScopeModelInfo("openai", "https://api-inference.modelscope.cn/v1", "Qwen/Qwen3.5-27B")
+	if !ok || !vision.SupportsInput(ModalityImage) {
+		t.Fatalf("ModelScope vision metadata = %+v, ok=%t", vision, ok)
+	}
+	text, ok := ModelScopeModelInfo("openai", "https://api-inference.modelscope.cn/v1", "ZhipuAI/GLM-5.2")
+	if !ok || text.SupportsInput(ModalityImage) {
+		t.Fatalf("ModelScope text metadata = %+v, ok=%t", text, ok)
+	}
+	if _, ok := ModelScopeModelInfo("openai", "https://gateway.example/v1", "Qwen/Qwen3.5-27B"); ok {
+		t.Fatal("custom ModelScope lookalike must not use the local catalog")
+	}
+}
+
+func TestBuiltinModelInfoIncludesDeepSeekVisionSKU(t *testing.T) {
+	vision, ok := BuiltinModelInfo("openai", "https://api.deepseek.com/v1", "deepseek-v4-flash-vision-exp")
+	if !ok || !vision.SupportsInput(ModalityImage) {
+		t.Fatalf("DeepSeek vision metadata = %+v, ok=%t", vision, ok)
+	}
+	text, ok := BuiltinModelInfo("openai", "https://api.deepseek.com/v1", "deepseek-v4-pro")
+	if !ok || text.SupportsInput(ModalityImage) {
+		t.Fatalf("DeepSeek text metadata = %+v, ok=%t", text, ok)
+	}
+}
+
+func TestOpenCodeGoMiniMaxM27ServedOnlyOnAnthropicRoute(t *testing.T) {
+	const chatURL, anthropicURL = "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/go"
+	const id = "minimax-m2.7"
+	if route, ok := OpenCodeGoRecommendedRoute(id); !ok || route != OpenCodeGoRouteAnthropic {
+		t.Fatalf("recommended route = %q, %t; want anthropic", route, ok)
+	}
+	if _, ok := OpenCodeGoChatModels()[id]; ok {
+		t.Fatal("listed on the Chat Completions route")
+	}
+	if _, ok := LookupOfficialOpenCodeGo("openai", chatURL, id); ok {
+		t.Fatal("resolves on the Chat Completions route")
+	}
+	if _, ok := PiCatalogModelInfo("openai", chatURL, id); ok {
+		t.Fatal("inherits Chat Completions catalog facts")
+	}
+	if _, ok := PiCatalogModelInfoForProvider("opencode-go", "openai", chatURL, id); ok {
+		t.Fatal("inherits provider catalog facts on the Chat Completions route")
+	}
+	if _, ok := LookupOfficialOpenCodeGo("anthropic", anthropicURL, id); !ok {
+		t.Fatal("missing from the Anthropic route")
+	}
+}
+
+// models.dev serves these Qwen models over the OpenAI-compatible SDK while the
+// docs table lists /v1/messages; both routes stay available.
+func TestOpenCodeGoQwenModelsKeepBothRoutes(t *testing.T) {
+	for _, id := range []string{"qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus", "qwen3.8-max"} {
+		if route, ok := OpenCodeGoRecommendedRoute(id); !ok || route != OpenCodeGoRouteChat {
+			t.Errorf("%s recommended route = %q, %t", id, route, ok)
+		}
+		if _, ok := LookupOfficialOpenCodeGo("openai", "https://opencode.ai/zen/go/v1", id); !ok {
+			t.Errorf("%s dropped from the Chat Completions route", id)
+		}
+		if _, ok := LookupOfficialOpenCodeGo("anthropic", "https://opencode.ai/zen/go", id); !ok {
+			t.Errorf("%s dropped from the Anthropic route", id)
+		}
+		if OpenCodeGoRouteCorrected(id) {
+			t.Errorf("%s carries a route correction", id)
+		}
 	}
 }

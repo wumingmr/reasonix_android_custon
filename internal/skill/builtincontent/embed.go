@@ -1,6 +1,6 @@
 // Package builtincontent holds shipped skill markdown that is embedded into the
 // Reasonix binary. Bodies stay out of the system prompt until the skill is
-// invoked; only the name+description index line is cache-stable.
+// invoked; reference pages are read separately on demand.
 package builtincontent
 
 import (
@@ -13,7 +13,7 @@ import (
 	"reasonix/internal/frontmatter"
 )
 
-//go:embed reasonix-guide/SKILL.md
+//go:embed reasonix-guide
 var files embed.FS
 
 // SkillMarkdown is one embedded skill file after frontmatter split.
@@ -65,8 +65,7 @@ func loadSkill(embedPath string) (SkillMarkdown, error) {
 }
 
 // ParseSkillMarkdown splits embedded (or test) skill markdown using the same
-// frontmatter rules as on-disk skills. It does not expand references/scripts
-// (embedded skills ship a single file).
+// frontmatter rules as on-disk skills. References remain separate resources.
 func ParseSkillMarkdown(sourcePath, content string) (SkillMarkdown, error) {
 	content = strings.TrimPrefix(strings.ReplaceAll(content, "\r\n", "\n"), "\uFEFF")
 	fm, body := frontmatter.Split(content)

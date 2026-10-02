@@ -34,10 +34,8 @@ const summary = summarizeProjectTreeSessions({
   tree,
   visibleTree: tree,
   expanded: new Set(["project-a"]),
-  showAllTopics: new Set(),
-  classicTruncationActive: true,
   queryActive: false,
-  timeFilterActive: false,
+  folderProjection: (_folder, children) => ({ visible: children.slice(0, 5) }),
   projectNodeKey: (node) => node.key,
   isActive: (node) => node.topicId === "one",
   isUnread: (node) => node.topicId === "two",
@@ -49,8 +47,8 @@ assert.equal(summary.hiddenSessions, 2);
 assert.equal(summary.hiddenByTruncation, 1);
 assert.equal(summary.hiddenByCollapsed, 1);
 assert.equal(summary.runtimeOnlySessions, 1);
-assert.equal(summary.recoveryCopySessions, 1);
-assert.equal(summary.recoveryCopies, 2);
+assert.equal(summary.recoveryCopySessions, 0, "ordinary-tree diagnostics ignore deprecated physical-copy counts");
+assert.equal(summary.recoveryCopies, 0, "ordinary-tree diagnostics do not expose hidden recovery storage");
 assert.equal(summary.runningSessions, 1);
 assert.equal(summary.unreadSessions, 1);
 assert.equal(summary.pinnedSessions, 1);
@@ -61,10 +59,7 @@ const filtered = summarizeProjectTreeSessions({
   tree,
   visibleTree: [{ ...tree[0], children: [tree[0].children?.[0] ?? topic("one")] }],
   expanded: new Set(["project-a"]),
-  showAllTopics: new Set(["project-a"]),
-  classicTruncationActive: false,
   queryActive: true,
-  timeFilterActive: false,
   projectNodeKey: (node) => node.key,
 });
 assert.equal(filtered.workspaceSessions, 7);

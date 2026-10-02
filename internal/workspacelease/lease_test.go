@@ -109,9 +109,9 @@ func TestWorkspaceIdentityHelpersPreserveCanonicalRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ancestors := ancestorDirectories(owner.canonical)
-	if len(ancestors) == 0 || ancestors[len(ancestors)-1] != owner.canonical {
-		t.Fatalf("ancestor chain = %q, want canonical root %q last", ancestors, owner.canonical)
+	ancestors := ancestorDirectories(owner.compatibility)
+	if len(ancestors) == 0 || ancestors[len(ancestors)-1] != owner.compatibility {
+		t.Fatalf("ancestor chain = %q, want compatibility root %q last", ancestors, owner.compatibility)
 	}
 	if got := workspaceLockPath(owner.lockDir, owner.compatibility); got != owner.lockPath {
 		t.Fatalf("compatibility root lock = %q, want owner lock %q", got, owner.lockPath)
@@ -164,12 +164,21 @@ func TestOwnersSerializeSameWorkspaceAndNotifyOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	var notices atomic.Int32
-	second, err := New(root, locks, func() { notices.Add(1) })
+	waiting := make(chan struct{}, 1)
+	second, err := New(root, locks, func() {
+		notices.Add(1)
+		select {
+		case waiting <- struct{}{}:
+		default:
+		}
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	first.BeginRun()
 	second.BeginRun()
+	t.Cleanup(first.EndRun)
+	t.Cleanup(second.EndRun)
 	if err := first.AcquireWrite(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +188,9 @@ func TestOwnersSerializeSameWorkspaceAndNotifyOnce(t *testing.T) {
 	select {
 	case err := <-acquired:
 		t.Fatalf("second owner acquired early: %v", err)
-	case <-time.After(100 * time.Millisecond):
+	case <-waiting:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second owner did not report waiting")
 	}
 	first.EndRun()
 	select {
@@ -241,12 +252,15 @@ func TestIndependentWorkspacesDoNotBlockEachOther(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := New(t.TempDir(), locks, nil)
+	secondRoot, _ := unrelatedTreePath(t, first, t.TempDir())
+	second, err := New(secondRoot, locks, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	first.BeginRun()
 	second.BeginRun()
+	t.Cleanup(first.EndRun)
+	t.Cleanup(second.EndRun)
 	if err := first.AcquireWrite(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -422,10 +436,16 @@ func TestNestedRepoPathWritesRunInParallel(t *testing.T) {
 	}
 	first.BeginRun()
 	second.BeginRun()
-	if err := first.AcquireWriteForPath(context.Background(), filepath.Join(repoA, "a.go")); err != nil {
+	t.Cleanup(first.EndRun)
+	t.Cleanup(second.EndRun)
+	firstPath := filepath.Join(repoA, "a.go")
+	secondPath := distinctPathSlotInDirectory(t, second, repoB, canonicalPathSlot(t, first, firstPath))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := first.AcquireWriteForPath(ctx, firstPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := second.AcquireWriteForPath(context.Background(), filepath.Join(repoB, "b.go")); err != nil {
+	if err := second.AcquireWriteForPath(ctx, secondPath); err != nil {
 		t.Fatal(err)
 	}
 	first.EndRun()
@@ -479,14 +499,17 @@ func TestSameRepoDifferentFilesRunInParallel(t *testing.T) {
 	}
 	first.BeginRun()
 	second.BeginRun()
-	if err := first.AcquireWriteForPath(context.Background(), filepath.Join(repo, "a.go")); err != nil {
+	t.Cleanup(first.EndRun)
+	t.Cleanup(second.EndRun)
+	firstPath, secondPath := increasingPathSlots(t, first)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := first.AcquireWriteForPath(ctx, firstPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := second.AcquireWriteForPath(context.Background(), filepath.Join(repo, "b.go")); err != nil {
+	if err := second.AcquireWriteForPath(ctx, secondPath); err != nil {
 		t.Fatal(err)
 	}
-	first.EndRun()
-	second.EndRun()
 }
 
 func TestSameFilePathWritesStillSerialize(t *testing.T) {

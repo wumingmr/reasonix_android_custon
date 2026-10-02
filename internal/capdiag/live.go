@@ -35,10 +35,12 @@ func probeLiveMCP(rep *MCPReport, cfg *config.Config, root, home, reasonixHome s
 		timeout = MaxLiveTimeout
 	}
 
-	// Only probe automatic start intent servers.
+	// Only probe servers that would start on their own; a project-declared one
+	// the user has not enabled must not start here either.
+	enabled := enabledMCPNames(cfg, root, reasonixHome)
 	var auto []config.PluginEntry
 	for _, p := range cfg.Plugins {
-		if p.ShouldAutoStart() {
+		if enabled[p.Name] {
 			auto = append(auto, p)
 		} else {
 			for i := range rep.Servers {
@@ -74,6 +76,7 @@ func probeLiveMCP(rep *MCPReport, cfg *config.Config, root, home, reasonixHome s
 
 	connected := map[string]bool{}
 	for _, s := range host.Servers() {
+		rep.bindings = append(rep.bindings, s.ToolBindings...)
 		connected[s.Name] = true
 		tools := make([]MCPToolInfo, 0, len(s.ToolList))
 		for _, t := range s.ToolList {
@@ -153,4 +156,25 @@ func LiveWarningMessage() string {
 They may access the network and receive configured environment variables and headers.
 Tools are not registered into the agent registry. Startup stats/schema cache writes are disabled.
 Host is always closed after the probe.`)
+}
+
+// enabledMCPNames resolves which servers start on their own, reading the
+// activation store under reasonixHome.
+func enabledMCPNames(cfg *config.Config, root, reasonixHome string) map[string]bool {
+	store := config.DefaultMCPActivationStore()
+	if strings.TrimSpace(reasonixHome) != "" {
+		store = config.NewMCPActivationStore(reasonixHome)
+	}
+	out := map[string]bool{}
+	for _, p := range cfg.EnabledPlugins(root, store) {
+		out[p.Name] = true
+	}
+	return out
+}
+
+func startIntent(enabled bool) string {
+	if enabled {
+		return "automatic"
+	}
+	return "off"
 }

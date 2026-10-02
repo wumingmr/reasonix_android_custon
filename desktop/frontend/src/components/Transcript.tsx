@@ -1,1062 +1,325 @@
-import { lazy, Suspense, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type TouchEvent as ReactTouchEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type WheelEvent as ReactWheelEvent } from "react";
-import { Virtuoso, type ListItem } from "react-virtuoso";
-import type { ControllerLiveStore, Item, LiveStream } from "../lib/useController";
-import type { CheckpointMeta, WireCompletionSummary } from "../lib/types";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { ArrowDown } from "lucide-react";
+import { getTranscriptStore } from "../lib/transcriptStore";
+import type { ControllerLiveStore, HistoryLoadOutcome, HistoryLoadTrigger, Item, LiveStream } from "../lib/useController";
+import type { LocalSubmission } from "../lib/localSubmissionState";
+import { forkTargetForAnswer, type ForkBlockReason, type ForkTargetSetView, type ForkTargetView } from "../lib/forkTargets";
 import type { InvocationMetadataMap } from "../lib/invocationDisplay";
-import { useT } from "../lib/i18n";
-import { InvocationMetadataContext, TurnActions, UserMessage } from "./Message";
-import { ToolCard } from "./ToolCard";
-import { ExtensionCard } from "./ExtensionCard";
-import { ArrowDown, Loader2 } from "lucide-react";
-import { Welcome } from "./Welcome";
-import { ReadOnlyBatch } from "./ReadOnlyBatch";
-import { ToolGroup } from "./ToolGroup";
-import { getProcessFoldPreference, onProcessFoldPreferenceChange, type ProcessFoldPreference } from "../lib/processFoldPreference";
-import { isSteerNoticeText } from "../lib/useController";
-import { useTranscriptEntranceAnimation } from "../lib/useEntranceAnimation";
-import { useTranscriptSelectionRetention } from "../lib/useTranscriptSelectionRetention";
-import {
-  questionAnchorId,
-} from "../lib/transcriptGrouping";
-import {
-  buildTranscriptRows,
-  buildTurnModels,
-  foldMapWithReasoningOpen,
-  foldMapWithToggle,
-  foldSegmentStates,
-  reconcileFoldEntries,
-  splitTranscriptLiveRows,
-  EMPTY_FOLDS,
-  NO_LIVE,
-  type AssistantItem,
-  type FoldMap,
-  type ToolItem,
-  type TranscriptLiveFlags,
-  type TranscriptRow,
-  transcriptRowMeasurementVersion,
-} from "../lib/transcriptRows";
-import { createTranscriptMeasuredSizes, type TranscriptSynthesizedSizes } from "../lib/transcriptMeasuredSizes";
-import {
-  transcriptRowLayoutVariant,
-  type TranscriptEstimateSource,
-  type TranscriptGeometryEnvironment,
-  type TranscriptRowLayoutVariant,
-} from "../lib/transcriptRowGeometry";
-import { readTranscriptGeometryEnvironment } from "../lib/transcriptGeometryEnvironment";
-import { onTypographyPreferencesChange } from "../lib/typographyPreferences";
+import type { WireCompletionSummary } from "../lib/types";
 import { acquireMarkdownWorkerClient, releaseMarkdownWorkerClient } from "../lib/markdownWorkerClient";
-import { noteTranscriptRecoveryTerminal, noteTranscriptRowCounts } from "../lib/sessionDiagnostics";
-import { useReasoningDisplayMode } from "../lib/reasoningDisplayPreference";
-import { InlineAssistantReasoning } from "./InlineAssistantReasoning";
-import { ProcessFoldHeader } from "./ProcessFoldHeader";
-import { CompactionCard, NoticeCard, PhaseCard, SteerCard } from "./TranscriptCards";
-import { LiveStreamContext } from "./LiveStreamContext";
-import { useTranscriptSelectableRows } from "../lib/useTranscriptSelectableRows";
-import { useCreationTranscriptScrollbar } from "../lib/useCreationTranscriptScrollbar";
-import { useTranscriptScrollInteractions } from "../lib/useTranscriptScrollInteractions";
-import { hasTranscriptScrollableRange, TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX, useTranscriptScrollArbiter } from "../lib/useTranscriptScrollArbiter";
-import { useTranscriptLayoutIntegrity } from "../lib/useTranscriptLayoutIntegrity";
-import { TranscriptLayoutIntentProvider, TranscriptScrollWriteProvider } from "./TranscriptLayoutIntentContext";
+import { ChatSource } from "../lib/chatViewSource";
+import { ChatScrollController } from "../lib/chatScrollController";
+import { ChatContentLoader } from "../lib/chatContentLoader";
+import { ChatMountedOrder } from "../lib/chatMountedOrder";
+import { ChatTurnJump } from "../lib/chatTurnJump";
+import type { NavigateToTurn } from "../lib/historyTurnNavigation";
+import { desktopHost } from "../lib/desktopHost";
+import { findLoadedTurn, indexLoadedTurns } from "../lib/chatTurnRail";
+import { signalOutline } from "../lib/transcriptOutlineSignals";
+import { addBreadcrumb } from "../lib/breadcrumbs";
+import { useT } from "../lib/i18n";
+import { InvocationMetadataContext } from "./Message";
 import { MarkdownImageTabContext } from "./MarkdownImageContext";
-import { recordTranscriptScrollDiagnostic } from "../lib/transcriptScrollProbe";
-import { recordFrontendDiagnostic } from "../lib/frontendDiagnosticBridge";
-import { useTranscriptQuestionJump, useTranscriptQuestions } from "../lib/useTranscriptQuestionNavigation";
-import {
-  LiveAssistantMessage,
-  SHOW_SCROLL_DIAGNOSTICS,
-  TRANSCRIPT_VIRTUOSO_COMPONENTS,
-  TRANSCRIPT_VIRTUOSO_COMPONENTS_WITH_HEADER,
-  type TranscriptVirtuosoContext,
-} from "./TranscriptVirtuosoParts";
-
-// NoticeCard lives with the other row cards; keep the historical export path.
+import { ChatFileScopeProvider } from "./ChatFileLinkContext";
+import { ChatDetails, ChatNodeList, ChatRunning, type ChatActions } from "./ChatNodes";
+import { Welcome } from "./Welcome";
+import { SessionLoadingIndicator } from "./SessionLoadingIndicator";
+import "./ChatTranscript.css";
+const ChatTurnNavigator = lazy(() => import("./ChatTurnNavigator"));
 export { NoticeCard } from "./TranscriptCards";
-type OpenTurnAction = { turn: number; menu: "summary" | "rewind" };
-const QUESTION_NAV_MIN_COUNT = 2;
-const EMPTY_CHECKPOINTS: CheckpointMeta[] = [];
-const EMPTY_INVOCATION_METADATA: InvocationMetadataMap = {};
-const NO_HELD_ROWS: readonly TranscriptRow[] = [];
-const QuestionJumpBar = lazy(() => import("./QuestionJumpBar"));
-const SHOW_FRONTEND_DIAGNOSTICS = typeof __BUILD_CHANNEL__ === "undefined"
-  || __BUILD_CHANNEL__ === "test"
-  || __BUILD_CHANNEL__ === "preview"
-  || __BUILD_CHANNEL__ === "canary"
-  || Boolean(import.meta.env?.DEV);
-const FrontendDiagnosticsPanel = SHOW_FRONTEND_DIAGNOSTICS
-  ? lazy(() => import("./FrontendDiagnosticsPanel"))
-  : null;
-const VIRTUAL_OVERSCAN_ROWS = 8;
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function assistantAnswerOnly(item: AssistantItem): AssistantItem {
-  return { ...item, reasoning: "", reasoningComplete: true, reasoningDurationMs: undefined };
-}
-
-// ── Transcript component ──────────────────────────────────────────────────────
-
-export function Transcript({
-  items,
-  live: liveProp,
-  liveStore,
-  tabId,
-  geometrySessionKey,
-  footerHeight = 0,
-  onPrompt,
-  onDeliveryContinue,
-  onAcceptDelivery,
-  onOpenChanges,
-  onOpenVerification,
-  onEditPrompt,
-  onRewind,
-  checkpoints = EMPTY_CHECKPOINTS,
-  actionPending = false,
-  rewindDisabled = false,
-  running = false,
-  questionNavigator = true,
-  welcomeVariant = "default",
-  creationMode = false,
-  actionHoverMenus = false,
-  rewindSignal = 0,
-  revealSignal = 0,
-  hydrating = false,
-  hasOlderHistory = false,
-  historyStartTurn = 0,
-  historyTotalTurns = 0,
-  loadingOlderHistory = false,
-  olderHistoryError,
-  onLoadOlderHistory,
-  turnStartAt,
-  contentRevision = 0,
-  invocationMetadata = EMPTY_INVOCATION_METADATA,
-}: {
+export type TranscriptProps = {
+  onNavigateToTurn?: NavigateToTurn;
   items: Item[];
+  localSubmissions?: readonly LocalSubmission[];
+  localSubmissionSendRevision?: number;
+  visibleSubmissionHandoffs?: Readonly<Record<string, { submissionId: string }>>;
   live?: LiveStream;
   liveStore?: ControllerLiveStore;
   tabId?: string;
-  /** Stable, memory-only session identity for safe geometry reuse. */
+  hostId?: string;
   geometrySessionKey?: string;
   footerHeight?: number;
-  onPrompt: (text: string) => void;
-  onDeliveryContinue?: () => void;
-  onAcceptDelivery?: () => void;
-  onOpenChanges?: () => void;
-  onOpenVerification?: (summary: WireCompletionSummary) => void;
-  onEditPrompt?: (turn: number, displayText: string, submitText?: string) => boolean | void | Promise<boolean | void>;
-  onRewind?: (turn: number, scope: string) => void;
-  checkpoints?: CheckpointMeta[];
-  actionPending?: boolean;
-  rewindDisabled?: boolean;
+  onPrompt: (displayText: string, submitText?: string) => void;
+  onFork?: (target: ForkTargetView) => void;
+  onOpenTurnChanges?: (summary: WireCompletionSummary, initialPath?: string) => void;
+  /** Persisted fork boundaries of the shown session; undefined until the first read resolves. */
+  forkTargets?: ForkTargetSetView;
+  /** Non-null replaces every fork entry's own state, e.g. a surface that cannot create a child. */
+  forkBlocked?: ForkBlockReason | null;
   running?: boolean;
-  questionNavigator?: boolean;
-  welcomeVariant?: "default" | "creation";
-  creationMode?: boolean;
-  actionHoverMenus?: boolean;
-  rewindSignal?: number;
-  revealSignal?: number;
   hydrating?: boolean;
+  /** Shell surfaces own one shared loading indicator across empty/content states. */
+  showLoadingFeedback?: boolean;
   hasOlderHistory?: boolean;
+  hasNewerHistory?: boolean;
   historyStartTurn?: number;
-  historyTotalTurns?: number;
+  historyEndTurn?: number;
+  /** Total turns the snapshot reports, used to keep the rail area while the
+   * outline loads without showing it on a brand-new conversation. */
+  totalTurns?: number;
   loadingOlderHistory?: boolean;
   olderHistoryError?: string;
-  onLoadOlderHistory?: (targetTurn?: number) => boolean | Promise<boolean>;
+  onLoadOlderHistory?: (targetTurn?: number, trigger?: HistoryLoadTrigger) => HistoryLoadOutcome | boolean | Promise<HistoryLoadOutcome | boolean>;
+  loadingNewerHistory?: boolean;
+  newerHistoryError?: string;
+  onLoadNewerHistory?: (latest?: boolean, current?: () => boolean) => HistoryLoadOutcome | boolean | Promise<HistoryLoadOutcome | boolean>;
   turnStartAt?: number;
-  contentRevision?: number;
   invocationMetadata?: InvocationMetadataMap;
-}) {
+  surfaceCommitToken?: string;
+  onSurfacePaintReady?: (token: string, outcome: "ready" | "degraded") => void;
+};
+
+
+/** Local and remote hosts share this natural-flow presentation adapter. */
+export function Transcript(props: TranscriptProps) {
+  const sessionKey = props.geometrySessionKey || `tab:${props.tabId ?? "preview"}`;
+  return <ChatSession key={sessionKey} {...props} sessionKey={sessionKey} />;
+}
+
+function TranscriptConnection({ tabId }: { tabId?: string }) {
+  const store = getTranscriptStore();
+  const subscribe = useCallback((listener: () => void) => tabId ? store.subscribeState(tabId, listener) : () => {}, [store, tabId]);
+  const snapshot = useCallback(() => tabId ? store.states.get(tabId)?.transcriptConnection : undefined, [store, tabId]);
+  const status = useSyncExternalStore(subscribe, snapshot, snapshot);
   const t = useT();
-  const subscribeLive = useCallback(
-    (listener: () => void) => liveStore?.subscribe(tabId, listener) ?? (() => {}),
-    [liveStore, tabId],
-  );
-  const getLiveSnapshot = useCallback(
-    () => liveStore?.getSnapshot(tabId) ?? liveProp,
-    [liveProp, liveStore, tabId],
-  );
-  const live = useSyncExternalStore(subscribeLive, getLiveSnapshot, getLiveSnapshot);
-  const layoutSurfaceKey = `${tabId ?? ""}:${revealSignal}`;
-  const resolvedGeometrySessionKey = geometrySessionKey || `tab:${tabId ?? "preview"}`;
-  // Transcript survives tab switches; the bounded LRU therefore survives
-  // reveal resets while the Virtuoso view state still resets independently.
-  const measuredSizes = useMemo(() => createTranscriptMeasuredSizes(), []);
-  const [geometryEnvironment, setGeometryEnvironment] = useState<TranscriptGeometryEnvironment>({
-    contentWidth: undefined,
-    typographySignature: "unresolved",
-  });
-  const geometrySessionKeyRef = useRef(resolvedGeometrySessionKey);
-  geometrySessionKeyRef.current = resolvedGeometrySessionKey;
-  const geometryEnvironmentRef = useRef(geometryEnvironment);
-  geometryEnvironmentRef.current = geometryEnvironment;
-  const recordMeasuredGeometry = useCallback((
-    rowKey: string,
-    kind: TranscriptRow["kind"],
-    layoutVariant: TranscriptRowLayoutVariant,
-    height: number,
-    width: number,
-    measurementVersion: string | undefined,
-    _estimateSource: TranscriptEstimateSource | undefined,
-    staticEstimate: number | undefined,
-  ) => {
-    measuredSizes.recordGeometry(geometrySessionKeyRef.current, {
-      rowKey,
-      kind,
-      layoutVariant,
-      height,
-      environment: { ...geometryEnvironmentRef.current, contentWidth: width },
-      measurementVersion: measurementVersion ?? "0:0",
-      staticEstimate,
-    });
-  }, [measuredSizes]);
-  useEffect(() => {
-    recordFrontendDiagnostic("transcript", "transcript.surface", {
-      hasActiveTab: Boolean(tabId),
-      totalRows: items.length,
-    });
-  }, [items.length, layoutSurfaceKey, tabId]);
-  const [layoutWidth, setLayoutWidth] = useState<number>();
-  const [geometryBootstrapComplete, setGeometryBootstrapComplete] = useState(false);
-  const geometryBootstrapRevisionRef = useRef<string | null>(null);
-  const {
-    virtuosoRef,
-    scrollRef,
-    itemSize,
-    nativeScrollbarDragging,
-    scrollElement,
-    pinnedRef: stick,
-    onWheelIntent,
-    onPointerDownIntent,
-    onNestedScrollIntent,
-    onTouchStartIntent,
-    onTouchMoveIntent,
-    onTouchEndIntent,
-    onKeyScrollIntent,
-    isAtBottom,
-    scrollerRef,
-    atBottomStateChange,
-    deliverScroll,
-    scrollToBottom,
-    followGrowingTail,
-    beginUserResize,
-    scrollToDataIndex,
-    releaseTailFollow,
-    setMode: setScrollMode,
-    writeOffset,
-    reset: resetScroll,
-    finishProgrammaticScroll,
-    submitRecoveryRequest,
-    retryRecoveryRequest,
-    lastGoodAnchorRef,
-    layoutTransientRef,
-  } = useTranscriptScrollArbiter({
-    onRecoveryTerminal: noteTranscriptRecoveryTerminal,
-    onItemMeasured: recordMeasuredGeometry,
-  });
-  const virtuosoReadyRef = useRef(false);
-  const entranceRef = useTranscriptEntranceAnimation<HTMLDivElement>(tabId, revealSignal, items);
+  return status && status !== "connected" ? <p role="status">{t(status === "syncing" ? "chat.syncing" : "chat.disconnected")}</p> : null;
+}
 
-  // Lease the markdown parse worker for as long as a transcript surface is
-  // mounted; the last release terminates the thread (it re-spawns lazily).
-  useEffect(() => {
-    acquireMarkdownWorkerClient();
-    return () => releaseMarkdownWorkerClient();
-  }, []);
-
-  const cancelStreamingAutoScroll = useCallback(() => {}, []);
-
-  const cancelStreamingAndFollow = useCallback(() => {
-    cancelStreamingAutoScroll();
-    releaseTailFollow();
-  }, [cancelStreamingAutoScroll, releaseTailFollow]);
-
-  const {
-    state: creationScrollbar,
-    handleScroll: handleCreationScroll,
-    onThumbPointerDown: handleCreationScrollbarThumbPointerDown,
-    onRailPointerDown: handleCreationScrollbarRailPointerDown,
-  } = useCreationTranscriptScrollbar({
-    enabled: creationMode,
-    contentRevision: items.length,
-    scrollRef,
-    onScroll: () => {},
-    setScrollMode,
-    writeOffset,
-    finishProgrammaticScroll,
-  });
-
-  const [
-    questions,
-    loadedByTurn,
-    totalQuestions,
-    activeQuestion,
-    setActiveQuestion,
-    scheduleActiveQuestionSync,
-    turnForUser,
-    lastTurn,
-  ] = useTranscriptQuestions(items, historyStartTurn, historyTotalTurns, scrollElement, scrollToBottom);
-  const showQuestionNav = questionNavigator && totalQuestions >= QUESTION_NAV_MIN_COUNT;
-
-  // Reset the auto-scroll pin when switching tabs so the new session always
-  // starts at the bottom. Without this, stick.current from the previous tab
-  // persists across React re-renders (Transcript is not keyed by tabId) and
-  // disables auto-scroll when the user had scrolled up in the old tab (#4584).
+function ChatSession(props: TranscriptProps & { sessionKey: string }) {
+  const { sessionKey, tabId, items, live, liveStore, running = false, hydrating = false,
+    hasOlderHistory = false, hasNewerHistory = false, loadingOlderHistory = false, olderHistoryError,
+    loadingNewerHistory = false, newerHistoryError, turnStartAt,
+    onLoadOlderHistory, onLoadNewerHistory, onPrompt, onFork, onSurfacePaintReady, surfaceCommitToken } = props;
+  const t = useT();
+  const [source] = useState(() => new ChatSource(sessionKey));
+  const [mounts] = useState(() => new ChatMountedOrder());
+  const order = useSyncExternalStore(source.subscribeOrder, source.getOrderSnapshot, source.getOrderSnapshot);
+  const [scroll] = useState(() => new ChatScrollController(sessionKey));
+  const loader = useMemo(() => new ChatContentLoader(tabId), [tabId]);
+  const scroller = useRef<HTMLDivElement>(null);
+  const column = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLElement | null>(null);
+  const lifetime = useRef(0);
+  const [details, setDetails] = useState<string>();
+  const closeDetails = useCallback(() => { setDetails(undefined); }, []);
+  const openDetails = useCallback((key: string, element: HTMLElement) => { trigger.current = element; setDetails(key); }, []);
+  const recover = useCallback((id: string) => onPrompt(t("notice.protocolRecoveryAction"), `/recover-context ${id}`), [onPrompt, t]);
+  const actions = useMemo<ChatActions>(() => ({ openDetails, recover, openTurnChanges: props.onOpenTurnChanges,
+    fork: onFork ? {
+      targetFor: (answerKey) => forkTargetForAnswer(props.forkTargets, answerKey),
+      loaded: props.forkTargets !== undefined,
+      verifiable: props.forkTargets?.verifiable ?? false,
+      blocked: props.forkBlocked ?? null,
+      create: onFork,
+    } : undefined }), [openDetails, recover, onFork, props.forkTargets, props.forkBlocked, props.onOpenTurnChanges]);
   useLayoutEffect(() => {
-    resetScroll();
-    virtuosoReadyRef.current = false;
-  }, [resetScroll, revealSignal, tabId]);
-
-  // Row measurement and footer resize share the same coalesced height path.
+    source.update({ items, live: props.hasNewerHistory ? undefined : liveStore?.getSnapshot(tabId) ?? live, running, hydrating,
+      localSubmissions: props.hasNewerHistory ? [] : props.localSubmissions,
+      visibleSubmissionHandoffs: props.visibleSubmissionHandoffs,
+      hasOlder: hasOlderHistory, loadingOlder: loadingOlderHistory, error: olderHistoryError,
+      startedAt: turnStartAt, historyStartTurn: props.historyStartTurn });
+  }, [source, items, props.localSubmissions, props.visibleSubmissionHandoffs, live, liveStore, tabId, running, hydrating, hasOlderHistory, loadingOlderHistory, olderHistoryError, turnStartAt, props.historyStartTurn, props.hasNewerHistory]);
+  useEffect(() => liveStore?.subscribe(tabId, () => source.updateLive(props.hasNewerHistory ? undefined : liveStore.getSnapshot(tabId))), [source, liveStore, tabId, props.hasNewerHistory]);
+  useLayoutEffect(() => {
+    if (scroller.current && column.current) scroll.attach(scroller.current, column.current);
+    return () => scroll.dispose();
+  }, [scroll]);
   useEffect(() => {
-    if (hydrating || !virtuosoReadyRef.current || !stick.current) return;
-    followGrowingTail();
-  }, [footerHeight, followGrowingTail, hydrating, stick]);
-
-  const refreshGeometryEnvironment = useCallback((element: HTMLElement) => {
-    const next = readTranscriptGeometryEnvironment(element);
-    setGeometryEnvironment((current) => (
-      Math.abs((current.contentWidth ?? 0) - (next.contentWidth ?? 0)) <= 1
-        && current.typographySignature === next.typographySignature
-        ? current
-        : next
-    ));
-  }, []);
-
-  // The live region grows from zero height and shrinks the history viewport
-  // mid-stream; keep the tail pinned across that viewport resize.
+    loader.activate();
+    acquireMarkdownWorkerClient();
+    return () => { lifetime.current++; source.dispose(); mounts.dispose(); loader.dispose(); releaseMarkdownWorkerClient(); };
+  }, [source, mounts, loader]);
+  useLayoutEffect(() => {
+    if (!hydrating) scroll.ready();
+    scroll.layout();
+  }, [scroll, items, hydrating, props.footerHeight, details]);
   useEffect(() => {
-    const element = scrollElement;
-    if (!element || typeof ResizeObserver === "undefined") return;
-    let lastHeight = element.clientHeight;
-    let lastWidth = element.clientWidth;
-    setLayoutWidth(lastWidth);
-    refreshGeometryEnvironment(element);
-    const observer = new ResizeObserver(() => {
-      const height = element.clientHeight;
-      const width = element.clientWidth;
-      if (width !== lastWidth) {
-        lastWidth = width;
-        setLayoutWidth(width);
-        refreshGeometryEnvironment(element);
-      }
-      if (height !== lastHeight) {
-        lastHeight = height;
-        if (!hydrating) followGrowingTail();
-      }
-    });
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [hydrating, scrollElement, followGrowingTail, refreshGeometryEnvironment]);
-
-  // Typography settings update CSS variables synchronously. Re-read the
-  // geometry signature without remounting Virtuoso; old exact samples then
-  // fail their font key and static state-aware seeds take over.
-  useEffect(() => onTypographyPreferencesChange(() => {
-    if (scrollElement) refreshGeometryEnvironment(scrollElement);
-  }), [refreshGeometryEnvironment, scrollElement]);
-
-  // Sub-agent calls carry a parentId; collect them under their parent `task`
-  // call so the parent card can render them nested, and skip them at top level.
-  const subcallsByParent = useMemo(() => {
-    const m = new Map<string, ToolItem[]>();
-    for (const it of items) {
-      if (it.kind === "tool" && it.parentId) {
-        const arr = m.get(it.parentId) ?? [];
-        arr.push(it);
-        m.set(it.parentId, arr);
-      }
+    if (hydrating || !surfaceCommitToken || (items.length > 0 && order.length === 0)) return;
+    let paint = 0;
+    const frame = requestAnimationFrame(() => { paint = requestAnimationFrame(() => onSurfacePaintReady?.(surfaceCommitToken, "ready")); });
+    return () => { cancelAnimationFrame(frame); cancelAnimationFrame(paint); };
+  }, [hydrating, surfaceCommitToken, onSurfacePaintReady, items.length, order.length]);
+  const submissionRevision = props.localSubmissionSendRevision ?? 0;
+  const previousSubmissionRevision = useRef(submissionRevision);
+  useLayoutEffect(() => {
+    if (previousSubmissionRevision.current !== submissionRevision && running && !hydrating && !props.hasNewerHistory) scroll.toBottom();
+    previousSubmissionRevision.current = submissionRevision;
+  }, [submissionRevision, running, hydrating, scroll, props.hasNewerHistory]);
+  const position = useSyncExternalStore(scroll.subscribe, scroll.getSnapshot, scroll.getSnapshot);
+  const activeDetails = details && source.getNodeSnapshot(details)?.kind === "tool" ? details : undefined;
+  const drawerWasOpen = useRef(false);
+  useLayoutEffect(() => {
+    if (!activeDetails && drawerWasOpen.current) {
+      (trigger.current?.isConnected ? trigger.current : scroller.current)?.focus({ preventScroll: true });
+      trigger.current = null;
     }
-    return m;
-  }, [items]);
-
-  // ── Turn models, fold state, virtual rows ─────────────────────────────────
-  // The row model only depends on structural inputs and live PRESENCE flags —
-  // streaming tokens flow through LiveStreamContext and never rebuild it.
-  const liveId = live?.id;
-  const liveHasAnswerText = Boolean(live?.text.trim());
-  const liveHasReasoning = Boolean(live?.reasoning);
-  const liveReasoningComplete = live?.reasoningComplete;
-  const reasoningDisplayMode = useReasoningDisplayMode();
-  const hideReasoning = reasoningDisplayMode === "hidden" || reasoningDisplayMode === "pending";
-  const liveFlags = useMemo<TranscriptLiveFlags>(
-    () => (liveId
-      ? { id: liveId, hasAnswerText: liveHasAnswerText, hasReasoning: liveHasReasoning, reasoningComplete: liveReasoningComplete }
-      : NO_LIVE),
-    [liveId, liveHasAnswerText, liveHasReasoning, liveReasoningComplete],
-  );
-  const turnModels = useMemo(() => buildTurnModels(items, liveFlags, running, hideReasoning), [items, liveFlags, running, hideReasoning]);
-  const segmentStates = useMemo(() => foldSegmentStates(turnModels, reasoningDisplayMode === "expanded"), [reasoningDisplayMode, turnModels]);
-
-  const [foldPreference, setFoldPreference] = useState<ProcessFoldPreference>(getProcessFoldPreference);
-  useEffect(() => onProcessFoldPreferenceChange(setFoldPreference), []);
-  const foldPreferenceRef = useRef(foldPreference);
-  const [folds, setFolds] = useState<FoldMap>(EMPTY_FOLDS);
-
-  // Hoisted TurnCollapse effects: auto-open while running, auto-close on
-  // completion, preference switches apply to folds already on screen.
-  useEffect(() => {
-    const preferenceChanged = foldPreferenceRef.current !== foldPreference;
-    foldPreferenceRef.current = foldPreference;
-    setFolds((prev) => reconcileFoldEntries(prev, segmentStates, foldPreference, preferenceChanged) ?? prev);
-  }, [segmentStates, foldPreference]);
-
-  const handleFoldToggle = useCallback((segmentKey: string, currentlyOpen: boolean) => {
-    beginUserResize();
-    setFolds((prev) => foldMapWithToggle(prev, segmentKey, currentlyOpen));
-  }, [beginUserResize]);
-
-  const handleReasoningManualOpen = useCallback((segmentKey: string) => {
-    beginUserResize();
-    const running = segmentStates.find((segment) => segment.key === segmentKey)?.hasRunningWork ?? false;
-    setFolds((prev) => foldMapWithReasoningOpen(prev, segmentKey, running));
-  }, [beginUserResize, segmentStates]);
-
-  // ── The turn action menu ──────────────────────────────────────────────────
-  const [openAction, setOpenAction] = useState<OpenTurnAction | null>(null);
-  useEffect(() => {
-    if (openAction === null) return;
-    const onDown = (e: MouseEvent) => {
-      const el = e.target as Element | null;
-      if (!el || !el.closest(".turn-actions")) setOpenAction(null);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [openAction]);
-
-  const checkpointsByTurn = useMemo(() => new Map(checkpoints.map((checkpoint) => [checkpoint.turn, checkpoint])), [checkpoints]);
-  const hasCheckpointForTurn = useCallback((turn: number) => checkpointsByTurn.has(turn), [checkpointsByTurn]);
-  const rows = useMemo(
-    () => buildTranscriptRows(turnModels, {
-      folds,
-      foldPreference,
-      hasOlderHistory,
-      creationMode,
-      turnForUser,
-      hasCheckpointForTurn,
-      reasoningDisplayMode,
-      subcallsByParent,
-    }),
-    [turnModels, folds, foldPreference, hasOlderHistory, creationMode, turnForUser, hasCheckpointForTurn, reasoningDisplayMode, subcallsByParent],
-  );
-  // The active (streaming) turn renders as the list's in-flow Footer, outside
-  // the measured size tree: the list only ever owns static, bounded rows, so
-  // streaming never churns Virtuoso's measurements or scroll anchoring
-  // (#8657/#8688).
-  const liveSplit = useMemo(
-    () => splitTranscriptLiveRows(turnModels, rows, liveId, running),
-    [turnModels, rows, liveId, running],
-  );
-  // Keep the load-older affordance in Virtuoso's measured Header slot so an
-  // older page is a true data prepend, rather than an insertion after row 0.
-  const virtualRows = useMemo(
-    () => liveSplit.historyRows[0]?.kind === "older-history" ? liveSplit.historyRows.slice(1) : liveSplit.historyRows,
-    [liveSplit.historyRows],
-  );
-  const rowIndexByKey = useMemo(() => {
-    const map = new Map<string, number>();
-    virtualRows.forEach((row, index) => map.set(String(row.key), index));
-    return map;
-  }, [virtualRows]);
-  // Selection spans both regions: the logical model covers history + live
-  // rows, while Virtuoso index jumps keep using the history-only map above.
-  const allRows = useMemo(
-    () => [...virtualRows, ...liveSplit.liveRows],
-    [virtualRows, liveSplit.liveRows],
-  );
-  const allRowIndexByKey = useMemo(() => {
-    const map = new Map<string, number>();
-    allRows.forEach((row, index) => map.set(String(row.key), index));
-    return map;
-  }, [allRows]);
-  const [selectableRows, liveSelectableRows] = useTranscriptSelectableRows(allRows, live);
-  const {
-    resetKey: virtuosoResetKey,
-    firstItemIndex,
-    restoreLocation,
-    restoreSnapshot,
-    handleItemsRendered: handleRecoveryItemsRendered,
-    scheduleBlankViewportCheck,
-    invalidateAnchors,
-    noteUserScrollIntent,
-    noteScrollActivity,
-    safeMode: layoutSafeMode,
-  } = useTranscriptLayoutIntegrity({
-    surfaceKey: layoutSurfaceKey,
-    rows: virtualRows,
-    rowIndexByKey,
-    scrollRef,
-    pinnedRef: stick,
-    readyRef: virtuosoReadyRef,
-    scrollToBottom,
-    submitRecoveryRequest,
-    retryRecoveryRequest,
-    lastGoodAnchorRef,
-    layoutTransientRef,
-    layoutWidth,
-    geometrySessionKey: resolvedGeometrySessionKey,
-    geometryEnvironment,
-  });
-  const selectionRetention = useTranscriptSelectionRetention({
-    tabId,
-    revealSignal,
-    rowIndexByKey: allRowIndexByKey,
-    selectableRows,
-    selectableRowOverrides: liveSelectableRows,
-    scrollRef,
-    setScrollMode,
-    writeOffset,
-    cancelStreamingScroll: cancelStreamingAndFollow,
-  });
-  const clearTranscriptSelection = selectionRetention.clear;
-  // User scroll intent is reported to the layout-integrity hook (idle gating
-  // for the blank watchdog) and to the scroll arbiter itself, which preempts
-  // any in-flight recovery restore on its own intent events (#8657/#8688
-  // follow-up).
-  const onWheelIntentWithRecovery = useCallback((event: ReactWheelEvent<HTMLElement>) => {
-    const accepted = onWheelIntent(event);
-    if (accepted) {
-      if (SHOW_SCROLL_DIAGNOSTICS) recordTranscriptScrollDiagnostic("wheel", { deltaY: event.deltaY });
-      noteUserScrollIntent();
-    }
-    return accepted;
-  }, [noteUserScrollIntent, onWheelIntent]);
-  const onTouchStartIntentWithRecovery = useCallback((event: ReactTouchEvent<HTMLElement>) => {
-    onTouchStartIntent(event);
-  }, [onTouchStartIntent]);
-  const onTouchMoveIntentWithRecovery = useCallback((event: ReactTouchEvent<HTMLElement>) => {
-    const accepted = onTouchMoveIntent(event);
-    if (accepted) noteUserScrollIntent();
-    return accepted;
-  }, [noteUserScrollIntent, onTouchMoveIntent]);
-  const onKeyScrollIntentWithRecovery = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
-    const accepted = onKeyScrollIntent(event);
-    if (accepted) noteUserScrollIntent();
-    return accepted;
-  }, [noteUserScrollIntent, onKeyScrollIntent]);
-  const onPointerDownIntentWithRecovery = useCallback((event: ReactPointerEvent<HTMLElement>) => {
-    const accepted = onPointerDownIntent(event);
-    if (accepted) noteUserScrollIntent();
-    return accepted;
-  }, [noteUserScrollIntent, onPointerDownIntent]);
-  const scrollInteractions = useTranscriptScrollInteractions({
-    scrollElement,
-    cancelStreamingScroll: cancelStreamingAutoScroll,
-    onWheelIntent: onWheelIntentWithRecovery,
-    onTouchMoveIntent: onTouchMoveIntentWithRecovery,
-    onTouchEndIntent,
-    onKeyScrollIntent: onKeyScrollIntentWithRecovery,
-    onPointerDownIntent: onPointerDownIntentWithRecovery,
-    onNestedScrollIntent,
-    onScrollEnd: finishProgrammaticScroll,
-    onSelectionPointerDown: selectionRetention.onPointerDownCapture,
-  });
-  const virtualRowsGeometryRevision = useMemo(
-    () => virtualRows.map((row) => [
-      String(row.key),
-      row.kind,
-      transcriptRowLayoutVariant(row),
-      transcriptRowMeasurementVersion(row),
-    ].join("\u0000")).join("\u0001"),
-    [virtualRows],
-  );
-  const geometryEnvironmentReady = geometryEnvironment.typographySignature !== "unresolved"
-    && Number.isFinite(geometryEnvironment.contentWidth)
-    && (geometryEnvironment.contentWidth ?? 0) > 0;
-  // Fold reconciliation and initial history normalization run in effects. Do
-  // not let Virtuoso construct its first size tree between those two commits:
-  // that would seed one tree from the pre-fold row model and then apply a
-  // whole-list geometry delta during the user's first upward gesture. Wait
-  // for one quiet animation frame after the environment and row revision are
-  // both stable; subsequent revisions remain incremental and do not remount.
-  useEffect(() => {
-    if (geometryBootstrapComplete || !geometryEnvironmentReady) return;
-    const revision = virtualRowsGeometryRevision;
-    geometryBootstrapRevisionRef.current = revision;
-    let frame = requestAnimationFrame(() => {
-      frame = requestAnimationFrame(() => {
-        if (geometryBootstrapRevisionRef.current === revision) setGeometryBootstrapComplete(true);
-      });
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [geometryBootstrapComplete, geometryEnvironmentReady, virtualRowsGeometryRevision]);
-  // Measurements mutate the bounded cache but must never rebuild the whole
-  // array while a Virtuoso surface is alive. A ref-backed seed makes this
-  // explicit: only a real geometry-contract key (row state/content, width or
-  // typography, session, or an explicit reset) synthesizes a new initial
-  // seed. This prevents calibration samples arriving during the first upward
-  // traversal from changing the size tree underneath the pointer.
-  const geometrySeedKey = [
-    resolvedGeometrySessionKey,
-    virtuosoResetKey,
-    geometryEnvironment.contentWidth ?? "unknown",
-    geometryEnvironment.typographySignature,
-    virtualRowsGeometryRevision,
-  ].join("\u0002");
-  const geometrySeedRef = useRef<{ key: string; value: TranscriptSynthesizedSizes } | null>(null);
-  if (geometrySeedRef.current?.key !== geometrySeedKey) {
-    geometrySeedRef.current = {
-      key: geometrySeedKey,
-      value: measuredSizes.synthesizeDetailed(resolvedGeometrySessionKey, virtualRows, geometryEnvironment),
-    };
-  }
-  const synthesizedSizes = geometrySeedRef.current.value;
-  const heightEstimates = synthesizedSizes.heightEstimates;
-  const estimateSources = synthesizedSizes.estimateSources;
-  const estimatedTotalHeight = useMemo(
-    () => heightEstimates.reduce((total, height) => total + height, 0),
-    [heightEstimates],
-  );
-  const overlayRevision = useMemo(
-    () => virtualRows.map((row) => String(row.key)).join("|"),
-    [virtualRows],
-  );
-  const handleScrollerRef = useCallback((node: HTMLElement | Window | null) => {
-    scrollerRef(node);
-    const element = node instanceof HTMLElement ? node as HTMLDivElement : null;
-    entranceRef.current = element;
-    if (element) {
-      setLayoutWidth(element.clientWidth);
-      refreshGeometryEnvironment(element);
-    }
-  }, [entranceRef, refreshGeometryEnvironment, scrollerRef]);
-  const handleTranscriptScroll = useCallback(() => {
-    deliverScroll();
-    noteScrollActivity();
-    if (creationMode) handleCreationScroll();
-    scheduleActiveQuestionSync();
-    scheduleBlankViewportCheck();
-  }, [creationMode, deliverScroll, handleCreationScroll, noteScrollActivity, scheduleActiveQuestionSync, scheduleBlankViewportCheck]);
-  const [handleJumpToQuestion, handleEarlierHistoryReached, retryOlderHistory] = useTranscriptQuestionJump({
-    questions,
-    loadedByTurn,
-    layoutSurfaceKey,
-    rowIndexByKey,
-    hasOlderHistory,
-    loadingOlderHistory,
-    olderHistoryError,
-    running,
-    suppressAutoComplete: hydrating,
-    onLoadOlderHistory,
-    clearTranscriptSelection,
-    invalidateAnchors,
-    scrollToDataIndex,
-    setActiveQuestion,
-    rewindSignal,
-  });
-
-  // The jump-bottom click is explicit user intent: it outranks any in-flight
-  // recovery anchor restore and ends a stale selection gesture whose
-  // pointerup was lost (#8657/#8688).
-  const handleJumpToBottom = () => {
-    selectionRetention.endStaleGesture();
-    invalidateAnchors();
-    scrollToBottom();
+    drawerWasOpen.current = Boolean(activeDetails);
+  }, [activeDetails]);
+  const [pagingError, setPagingError] = useState(false);
+  const [selectionBlocked, setSelectionBlocked] = useState(false);
+  // Deduplicate paging buttons; target navigation uses the store request fence.
+  const pagingPromise = useRef<Promise<HistoryLoadOutcome> | null>(null);
+  const navigationIntent = useRef(0);
+  const selectionInsideTranscript = () => {
+    const selection = window.getSelection?.();
+    return Boolean(selection && !selection.isCollapsed && scroller.current &&
+      ((selection.anchorNode && scroller.current.contains(selection.anchorNode)) ||
+        (selection.focusNode && scroller.current.contains(selection.focusNode))));
   };
-
-  const empty = items.length === 0;
-  const geometryReady = geometryEnvironmentReady && geometryBootstrapComplete;
-
-  // ── Row rendering ─────────────────────────────────────────────────────────
-  // renderRow/itemContent keep stable identities: Transcript re-renders on
-  // every streaming frame, and Virtuoso re-maps every mounted row whenever
-  // itemContent changes identity.
-  const renderRow = useCallback((row: TranscriptRow): ReactNode => {
-    switch (row.kind) {
-      case "older-history":
-        return null;
-      case "user": {
-        const user = row.item;
-        const checkpoint = row.turn == null ? undefined : checkpointsByTurn.get(row.turn);
-        return (
-          <UserMessage
-            id={user.id}
-            text={user.text}
-            submitText={user.submitText}
-            failed={user.failed}
-            createdAt={user.createdAt}
-            turn={row.turn}
-            anchorId={questionAnchorId(user.id)}
-            onEdit={onEditPrompt}
-            editDisabled={rewindDisabled || !checkpoint?.canConversation}
-          />
-        );
-      }
-      case "process-header":
-        return (
-          <ProcessFoldHeader
-            segment={row.segment}
-            open={row.open}
-            onToggle={() => handleFoldToggle(row.segment.key, row.open)}
-            turnStartAt={row.segment.turnActive ? turnStartAt : undefined}
-          />
-        );
-      case "reasoning":
-        return (
-          <div className="turn-collapse__body">
-            <InlineAssistantReasoning item={row.item} onManualOpen={() => handleReasoningManualOpen(row.segmentKey)} />
-          </div>
-        );
-      case "tool":
-        return (
-          <div className="turn-collapse__body">
-            <ToolCard item={row.item} subcalls={subcallsByParent.get(row.item.id)} tabId={tabId} />
-          </div>
-        );
-      case "tool-batch":
-        return (
-          <div className="turn-collapse__body">
-            <ReadOnlyBatch items={row.items} subcalls={subcallsByParent} tabId={tabId} />
-          </div>
-        );
-      case "tool-group":
-        return (
-          <div className="turn-collapse__body">
-            <ToolGroup kind={row.groupKind} items={row.items} subcalls={subcallsByParent} tabId={tabId} />
-          </div>
-        );
-      case "phase":
-        return (
-          <div className="turn-collapse__body">
-            <PhaseCard id={row.item.id} text={row.item.text} />
-          </div>
-        );
-      case "process-notice":
-        return (
-          <div className="turn-collapse__body">
-            <NoticeCard item={row.item} />
-          </div>
-        );
-      case "compaction":
-        return (
-          <div className="turn-collapse__body">
-            <CompactionCard item={row.item} />
-          </div>
-        );
-      case "answer":
-        return (
-          <LiveAssistantMessage
-            item={assistantAnswerOnly(row.item)}
-            defaultExpanded={false}
-            expandWhileStreaming={false}
-            creationMode={creationMode}
-            reasoningDisplay="hide"
-          />
-        );
-      case "notice":
-        if (isSteerNoticeText(row.item.text)) {
-          return <SteerCard id={row.item.id} text={row.item.text} />;
-        }
-        return (
-          <NoticeCard
-            item={row.item}
-            actionDisabled={running}
-            onAction={row.item.action === "continue_delivery"
-              ? (onDeliveryContinue ?? (() => onPrompt(t("notice.deliveryIncompleteContinuePrompt"))))
-              : row.item.action === "open_changes"
-                ? onOpenChanges
-                : undefined}
-            onOpenVerification={row.item.variant === "completion" ? onOpenVerification : undefined}
-            onAccept={row.item.action === "continue_delivery" ? onAcceptDelivery : undefined}
-          />
-        );
-      case "extension":
-        return <ExtensionCard item={row.item} tabId={tabId} />;
-      case "turn-actions": {
-        const openMenu = openAction && openAction.turn === row.turn ? openAction.menu : null;
-        return (
-          <TurnActions
-            text={row.text}
-            turn={row.turn}
-            openMenu={openMenu}
-            onOpenMenu={(menu) => setOpenAction(menu ? { turn: row.turn, menu } : null)}
-            checkpoint={checkpointsByTurn.get(row.turn)}
-            actionPending={actionPending}
-            rewindDisabled={rewindDisabled}
-            hoverMenus={actionHoverMenus}
-            isLastTurn={row.turn === lastTurn}
-            onRewind={(targetTurn, scope) => {
-              onRewind?.(targetTurn, scope);
-              setOpenAction(null);
-            }}
-          />
-        );
-      }
-    }
-  }, [
-    actionHoverMenus,
-    actionPending,
-    checkpointsByTurn,
-    creationMode,
-    handleFoldToggle,
-    handleReasoningManualOpen,
-    lastTurn,
-    onDeliveryContinue,
-    onAcceptDelivery,
-    onEditPrompt,
-    onOpenChanges,
-    onOpenVerification,
-    onPrompt,
-    onRewind,
-    openAction,
-    rewindDisabled,
-    running,
-    subcallsByParent,
-    t,
-    tabId,
-    turnStartAt,
-  ]);
-  const renderVirtuosoRow = useCallback(
-    (_index: number, row: TranscriptRow) => renderRow(row),
-    [renderRow],
-  );
-
-  // ── Live-region completion handoff ────────────────────────────────────────
-  // When the active turn settles, its rows join the virtual data in the same
-  // commit that would unmount the live-region footer. While the view is at
-  // the bottom, keep painting the region's final content until Virtuoso
-  // reports the materialized tail row mounted, so completion does not flash
-  // stale history (#8657/#8688).
-  const heldLiveRowsRef = useRef<readonly TranscriptRow[]>([]);
-  const heldSurfaceRef = useRef(layoutSurfaceKey);
-  const [holdingLiveRegion, setHoldingLiveRegion] = useState(false);
-  const wasLiveActiveRef = useRef(false);
-  if (liveSplit.liveActive) {
-    wasLiveActiveRef.current = true;
-    heldSurfaceRef.current = layoutSurfaceKey;
-    heldLiveRowsRef.current = liveSplit.liveRows;
-    if (holdingLiveRegion) setHoldingLiveRegion(false);
-  } else if (wasLiveActiveRef.current) {
-    wasLiveActiveRef.current = false;
-    // Transcript is not keyed by tab: a hold captured on one surface must
-    // never paint into another after a tab switch.
-    if (heldSurfaceRef.current !== layoutSurfaceKey) heldLiveRowsRef.current = [];
-    if (heldLiveRowsRef.current.length > 0 && isAtBottom && !holdingLiveRegion) {
-      setHoldingLiveRegion(true);
-    }
-  }
-  // The materialization target can disappear mid-hold (rewind, fork, or a
-  // wholesale session replace): release immediately instead of pinning rows
-  // that are no longer in the transcript for the safety-timeout duration.
-  if (holdingLiveRegion && heldLiveRowsRef.current.length > 0) {
-    const lastHeldKey = String(heldLiveRowsRef.current[heldLiveRowsRef.current.length - 1].key);
-    if (!rows.some((row) => String(row.key) === lastHeldKey)) {
-      heldLiveRowsRef.current = [];
-      setHoldingLiveRegion(false);
-    }
-  }
   useEffect(() => {
-    heldLiveRowsRef.current = [];
-    setHoldingLiveRegion(false);
-  }, [layoutSurfaceKey]);
-  useEffect(() => {
-    if (!holdingLiveRegion) return;
-    // Safety net: if the tail row never reports (e.g. the surface changed),
-    // release the hold instead of pinning stale content.
-    const timeout = window.setTimeout(() => {
-      heldLiveRowsRef.current = [];
-      setHoldingLiveRegion(false);
-    }, 300);
-    return () => window.clearTimeout(timeout);
-  }, [holdingLiveRegion]);
-  const heldLiveRows = heldSurfaceRef.current === layoutSurfaceKey ? heldLiveRowsRef.current : NO_HELD_ROWS;
-  const showLiveRegion = liveSplit.liveActive || (holdingLiveRegion && heldLiveRows.length > 0);
-
-  const handleItemsRendered = useCallback((rendered: ListItem<TranscriptRow>[]) => {
-    noteTranscriptRowCounts(rendered.length, virtualRows.length);
-    selectionRetention.reconcileLogicalFocus();
-    handleRecoveryItemsRendered(rendered.length);
-    scheduleActiveQuestionSync();
-    if (holdingLiveRegion) {
-      const held = heldLiveRowsRef.current;
-      const lastKey = held.length > 0 ? String(held[held.length - 1].key) : null;
-      if (lastKey === null || rendered.some((item) => String(item.data?.key ?? "") === lastKey)) {
-        heldLiveRowsRef.current = [];
-        setHoldingLiveRegion(false);
+    const clear = () => { if (!selectionInsideTranscript()) setSelectionBlocked(false); };
+    document.addEventListener("selectionchange", clear);
+    return () => document.removeEventListener("selectionchange", clear);
+  }, []);
+  const loadPage = (direction: "older" | "newer" | "latest", trigger: HistoryLoadTrigger = "viewport-user", current?: () => boolean): Promise<HistoryLoadOutcome> => {
+    if (pagingPromise.current && direction !== "latest") return pagingPromise.current;
+    const load = direction === "older" ? () => onLoadOlderHistory?.(undefined, trigger) : () => onLoadNewerHistory?.(direction === "latest", current);
+    if (direction === "older" ? !onLoadOlderHistory : !onLoadNewerHistory) return Promise.resolve("empty");
+    if (selectionInsideTranscript()) { setSelectionBlocked(true); return Promise.resolve("empty"); }
+    const generation = lifetime.current;
+    setPagingError(false);
+    setSelectionBlocked(false);
+    scroll.beforeChange();
+    const run = (async (): Promise<HistoryLoadOutcome> => {
+      try {
+        // A host that still answers with a plain boolean is normalized here.
+        const result = await load();
+        if (result === true) return "loaded";
+        if (result === false) return "empty";
+        return result ?? "empty";
+      } catch {
+        if (generation === lifetime.current) setPagingError(true);
+        return "empty";
       }
-    }
-  }, [handleRecoveryItemsRendered, holdingLiveRegion, scheduleActiveQuestionSync, selectionRetention.reconcileLogicalFocus, virtualRows.length]);
-
-  const handleTotalListHeightChanged = useCallback((height: number) => {
-    if (SHOW_SCROLL_DIAGNOSTICS) recordTranscriptScrollDiagnostic("list-height", { listHeight: height });
-    if (hydrating) return;
-    followGrowingTail();
-  }, [followGrowingTail, hydrating]);
-
-  const virtuosoContext = useMemo<TranscriptVirtuosoContext>(() => ({
-    tabId,
-    scrollElement,
-    nativeScrollbarDragging,
-    overlayRevision,
-    geometryEnvironment,
-    rowGeometry: {
-      heightEstimates,
-      estimateSources,
-      rowIndexByKey,
-      contentRevision,
+    })();
+    pagingPromise.current = run;
+    void run.finally(() => { if (pagingPromise.current === run) pagingPromise.current = null; });
+    return run;
+  };
+  const loadOlder = (trigger: HistoryLoadTrigger = "viewport-user") => loadPage("older", trigger);
+  // The jump outlives a single render, so it reads the live paging state
+  // through refs rather than through the closure it was built with.
+  const navigateRef = useRef(props.onNavigateToTurn); navigateRef.current = props.onNavigateToTurn;
+  const selectionRef = useRef(selectionInsideTranscript); selectionRef.current = selectionInsideTranscript;
+  const lifetimeRef = useRef(lifetime.current); lifetimeRef.current = lifetime.current;
+  // Rebuild the mounted identity index only when the mount advances, then
+  // resolve each target from it in constant time: scanning the mounted order
+  // per outline entry is quadratic on long conversations.
+  const jump = useMemo(() => new ChatTurnJump({
+    mounts, scroll,
+    navigate: async (target, current) => {
+      if (selectionRef.current()) { setSelectionBlocked(true); return "cancelled"; }
+      if (!current()) return "cancelled";
+      return navigateRef.current?.(target, () => current() && !selectionRef.current()) ?? "unavailable";
     },
-    liveRegion: showLiveRegion
-      ? {
-          rows: liveSplit.liveActive ? liveSplit.liveRows : heldLiveRows,
-          renderRow,
-          showStatus: liveSplit.liveActive,
-          turnStartAt,
-          onPointerDownCapture: selectionRetention.onPointerDownCapture,
-        }
-      : null,
-    olderHistory: hasOlderHistory && (loadingOlderHistory || Boolean(olderHistoryError))
-      ? {
-          loading: loadingOlderHistory,
-          error: olderHistoryError ? t("transcript.loadEarlierFailed") : undefined,
-          onRetry: retryOlderHistory,
-        }
-      : null,
-  }), [
-    hasOlderHistory,
-    heightEstimates,
-    estimateSources,
-    geometryEnvironment,
-    heldLiveRows,
-    liveSplit.liveActive,
-    liveSplit.liveRows,
-    loadingOlderHistory,
-    contentRevision,
-    nativeScrollbarDragging,
-    olderHistoryError,
-    overlayRevision,
-    renderRow,
-    rowIndexByKey,
-    retryOlderHistory,
-    scrollElement,
-    selectionRetention.onPointerDownCapture,
-    showLiveRegion,
-    t,
-    tabId,
-    turnStartAt,
-  ]);
-
-  // ── Assemble rendered output ──────────────────────────────────────────────
-  return (
-    <InvocationMetadataContext.Provider value={invocationMetadata}>
+    resolveKey: (entry) => {
+      const order = mounts.getSnapshot();
+      const index = indexLoadedTurns(order, (key) => {
+            const node = source.getNodeSnapshot(key);
+            return node?.kind === "user" ? { id: node.item.id, messageId: node.item.messageId } : undefined;
+      });
+      return findLoadedTurn(index, { id: `m:${entry.messageId}`, messageId: entry.messageId, turn: 0, order: 0, prompt: "" });
+    },
+    // Refresh a stale cut once while retaining the original message identity.
+    refresh: async () => { if (tabId) await (await import("../lib/transcriptOutlineStore")).getTranscriptOutlineStore().refresh(tabId); },
+    isCurrent: () => lifetimeRef.current === lifetime.current,
+  }), [mounts, scroll, source, tabId]);
+  const jumpState = useSyncExternalStore(jump.subscribe, jump.getSnapshot, jump.getSnapshot);
+  const returnToLatest = async () => {
+    jump.cancel();
+    const intent = ++navigationIntent.current;
+    if (!hasNewerHistory) { scroll.toBottom(); return; }
+    const generation = lifetime.current;
+    let reading = false;
+    const release = scroll.subscribeReaderIntent(() => { reading = true; });
+    const current = () => !reading && intent === navigationIntent.current && generation === lifetime.current && !selectionRef.current();
+    try {
+      const result = await loadPage("latest", "retry", current);
+      if (result === "loaded" && current()) scroll.toBottom();
+    } finally { release(); }
+  };
+  const newerArmed = useRef(true);
+  const autoNewer = useRef<() => void>(() => undefined);
+  autoNewer.current = () => {
+    if (!onLoadNewerHistory || selectionInsideTranscript()) return;
+    newerArmed.current = false;
+    const intent = ++navigationIntent.current;
+    const generation = lifetime.current;
+    let reading = false;
+    const release = scroll.subscribeReaderIntent(() => { reading = true; });
+    const current = () => !reading && intent === navigationIntent.current && generation === lifetime.current && !selectionRef.current();
+    scroll.stopFollowing();
+    void loadPage("newer", "auto-fill", current).finally(release);
+  };
+  useEffect(() => {
+    if (!hasNewerHistory || !position.following) { newerArmed.current = true; return; }
+    if (newerArmed.current && !hydrating && !loadingNewerHistory && !newerHistoryError) autoNewer.current();
+  }, [hasNewerHistory, position.following, hydrating, loadingNewerHistory, newerHistoryError]);
+  useEffect(() => () => jump.dispose(), [jump]);
+  useEffect(() => desktopHost().native.onServiceState(state => {
+    if (state.phase === "stopping" || state.phase === "exited") {
+      navigationIntent.current++;
+      jump.cancel(); if (tabId) signalOutline(tabId, "suspend");
+    } else if (state.phase === "ready" && tabId) signalOutline(tabId);
+  }), [jump, tabId]);
+  useEffect(() => {
+    if (jumpState.status !== "failed") return;
+    addBreadcrumb("chat.jump", `turn jump failed: ${jumpState.reason ?? "unknown"}`);
+  }, [jumpState.status, jumpState.reason]);
+  return <InvocationMetadataContext.Provider value={props.invocationMetadata ?? {}}>
     <MarkdownImageTabContext.Provider value={tabId ?? ""}>
-    <TranscriptLayoutIntentProvider value={beginUserResize}>
-    <TranscriptScrollWriteProvider value={writeOffset}>
-    <div className="transcript-shell">
-      {empty ? (
-        <div
-          className={`transcript transcript--empty${creationMode ? " transcript--creation-scrollbar" : ""}`}
-          ref={(node) => handleScrollerRef(node)}
-          aria-busy={hydrating || undefined}
-        >
-          {hydrating ? (
-            <div className="transcript__loading" role="status" aria-live="polite">
-              <Loader2 className="transcript__loading-icon" aria-hidden="true" />
-              <span>{t("common.loading")}</span>
+      <ChatFileScopeProvider scopeKey={source.sessionKey} tabId={tabId} hostId={props.hostId}>
+      <section className="chat-transcript">
+        <SessionLoadingIndicator active={hydrating && props.showLoadingFeedback !== false} identity={sessionKey} />
+        <div className="chat-surface" inert={Boolean(activeDetails)}>
+          <Suspense fallback={null}><ChatTurnNavigator source={source} scroll={scroll} mounts={mounts}
+            tabId={tabId} hostId={props.hostId} knownTurns={props.totalTurns ?? 0}
+            busyTurn={jumpState.status === "loading" ? jumpState.turn : null}
+            failedTurn={jumpState.status === "failed" ? jumpState.turn : null}
+            failedReason={jumpState.reason}
+            // Every click takes the one transaction entry point, so a newer
+            // selection always supersedes a pending jump instead of racing it.
+            onNavigate={(target) => {
+              navigationIntent.current++;
+              if (target.anchor.kind === "loaded") jump.jumpTo(target.anchor.key);
+              else void jump.jump({ turn: target.turn, resolve: async () => {
+                if (!tabId) return undefined;
+                const store = (await import("../lib/transcriptOutlineStore")).getTranscriptOutlineStore();
+                const entry = target.anchor.kind === "unloaded" && target.anchor.messageId
+                  ? { messageId: target.anchor.messageId } : await store.entry(tabId, target.ordinal);
+                if (!entry) return undefined;
+                const view = store.getView(tabId);
+                return { messageId: entry.messageId, generation: view.generation, snapshotSequence: view.snapshotSequence };
+              } });
+            }}
+            onRetryJump={() => { void jump.retry(); }}
+            onCancelJump={() => jump.cancel()} /></Suspense>
+          <div ref={scroller} id={`reasonix-chat-transcript-${tabId ?? "local"}`} className="transcript chat-flow-scroll" tabIndex={0} data-transcript-render-mode="full"
+            data-transcript-hydrating={hydrating} data-scroll-mode={position.following ? "tail" : "reader"}>
+            <div ref={column} className="chat-column">
+              <TranscriptConnection tabId={tabId} />
+              {(hasOlderHistory || hasNewerHistory) && <div className="chat-history-window" role="status">
+                <span>{t("chat.historyRange", { start: Math.max(1, (props.historyStartTurn ?? 0) + 1), end: Math.max(1, props.historyEndTurn ?? props.totalTurns ?? 0), total: props.totalTurns ?? 0 })}</span>
+              </div>}
+              {hasOlderHistory && <button className="btn chat-older" disabled={loadingOlderHistory} onClick={() => void loadOlder()}>{t(loadingOlderHistory ? "chat.loading" : "chat.loadOlder")}</button>}
+              {(olderHistoryError || pagingError) && <button className="btn" onClick={() => void loadOlder()}>{t("chat.loadFailed")}</button>}
+              {selectionBlocked && <p className="chat-history-selection" role="status">{t("chat.historySelectionBlocked")}</p>}
+              {!hydrating && items.length === 0 && !running && <Welcome onPrompt={onPrompt} />}
+              <ChatNodeList key={source.sessionKey} source={source} mounts={mounts} loader={loader} scroll={scroll} actions={actions} tabId={tabId} hostId={props.hostId} />
+              <ChatRunning source={source} />
+              {hasNewerHistory && <div className="chat-history-newer">
+                <button className="btn" disabled={loadingNewerHistory} onClick={() => void loadPage("newer")}>{t(loadingNewerHistory ? "chat.loading" : "chat.loadNewer")}</button>
+                <button className="btn" disabled={loadingNewerHistory} onClick={() => void returnToLatest()}>{t("chat.toLatest")}</button>
+              </div>}
+              {newerHistoryError && <button className="btn" onClick={() => void loadPage("newer")}>{t("chat.loadFailed")}</button>}
             </div>
-          ) : <Welcome onPrompt={onPrompt} variant={welcomeVariant} />}
+          </div>
+          <button className="btn chat-to-bottom" hidden={position.following} aria-label={t("chat.toLatest")} onClick={() => void returnToLatest()}><ArrowDown size={18} /></button>
         </div>
-      ) : !geometryReady ? (
-        // Bootstrap the real readable width/font signature before Virtuoso
-        // constructs its empty size tree. This element is the first scroller,
-        // not a remount/recovery cycle; later environment changes stay live.
-        <div
-          className={`transcript${creationMode ? " transcript--creation-scrollbar" : ""}`}
-          ref={(node) => handleScrollerRef(node)}
-          aria-busy="true"
-          data-transcript-geometry-bootstrap="true"
-        />
-      ) : (
-        <LiveStreamContext.Provider value={live}>
-          <Virtuoso<TranscriptRow, TranscriptVirtuosoContext>
-            key={virtuosoResetKey}
-            ref={virtuosoRef}
-            className={`transcript${creationMode ? " transcript--creation-scrollbar" : ""}${creationMode && creationScrollbar.hot ? " transcript--scrollbar-hot" : ""}`}
-            data-transcript-row-count={virtualRows.length}
-            data-transcript-estimated-total={estimatedTotalHeight}
-            data-transcript-reset-key={virtuosoResetKey}
-            data-transcript-typography={geometryEnvironment.typographySignature}
-            data-transcript-estimate-sources={JSON.stringify(estimateSources.reduce((counts, source) => {
-              counts[source] = (counts[source] ?? 0) + 1;
-              return counts;
-            }, {} as Record<string, number>))}
-            data={virtualRows}
-            context={virtuosoContext}
-            components={virtuosoContext.olderHistory ? TRANSCRIPT_VIRTUOSO_COMPONENTS_WITH_HEADER : TRANSCRIPT_VIRTUOSO_COMPONENTS}
-            computeItemKey={(_index, row) => `${resolvedGeometrySessionKey}:${String(row.key)}`}
-            firstItemIndex={firstItemIndex}
-            // A validated captured state restores through the same stream as
-            // initialTopMostItemIndex, so the two never apply together.
-            restoreStateFrom={restoreSnapshot}
-            initialTopMostItemIndex={restoreSnapshot ? undefined : restoreLocation}
-            // Do not set alignToBottom: Virtuoso's margin-top:auto plus
-            // firstItemIndex paints a ghost first-user bubble and empty band
-            // in short chats. The coordinator owns tail following.
-            atBottomThreshold={TRANSCRIPT_AT_BOTTOM_THRESHOLD_PX}
-            atBottomStateChange={atBottomStateChange}
-            heightEstimates={heightEstimates}
-            itemSize={itemSize}
-            minOverscanItemCount={layoutSafeMode
-              ? { top: 32, bottom: 32 }
-              : { top: VIRTUAL_OVERSCAN_ROWS, bottom: VIRTUAL_OVERSCAN_ROWS }}
-            increaseViewportBy={layoutSafeMode
-              ? { top: (scrollElement?.clientHeight ?? 0) * 2, bottom: (scrollElement?.clientHeight ?? 0) * 2 }
-              : { top: 480, bottom: 480 }}
-            scrollerRef={handleScrollerRef}
-            itemsRendered={handleItemsRendered}
-            startReached={handleEarlierHistoryReached}
-            totalListHeightChanged={handleTotalListHeightChanged}
-            itemContent={renderVirtuosoRow}
-            onScroll={handleTranscriptScroll}
-            onWheelCapture={scrollInteractions.onWheelCapture}
-            onTouchStartCapture={onTouchStartIntentWithRecovery}
-            onTouchMoveCapture={scrollInteractions.onTouchMoveCapture}
-            onTouchEndCapture={scrollInteractions.onTouchEndCapture}
-            onTouchCancelCapture={scrollInteractions.onTouchEndCapture}
-            onKeyDownCapture={scrollInteractions.onKeyDownCapture}
-            onPointerDownCapture={scrollInteractions.onPointerDownCapture}
-          />
-        </LiveStreamContext.Provider>
-      )}
-
-      {creationMode && creationScrollbar.visible && (
-        <div
-          className={`transcript__scrollbar${creationScrollbar.hot ? " transcript__scrollbar--hot" : ""}`}
-          onPointerDown={handleCreationScrollbarRailPointerDown}
-          aria-hidden="true"
-        >
-          <div
-            className="transcript__scrollbar-thumb"
-            style={{ top: creationScrollbar.thumbTop, height: creationScrollbar.thumbHeight } as CSSProperties}
-            onPointerDown={handleCreationScrollbarThumbPointerDown}
-          />
-        </div>
-      )}
-
-      {!empty && showQuestionNav && (
-        <Suspense fallback={null}>
-          <QuestionJumpBar
-            loadedQuestions={questions}
-            totalQuestions={totalQuestions}
-            activeTurn={activeQuestion}
-            onJump={handleJumpToQuestion}
-          />
-        </Suspense>
-      )}
-
-      {!empty && !isAtBottom && scrollElement && hasTranscriptScrollableRange(scrollElement) && (
-        <button
-          type="button"
-          className="transcript__jump-bottom"
-          onClick={handleJumpToBottom}
-          aria-label={t("transcript.jumpToBottom")}
-          title={t("transcript.jumpToBottom")}
-        >
-          <ArrowDown size={18} strokeWidth={2.2} aria-hidden="true" />
-        </button>
-      )}
-      {FrontendDiagnosticsPanel && <Suspense fallback={null}><FrontendDiagnosticsPanel scrollElement={scrollElement} totalRows={virtualRows.length} /></Suspense>}
-    </div>
-    </TranscriptScrollWriteProvider>
-    </TranscriptLayoutIntentProvider>
+        {activeDetails && <ChatDetails key={activeDetails} source={source} nodeKey={activeDetails} loader={loader} onClose={closeDetails} onNavigate={setDetails} />}
+      </section>
+      </ChatFileScopeProvider>
     </MarkdownImageTabContext.Provider>
-    </InvocationMetadataContext.Provider>
-  );
+  </InvocationMetadataContext.Provider>;
 }

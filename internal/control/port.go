@@ -16,6 +16,7 @@ import (
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/sandbox"
+	"reasonix/internal/session"
 	"reasonix/internal/skill"
 )
 
@@ -43,6 +44,27 @@ type Lifecycle interface {
 	ModelRef() string
 	WorkspaceRoot() string
 	Close()
+}
+
+// IdentityLifecycle is the final session-id based lifecycle. Frontends may
+// type-assert it while legacy read/import DTOs remain available; new execution
+// commands must use this surface instead of manufacturing transcript paths.
+type IdentityLifecycle interface {
+	SessionRef() (session.SessionRef, bool)
+	SessionService() *session.Service
+	UsesExclusiveSession() bool
+	BindFreshSession(context.Context, string) (session.SessionRef, error)
+	OpenSession(context.Context, session.SessionRef) (session.SessionRef, error)
+	ContinueLegacySession(context.Context, string, string) (session.SessionRef, error)
+	ContinuePrototypeSession(context.Context, string) (session.SessionRef, error)
+}
+
+// IdentityCreateLifecycle is the header-aware creation extension used by the
+// Desktop Workspace registry. Other frontends may continue using
+// IdentityLifecycle.BindFreshSession while they do not own Workspace metadata.
+type IdentityCreateLifecycle interface {
+	BindFreshSessionWithOptions(context.Context, session.CreateOptions) (session.SessionRef, error)
+	ContinueLegacySessionWithOptions(context.Context, string, string, session.CreateOptions) (session.SessionRef, error)
 }
 
 // TurnControl covers driving a model turn and observing its run state: the
@@ -80,10 +102,15 @@ type Approvals interface {
 	Approve(id string, allow, session, persist bool)
 	ResolveApproval(id string, allow bool, scope sandbox.ApprovalScope) error
 	ResolvePlanDecision(id string, action PlanDecisionAction) error
-	// ResolveRecovery answers an Auto Guard card: continue|continue_task|revise. Revise
-	// refuses the mutation and steers feedback.
+	ResolvePlanDecisionWithFeedback(id string, action PlanDecisionAction, feedback string) error
+	// ResolveRecovery rejects retired Auto Guard actions with recovery_retired.
 	ResolveRecovery(id string, action agent.RecoveryAction, feedback string) error
+	AnswerMCPInteraction(id, action string, content map[string]any)
 	AnswerQuestion(id string, answers []event.AskAnswer)
+	AnswerQuestionChecked(id string, answers []event.AskAnswer) error
+	// AnswerMCPInteractionChecked resolves an mcp_interaction prompt after its
+	// durable transition (serve /mcp-interaction, desktop bridge).
+	AnswerMCPInteractionChecked(id, action string, content map[string]any) error
 	Ask(ctx context.Context, questions []event.AskQuestion) ([]event.AskAnswer, error)
 	ReplayPendingPrompts()
 	ReplayPendingPromptsTo(sink event.Sink)
@@ -104,6 +131,13 @@ type Goals interface {
 	Goal() string
 	GoalStatus() string
 	SetGoal(goal string)
+	// SetGoalDurable updates the Goal only after its backing session accepts
+	// the lifecycle mutation. Hosts must use this method before publishing UI
+	// metadata or starting a provider turn.
+	SetGoalDurable(goal string) error
+	// EditGoalDurable changes an existing Goal in place. It preserves the Goal
+	// identity and admitted round count while advancing its CAS revision.
+	EditGoalDurable(objective string, maxGoalRounds *uint64) error
 	// SetGoalWithResearchMode is retained for deprecated CLI budget flags. The
 	// mode is translated at the boundary and is not stored in the Goal runtime.
 	SetGoalWithResearchMode(goal string, researchMode GoalResearchMode)
@@ -133,11 +167,14 @@ type Goals interface {
 type SessionHistory interface {
 	Checkpoints() []checkpoint.Meta
 	CheckpointFileState(path string) (checkpoint.FileState, bool)
+	CheckpointTurnChanges(turn int) *checkpoint.TurnChanges
 	CheckpointTurnsByMessageIndex() map[int]int
 	CheckpointHasBoundary(turn int) bool
 	Rewind(turn int, scope RewindScope) error
 	PrepareRewind(turn int, scope RewindScope) (checkpoint.RewindPlan, error)
 	CommitRewind(planID string) (checkpoint.RewindResult, error)
+	CommitRewindInPlace(planID string) (checkpoint.RewindResult, error)
+	SessionHead() (agent.HeadRef, bool)
 	UndoRewind(transactionID string) (checkpoint.RewindResult, error)
 	PrepareFileRevert(path string) (checkpoint.RewindPlan, error)
 	CommitFileRevert(planID string, resolution checkpoint.ConflictResolution) (checkpoint.RewindResult, error)
@@ -147,6 +184,7 @@ type SessionHistory interface {
 	Branch(name string) (string, error)
 	Branches() ([]agent.BranchInfo, error)
 	BranchTreeText() string
+	CurrentBranchID() string
 	SwitchBranch(ref string) (agent.BranchInfo, error)
 	Compact(ctx context.Context, instructions string) error
 	CompactRatio() float64
@@ -178,6 +216,7 @@ type Capabilities interface {
 	Skills() []skill.Skill
 	SlashSkills() []skill.Skill
 	AllSkills() []skill.Skill
+	LoadSkill(name string) (skill.Skill, bool)
 	DisabledSkills() []skill.Skill
 	SkillEnabled(name string) bool
 	SetSkillEnabled(name string, enabled bool) error
@@ -187,6 +226,10 @@ type Capabilities interface {
 	HookRunner() *hook.Runner
 	CustomCommand(input string) (sent string, found bool)
 	MCPPrompt(ctx context.Context, input string) (sent string, found bool, err error)
+	// MCPCapabilityViews returns the host's four-layer capability matrix
+	// (Protocol Connection, Core Host, Interactive Host, Apps Host) as
+	// read-only diagnostics for MCP status surfaces.
+	MCPCapabilityViews() []plugin.CapabilityView
 	RunSkill(input string) (sent string, found bool)
 	AddMCPServer(e config.PluginEntry) (int, error)
 	ConnectMCPServer(e config.PluginEntry) (int, error)
@@ -218,6 +261,10 @@ type Status interface {
 	Balance(ctx context.Context) (*billing.Balance, error)
 	Jobs() []jobs.View
 	Todos() []evidence.TodoItem
+	// BoundShell reports the interpreter this controller generation bound at
+	// build time, so hosts can distinguish the live session's shell from what
+	// a reload would resolve now.
+	BoundShell() sandbox.Shell
 }
 
 // SessionPersistence covers snapshotting a session and tearing down its on-disk
@@ -253,6 +300,8 @@ type Settings interface {
 	SetResponseLanguage(lang string)
 	SetReasoningLanguage(lang string)
 	SetDisplayRecorder(fn func(content, display string))
+	ApplyComposerProfile(plan bool, toolApprovalMode, goal string) ([]string, error)
+	SystemPrompt() string
 }
 
 // SessionAPI is the full driving port — the composition of every sub-port. A
@@ -278,6 +327,7 @@ type SessionAPI interface {
 // never silently drift from the implementation.
 var (
 	_ Lifecycle          = (*Controller)(nil)
+	_ IdentityLifecycle  = (*Controller)(nil)
 	_ TurnControl        = (*Controller)(nil)
 	_ Approvals          = (*Controller)(nil)
 	_ Goals              = (*Controller)(nil)

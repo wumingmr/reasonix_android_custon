@@ -7,10 +7,7 @@ import (
 	"strings"
 
 	"reasonix/internal/capability"
-	"reasonix/internal/event"
-	"reasonix/internal/evidence"
 	"reasonix/internal/skill"
-	"reasonix/internal/tool"
 )
 
 // capabilityGateState is one user turn's gate memory, scoped to the same turn
@@ -18,9 +15,6 @@ import (
 // and which kind of miss was reported, so a later clean gate is audited as a
 // recovery instead of a first pass. Zeroing the struct is the turn reset.
 type capabilityGateState struct {
-	preferReminded  bool
-	requireMissSeen bool
-	preferMissSeen  bool
 }
 
 // SeedCapabilityRoute installs the turn's route decision into the capability ledger.
@@ -133,196 +127,6 @@ func splitMCP(name string) (server, raw string, ok bool) {
 		return "", "", false
 	}
 	return parts[0], parts[1], true
-}
-
-// capabilityGateFailure is checked during final readiness for closed-loop turns.
-func (a *Agent) capabilityGateFailure() string {
-	if a == nil || !a.closedLoopActive() || a.capabilityLedger == nil {
-		return ""
-	}
-	gate := a.capabilityLedger.CheckFinalGate()
-	if gate.Reason == "" {
-		// A clean gate after an earlier miss this turn is a recovery — the
-		// model was nudged and then actually invoked the capability.
-		if a.capabilityGate.requireMissSeen || a.capabilityGate.preferMissSeen {
-			if a.capabilityAudit != nil {
-				a.capabilityAudit.RecordGateRecovery(a.capabilityGate.requireMissSeen, a.capabilityGate.preferMissSeen)
-			}
-			a.capabilityGate.requireMissSeen = false
-			a.capabilityGate.preferMissSeen = false
-		}
-		return ""
-	}
-	if gate.PreferRemind && !a.capabilityGate.preferReminded {
-		for _, id := range gate.PreferIDs {
-			a.capabilityLedger.MarkReminded(id)
-		}
-		a.capabilityGate.preferReminded = true
-		a.capabilityGate.preferMissSeen = true
-		if a.capabilityAudit != nil {
-			a.capabilityAudit.RecordGate(false, true, false)
-		}
-		return gate.Reason
-	}
-	if gate.UnavailableOK {
-		// Host-proven unavailable: allow final answer that reports the blocker,
-		// but do not treat it as successful delivery. The reason is returned so
-		// the model is nudged once; if it still claims success, missing mutation
-		// / sign-off gates still apply. For pure capability blockers with no
-		// mutation, we surface the reason and allow the loop-guard path.
-		if a.capabilityAudit != nil {
-			a.capabilityAudit.RecordGate(true, false, false)
-		}
-		// Do not hard-block forever: once reported, allow final if no mutation pending.
-		if _, ok := a.task.ledger.LatestSuccessfulMutationIndex(); !ok {
-			return ""
-		}
-		return gate.Reason
-	}
-	if len(gate.RequireIDs) > 0 {
-		a.capabilityGate.requireMissSeen = true
-		if a.capabilityAudit != nil {
-			a.capabilityAudit.RecordGate(true, false, false)
-		}
-		return gate.Reason
-	}
-	if len(gate.PreferIDs) > 0 {
-		a.capabilityGate.preferMissSeen = true
-		if a.capabilityAudit != nil {
-			a.capabilityAudit.RecordGate(false, true, false)
-		}
-		return gate.Reason
-	}
-	return gate.Reason
-}
-
-// deliveryReviewGateFailure enforces risk-adaptive structured review after the
-// latest mutation. Contract review obligations are authoritative.
-func (a *Agent) deliveryReviewGateFailure() string {
-	if a == nil || a.task.ledger == nil {
-		return ""
-	}
-	// Without Goal/Plan closed-loop or a contract review obligation, skip.
-	if !a.closedLoopActive() && !a.requiresIndependentReview() {
-		return ""
-	}
-	if a.subagentDepth > 0 {
-		// Structured review is the parent's contract. A child's mutation
-		// receipts merge into the parent ledger (mergeChildEvidence), so the
-		// parent cannot final-answer without review coverage of those writes.
-		// Demanding review_report inside a depth-capped sub-agent — which may
-		// not even have the review tools — wedges the child against a gate it
-		// cannot satisfy. The light post-mutation review (read the touched
-		// file or run git diff/status) still applies via finalReadinessCheck.
-		return ""
-	}
-	mutation, ok := a.task.ledger.LatestSuccessfulMutationIndex()
-	if !ok {
-		return ""
-	}
-	a.emitTurnPhase(event.TurnPhaseReviewing)
-	risk := a.task.ledger.MutationRiskWithin(a.writeWorkspaceRoot)
-	// Contract review obligations may raise the review floor.
-	if a.requiresSecurityReview() {
-		risk = evidence.RiskHigh
-	} else if a.requiresIndependentReview() && risk < evidence.RiskMedium {
-		risk = evidence.RiskMedium
-	}
-	paths := productionPaths(a.task.ledger.PathsSince(-1))
-	hasReviewTool := a.svc.tools != nil && (toolPresent(a.svc.tools, "review") || toolPresent(a.svc.tools, "run_skill") || toolPresent(a.svc.tools, "use_capability"))
-	hasSecurityTool := a.svc.tools != nil && (toolPresent(a.svc.tools, "security_review") || toolPresent(a.svc.tools, "run_skill") || toolPresent(a.svc.tools, "use_capability"))
-	switch risk {
-	case evidence.RiskLow:
-		// Existing light review (read/diff) already checked elsewhere.
-		return ""
-	case evidence.RiskMedium:
-		if !hasReviewTool {
-			// Test/minimal registries without review keep the light review gate.
-			return ""
-		}
-		ok, blocking, report := a.task.ledger.HasStructuredReviewAfter(evidence.ReviewKindReview, mutation, paths)
-		if blocking {
-			if a.capabilityAudit != nil {
-				a.capabilityAudit.RecordReviewBlock(false)
-			}
-			return "structured review reported blocking findings; fix them and re-run review"
-		}
-		if !ok {
-			hostProof := a.task.ledger.HasSuccessfulDeliverySignoffAfter(mutation) &&
-				a.task.ledger.HasHostReviewCoverageAfter(mutation, paths)
-			if !hostProof {
-				return "medium-risk changes require either a successful structured review or host-proven verification plus diff/file inspection after the latest mutation" + reviewCoverageHint(paths)
-			}
-		}
-		if report != nil {
-			a.turn.reviewWarnings = append(a.turn.reviewWarnings, report.WarningSummaries()...)
-		}
-	case evidence.RiskHigh:
-		if !hasReviewTool && !hasSecurityTool {
-			return "high-risk changes require review and security_review tools after the latest mutation"
-		}
-		okR, blockR, repR := a.task.ledger.HasStructuredReviewAfter(evidence.ReviewKindReview, mutation, paths)
-		if blockR {
-			if a.capabilityAudit != nil {
-				a.capabilityAudit.RecordReviewBlock(false)
-			}
-			return "structured review reported blocking findings; fix them and re-run review"
-		}
-		if !okR {
-			return "high-risk changes require review with review_report after the latest mutation" + reviewCoverageHint(paths)
-		}
-		okS, blockS, repS := a.task.ledger.HasStructuredReviewAfter(evidence.ReviewKindSecurity, mutation, paths)
-		if blockS {
-			if a.capabilityAudit != nil {
-				a.capabilityAudit.RecordReviewBlock(true)
-			}
-			return "security_review reported blocking findings; fix them and re-run security_review"
-		}
-		if !okS {
-			return "high-risk changes require security_review with review_report after the latest mutation" + reviewCoverageHint(paths)
-		}
-		if repR != nil {
-			a.turn.reviewWarnings = append(a.turn.reviewWarnings, repR.WarningSummaries()...)
-		}
-		if repS != nil {
-			a.turn.reviewWarnings = append(a.turn.reviewWarnings, repS.WarningSummaries()...)
-		}
-	}
-	return ""
-}
-
-func reviewCoverageHint(paths []string) string {
-	if len(paths) == 0 {
-		return "; the mutation did not report file paths, so first inspect `git status --short` and `git diff` to identify the changed files, then submit reviewed_paths for the files inspected"
-	}
-	return " covering: " + strings.Join(paths, ", ")
-}
-
-func toolPresent(reg *tool.Registry, name string) bool {
-	if reg == nil {
-		return false
-	}
-	_, ok := reg.Get(name)
-	return ok
-}
-
-func productionPaths(paths []string) []string {
-	var out []string
-	for _, p := range paths {
-		if p == "" {
-			continue
-		}
-		// Skip pure test/doc paths for coverage requirements when mixed sets exist.
-		lower := strings.ToLower(p)
-		if strings.HasSuffix(lower, "_test.go") || strings.Contains(lower, "/docs/") {
-			continue
-		}
-		out = append(out, p)
-	}
-	if len(out) == 0 {
-		return paths
-	}
-	return out
 }
 
 // ReviewWarnings returns warn-level review findings collected this turn.

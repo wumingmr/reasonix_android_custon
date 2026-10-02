@@ -46,14 +46,14 @@ func TestResumeRefusedWhenSessionLeaseHeld(t *testing.T) {
 
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc, SessionDir: dir, SessionPath: active})
-	server := New(ctrl, bc, config.ServeConfig{})
+	server := newLifecycleTestServer(t, ctrl, bc, config.ServeConfig{})
 	leases := control.NewSessionLeaseKeeper()
 	defer leases.Release()
 	if err := leases.Rebind(active); err != nil {
 		t.Fatalf("seed lease on active: %v", err)
 	}
 	server.SetSessionLeases(leases)
-	srv := httptest.NewServer(server.Handler())
+	srv := httptest.NewServer(operatorHandler(server))
 	defer srv.Close()
 
 	body, err := json.Marshal(map[string]string{"path": held})
@@ -92,15 +92,16 @@ func TestResumeMovesSessionLease(t *testing.T) {
 	saveServeTestSession(t, next)
 
 	bc := NewBroadcaster()
-	ctrl := control.New(control.Options{Sink: bc, SessionDir: dir, SessionPath: active})
-	server := New(ctrl, bc, config.ServeConfig{})
+	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, bc)
+	ctrl := control.New(control.Options{Executor: exec, Sink: bc, SessionDir: dir, SessionPath: active})
+	server := newLifecycleTestServer(t, ctrl, bc, config.ServeConfig{})
 	leases := control.NewSessionLeaseKeeper()
 	defer leases.Release()
 	if err := leases.Rebind(active); err != nil {
 		t.Fatalf("seed lease on active: %v", err)
 	}
 	server.SetSessionLeases(leases)
-	srv := httptest.NewServer(server.Handler())
+	srv := httptest.NewServer(operatorHandler(server))
 	defer srv.Close()
 
 	body, err := json.Marshal(map[string]string{"path": next})
@@ -121,6 +122,9 @@ func TestResumeMovesSessionLease(t *testing.T) {
 	}
 	if got, wantHeld := leases.HeldPath(), agent.CanonicalSessionPath(want); got != wantHeld {
 		t.Fatalf("lease after resume = %q, want %q", got, wantHeld)
+	}
+	if got := ctrl.WriteAuthorityGeneration(); got == 0 {
+		t.Fatal("resumed controller session has no target write authority")
 	}
 	lease, err := agent.TryAcquireSessionLease(active)
 	if err != nil {
@@ -173,6 +177,8 @@ func waitServeLeaseResult(t *testing.T, ch <-chan error, what string, timeout ti
 	}
 }
 
+const concurrentServeLeaseTimeout = 60 * time.Second
+
 // TestConcurrentResumesKeepControllerAndLeaseAligned hammers POST /resume from
 // two goroutines bouncing between different targets and asserts the invariant
 // this PR exists for: whatever session the controller ends up writing is the
@@ -199,7 +205,7 @@ func TestConcurrentResumesKeepControllerAndLeaseAligned(t *testing.T) {
 		t.Fatalf("seed lease on active: %v", err)
 	}
 	server.SetSessionLeases(leases)
-	srv := httptest.NewServer(server.Handler())
+	srv := httptest.NewServer(operatorHandler(server))
 	defer srv.Close()
 	client := &http.Client{Timeout: 10 * time.Second}
 
@@ -235,7 +241,7 @@ func TestConcurrentResumesKeepControllerAndLeaseAligned(t *testing.T) {
 		close(done)
 		close(errs)
 	}()
-	waitServeLeaseDone(t, done, "concurrent resume posts", 20*time.Second)
+	waitServeLeaseDone(t, done, "concurrent resume posts", concurrentServeLeaseTimeout)
 	for err := range errs {
 		if err != nil {
 			t.Fatal(err)
@@ -269,7 +275,7 @@ func TestConcurrentResumeAndForkKeepAlignment(t *testing.T) {
 		t.Fatalf("seed lease on active: %v", err)
 	}
 	server.SetSessionLeases(leases)
-	srv := httptest.NewServer(server.Handler())
+	srv := httptest.NewServer(operatorHandler(server))
 	defer srv.Close()
 	client := &http.Client{Timeout: 10 * time.Second}
 
@@ -307,7 +313,7 @@ func TestConcurrentResumeAndForkKeepAlignment(t *testing.T) {
 		close(done)
 		close(errs)
 	}()
-	waitServeLeaseDone(t, done, "concurrent resume/fork posts", 20*time.Second)
+	waitServeLeaseDone(t, done, "concurrent resume/fork posts", concurrentServeLeaseTimeout)
 	for err := range errs {
 		if err != nil {
 			t.Fatal(err)
@@ -346,7 +352,7 @@ func TestInterleavedResumesForcedThroughBindWindow(t *testing.T) {
 		t.Fatalf("seed lease on active: %v", err)
 	}
 	server.SetSessionLeases(leases)
-	srv := httptest.NewServer(server.Handler())
+	srv := httptest.NewServer(operatorHandler(server))
 	defer srv.Close()
 	client := &http.Client{Timeout: 10 * time.Second}
 

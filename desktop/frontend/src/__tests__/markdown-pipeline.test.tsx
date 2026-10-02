@@ -12,8 +12,10 @@ import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import { JSDOM } from "jsdom";
 import { normalizeMath } from "../components/mathNormalize";
 import { createComponents } from "../components/markdownComponents";
+import { LocaleProvider } from "../lib/i18n";
 import { reasonixRehypePlugins, reasonixRemarkPlugins } from "../components/markdownRemarkPlugins";
 import { hastBlockToJsx } from "../lib/hastJsx";
+import { visibleMarkdownBlockCount } from "../lib/markdownDomBudget";
 import {
   defaultMarkdownUrlTransform,
   estimateHastBytes,
@@ -25,7 +27,6 @@ import {
   sliceHastBlocks,
   type MarkdownBlock,
 } from "../lib/markdownPipeline";
-import { projectTranscriptSelectableDom } from "../lib/transcriptSelectionDom";
 
 let passed = 0;
 let failed = 0;
@@ -47,23 +48,23 @@ function eq(actual: unknown, expected: unknown, label: string) {
 
 function renderCurrent(text: string): string {
   return renderToStaticMarkup(
-    createElement(ReactMarkdown, {
+    createElement(LocaleProvider, null, createElement(ReactMarkdown, {
       remarkPlugins: reasonixRemarkPlugins,
       rehypePlugins: reasonixRehypePlugins,
       components: createComponents(false),
       urlTransform: markdownUrlTransform,
       children: normalizeMath(text),
-    }),
+    })),
   );
 }
 
 function renderBlocks(blocks: MarkdownBlock[]): string {
   const components = createComponents(false);
   return renderToStaticMarkup(
-    createElement(Fragment, {
+    createElement(LocaleProvider, null, createElement(Fragment, {
       children: blocks.map((block) =>
         createElement(Fragment, { key: block.key, children: hastBlockToJsx(block, components) as ReactNode })),
-    }),
+    })),
   );
 }
 
@@ -73,7 +74,9 @@ function projectRenderedBlocks(blocks: MarkdownBlock[]): string {
   globalThis.Element = dom.window.Element;
   globalThis.HTMLElement = dom.window.HTMLElement;
   const root = dom.window.document.getElementById("root") as HTMLElement;
-  const projected = projectTranscriptSelectableDom(root).text;
+  const selection = dom.window.getSelection()!;
+  selection.selectAllChildren(root);
+  const projected = selection.toString();
   dom.window.close();
   return projected;
 }
@@ -111,10 +114,48 @@ for (const [name, text] of Object.entries(fixtures)) {
   eq(sliced, expected, `${name}: sliced blocks render identically (${blocks.length} blocks)`);
 }
 
+// Empty fenced blocks are formatting placeholders. They must not create a
+// bordered CodeViewer, while comment-only and whitespace-adjacent blocks stay
+// visible as real code content.
+{
+  const emptyFences = "Before\n\n```\n\n```\n\nAfter\n\n```ts\n   \n```";
+  const html = renderCurrent(emptyFences);
+  ok(!html.includes("code-block"), "empty fenced blocks do not render phantom code cards");
+  ok(html.includes("Before") && html.includes("After"), "text around empty fenced blocks remains visible");
+
+  const comments = "```ts\n// keep this comment\nconst stable = true;\n```";
+  const commentHtml = renderCurrent(comments);
+  ok(commentHtml.includes("keep this comment"), "non-empty comment code blocks remain visible");
+  ok(commentHtml.includes("code-block"), "non-empty comment code keeps its code-block surface");
+}
+
+// A lone tilde writes a range; two ranges on one line must not strike out the
+// text between them. Only ~~ strikes, on the live and the worker path alike.
+{
+  const text = "转速 500~1000 或 2000~3000 转，~~旧值~~";
+  const live = renderCurrent(text);
+  const worker = renderBlocks([{ key: "whole", children: parseMarkdownToHast(text).children }]);
+  for (const [path, html] of [["live", live], ["worker", worker]] as const) {
+    eq((html.match(/<del>/g) ?? []).length, 1, `${path}: only the doubled tilde strikes`);
+    ok(html.includes("500~1000 或 2000~3000"), `${path}: single-tilde ranges stay literal`);
+  }
+}
+
 // Block keys are stable top-level indexes.
 {
   const blocks = parseMarkdownToBlocks("one\n\ntwo\n\nthree");
   eq(blocks.map((b) => b.key).join(","), "b0,b1,b2", "block keys are stable indexes");
+  ok(blocks.every((block) => (block.elementCount ?? 0) > 0), "parse stamps DOM element counts with block fingerprints");
+}
+
+// Progressive DOM publication keeps semantic blocks whole and advances by an
+// explicit element budget instead of mounting an unbounded parsed document.
+{
+  const blocks = parseMarkdownToBlocks(Array.from({ length: 12 }, (_, index) =>
+    `## Part ${index}\n\nParagraph with **bold** and [link](https://example.com/${index}).`).join("\n\n"));
+  const first = visibleMarkdownBlockCount(blocks, 8);
+  ok(first > 0 && first < blocks.length, "small DOM budget publishes a strict leading block page");
+  ok(visibleMarkdownBlockCount(blocks, 10_000) === blocks.length, "larger DOM budget makes every block reachable");
 }
 
 // Footnote definitions survive slicing as a trailing block with working refs.
@@ -216,11 +257,9 @@ console.log("\nmarkdown selection projection");
     "标题 😀\n段落 链接文字 与 $x^2$。\n内联 粗体 斜体。\n第一项\n第二项\nconst value = 1;\n名称\t值\n一\t1",
     "selection projection preserves readable structure, code, tables, CJK, emoji and LaTeX",
   );
-  eq(
-    result.selectionText,
-    projectRenderedBlocks(result.blocks),
-    "selection projection uses the same UTF-16 text as the rendered DOM adapter",
-  );
+  const selected = projectRenderedBlocks(result.blocks);
+  ok(selected.includes("标题 😀") && selected.includes("链接文字") && selected.includes("const value = 1;"),
+    "native DOM selection includes Unicode, links and complete code text");
   eq(result.selectionRevision, markdownContentRevision(result.selectionText), "selection revision fingerprints projected UTF-16 text");
 }
 
@@ -229,6 +268,43 @@ console.log("\nmarkdown selection projection");
   const result = parseMarkdown(`| name | value |\n| --- | --- |\n${rows}`);
   ok(result.blocks.some((block) => block.virtualTable), "large plain table uses the virtual table representation");
   ok(result.selectionText.includes("row-51\t51"), "virtual table projection includes rows that never mount in the DOM");
+}
+
+// ── block fingerprints ──────────────────────────────────────────────────────
+// The render path keeps a previous AST object when key and fingerprint match,
+// so the fingerprint must be equal exactly when the block's rendered content is
+// equal. A false "unchanged" leaves a stale block on screen.
+{
+  const same = parseMarkdown("paragraph one\n\n- a\n- b");
+  const again = parseMarkdown("paragraph one\n\n- a\n- b");
+  eq(
+    again.blocks.map(block => block.fingerprint).join(","),
+    same.blocks.map(block => block.fingerprint).join(","),
+    "identical sources fingerprint identically",
+  );
+  ok(same.blocks.every(block => Number.isInteger(block.fingerprint)), "every block is stamped with a fingerprint");
+
+  // A block that changed must not be mistaken for its previous self.
+  const appended = parseMarkdown("paragraph one\n\n- a\n- b\n- c");
+  ok(appended.blocks[0].fingerprint === same.blocks[0].fingerprint, "an unchanged leading block keeps its fingerprint");
+  ok(appended.blocks[1].fingerprint !== same.blocks[1].fingerprint, "a grown list block changes its fingerprint");
+
+  // Appending a reference definition rewrites an EARLIER paragraph's link. A
+  // positional-only identity would keep the stale block here.
+  const unresolved = parseMarkdown("see [docs][ref]\n\nand more");
+  const resolved = parseMarkdown("see [docs][ref]\n\nand more\n\n[ref]: https://example.com/doc");
+  ok(unresolved.blocks[0].fingerprint !== resolved.blocks[0].fingerprint,
+    "a reference definition that resolves an earlier link changes that block's fingerprint");
+
+  // Structure the markdown source does not spell out still separates blocks.
+  const inline = parseMarkdown("a **bold** word");
+  const plain = parseMarkdown("a bold word");
+  ok(inline.blocks[0].fingerprint !== plain.blocks[0].fingerprint, "inline emphasis changes the fingerprint");
+
+  // Distinct content must not collide, including across block boundaries.
+  const boundary = parseMarkdown("ab\n\nc");
+  const shifted = parseMarkdown("a\n\nbc");
+  ok(boundary.blocks[0].fingerprint !== shifted.blocks[0].fingerprint, "a shorter first block fingerprints differently");
 }
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

@@ -3,9 +3,6 @@ package recovery
 import (
 	"encoding/json"
 	"time"
-
-	"reasonix/internal/agent"
-	"reasonix/internal/event"
 )
 
 // Phase is a derived view of recovery progress for compatibility snapshots.
@@ -135,9 +132,8 @@ type TaskState struct {
 	StopReason     string `json:"stop_reason,omitempty"`
 }
 
-// Snapshot is the form of all task recovery state.
-// Live Snapshot() includes debug fields; PersistenceSnapshot() strips temporary
-// lock/budget state so disk never re-arms Auto blocks after restart.
+// Snapshot decodes historical Auto Guard sidecars. New runtimes do not write
+// or restore this state.
 type Snapshot struct {
 	Tasks map[string]*TaskState `json:"tasks,omitempty"`
 }
@@ -176,67 +172,3 @@ const (
 	ApprovalKindTool = "tool"
 	ApprovalKindPlan = "plan"
 )
-
-// ToEventApproval builds the event payload for a recovery confirmation card.
-func ToEventApproval(id string, pending PendingProposal, failure *FailureEvent) event.Approval {
-	rec := &event.RecoveryApproval{
-		SourceAgent:     pending.SourceAgent,
-		FailedTool:      "",
-		FailedSummary:   pending.Failure,
-		Diagnosis:       pending.Diagnosis,
-		NextTool:        pending.Tool,
-		NextAction:      firstNonEmpty(pending.Proposed, pending.Subject, pending.Preview),
-		ChangeKind:      string(pending.ChangeKind),
-		ChangeRationale: pending.Rationale,
-		ReviewRationale: pending.Rationale,
-		PlanBefore:      pending.PlanBefore,
-		PlanAfter:       pending.PlanAfter,
-		CanGrantTask:    pending.TaskGrantKey != "",
-		TaskGrantScope:  pending.TaskGrantDisplay,
-	}
-	if failure != nil {
-		rec.FailedTool = failure.Tool
-		if rec.FailedSummary == "" {
-			rec.FailedSummary = failure.ErrSummary
-		}
-		if rec.SourceAgent == "" {
-			rec.SourceAgent = failure.SourceAgent
-		}
-	}
-	subject := firstNonEmpty(pending.Subject, pending.Preview, pending.Tool)
-	reason := firstNonEmpty(pending.Rationale, pending.Diagnosis, "Plan change requires confirmation")
-	return event.Approval{
-		ID:       id,
-		Tool:     pending.Tool,
-		Subject:  subject,
-		Reason:   reason,
-		Fresh:    true,
-		Kind:     ApprovalKindRecovery,
-		Recovery: rec,
-	}
-}
-
-// Observation aliases keep call sites readable when bridging agent types.
-type Observation = agent.RecoveryObservation
-type Proposal = agent.RecoveryProposal
-type Decision = agent.RecoveryDecision
-type Action = agent.RecoveryAction
-
-const (
-	ActionContinue     = agent.RecoveryActionContinue
-	ActionContinueTask = agent.RecoveryActionContinueTask
-	ActionRevise       = agent.RecoveryActionRevise
-)
-
-// DefaultReviseFeedback is injected when the user chooses "try another approach"
-// without optional free-text feedback.
-const DefaultReviseFeedback = "The pending mutation was rejected. Do not retry the same action. Summarize the failure cause, narrow the scope, and propose a safer alternative before attempting another mutation."
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}

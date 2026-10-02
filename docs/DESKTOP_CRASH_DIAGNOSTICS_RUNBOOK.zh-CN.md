@@ -5,22 +5,107 @@
 本手册用于跨平台 Desktop 诊断链路的发布、隐私、性能和根因闭环。Windows build
 `17763` 是重点实验环境，不是代码白名单；发布诊断版本本身不代表问题已经解决。
 
+## 本地 transcript 初始化失败
+
+创建、打开会话或迁移旧会话时，如果 transcript 初始化失败，可在 Electron 壳的
+`service.log`（以及轮转文件 `service.log.1`）中搜索
+`session transcript initialization failed`。服务向 stderr 输出结构化的 `diagnostic`
+字段组，由壳现有日志链路落盘。该诊断的 `version=1`、
+`code=transcript_initialization_failed`；不改变迁移账本格式。下文另行说明不含内容的线上
+报告。
+
+| 字段 | 含义 |
+| --- | --- |
+| `diagnostic.session_key` | 会话 ID 的 SHA-256，用于关联该运行时会话的错误 |
+| `diagnostic.covered_sequence` | 初始化 transcript 覆盖到的事件序号 |
+| `diagnostic.baseline_message_count` | 本次选取的输入消息数，最多 96 条 |
+| `diagnostic.baseline_total_message_count` | 选取尾部窗口前可用的候选消息数，不一定是完整历史总数 |
+| `diagnostic.baseline.record_count` | 这些输入消息转换生成的 transcript 记录数 |
+| `diagnostic.baseline.record_index` / `previous_record_index` | 当前基线内从 0 开始的出错记录位置 / 首次冲突位置，仅在已知时记录 |
+| `diagnostic.baseline.role` | 白名单内的角色，其他值统一为 `other` |
+| `diagnostic.baseline.record_key` / `message_key` / `tool_call_key` | 标识的 SHA-256 摘要，原标识缺失时为空 |
+
+`diagnostic.baseline.code` 区分 `duplicate_record_identity`（重复标识）、
+`missing_record_identity`（缺少标识）、`baseline_encode_failed`（编码失败）和
+`baseline_decode_failed`（解码失败）。编码、解码失败不记录位置。
+位置针对本次基线内的 transcript 记录，不是整个会话的消息偏移。
+
+旧会话迁移还会输出 `desktop session migration transcript initialization failed`，
+包含同一份诊断、`stage=legacy_import` 和 `source_key`。使用 `source_key` 对照
+Reasonix 配置目录下 `desktop/session-migration-v5.json` 中已有的 `sourceKey`。
+即使重试时生成了不同的目标会话 ID，也能据此关联同一迁移来源。每次失败输出一条运行时
+诊断；在该迁移路径中再输出一条迁移诊断。失败来源保留，正常会话可继续迁移。
+
+这些新增记录不包含聊天正文、思考正文、工具参数、原始路径、原始标识或任意错误原文。
+摘要用于关联，本身不能证明用户原始数据的具体触发原因。旧 `1.38.10` 日志无法补回这些
+字段，需要使用包含此改动的构建复现后重新收集日志。
+
+同一个已处理的迁移失败还会进入本地待上传队列，作为 `exception` 上报；其
+`source=desktop.session_migration`、`label=transcript.initialization`，fingerprint hint
+只包含无正文的错误分类。报告投递到 `https://crash.reasonix.io/v1/report`，并在
+`/stats/diagnostics` 中展示，继续遵守现有 Desktop telemetry 同意开关、失败重试和按版本
+去重规则。会话/迁移来源摘要以及记录标识摘要只保留在本地。旧版本未捕获的 panic 继续走
+已有的 `go.runtime` / `go.fatal` 上报链路，并按高等级崩溃展示。
+
 ## 发布顺序
 
-1. 冻结唯一候选 SHA，已发布 tag 不得移动或重建。
-2. 备份 D1，并先用 `PRAGMA table_info` 检查生产，再应用
-   `workers/crash-report/migrate-diagnostics-v2.sql`。若 draft 字段已提前存在，停止发布，
-   另做纯加法 reconciliation migration。
-3. 验证 `report_daily`、`report_installations`、
+1. Firebase 项目保持 Spark 且不关联 Cloud Billing；只在
+   `asia-southeast1` 创建 Realtime Database，并部署
+   `workers/crash-report/firebase/database.rules.json`，确认客户端读写均被拒绝。不得启用
+   Functions、Firestore、BigQuery、Hosting、Storage 或 Secret Manager。
+2. 配置仓库 Secret：`FIREBASE_DATABASE_URL`、`FIREBASE_CLIENT_EMAIL` 和
+   `FIREBASE_PRIVATE_KEY`。服务账号必须专用于 crash 投递且仅授予 Realtime Database
+   权限。不得使用 Web Firebase 配置，也不得在 Desktop 产物中包含 Firebase SDK 或配置。
+3. 冻结唯一候选 SHA，已发布 tag 不得移动或重建。
+4. 备份 D1，并运行 `npm run migrate:diagnostics-v2`。命令会先检查完整 schema，写入前
+   记录新的 Time Travel bookmark。已退休的 `metric_users` 和 `cli_metric_users` 不再
+   是必需表；活跃 diagnostics 表出现任何 partial 状态时仍然 fail closed。
+5. 运行 `npm run migrate:firebase-crash`。命令先记录 D1 Time Travel bookmark，再依次
+   应用第一阶段 `migrate-firebase-crash.sql` 与第二阶段
+   `migrate-firebase-crash-capacity.sql`；任一阶段部分完成时 fail closed。验证 outbox、
+   receipt、兼容 lease 表、`firebase_crash_group_state` 及全部投递/生命周期索引。旧 lease
+   表只用于滚动部署兼容。
+6. 验证 `report_daily`、`report_installations`、
    `report_event_dimensions`、`diagnostics_meta`、fingerprint/date 索引、ping
    窗口索引，以及 `installation_linked_since`。
-4. 先部署 Worker；用旧 Report/Ping/Metrics、legacy `webview2`、Windows/Linux
+7. 在 **Actions > Deploy crash worker > Run workflow** 中选择 `main-v2`，并将
+   **Firebase crash history operation** 设为 `dry-run`。该任务使用现有仓库 Secret，经过
+   `canary` environment 审批，不会部署 Worker；脚本按每页 200 个 fingerprint 的 keyset
+   分页，预计预留必须不超过 700 MiB。确认结果后选择 `apply`，并输入精确确认短语
+   `APPLY_FIREBASE_CRASH_DATA`；任务会在同一 runner 内依次执行 `--apply` 和
+   `--verify-only`。后续独立核验可选择 `verify-only`。已认证的运维人员仍可在本机运行
+   `npm run migrate:firebase-data`、`npm run migrate:firebase-data -- --apply` 和
+   `npm run migrate:firebase-data -- --verify-only`。默认 checkpoint 为权限 `0600` 且已
+   gitignore 的 `.firebase-crash-migration-state.json`；可用 `--checkpoint=<path>` 改路径，
+   只有明确重跑时才用 `--reset-checkpoint`。日志只输出计数、fingerprint 前缀和摘要。
+8. Worker 先使用 `dual` 模式；用旧 Report/Ping/Metrics、legacy `webview2`、Windows/Linux
    `webRuntime` payload 做 `channel=test` smoke。
-5. 用同一 SHA 生成签名 Windows/Linux 构建；能力矩阵和性能门禁通过后才发布 feature
+9. 连续比较 7 个完整 UTC 日；fingerprint、计数、样本和脱敏结果一致后，才将
+   `CRASH_STORAGE_MODE` 从 `dual` 切换为 `firebase`。Firebase 模式下 D1 只保留聚合、
+   索引和有界 outbox，不再写入新 `reports` 原文。
+10. 用同一 SHA 生成签名 Windows/Linux 构建；能力矩阵和性能门禁通过后才发布 feature
    release。
-6. 通过管理界面保留审计地整理历史数据：忽略 `[go panic] safe` / `v9.9.9`，将
+11. 再稳定观察 7 天后归档 D1 旧原始样本。保留 `d1`、`dual`、`firebase` 三种回滚
+   模式；Worker 回滚不要求客户端升级。
+12. 通过管理界面保留审计地整理历史数据：忽略 `[go panic] safe` / `v9.9.9`，将
    `72daba81` 标记为在 `desktop-v1.19.3` 解决，忽略旧
    `desktop.abnormal_exit` replay 分组。
+
+## Spark 容量、生命周期与回滚
+
+Worker 固定执行 700 MiB 预留上限：active 每组 640 KiB、compacted 128 KiB、
+archiving 32 KiB、archived 为 0。达到 80% 时复用现有 webhook 告警并在后台提示；新组或
+扩容会越过上限时，必须在创建 outbox 前返回 `503`。不得把该上限改为可配置项。
+
+只有 resolved/ignored 分组参与生命周期：30 天无新事件后，把最近 5 个样本替换为带
+fencing 的 marker，并保留当前周期首个样本；60 天后 tombstone 全部样本路径，24 小时后
+条件删除 Firebase group。D1 的计数、状态、备注、聚合和审计继续保留。archived
+fingerprint 再出现时进入新 sample epoch，累计 count 与 lifetime first-seen 不重置。管理员
+删除复用同一 tombstone 窗口，并原子删除对应 D1 分组数据。
+
+回滚只改配置：设置 `CRASH_STORAGE_MODE=d1` 并重新部署。回滚时不要删除 outbox、receipt、
+group-state 或 Firebase 数据。修复 migration/容量/ETag 问题后，重新执行 dry-run 与
+`--verify-only`，再切回 `dual`；Desktop/CLI 无需升级。
 
 ## 隐私与兼容 smoke
 
@@ -33,11 +118,16 @@
 - 删除测试分组会删除三张诊断聚合表的对应数据；
 - 诊断事实、ping、metric user 按 30 天分块清理；
 - `channel=test` 始终位于 development namespace。
+- 重复 `eventId` 返回 `202` 且不重复增加聚合；
+- Firebase timeout、401、429 或 5xx 会保留 projected outbox，交给每 6 小时重试；
+  outbox 满时返回 `503`，客户端必须保留 pending；
+- Desktop 自动报告按版本和 dedup key 只成功上传一次，失败不进入 512 条/180 天账本；
+  用户主动提交的 Desktop/CLI 报告不受本地 fingerprint 去重限制。
 
 ## 正常体验门禁
 
-候选版本在 Wails 启动前只允许一次本地配置读取、一次非阻塞归属锁和一次小型原子生命周期
-写入。Runtime 探测及报告/指标落盘必须在 Wails 启动后或有界后台消费者中执行；COM/GTK
+候选版本在壳启动前只允许一次本地配置读取、一次非阻塞归属锁和一次小型原子生命周期
+写入。Runtime 探测及报告/指标落盘必须在壳启动后或有界后台消费者中执行；COM/GTK
 回调只能非阻塞入队或递增原子丢弃计数。任何诊断失败都必须 fail-open。
 
 使用同一 SHA 与关闭诊断的基线比较：诊断初始化 p95 不超过 10 ms、p99 不超过 25

@@ -1,8 +1,10 @@
 // Run: tsx src/__tests__/composer-run-strip.test.tsx
 //
-// The run state lives inside the composer card (no floating pill, no layout
-// jump), stop has a fixed home next to send, and a pending approval/ask shifts
-// the strip into a waiting state instead of a ticking "working" spinner.
+// Ordinary work keeps the perimeter trace and now carries a live
+// token/throughput strip too; the accessible announcement still speaks the
+// stable state text alone. Timing/throughput detail lives in the context
+// popover; approval/ask retain an in-card attention strip, and stop keeps a
+// fixed home next to send.
 
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -36,6 +38,15 @@ function eq(actual: unknown, expected: unknown, label: string) {
 
 function flushTimers(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function readRunMetrics() {
+  await act(async () => {
+    const ring = document.querySelector(".context-ring") as HTMLButtonElement;
+    if (ring.getAttribute("aria-expanded") !== "true") ring.click();
+    await flushTimers();
+  });
+  return ` ${document.querySelector(".context-ring-popover")?.textContent ?? ""}`;
 }
 
 class TestResizeObserver {
@@ -95,7 +106,7 @@ async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {
   let currentProps: Parameters<typeof Composer>[0] = {
     running: false,
     collaborationMode: "normal" as CollaborationMode,
-    toolApprovalMode: "ask" as ToolApprovalMode,
+    toolApprovalMode: "workspace-write" as ToolApprovalMode,
     goal: "",
     cwd: "/repo",
     modelLabel: "DeepSeek-R1",
@@ -110,8 +121,7 @@ async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {
     onSetToolApprovalMode: (mode) => {
       calls.approvalModes.push(mode);
     },
-    onToggleYoloApprovalMode: () => {},
-    onClearGoal: () => {},
+        onClearGoal: () => {},
     onSwitchModel: () => {},
     onSetEffort: () => {},
     ready: true,
@@ -176,19 +186,100 @@ console.log("\ncomposer run strip");
 // Idle: no strip, no stop button, plain send arrow.
 {
   const dom = installDom();
-  const { root, calls } = await renderComposer();
+  const { root, calls, rerender } = await renderComposer({ workspaceRoot: "/repo" });
 
   eq(document.querySelector(".composer-run-strip"), null, "idle composer renders no run strip");
   eq(document.querySelector(".composer__btn--stop"), null, "idle composer renders no stop button");
   ok(document.querySelector(".composer__btn--send") !== null, "idle composer keeps the send button");
   eq(document.querySelector(".composer-toolbar--status-only"), null, "floating status pill is gone");
-  const yolo = document.querySelector<HTMLButtonElement>(".composer-modebar__item--yolo");
-  ok(yolo !== null, "approval bar always exposes Yolo alongside Ask and Auto");
   await act(async () => {
-    yolo?.click();
+    document.querySelector<HTMLButtonElement>(".composer-meta__control--approval button")?.click();
     await flushTimers();
   });
-  eq(calls.approvalModes.at(-1), "yolo", "the visible Yolo option selects Yolo approval");
+  const fullAccess = document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')[2];
+  ok(fullAccess !== null, "permission menu exposes Read only, Workspace write, and Full access");
+  await act(async () => {
+    fullAccess?.click();
+    await flushTimers();
+  });
+  eq(calls.approvalModes.length, 0, "selecting Full access waits for explicit risk acknowledgement");
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+  ok(dialog?.textContent?.includes("Enable Full access?"), "Full access opens the Harness-style risk confirmation");
+  const checkbox = dialog?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+  const enable = Array.from(dialog?.querySelectorAll<HTMLButtonElement>("button") ?? [])
+    .find(button => button.textContent?.includes("Enable Full access"));
+  ok(Boolean(checkbox), "risk confirmation includes the explicit acknowledgement checkbox");
+  ok(Boolean(enable?.disabled), "Full access stays disabled before acknowledgement");
+  await act(async () => {
+    checkbox?.click();
+    await flushTimers();
+  });
+  eq(enable?.disabled, false, "acknowledgement enables the Full access action");
+  await act(async () => {
+    enable?.click();
+    await flushTimers();
+  });
+  eq(calls.approvalModes.at(-1), "danger-full-access", "confirmed Full access reaches the session permission owner");
+  eq(document.querySelector('[role="dialog"]'), null, "confirmation closes after submission");
+
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>(".composer-meta__control--approval button")?.click();
+    await flushTimers();
+    document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')[2]?.click();
+    await flushTimers();
+  });
+  eq(document.querySelector('[role="dialog"]'), null,
+    "a project that already acknowledged Full access does not show the warning again");
+  eq(calls.approvalModes.length, 2,
+    "remembered project acknowledgement selects Full access immediately");
+
+  await rerender({ cwd: "/another-project/subdirectory", workspaceRoot: "/another-project" });
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>(".composer-meta__control--approval button")?.click();
+    await flushTimers();
+    document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')[2]?.click();
+    await flushTimers();
+  });
+  const cancelledDialog = document.querySelector<HTMLElement>('[role="dialog"]');
+  ok(cancelledDialog !== null, "a different project still requires its own Full access confirmation");
+  const cancelledCheckbox = cancelledDialog?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+  await act(async () => {
+    cancelledCheckbox?.click();
+    Array.from(cancelledDialog?.querySelectorAll<HTMLButtonElement>("button") ?? [])
+      .find(button => button.textContent?.trim() === "Cancel")?.click();
+    await flushTimers();
+  });
+  eq(calls.approvalModes.length, 2, "cancelling a later Full access attempt does not submit another change");
+
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>(".composer-meta__control--approval button")?.click();
+    await flushTimers();
+    document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')[2]?.click();
+    await flushTimers();
+  });
+  eq(document.querySelector<HTMLInputElement>('[role="dialog"] input[type="checkbox"]')?.checked, false,
+    "a new Full access attempt never reuses an earlier acknowledgement");
+
+  await rerender({ disabled: true });
+  eq(document.querySelector('[role="dialog"]'), null,
+    "locking the composer closes a pending Full access confirmation");
+  eq(calls.approvalModes.length, 2,
+    "locking the composer cannot submit a pending Full access change");
+
+  await rerender({ disabled: false });
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>(".composer-meta__control--approval button")?.click();
+    await flushTimers();
+    document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')[2]?.click();
+    await flushTimers();
+  });
+  ok(document.querySelector('[role="dialog"]') !== null,
+    "Full access confirmation can reopen after the composer unlocks");
+  await rerender({ tabId: "next-tab", sessionKey: "next-session" });
+  eq(document.querySelector('[role="dialog"]'), null,
+    "switching sessions closes a pending Full access confirmation");
+  eq(calls.approvalModes.length, 2,
+    "switching sessions cannot approve the previous session's Full access change");
 
   await act(async () => {
     root.unmount();
@@ -196,8 +287,7 @@ console.log("\ncomposer run strip");
   dom.window.close();
 }
 
-// Execution modes are gone. Composer keeps collaboration, tool approval, and
-// the independent quality floor, but no execution-setting trigger or menu.
+// Execution modes and the independent quality-floor selector are gone.
 {
   const dom = installDom();
   const { root } = await renderComposer();
@@ -207,14 +297,14 @@ console.log("\ncomposer run strip");
   const chrome = document.body.textContent ?? "";
   eq(chrome.includes("Execution setting"), false, "composer chrome does not mention execution setting");
 
-  const intentTrigger = document.querySelector(".composer-task-mode-trigger") as HTMLButtonElement | null;
+  const intentTrigger = document.querySelector(".composer-content-trigger") as HTMLButtonElement | null;
   if (!intentTrigger) throw new Error("task intent trigger did not render");
   await act(async () => {
     intentTrigger.click();
     await flushTimers();
   });
   eq(document.querySelector(".composer-intent-menu")?.textContent?.includes("Work mode"), false, "task-intent menu does not own a work-mode section");
-  eq(document.querySelectorAll('.composer-intent-menu [role="menuitemradio"]').length, 3, "task method menu exposes direct, plan, and goal");
+  eq(document.querySelectorAll('.composer-intent-menu [role="menuitemradio"]').length, 2, "task method menu exposes plan and goal");
 
   await act(async () => {
     root.unmount();
@@ -228,7 +318,7 @@ console.log("\ncomposer run strip");
 {
   const dom = installDom();
   const timers = installWindowTimerQueue();
-  const { root } = await renderComposer({ showContextWindowRing: true });
+  const { root } = await renderComposer({ showContextWindowRing: true, collaborationMode: "plan" });
 
   for (const selector of [".composer-task-mode-trigger"]) {
     const trigger = document.querySelector(selector) as HTMLButtonElement | null;
@@ -254,8 +344,8 @@ console.log("\ncomposer run strip");
     intentTrigger.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: null }));
     timers.advance(120);
   });
-  ok(intentTrigger.classList.contains("composer-task-mode-trigger--open"), "a sustained Creation hover still opens the trigger");
-  ok(document.querySelector(".composer-intent-menu") !== null, "a sustained Creation hover still renders the menu");
+  ok(intentTrigger.classList.contains("composer-task-mode-trigger--removable"), "mode chip exposes its dismiss interaction");
+  ok(document.querySelector(".composer-intent-menu") === null, "hovering a mode chip does not open the add menu");
 
   timers.restore();
   await act(async () => {
@@ -270,11 +360,11 @@ console.log("\ncomposer run strip");
   const dom = installDom();
   const { root } = await renderComposer({ disabled: true, goal: "ship it", collaborationMode: "goal" });
   const task = document.querySelector<HTMLButtonElement>(".composer-task-mode-trigger");
-  const approvals = Array.from(document.querySelectorAll<HTMLButtonElement>(".composer-modebar--approval button"));
+  const approvals = Array.from(document.querySelectorAll<HTMLButtonElement>(".composer-meta__control--approval button"));
   const send = document.querySelector<HTMLButtonElement>(".composer__btn--send");
   eq(document.querySelector(".composer-profile-trigger"), null, "runtime transition has no execution-setting control");
   ok(Boolean(task?.disabled), "runtime transition disables Goal mode changes");
-  ok(approvals.length === 3 && approvals.every((button) => button.disabled), "runtime transition disables Ask/Auto/Yolo changes");
+  ok(approvals.length === 1 && approvals.every((button) => button.disabled), "runtime transition disables permission preset changes");
   ok(Boolean(send?.disabled), "runtime transition disables submit");
 
   await act(async () => {
@@ -283,18 +373,18 @@ console.log("\ncomposer run strip");
   dom.window.close();
 }
 
-// Running: strip lives inside the card, ticker is aria-hidden, stop cancels.
+// Running: no visible strip, stable accessible announcement, stop cancels.
 {
   const dom = installDom();
   const { root, calls } = await renderComposer({ running: true, turnStartAt: Date.now() });
 
   const strip = document.querySelector(".composer-card .composer-run-strip");
-  ok(strip !== null, "running strip renders inside the composer card");
-  const ticker = strip?.querySelector(".composer-run-strip__text");
-  eq(ticker?.getAttribute("aria-hidden"), "true", "ticking spinner text stays out of the accessibility tree");
-  const live = strip?.querySelector(".sr-only[role=\"status\"]");
+  eq(strip?.querySelector(".composer-run-strip__text")?.textContent, "Reasonix is working",
+    "ordinary running state shows the run strip");
+  const live = document.querySelector(".composer-card .sr-only[role=\"status\"]");
   eq(live?.textContent, "Reasonix is working", "live region announces the stable state text only");
   ok(document.querySelector(".composer-card--running") !== null, "running card keeps its running modifier");
+  eq(document.querySelector(".composer-glowring")?.getAttribute("aria-hidden"), "true", "active work mounts a decorative perimeter trace");
 
   const stop = document.querySelector(".composer__btn--stop") as HTMLButtonElement | null;
   if (!stop) throw new Error("running composer stop button did not render");
@@ -324,9 +414,10 @@ console.log("\ncomposer run strip");
   eq(text?.getAttribute("aria-hidden"), null, "waiting text is static and stays accessible");
   eq(document.querySelector(".composer-card--running"), null, "waiting card hands the running accent off to the prompt card");
   ok(document.querySelector(".composer-card--waiting") !== null, "waiting card takes the waiting modifier");
+  eq(document.querySelector(".composer-glowring"), null, "waiting removes the trace rather than running an invisible animation");
 
-  const modeButtons = [...document.querySelectorAll(".composer-modebar--approval .composer-modebar__item")] as HTMLButtonElement[];
-  ok(modeButtons.length === 3 && modeButtons.every((b) => !b.disabled), "approval bar stays usable while its own prompt disables the composer");
+  const modeButtons = [...document.querySelectorAll(".composer-meta__control--approval button")] as HTMLButtonElement[];
+  ok(modeButtons.length === 1 && modeButtons.every((b) => !b.disabled), "approval bar stays usable while its own prompt disables the composer");
 
   await rerender({ pendingApprovalLabel: null, pendingAsk: true });
   eq(
@@ -340,10 +431,11 @@ console.log("\ncomposer run strip");
   );
 
   await rerender({ pendingAsk: false, disabled: false });
-  ok(
-    document.querySelector(".composer-run-strip__text")?.getAttribute("aria-hidden") === "true",
-    "resolving the prompt returns the strip to the ticking spinner",
-  );
+  const resolved = document.querySelector(".composer-run-strip");
+  eq(resolved?.classList.contains("composer-run-strip--waiting"), false,
+    "resolving the prompt removes the attention strip");
+  eq(resolved?.querySelector(".composer-run-strip__text")?.textContent, "Reasonix is working",
+    "the resolved prompt falls back to the ordinary work strip");
 
   await act(async () => {
     root.unmount();
@@ -393,8 +485,8 @@ console.log("\ncomposer run strip");
   });
   await rerender({ pendingApprovalLabel: null, disabled: false });
 
-  const ticker = document.querySelector(".composer-run-strip__text")?.textContent ?? "";
-  ok(/ 30s| 31s/.test(ticker), `ticker excludes the time spent waiting for approval (got "${ticker}")`);
+  const ticker = await readRunMetrics();
+  ok(/30s|31s/.test(ticker), `ticker excludes the time spent waiting for approval (got "${ticker}")`);
   ok(!/ 32s| 33s/.test(ticker), "ticker does not count the ~2.4s approval wait as model time");
 
   await act(async () => {
@@ -416,8 +508,8 @@ console.log("\ncomposer run strip");
   });
   await rerender({ suspendedByDecision: false, disabled: false });
 
-  const ticker = document.querySelector(".composer-run-strip__text")?.textContent ?? "";
-  ok(/ 15s| 16s/.test(ticker), `suspendedByDecision excludes wait time from model clock (got "${ticker}")`);
+  const ticker = await readRunMetrics();
+  ok(/15s|16s/.test(ticker), `suspendedByDecision excludes wait time from model clock (got "${ticker}")`);
   ok(!/ 17s| 18s/.test(ticker), "suspended wait is not counted as model work");
 
   await act(async () => {
@@ -469,9 +561,9 @@ console.log("\ncomposer run strip");
     turnWaitAccumMs: closedWaitMs,
   });
 
-  const ticker = document.querySelector(".composer-run-strip__text")?.textContent ?? "";
+  const ticker = await readRunMetrics();
   // 8s turn age − ~3.3s user wait ≈ 5s model work (not ~8s wall, not ~0–2s from A leak).
-  ok(/ 4s| 5s| 6s/.test(ticker), `tab B excludes background user-wait from model clock (got "${ticker}")`);
+  ok(/4s|5s|6s/.test(ticker), `tab B excludes background user-wait from model clock (got "${ticker}")`);
   ok(!/ 7s| 8s| 9s| 10s| 11s/.test(ticker), "background suspension is not counted as model work");
   ok(!/ 5[5-9]s| 6[0-9]s/.test(ticker), "tab B does not show tab A's ~60s turn age as model time");
 
@@ -500,13 +592,130 @@ console.log("\ncomposer run strip");
     },
   });
 
-  const ticker = document.querySelector(".composer-run-strip")?.textContent ?? "";
-  ok(ticker.includes("10 tokens/s"), "streaming TPS uses provider-output time instead of full turn age");
+  const ticker = await readRunMetrics();
+  ok(ticker.includes("10 t/s"), "streaming TPS uses provider-output time instead of full turn age");
+  ok(ticker.includes("≈10 t/s"), "the streaming reading carries the estimate marker");
   ok(ticker.includes("18 tokens"), "streaming token total adds the current request estimate to completed usage");
 
   await act(async () => {
     root.unmount();
   });
+  dom.window.close();
+}
+
+// The run strip carries those same readings during ordinary work, and withholds
+// throughput once the model stops emitting rather than freezing a stale rate.
+{
+  const dom = installDom();
+  const live = { id: "assistant-1", text: "x".repeat(40), reasoning: "", reasoningComplete: false };
+  const stripText = () => document.querySelector(".composer-run-strip__text")?.textContent ?? "";
+  const { root, rerender } = await renderComposer({
+    running: true,
+    tabId: "tab-strip",
+    turnStartAt: Date.now() - 60_000,
+    turnTokens: 8,
+    turnOutputTokens: 10,
+    turnOutputCharsAtUsage: 0,
+    turnModelActiveMs: 2_000,
+    turnModelActiveAt: Date.now(),
+    liveStore: { subscribe: () => () => {}, getSnapshot: () => live },
+  });
+
+  ok(stripText().includes("18 tokens"), "the run strip carries the live token readout");
+  ok(stripText().includes("10 t/s"), "an emitting model contributes throughput to the strip");
+  eq((stripText().match(/≈/g) ?? []).length, 1, "the strip marks the estimate once");
+  ok(!/[()·]/.test(stripText()), "no grouping punctuation: colour and position do the separating");
+  const readings = document.querySelector(".composer-run-strip__metrics");
+  const readingsText = readings?.textContent ?? "";
+  ok(/^ \d+(m \d+)?s ≈18 tokens 10 t\/s$/.test(readingsText),
+    `readings read as clock, tokens, throughput (got "${readingsText}")`);
+  const shed = document.querySelector(".composer-run-strip__metric--optional");
+  eq(shed?.textContent, " 10 t/s", "throughput owns the trailing segment so a narrow strip sheds it whole");
+  ok(!(shed?.textContent ?? "").includes("tokens"),
+    "the clock and token count sit outside the shedable segment and are never cut");
+
+  await rerender({ turnModelActiveAt: undefined });
+  ok(stripText().includes("18 tokens"), "the token readout survives the model going quiet");
+  ok(!stripText().includes("t/s"), "a quiet model withholds throughput instead of freezing a rate");
+  eq(document.querySelector(".composer-run-strip__metric--optional"), null,
+    "a quiet model contributes no shedable segment");
+
+  await rerender({ running: false, turnDoneAt: Date.now() });
+  ok(stripText() === "", "a settled turn drops the strip readings");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+// Metrics survive wait/retry/completion and derive completed time from the
+// controller timestamp, including when mounting an already completed tab.
+{
+  const dom = installDom();
+  const start = Date.now() - 30_000;
+  const { root, rerender } = await renderComposer({
+    running: true, turnStartAt: start, turnTokens: 100,
+    turnOutputTokens: 20, turnModelActiveMs: 2_000,
+  });
+  await rerender({ pendingApprovalLabel: "Run command", disabled: true });
+  ok((await readRunMetrics()).includes("100 tokens"), "approval wait retains turn tokens");
+  await rerender({ pendingApprovalLabel: null, disabled: false,
+    retry: { attempt: 1, max: 3 } });
+  ok((await readRunMetrics()).includes("10 t/s"), "retry retains throughput");
+  await rerender({ running: false, retry: undefined, turnDoneAt: start + 20_000,
+    lastTurnOutputTokens: 24, turnWaitAccumMs: 0 });
+  const completed = await readRunMetrics();
+  ok(/19s|20s/.test(completed), `completed duration uses the controller timestamp minus local wait (got "${completed}")`);
+  ok(completed.includes("104 tokens"), "completion keeps final in-flight token estimates");
+  await rerender({ lastTurnWaitAccumMs: 0, turnWaitAccumMs: 60_000 });
+  ok((await readRunMetrics()).includes("20s"), "later wait accounting cannot change the frozen completion duration");
+  await rerender({ sessionKey: "completed-tab", tabId: "completed-tab" });
+  ok((await readRunMetrics()).includes("20s"), "switching to a completed tab preserves its duration");
+  await rerender({ running: true, turnStartAt: Date.now(), turnDoneAt: 0,
+    turnTokens: 0, turnOutputTokens: 0, turnModelActiveMs: 0 });
+  ok(!(await readRunMetrics()).includes("104 tokens"), "new turn does not inherit previous turn metrics");
+  await act(async () => { root.unmount(); });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  const picked: string[] = [];
+  let modelChanges = 0;
+  const { root, rerender } = await renderComposer({
+    effort: { supported: true, current: "auto", default: "high", levels: ["auto", "high", "max"] },
+    onSetEffort: level => picked.push(level),
+    onSwitchModel: () => { modelChanges += 1; },
+  });
+  const trigger = document.querySelector<HTMLButtonElement>(".composer-effort-control button");
+  if (!trigger) throw new Error("missing independent effort selector");
+  await act(async () => { trigger.click(); await flushTimers(); });
+  const high = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(e => e.textContent === "high");
+  if (!high) throw new Error("missing high effort option");
+  await act(async () => { high.click(); await flushTimers(); });
+  eq(picked.join(","), "high", "separate effort selector changes reasoning effort");
+  eq(modelChanges, 0, "changing effort does not switch models");
+  eq(trigger.getAttribute("aria-expanded"), "false", "effort menu closes after selection");
+  await rerender({ effort: { supported: false, current: "auto", default: "auto", levels: [] } });
+  eq(document.querySelector(".composer-effort-control"), null, "unsupported models hide effort control");
+  await act(async () => root.unmount());
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  const modeChanges: string[] = [];
+  const { root } = await renderComposer({ collaborationMode: "plan", onSetCollaborationMode: mode => modeChanges.push(mode) });
+  eq(document.querySelector(".composer-delivery-trigger"), null, "composer has no delivery chip");
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>(".composer-content-trigger")?.click();
+    await flushTimers();
+  });
+  const toggle = document.querySelector<HTMLButtonElement>('[role="menuitemcheckbox"]');
+  eq(toggle, null, "content menu has no delivery toggle");
+  eq(modeChanges.length, 0, "opening the menu does not change Plan mode");
+  await act(async () => root.unmount());
   dom.window.close();
 }
 
@@ -525,6 +734,7 @@ console.log("\ncomposer run strip");
   const { root, rerender } = await renderComposer({ running: true, turnStartAt: Date.now() });
 
   const handle = document.querySelector(".composer-resize-handle") as HTMLButtonElement;
+  eq((document.querySelector(".composer-card") as HTMLElement).style.getPropertyValue("--composer-height"), "140px", "fresh composer defaults to the selected 140px height");
   await act(async () => {
     handle.focus();
     handle.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Home", bubbles: true }));
@@ -533,7 +743,7 @@ console.log("\ncomposer run strip");
 
   const card = document.querySelector(".composer-card") as HTMLElement;
   eq(card.style.getPropertyValue("--composer-height"), "104px", "render path writes the logical height, not a compensated one");
-  eq(card.style.getPropertyValue("--composer-run-strip-reserved"), "30px", "running card reserves the strip height via its own variable");
+  eq(card.style.getPropertyValue("--composer-run-strip-reserved"), "30px", "ordinary running state reserves the metrics strip height");
 
   // Drag while running: the live writer stays in logical-height space.
   await act(async () => {
@@ -548,7 +758,7 @@ console.log("\ncomposer run strip");
     await flushTimers();
   });
   eq(card.style.getPropertyValue("--composer-height"), "124px", "drag release keeps the same logical-height space as the render path");
-  eq(card.style.getPropertyValue("--composer-run-strip-reserved"), "30px", "strip reservation survives the drag");
+  eq(card.style.getPropertyValue("--composer-run-strip-reserved"), "30px", "dragging keeps the running strip reservation");
   eq(handle.getAttribute("aria-valuenow"), "124", "separator reports the logical height");
 
   await rerender({ running: false, turnStartAt: undefined });
@@ -556,8 +766,9 @@ console.log("\ncomposer run strip");
   eq(card.style.getPropertyValue("--composer-height"), "124px", "idle card keeps the user's logical height");
 
   const textarea = document.querySelector(".composer__input") as HTMLTextAreaElement;
+  const measureTextarea = document.querySelector(".composer__input--measure") as HTMLTextAreaElement;
   let measuredDraftHeight = 108;
-  Object.defineProperty(textarea, "scrollHeight", {
+  Object.defineProperty(measureTextarea, "scrollHeight", {
     configurable: true,
     get: () => measuredDraftHeight,
   });
@@ -596,6 +807,14 @@ console.log("\ncomposer run strip");
   eq(card.style.getPropertyValue("--composer-height"), `${viewportCap}px`, "oversized draft stops at the viewport-aware cap");
   eq(textarea.style.height, `${viewportCap - 58}px`, "oversized input uses the capped content viewport");
   eq(textarea.style.overflowY, "auto", "oversized draft scrolls only after reaching the cap");
+
+  measuredDraftHeight = 22;
+  await updateDraft("");
+  await act(async () => {
+    handle.dispatchEvent(new window.MouseEvent("dblclick", { bubbles: true }));
+    await flushTimers();
+  });
+  eq(card.style.getPropertyValue("--composer-height"), "140px", "reset restores the 140px default after manual resizing");
 
   await act(async () => {
     root.unmount();

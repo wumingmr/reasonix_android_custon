@@ -5,8 +5,9 @@ import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { useController } from "../lib/useController";
 import type { AppBindings } from "../lib/bridge";
-import type { ContextInfo, EffortInfo, HistorySlice, HistorySliceRequest, Meta, TabMeta, WireEvent } from "../lib/types";
+import type { ContextInfo, EffortInfo, HistoryMessage, HistorySliceRequest, Meta, TabMeta, WireEvent } from "../lib/types";
 import { historySliceFromMessages } from "./mockHistorySlice";
+import { installDesktopHostStub } from "./desktopHostStub";
 
 let passed = 0;
 let failed = 0;
@@ -48,6 +49,7 @@ function tabMeta(overrides: Partial<TabMeta> = {}): TabMeta {
     workspacePath: "/repo",
     topicId: "topic-a",
     topicTitle: "General",
+    session: { hostId: "local", sessionId: "canonical-a" },
     label: "model",
     ready: true,
     running: false,
@@ -70,6 +72,7 @@ function meta(): Meta {
     workspaceRoot: "/repo",
     workspaceName: "repo",
     workspacePath: "/repo",
+    session: { hostId: "local", sessionId: "canonical-a" },
     autoApproveTools: false,
     bypass: false,
     collaborationMode: "normal",
@@ -100,30 +103,30 @@ globalThis.localStorage = dom.window.localStorage;
 globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
 globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
 
-const eventHandlers: Array<(e: WireEvent) => void> = [];
 let backendRunning = false;
+const backendHistory: HistoryMessage[] = [{
+  role: "user",
+  content: "hello",
+  messageId: "initial-user",
+  createdAt: 1000,
+  checkpointTurn: 0,
+  attachments: [{ kind: "image", digest: "a".repeat(64), name: "photo.png", mime: "image/png", width: 1, height: 1, bytes: 68 }],
+}];
 let cancelCalls = 0;
 let cancelInboxCalls = 0;
 let cancelInboxError: Error | null = null;
 let cancelDiscardedItemIDs: string[] = [];
+let interruptCalls = 0;
+let interruptError: Error | null = null;
 let effortCalls = 0;
 let checkpointHistoryCalls = 0;
 let historyLoads = 0;
 let checkpointLoads = 0;
-let historyShouldFail = false;
-let deferredHistory = false;
-let resolveDeferredHistory: ((page: HistorySlice) => void) | undefined;
+let turnReplayCalls = 0;
 const context: ContextInfo = { used: 0, window: 100, sessionTokens: 0 };
 const effort: EffortInfo = { supported: true, current: "auto", default: "auto", levels: ["auto"] };
 
-window.runtime = {
-  EventsOn: (name: string, cb: (payload: unknown) => void) => {
-    if (name === "agent:event") eventHandlers.push(cb as (e: WireEvent) => void);
-    return () => {};
-  },
-  BrowserOpenURL: () => {},
-};
-window.go = {
+const desktopStub = installDesktopHostStub(({
   main: {
     App: {
       ListTabs: async () => [tabMeta({ running: backendRunning, cancellable: backendRunning })],
@@ -140,18 +143,13 @@ window.go = {
         checkpointLoads += 1;
         return [{ turn: 0, prompt: "hello", files: [], time: Date.now(), canConversation: true }];
       },
+      ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
       HistoryForTab: async () => [],
       HistorySliceForTab: async (tabID: string, req: HistorySliceRequest) => {
         historyLoads += 1;
-        if (historyShouldFail) throw new Error("history unavailable");
-        if (deferredHistory) {
-          return await new Promise<HistorySlice>((resolve) => {
-            resolveDeferredHistory = resolve;
-          });
-        }
         return historySliceFromMessages(
           tabID,
-          [{ role: "user", content: "hello", createdAt: Date.now(), checkpointTurn: 0 }],
+          backendHistory,
           req,
         );
       },
@@ -160,11 +158,42 @@ window.go = {
         return [];
       },
       ReplayPendingPrompts: async () => {},
+      TurnEventsForTab: async (_tabID: string, afterSeq: number) => {
+        turnReplayCalls += 1;
+        const events = afterSeq !== 1 ? [] : [
+          {
+            turnId: "turn-gap",
+            seq: 2,
+            status: "in_progress",
+            event: { kind: "turn_started", turnId: "turn-gap", seq: 2, status: "in_progress" },
+          },
+          {
+            turnId: "turn-gap",
+            seq: 3,
+            status: "waiting_user",
+            event: { kind: "turn_status", turnId: "turn-gap", seq: 3, status: "waiting_user" },
+          },
+        ];
+        return {
+          events,
+          floorSeq: 1,
+          latestSeq: 3,
+          nextAfterSeq: events.length > 0 ? 3 : afterSeq,
+          hasMore: false,
+          resetRequired: false,
+        };
+      },
       SubmitToTab: async () => {},
-      SubmitToTabWithID: async () => {},
+      SubmitToTabWithID: async (tabId: string, text: string, submissionId: string) => {
+        const messageId = `user-${submissionId}`;
+        const createdAt = Date.now();
+        backendHistory.push({ role: "user", content: text, messageId, submissionId, createdAt });
+        desktopStub.emit("agent:event", { kind: "user_message", tabId, text, messageId, submissionId, createdAt });
+      },
       CancelTab: async () => {
         cancelCalls += 1;
         backendRunning = false;
+        desktopStub.emit("agent:event", { kind: "turn_done", tabId: "tab-a", status: "cancelled" });
       },
       CancelTabWithInboxItems: async () => {
         cancelInboxCalls += 1;
@@ -175,11 +204,18 @@ window.go = {
         cancelInboxCalls += 1;
         if (cancelInboxError) throw cancelInboxError;
         backendRunning = false;
+        desktopStub.emit("agent:event", { kind: "turn_done", tabId: "tab-a", status: "cancelled" });
         return { discardedItemIds: [...cancelDiscardedItemIDs] };
+      },
+      InterruptTurnForTab: async () => {
+        interruptCalls += 1;
+        if (interruptError) throw interruptError;
+        backendRunning = false;
+        desktopStub.emit("agent:event", { kind: "turn_done", tabId: "tab-a", status: "cancelled" });
       },
     } as Partial<AppBindings> as AppBindings,
   },
-};
+}).main.App);
 
 type Controller = ReturnType<typeof useController>;
 let controller: Controller | undefined;
@@ -204,9 +240,38 @@ await act(async () => {
 historyLoads = 0;
 checkpointLoads = 0;
 
+// A future event must pause projection until the missing durable prefix has
+// been replayed. This interleaving is driven only by resolved promises (no
+// timing sleeps), then a duplicate seq=3 is ignored idempotently.
+await act(async () => {
+  desktopStub.emit("agent:event", { kind: "turn_status", tabId: "tab-a", turnId: "turn-gap", seq: 1, status: "queued" });
+  desktopStub.emit("agent:event", { kind: "turn_status", tabId: "tab-a", turnId: "turn-gap", seq: 3, status: "waiting_user" });
+  for (let step = 0; step < 20; step += 1) await Promise.resolve();
+});
+eq(turnReplayCalls, 0, "v2 does not consult the retired ledger sequence space");
+eq(controller?.state.pendingPrompt, true, "future event projects only after the missing prefix");
+await act(async () => {
+  desktopStub.emit("agent:event", { kind: "turn_status", tabId: "tab-a", turnId: "turn-gap", seq: 3, status: "in_progress" });
+  await Promise.resolve();
+});
+eq(controller?.state.pendingPrompt, false, "ordered Follow revision is authoritative despite legacy sequence values");
+const historyLoadsBeforeSettlement = historyLoads;
+const historyMutationBeforeSettlement = controller?.state.historyMutation.seq ?? 0;
+await act(async () => {
+  desktopStub.emit("agent:event", { kind: "turn_done", tabId: "tab-a", turnId: "turn-gap", seq: 4, status: "completed" });
+  await Promise.resolve();
+});
+// A terminal turn is folded into the bounded durable window independently of
+// cancellation. Let that expected read settle before measuring the later
+// cancellation path, whose invariant is still that it schedules no reload.
+await act(async () => { await flushPromises(); });
+eq(historyLoads, historyLoadsBeforeSettlement, "completion never rebases from history");
+ok((controller?.state.historyMutation.seq ?? 0) >= historyMutationBeforeSettlement, "completion retains the installed transcript");
+historyLoads = 0;
+
 backendRunning = true;
 await act(async () => {
-  for (const handler of eventHandlers) handler({ kind: "turn_started", tabId: "tab-a" });
+  desktopStub.emit("agent:event", { kind: "turn_started", tabId: "tab-a" });
   await flushPromises();
 });
 eq(controller?.state.running, true, "turn_started marks the tab running");
@@ -226,14 +291,9 @@ for (let attempt = 0; attempt < 20 && controller?.state.running; attempt += 1) {
 eq(controller?.state.running, false, "cancel reconciliation clears the running state");
 eq(cancelCalls, 1, "CancelTab is called once");
 eq(controller?.state.cancelRequested, false, "cancel reconciliation clears cancelRequested");
-await waitFor(
-  "cancelled transcript reload",
-  () => historyLoads > 0 && checkpointLoads > 0 && Boolean(
-    controller?.state.items.some((item) => item.kind === "user" && item.text === "hello") &&
-    controller.state.checkpoints.some((checkpoint) => checkpoint.turn === 0 && checkpoint.canConversation),
-  ),
-);
-ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "hello"), "cancelled prompt is restored from the authoritative transcript");
+await waitFor("cancelled checkpoint refresh", () => checkpointLoads > 0);
+eq(historyLoads, 0, "cancellation never reloads or replaces the transcript");
+ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "hello"), "cancelled prompt stays in the projected transcript");
 ok(controller?.state.checkpoints.some((checkpoint) => checkpoint.turn === 0 && checkpoint.canConversation), "cancelled prompt keeps its conversation checkpoint");
 
 // The screenshot repro stops before turn_started, while the backend has
@@ -253,57 +313,24 @@ await act(async () => {
   controller?.cancel();
   await flushPromises();
 });
-await waitFor(
-  "immediate cancelled transcript reload",
-  () => !controller?.state.running && historyLoads > 0 && checkpointLoads > 0 && Boolean(
-    controller?.state.items.some((item) => item.kind === "user" && item.text === "hello") &&
-    controller.state.checkpoints.some((checkpoint) => checkpoint.turn === 0 && checkpoint.canConversation),
-  ),
-);
-ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "hello"), "immediate cancellation restores the persisted prompt bubble");
-ok(controller?.state.checkpoints.some((checkpoint) => checkpoint.turn === 0 && checkpoint.canConversation), "immediate cancellation restores the rewind checkpoint");
+await waitFor("immediate cancellation", () => !controller?.state.running && checkpointLoads > 0);
+eq(historyLoads, 0, "immediate cancellation does not schedule a transcript hydrate");
+ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "hello"), "immediate cancellation keeps the optimistic prompt bubble");
+ok(controller?.state.checkpoints.some((checkpoint) => checkpoint.turn === 0 && checkpoint.canConversation), "immediate cancellation keeps the rewind checkpoint");
 
-// A new submission must invalidate a cancellation hydrate that is still
-// waiting on authoritative history; otherwise its replace dispatch can erase
-// the new optimistic turn.
+// A new submission after the interrupted terminal boundary must remain in the
+// reducer because cancellation has no whole-history replacement path anymore.
 historyLoads = 0;
-deferredHistory = true;
-backendRunning = true;
-await act(async () => {
-  await controller?.send("accidental");
-  controller?.cancel();
-  await flushPromises();
-});
-await waitFor("deferred cancellation history", () => historyLoads > 0 && resolveDeferredHistory !== undefined);
 await act(async () => {
   await controller?.send("corrected");
-  resolveDeferredHistory?.(historySliceFromMessages(
-    "tab-a",
-    [{ role: "user", content: "stale cancellation history", createdAt: Date.now(), checkpointTurn: 0 }],
-    { cursor: "" },
-  ));
-  resolveDeferredHistory = undefined;
-  deferredHistory = false;
   await flushPromises();
 });
-ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "corrected"), "resubmission survives a stale cancellation hydrate");
-ok(!controller?.state.items.some((item) => item.kind === "user" && item.text === "stale cancellation history"), "stale cancellation history cannot replace a resubmitted turn");
-
-// A failed cancellation history read must preserve the transcript that was
-// already visible instead of resetting it to an empty state.
-historyLoads = 0;
-historyShouldFail = true;
-backendRunning = true;
-await act(async () => {
-  controller?.cancel();
-  await flushPromises();
-});
-await waitFor("failed cancellation history", () => !controller?.state.running && historyLoads > 0);
-ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "corrected"), "history failure preserves the visible transcript");
-historyShouldFail = false;
+ok(Object.values(controller?.state.localSubmissions ?? {}).some((submission) => submission.text === "corrected"),
+  "resubmission keeps its local echo through completed cancellation cleanup");
+eq(historyLoads, 0, "resubmission cannot race a stale cancellation history response");
 
 await act(async () => {
-  for (const handler of eventHandlers) handler({ kind: "turn_done", tabId: "tab-a", checkpointTurn: 0 });
+  desktopStub.emit("agent:event", { kind: "turn_done", tabId: "tab-a", checkpointTurn: 0 });
   await flushPromises();
 });
 eq(checkpointHistoryCalls, 0, "TurnDone does not request the full checkpoint-turn history");
@@ -327,15 +354,73 @@ eq(cancelOutcome?.discardedItemIds.join(","), "withdrawn-guidance", "cancel retu
 
 cancelInboxError = new Error("reasonix_error:inbox_invalid_state");
 await act(async () => {
-  await controller?.cancel(["queued-guidance"]);
+  cancelOutcome = await controller?.cancel(["queued-guidance"]);
   await flushPromises();
 });
+ok(Boolean(cancelOutcome?.error), "cancellation outcome preserves failure for the decision card");
 const inboxCancelNotice = controller?.state.items.find((item) =>
   item.kind === "notice" && item.text.includes("Cancel failed: This inbox instruction cannot be changed"),
 );
 eq(cancelInboxCalls, 2, "receipt-capable cancellation is called for durable guidance");
 ok(Boolean(inboxCancelNotice), "cancel failure formats the stable inbox code for the active locale");
 ok(inboxCancelNotice?.kind === "notice" && !inboxCancelNotice.text.includes("reasonix_error:"), "cancel failure never renders the stable transport code");
+
+// Stop is a session-level request: an exact-turn fence rejection (stale or
+// replaced turn id) must fall back to the unconditional cancel instead of
+// leaving the user with a "Cancel failed" notice and a running turn.
+const noticesBefore = controller?.state.items.filter((item) => item.kind === "notice").length ?? 0;
+const cancelCallsBefore = cancelCalls;
+backendRunning = true;
+interruptError = new Error('turn "turn-live" is not the active turn for tab "tab-a"');
+await act(async () => {
+  desktopStub.emit("agent:event", { kind: "turn_started", tabId: "tab-a", turnId: "turn-live" });
+  await flushPromises();
+});
+eq(controller?.state.activeTurnId, "turn-live", "turn_started with a turn id records the active turn");
+await act(async () => {
+  await controller?.cancel();
+  await flushPromises();
+});
+eq(interruptCalls, 1, "exact-turn stop is attempted first");
+eq(cancelCalls, cancelCallsBefore + 1, "fence rejection falls back to the unconditional CancelTab");
+eq(controller?.state.items.filter((item) => item.kind === "notice").length, noticesBefore, "fence rejection does not surface a Cancel failed notice");
+await waitFor("fallback cancel reconciliation", () => controller?.state.running === false);
+
+// An idle backend answers with a stable code; the UI reconciles quietly.
+backendRunning = false;
+interruptError = new Error("reasonix_error:turn_not_running");
+await act(async () => {
+  desktopStub.emit("agent:event", { kind: "turn_started", tabId: "tab-a", turnId: "turn-idle" });
+  await flushPromises();
+});
+await act(async () => {
+  await controller?.cancel();
+  await flushPromises();
+});
+eq(interruptCalls, 2, "idle stop still asks the backend once");
+eq(cancelCalls, cancelCallsBefore + 1, "idle stop does not retry through CancelTab");
+eq(controller?.state.items.filter((item) => item.kind === "notice").length, noticesBefore, "idle stop does not surface a Cancel failed notice");
+await waitFor("idle stop reconciliation", () => controller?.state.running === false);
+
+// A transport gap can hide the final event entirely: the resnapshot must
+// settle core state while retaining the mounted transcript and never cancel.
+backendRunning = true;
+await act(async () => {
+  desktopStub.emit("agent:event", { kind: "turn_started", tabId: "tab-a", turnId: "turn-gap-final" });
+  await flushPromises();
+});
+const gapCancelCalls = cancelCalls;
+const projectedUsers = controller?.state.items.filter(item => item.kind === "user") ?? [];
+const gapHistoryLoads = historyLoads;
+backendRunning = false;
+await act(async () => {
+  desktopStub.emit("desktop:resync", { generation: "g-current", reason: "gap", expectedSeq: 2, actualSeq: 4 });
+  await flushPromises();
+});
+await waitFor("event gap runtime snapshot", () => controller?.state.running === false);
+eq(cancelCalls, gapCancelCalls, "event gap recovery never replays a state-changing command");
+ok(projectedUsers.every(item => controller?.state.items.includes(item)), "event gap recovery retains projected user item identities");
+eq(historyLoads, gapHistoryLoads + 1, "transport gap obtains one consistent Follow snapshot");
 
 await act(async () => {
   root.unmount();

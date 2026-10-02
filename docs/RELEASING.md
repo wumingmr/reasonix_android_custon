@@ -1,120 +1,162 @@
 # Releasing Reasonix
 
-Reasonix has one user-facing release line: the official `X.Y.Z` version. The
-release engine keeps the proven Stable publication topology: three immutable
-Git tags on one `main-v2` commit and one protected orchestrator.
+Reasonix prepares immutable, accepted release candidates before it creates any
+public tag. Publication consumes those exact files after one approval; recovery
+observes public state and fills only missing stages.
+
+The public identity remains compatible with existing clients:
 
 | Surface | Immutable tag | Public result |
 | --- | --- | --- |
 | CLI | `vX.Y.Z` | GitHub Release and Homebrew |
-| npm | `npm-vX.Y.Z` | root and platform packages; `latest`, `canary`, and `next` compatibility aliases |
-| Desktop | `desktop-vX.Y.Z` | signed GitHub Release, immutable R2 directory, and `latest/latest.json` |
+| npm | `npm-vX.Y.Z` | root and six platform packages; official aliases |
+| Desktop | `desktop-vX.Y.Z` | signed GitHub Release, immutable R2 directory, and Stable manifest |
 
-The three tags are implementation identities, not user-selectable channels.
-They must always resolve to the same commit and may never be moved or deleted.
+All three tags must identify the candidate product SHA. They are created in one
+atomic push and must never be moved, deleted, or recreated. The Go SDK module
+(`sdk/go`) retains its independent `sdk/go/vX.Y.Z` version line.
 
-The Go SDK module (`sdk/go`) is versioned independently of the three product
-surfaces: its tags look like `sdk/go/vX.Y.Z` (first: `sdk/go/v1.0.0`) and
-point at the release commit that first shipped the corresponding Extension
-Protocol major. SDK tags do not trigger product releases, do not move, and
-do not change the three-tag contract above.
+## Normal release
 
-## Daily release flow
-
-The normal developer path has one version input, one reviewed Notes PR, one
-terminal command, and one environment approval:
-
-1. Open Actions → **Prepare release** and enter `X.Y.Z`.
-2. Review and merge the generated bilingual release-notes PR.
-3. From an authenticated maintainer checkout, run:
+1. Run **Prepare release** with `X.Y.Z` and review the generated bilingual
+   Notes PR.
+2. Merge the Notes PR after its required checks and review complete. The merge
+   automatically starts **Prepare release candidate**. A maintainer may also
+   dispatch that workflow on protected `main-v2` with `version`. Both entrypoints
+   freeze the protected event SHA before the runner starts; arbitrary SHA inputs
+   and PR-head execution are not accepted.
+3. Wait for the candidate workflow to build the shared CLI/npm binaries, build
+   and sign all Desktop platforms, run native final-package acceptance, and
+   seal the payload and evidence. Record the candidate ID printed in its
+   summary, for example `v1.39.0-0123456789ab-abcdef012345`.
+4. From an authenticated maintainer checkout, run:
 
    ```sh
-   ./scripts/release-stable.sh X.Y.Z
+   ./scripts/release-stable.sh CANDIDATE_ID
    ```
 
-4. Approve the resulting **Release stable** run once in the `release`
-   environment.
-5. Wait for its postflight to verify CLI, npm, Desktop, R2, Homebrew, and the
-   changelog.
+5. Review the candidate ID, full product SHA, Notes digest, signing policy,
+   platform receipts, and payload hashes in **Publish release candidate**.
+   Approve its `release` environment once.
+6. Wait for CLI, npm, and Desktop publication, Stable pointer convergence, the
+   owned Pages deployment, hydrated download verification, and the publication
+   ledger.
 
-If repository policy prevents Actions from opening the Notes PR, the workflow
-still pushes `release-notes/vX.Y.Z` and prints this recoverable handoff:
+The candidate is fixed when Notes are reviewed. Later `main-v2` merges do not
+invalidate it. A product fix or a change to embedded Notes creates a new
+candidate. Do not replace source files during packaging or claim an old binary
+contains new embedded Notes.
+
+## Candidate contract
+
+The record binds the candidate ID, version, full product SHA, build and
+acceptance control SHAs, Notes catalog and rendered-body hashes, workflow run
+and attempt, exact payload artifact ID, signing fingerprint, every file size
+and SHA-256, and native Windows/macOS acceptance receipts. GitHub artifact
+attestations bind both the record and every payload file to the protected
+candidate workflow on `main-v2`.
+
+Candidate payloads are retained for 30 days. Records, native receipts,
+publication ledgers, and timing reports are retained for 90 days. An expired
+unpublished payload must be prepared again. Published files are verified from
+their immutable public channels and are not rebuilt because an Actions artifact
+expired. Candidate artifacts contain no credentials or real user data.
+
+To revoke an unpublished candidate, add its exact ID to the comma- or
+whitespace-separated repository variable `RELEASE_REVOKED_CANDIDATES`.
+Preparation reuse and publication both fail closed for listed IDs.
+
+The six CLI binaries are each built once. CLI archives, Homebrew checksums, and
+npm platform tarballs reuse those bytes. Windows architectures build in
+parallel, then share one Certum session; completed architecture bundles can be
+reused by a failed-job rerun. Windows native acceptance runs in parallel after
+signing. Desktop platforms do not wait for unrelated platform acceptance before
+starting their own downstream work.
+
+## Publication and recovery
+
+Publication verifies the record attestation, exact artifact IDs, payload
+attestations and hashes, Notes identity, protected source ancestry, signatures,
+and acceptance receipts before requesting approval. It then atomically creates
+the three tags and publishes CLI, npm, and Desktop in parallel from the sealed
+payload. Tag creation no longer starts a second legacy release pipeline.
+
+For any interrupted publication, run:
 
 ```sh
-gh pr create --repo esengine/DeepSeek-Reasonix \
-  --base main-v2 --head release-notes/vX.Y.Z --fill
+./scripts/release-stable.sh CANDIDATE_ID recover
 ```
 
-Do not rerun Notes generation merely because PR creation was denied.
+Recovery uses the same global publication lock and one approval.
 
-## What the tag helper proves
+If activation has not started, recovery creates all three absent tags in one
+atomic push. If all tags already identify the candidate, it reuses them.
+Partial tag sets and conflicting identities always stop recovery.
 
-`scripts/release-stable.sh` fails before creating any public ref unless:
+Each publisher re-reads its external state:
 
-- the version is canonical `MAJOR.MINOR.PATCH`;
-- remote `main-v2` is the commit that introduces or updates the complete,
-  reviewed Stable catalog record;
-- exact-commit `main-v2` CI completed successfully;
-- `vX.Y.Z`, `npm-vX.Y.Z`, and `desktop-vX.Y.Z` are all absent.
+- matching immutable content is reused;
+- missing content is uploaded;
+- ambiguous requests are queried before retrying;
+- conflicting immutable content stops the stage;
+- signing and native acceptance are not repeated;
+- a newer npm, R2, Homebrew, or site pointer is never rolled back by an older
+  candidate recovery;
+- a site-only failure reruns Pages and hydrated-site verification without
+  rebuilding product files.
 
-It then pushes a no-op guard for that exact `main-v2` SHA and all three
-lightweight tags with one atomic Git transaction. If `main-v2` advanced while
-CI was running, the complete transaction is rejected and no version tag is
-consumed. A partial tag set is therefore not a normal failure mode. The
-`vX.Y.Z` event starts the existing protected Stable relay; maintainers do not
-dispatch child CLI, npm, or Desktop publishers.
+The publication ledger records observed tag SHAs, every CLI and Desktop release
+asset, all seven npm package identities and registry integrity values, pointer
+outcomes, Stable manifest, Homebrew, changelog, and homepage state. Recovery
+always queries the actual service again; the ledger is evidence, not a source of
+truth for later mutations.
 
-## Publication and approval
+## Verification and timing
 
-The protected Stable workflow re-resolves all three tags to one SHA on
-`main-v2` history, revalidates that normal candidates introduced their reviewed
-Notes and passed exact-SHA push CI, and runs the cache guard before requesting
-the sole human approval. `main-v2` may safely advance after the atomic tag
-transaction without invalidating that candidate. After approval it performs a
-no-publication SignPath preflight, then runs CLI, npm, and Desktop publishers
-against the immutable candidate.
+Run **Verify release** with `X.Y.Z` for a read-only public check. It validates
+the immutable tags, GitHub release contents, all npm packages and candidate
+identity, the current Stable manifest when the version owns it, Homebrew,
+changelog, and the browser-hydrated download DOM. For an older version, newer
+public pointers are preserved and reported rather than treated as a reason to
+roll them back.
 
-The npm publisher advances `latest`, `canary`, and `next` to the same official
-version. `canary` and `next` remain only so historical scripts continue to
-install a supported build; they are not testing channels and are not advertised.
+Candidate and publication workflows upload JSON timing evidence and summarize
+queue, runner, build, signing, acceptance, upload, site deployment, and total
+wall time. Diagnostic timing failures do not invalidate a sealed candidate or a
+verified publication.
 
-No custom GitHub App, App private key, repository-owner setting change, manual
-tag UI, or child-workflow approval is required.
+## Freezing the CLI channels
 
-## Recovery
+Setting the repository variable `CLI_PUBLISH_FROZEN` to `true` hands the CLI
+install channels to another release line while this line keeps shipping. Unset,
+empty, or any value other than `true` changes nothing. The comparison ignores
+case (`TRUE` freezes), is made once in the workflow expression, and every script
+receives the resulting `true` or `false`, so both sides always agree. When it is
+`true`, a Stable release
+still creates the `vX.Y.Z` GitHub release, its immutable
+`cli/releases/<tag>/latest.json` record, the `npm-vX.Y.Z` tag, Desktop and the
+Desktop Stable manifest, but it no longer:
 
-For a partial Stable publication, open **Release stable** on protected
-`main-v2`, enter the existing `vX.Y.Z`, select only the missing surfaces, and
-approve `release` once. Recovery accepts only an immutable three-tag set that
-remains on `main-v2` history. It must reuse matching public content and fail
-closed on conflicting checksums, signatures, manifests, npm provenance, or R2
-objects.
+- writes the Homebrew cask (GoReleaser runs with `--skip=homebrew`, and the tap
+  token is withheld);
+- writes the R2 `cli/{stable,preview}/latest.json` pointers;
+- moves npm `latest`, `canary` or `next`, or waits for `latest`.
 
-Never move, delete, or recreate a published tag. Ship product corrections as a
-higher patch version.
+npm packages are still published, under the `legacy-v1` dist-tag, so `npm i -g
+reasonix@legacy-v1` (or `reasonix@1`) resolves to this line. npm refuses `v1` as
+a tag name because it parses as a semver range. Postflight and **Verify
+release** check `legacy-v1` instead of `latest` and skip the Homebrew cask.
 
-## Retired prerelease paths
+## Legacy recovery
 
-Normal Preview, Canary, and RC publication entrypoints are disabled. Historical
-tags, Releases, package versions, changelog pages, and the final bridge endpoints
-remain available for compatibility, but they do not appear in current download
-navigation or release preparation.
+**Legacy release recovery** remains available only for releases created before
+the candidate pipeline. It retains historical surface selection and recovery
+guards. New releases must use candidate IDs; do not add hard-coded run IDs or
+version exceptions to the new workflows.
 
-Old CLI and Desktop channel settings resolve to the official line. Frozen
-Preview endpoints continue to lead old clients to the bridge build, which can
-then upgrade to the current official release.
+Historical Preview, Canary, and RC artifacts remain readable, but those paths
+are not normal publication entrypoints. npm `canary` and `next` remain
+compatibility aliases for the official line.
 
-## First release after cutover
-
-For the first release after this change, independently prove:
-
-- the three tags resolve to the reviewed Notes merge SHA;
-- both GitHub Releases contain their complete expected assets;
-- npm root and all six platform packages report that SHA and
-  `latest == canary == next`;
-- R2 immutable and latest manifests are byte-identical and every URL works;
-- Homebrew and reasonix.io show the same version;
-- old bridge clients can upgrade to the official release.
-
-The release is incomplete until every public surface reaches a terminal,
-verified state.
+The release is complete only when the immutable files, current public pointers,
+hydrated website, publication ledger, and read-only verification all agree.

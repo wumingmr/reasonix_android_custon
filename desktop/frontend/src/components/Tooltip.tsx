@@ -1,8 +1,15 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
+import {
+  elementLayoutSize,
+  isElementExplicitlyHidden,
+  MAX_INITIAL_OVERLAY_MEASUREMENT_FRAMES,
+  validAnchorRect,
+} from "../lib/anchoredOverlay";
 
 type TooltipSide = "top" | "bottom" | "left" | "right";
+type TooltipPosition = { left: number; top: number; side: TooltipSide; arrowX: number; arrowY: number };
 
 const GAP = 8;
 const EDGE_PAD = 8;
@@ -21,10 +28,10 @@ function oppositeSide(side: TooltipSide): TooltipSide {
 }
 
 function samePosition(
-  current: { left: number; top: number; side: TooltipSide; arrowX: number; arrowY: number },
-  next: { left: number; top: number; side: TooltipSide; arrowX: number; arrowY: number },
+  current: TooltipPosition | null,
+  next: TooltipPosition,
 ): boolean {
-  return (
+  return !!current && (
     current.side === next.side &&
     Math.abs(current.left - next.left) < 0.5 &&
     Math.abs(current.top - next.top) < 0.5 &&
@@ -57,91 +64,105 @@ export function Tooltip({
   const tooltipRef = useRef<HTMLDivElement>(null);
   const showTimerRef = useRef<number | null>(null);
   const [open, setOpen] = useState(false);
-  const [position, setPosition] = useState({ left: 0, top: 0, side, arrowX: 0, arrowY: 0 });
+  const [position, setPosition] = useState<TooltipPosition | null>(null);
+  const positionRef = useRef<TooltipPosition | null>(null);
   const active = !disabled && label !== undefined && label !== null && label !== "";
 
-  const clearTimer = () => {
+  const clearTimer = useCallback(() => {
     if (showTimerRef.current === null) return;
     window.clearTimeout(showTimerRef.current);
     showTimerRef.current = null;
-  };
+  }, []);
 
   const show = (delay = 180) => {
     if (!active) return;
     clearTimer();
-    showTimerRef.current = window.setTimeout(() => setOpen(true), delay);
+    showTimerRef.current = window.setTimeout(() => {
+      showTimerRef.current = null;
+      if (validAnchorRect(triggerRef.current)) setOpen(true);
+    }, delay);
   };
 
-  const hide = () => {
+  const hide = useCallback(() => {
     clearTimer();
     setOpen(false);
-  };
-
-  const updatePosition = () => {
-    const trigger = triggerRef.current;
-    const tip = tooltipRef.current;
-    if (!trigger || !tip) return;
-    const rect = trigger.getBoundingClientRect();
-    const tipRect = tip.getBoundingClientRect();
-    const space = {
-      top: rect.top - EDGE_PAD,
-      bottom: window.innerHeight - rect.bottom - EDGE_PAD,
-      left: rect.left - EDGE_PAD,
-      right: window.innerWidth - rect.right - EDGE_PAD,
-    };
-    let actualSide = side;
-    if ((side === "top" || side === "bottom") && space[side] < tipRect.height + GAP + ARROW_SIZE) {
-      const opposite = oppositeSide(side);
-      if (space[opposite] > space[side]) actualSide = opposite;
-    } else if ((side === "left" || side === "right") && space[side] < tipRect.width + GAP + ARROW_SIZE) {
-      const opposite = oppositeSide(side);
-      if (space[opposite] > space[side]) actualSide = opposite;
-    }
-
-    let left =
-      actualSide === "left"
-        ? rect.left - tipRect.width - GAP - ARROW_SIZE
-        : actualSide === "right"
-          ? rect.right + GAP + ARROW_SIZE
-          : rect.left + rect.width / 2 - tipRect.width / 2;
-    let top =
-      actualSide === "top"
-        ? rect.top - tipRect.height - GAP - ARROW_SIZE
-        : actualSide === "bottom"
-          ? rect.bottom + GAP + ARROW_SIZE
-          : rect.top + rect.height / 2 - tipRect.height / 2;
-
-    left = clamp(left, EDGE_PAD, window.innerWidth - tipRect.width - EDGE_PAD);
-    top = clamp(top, EDGE_PAD, window.innerHeight - tipRect.height - EDGE_PAD);
-    const arrowX = clamp(rect.left + rect.width / 2 - left, ARROW_PAD, tipRect.width - ARROW_PAD);
-    const arrowY = clamp(rect.top + rect.height / 2 - top, ARROW_PAD, tipRect.height - ARROW_PAD);
-
-    const next = {
-      left,
-      top,
-      side: actualSide,
-      arrowX,
-      arrowY,
-    };
-    setPosition((current) => (samePosition(current, next) ? current : next));
-  };
+    positionRef.current = null;
+    setPosition(null);
+  }, [clearTimer]);
 
   useLayoutEffect(() => {
-    if (!open) return;
+    if (!open || !active) return;
+    let frame: number | null = null;
+    let measured = false;
+    let initialMeasurementRetries = 0;
+    const updatePosition = () => {
+      frame = null;
+      const trigger = triggerRef.current;
+      const rect = validAnchorRect(trigger);
+      const tip = tooltipRef.current;
+      const tipSize = tip ? elementLayoutSize(tip) : null;
+      if (!rect || !tipSize) {
+        const explicitlyHidden = !!trigger && (!trigger.isConnected || isElementExplicitlyHidden(trigger));
+        if (!measured && !explicitlyHidden && initialMeasurementRetries < MAX_INITIAL_OVERLAY_MEASUREMENT_FRAMES) {
+          initialMeasurementRetries += 1;
+          frame = window.requestAnimationFrame(updatePosition);
+        } else {
+          hide();
+        }
+        return;
+      }
+      measured = true;
+      initialMeasurementRetries = 0;
+      const space = {
+        top: rect.top - EDGE_PAD,
+        bottom: window.innerHeight - rect.bottom - EDGE_PAD,
+        left: rect.left - EDGE_PAD,
+        right: window.innerWidth - rect.right - EDGE_PAD,
+      };
+      let actualSide = side;
+      if ((side === "top" || side === "bottom") && space[side] < tipSize.height + GAP + ARROW_SIZE) {
+        const opposite = oppositeSide(side);
+        if (space[opposite] > space[side]) actualSide = opposite;
+      } else if ((side === "left" || side === "right") && space[side] < tipSize.width + GAP + ARROW_SIZE) {
+        const opposite = oppositeSide(side);
+        if (space[opposite] > space[side]) actualSide = opposite;
+      }
+
+      let left =
+        actualSide === "left"
+          ? rect.left - tipSize.width - GAP - ARROW_SIZE
+          : actualSide === "right"
+            ? rect.right + GAP + ARROW_SIZE
+            : rect.left + rect.width / 2 - tipSize.width / 2;
+      let top =
+        actualSide === "top"
+          ? rect.top - tipSize.height - GAP - ARROW_SIZE
+          : actualSide === "bottom"
+            ? rect.bottom + GAP + ARROW_SIZE
+            : rect.top + rect.height / 2 - tipSize.height / 2;
+
+      left = clamp(left, EDGE_PAD, window.innerWidth - tipSize.width - EDGE_PAD);
+      top = clamp(top, EDGE_PAD, window.innerHeight - tipSize.height - EDGE_PAD);
+      const arrowX = clamp(rect.left + rect.width / 2 - left, ARROW_PAD, tipSize.width - ARROW_PAD);
+      const arrowY = clamp(rect.top + rect.height / 2 - top, ARROW_PAD, tipSize.height - ARROW_PAD);
+
+      const next = { left, top, side: actualSide, arrowX, arrowY };
+      if (!samePosition(positionRef.current, next)) {
+        positionRef.current = next;
+        setPosition(next);
+      }
+      frame = window.requestAnimationFrame(updatePosition);
+    };
     updatePosition();
-  }, [open, label, side]);
+    return () => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
+    };
+  }, [active, hide, open, side]);
 
   useEffect(() => {
-    if (!open) return;
-    window.addEventListener("resize", updatePosition);
-    window.addEventListener("scroll", updatePosition, true);
-    return () => {
-      window.removeEventListener("resize", updatePosition);
-      window.removeEventListener("scroll", updatePosition, true);
-    };
-  }, [open]);
-
-  useEffect(() => () => clearTimer(), []);
+    if (!active) hide();
+    return () => clearTimer();
+  }, [active, clearTimer, hide]);
 
   const triggerClass = `tooltip-trigger${fill ? " tooltip-trigger--fill" : ""}${block ? " tooltip-trigger--block" : ""}${className ? ` ${className}` : ""}`;
   const setTriggerRef = (node: HTMLElement | null) => {
@@ -169,13 +190,15 @@ export function Tooltip({
           <div
             id={id}
             ref={tooltipRef}
-            className={`tooltip tooltip--${position.side}`}
+            className={`tooltip tooltip--${position?.side ?? side}`}
             role="tooltip"
             style={{
-              left: position.left,
-              top: position.top,
-              "--tooltip-arrow-x": `${position.arrowX}px`,
-              "--tooltip-arrow-y": `${position.arrowY}px`,
+              left: position?.left ?? 0,
+              top: position?.top ?? 0,
+              visibility: position ? "visible" : "hidden",
+              pointerEvents: position ? undefined : "none",
+              "--tooltip-arrow-x": `${position?.arrowX ?? 0}px`,
+              "--tooltip-arrow-y": `${position?.arrowY ?? 0}px`,
             } as CSSProperties}
           >
             {label}

@@ -84,6 +84,34 @@ text-only, so it stays on the local encoding-preserving path and keeps its
 original charset. Without those client capabilities, the normal workspace
 tools run locally inside the Reasonix process.
 
+## Opt-in MCP interaction extension
+
+Hosts supporting MCP elicitation advertise this in `initialize.clientCapabilities`:
+
+```json
+{"_meta":{"reasonix.io":{"mcpInteraction":{"supported":true,"schemaVersion":1}}}}
+```
+
+Reasonix advertises the matching capability under
+`agentCapabilities._meta.reasonix.io.mcpInteraction`, including the method
+`_reasonix.io/mcp/request_interaction`. Negotiated sessions use the interactive
+MCP host profile. Clients without this exact opt-in keep the core profile and
+receive no new reverse requests. This applies to new, loaded and rebuilt sessions.
+
+The reverse request contains `sessionId`, `promptId`, `turnId`, `server`, `mode`
+and `message`, plus `requestedSchema` for a form or `url` and `elicitationId` for
+URL mode. Respond with `{"action":"accept","content":{}}`,
+`{"action":"decline"}` or `{"action":"cancel"}`. Validate the requested form;
+URL flows require user interaction and must not send credentials as form content.
+Hosts that cannot render a requested interaction should cancel it.
+
+Replies belong to the originating controller and turn. Cancellation, malformed
+replies and rejected URLs cancel the interaction; content is ignored unless the
+action is `accept`. Reasonix persists the decision through the controller before
+releasing its MCP waiter. This does not replace standard
+`session/request_permission` or change tool permission policy. The negotiated
+host profile affects MCP capability/cache identity; transcript schema is unchanged.
+
 ## Session lifecycle
 
 Each ACP session owns an independent Reasonix controller, workspace root, model,
@@ -116,7 +144,7 @@ one mode selector:
 | Collaboration mode | `normal`, `plan`, `goal` | `modes` and `session/set_mode` |
 | Model | Configured `provider/model` entries | `configOptions` with id `model` |
 | Reasoning effort | Provider-supported levels or `auto` | `configOptions` with id `effort` |
-| Tool approval | `ask`, `auto`, `yolo` | `configOptions` with id `tool_approval` |
+| Permission preset | `read-only`, `workspace-write`, `danger-full-access` | `configOptions` with id `tool_approval` |
 
 Use `session/set_config_option` for model, effort, and tool approval.
 Its parameters are `sessionId`, `configId` and `value`, where `configId` is the
@@ -130,7 +158,7 @@ Its parameters are `sessionId`, `configId` and `value`, where `configId` is the
   "params": {
     "sessionId": "session-id",
     "configId": "tool_approval",
-    "value": "yolo"
+    "value": "danger-full-access"
   }
 }
 ```
@@ -147,11 +175,15 @@ send `session/set_config_option` with `configId` `agent_preset` or `work_mode`
 (including legacy aliases `profile`, `runtime_profile`, `token_mode`) receive a
 successful no-op: nothing switches, nothing rebuilds, and the result carries a
 `deprecatedNotice` explaining the adaptive standard execution.
+The returned `configOptions` list does not advertise these retired selectors or
+`quality_floor`. A known legacy `quality_floor` value is accepted as the same
+no-op, while unknown values still return `InvalidParams`.
 
 For older clients, `session/set_model` remains available. The legacy
-`session/set_mode` values `default` and `auto` are also accepted as Normal + Ask
-and Normal + Yolo respectively; new clients should use the independent
-selectors above.
+`session/set_mode` values `default` and `auto` are also accepted as Normal +
+Read only and Normal + Workspace access respectively; new clients should use
+the independent selectors above. Legacy permission values are accepted only as
+input migration aliases and are never advertised in `configOptions`.
 
 ## Prompts, updates, and approvals
 
@@ -170,13 +202,18 @@ Hosts should keep the `session/prompt` request open until Reasonix returns its
 stop reason, while continuing to process requests and notifications in both
 directions.
 
-Reasonix emits only ACP v1 stop reasons. A completed turn that still needs a
-final-readiness check sends a `[warning]` message chunk and returns `end_turn`;
-its vendor status remains `readiness_paused` so the host can offer recovery.
-An explicit model-round limit (`max_steps`) sends a `[warning]`, returns
+Reasonix emits only ACP v1 stop reasons. Model completion ends the ordinary
+turn without a host readiness check or recovery action. An explicit model-round limit (`max_steps`) sends a `[warning]`, returns
 `max_turn_requests`, and records a paused vendor outcome. A host task-time,
 token, or cost budget also sends a `[warning]` and records a paused outcome,
 but returns `end_turn` because ACP v1 has no task-budget-specific stop reason.
+The completion validator has been removed. A clean model stop without tool
+calls returns `end_turn`; a response with tool calls continues through the
+agent loop, and a truly empty response is retried at the frozen-request
+boundary. Legacy `completion_validation`, `completion_evaluator_model`, and
+`REASONIX_COMPLETION_VALIDATION_MODE` settings remain readable but are ignored
+and are no longer emitted. Host-owned readiness, budget, tool-safety, and
+recovery boundaries remain active.
 Client cancellation returns `cancelled`, even when the interrupted runner exits
 without an error. Other provider, tool, or runtime failures return a JSON-RPC
 `-32603 InternalError` whose message contains a bounded, credential-redacted

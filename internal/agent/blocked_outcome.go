@@ -6,12 +6,11 @@ import "reasonix/internal/tool"
 // outcome, with the not-run shell metadata a blocked bash card renders.
 func (a *Agent) blockedToolOutcome(plan *toolCallPlan, msg string) toolOutcome {
 	out := toolOutcome{
-		output:             msg,
-		blocked:            true,
-		errMsg:             firstLine(msg),
-		recoveryGeneration: plan.recoveryGen,
+		output:  msg,
+		blocked: true,
+		errMsg:  firstLine(msg),
 	}
-	if plan.evidenceName == "bash" || plan.call.Name == "bash" {
+	if tool.IsShellToolName(plan.evidenceName) || tool.IsShellToolName(plan.call.Name) {
 		out.execution = shellPreflightExecution(plan, plan.verification)
 	}
 	return out
@@ -20,7 +19,7 @@ func (a *Agent) blockedToolOutcome(plan *toolCallPlan, msg string) toolOutcome {
 // blockedShellOutcome fills host-only terminal metadata for an early policy
 // refusal that was produced before blockedToolOutcome could shape it.
 func blockedShellOutcome(out toolOutcome, plan *toolCallPlan) toolOutcome {
-	if out.execution == nil && plan != nil && (plan.evidenceName == "bash" || plan.call.Name == "bash") {
+	if out.execution == nil && plan != nil && (tool.IsShellToolName(plan.evidenceName) || tool.IsShellToolName(plan.call.Name)) {
 		out.execution = shellPreflightExecution(plan, plan.verification)
 	}
 	return out

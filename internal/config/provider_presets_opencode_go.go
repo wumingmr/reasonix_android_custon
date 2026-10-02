@@ -2,6 +2,19 @@ package config
 
 import "reasonix/internal/provider"
 
+var (
+	opencodeGoAnthropicModels       = provider.OpenCodeGoModelIDs(provider.OpenCodeGoRouteAnthropic)
+	opencodeGoAnthropicVisionModels = provider.OpenCodeGoVisionModelIDs(provider.OpenCodeGoRouteAnthropic)
+	opencodeGoResponsesModels       = provider.OpenCodeGoModelIDs(provider.OpenCodeGoRouteResponses)
+	opencodeGoResponsesVisionModels = provider.OpenCodeGoVisionModelIDs(provider.OpenCodeGoRouteResponses)
+)
+
+// Chat preset lists v1.37.0-v1.39.1 shipped while minimax-m2.7 sat on the chat route.
+var shippedMiniMaxChatOpenCodeGoModels = [][]string{
+	{"deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4-pro", "glm-5.1", "glm-5.2", "glm-5.3", "glm-5.3-flash", "hy3", "hy4-preview", "kimi-k2.6", "kimi-k2.7-code", "kimi-k3", "longcat-2.0", "mimo-v2.5", "mimo-v2.5-pro", "minimax-m2.7", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus", "qwen3.8-max"},
+	{"deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4-pro", "glm-5.1", "glm-5.2", "glm-5.3", "glm-5.3-flash", "hy3", "hy4-preview", "kimi-k2.6", "kimi-k2.7-code", "kimi-k3", "longcat-2.0", "mimo-v2.5", "mimo-v2.5-pro", "minimax-m2.7", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus", "qwen3.8-max"},
+}
+
 func withOpenCodeGoChatContextOverrides(base map[string]ProviderModelOverride) map[string]ProviderModelOverride {
 	if base == nil {
 		base = map[string]ProviderModelOverride{}
@@ -9,6 +22,10 @@ func withOpenCodeGoChatContextOverrides(base map[string]ProviderModelOverride) m
 	for id, lim := range provider.OpenCodeGoChatModels() {
 		ov := base[id]
 		ov.ContextWindow = lim.Context
+		if provider.OpenCodeGoDeepSeekModel(id) {
+			contract, _ := provider.OpenCodeGoContractForRoute(provider.OpenCodeGoRouteChat, id)
+			ov.ReasoningProtocol, ov.SupportedEfforts, ov.DefaultEffort = contract.ReasoningProtocol, contract.Reasoning.IDs(), contract.Reasoning.Default
+		}
 		base[id] = ov
 	}
 	return base
@@ -43,6 +60,11 @@ func openCodeGoRecommendedChatOverrides() map[string]ProviderModelOverride {
 		out[id] = ProviderModelOverride{ContextWindow: lim.Context, MaxOutputTokens: minPositive(lim.MaxOutput, 32_768)}
 	}
 	for id, ov := range map[string]ProviderModelOverride{
+		"deepseek-v4-flash-vision-exp": {
+			ReasoningProtocol: ReasoningProtocolDeepSeek,
+			SupportedEfforts:  []string{"disabled", "low", "high", "max"},
+			DefaultEffort:     "high",
+		},
 		"glm-5.3": {
 			ReasoningProtocol: ReasoningProtocolOpenAI,
 			SupportedEfforts:  []string{"low", "high", "max"},
@@ -60,12 +82,12 @@ func openCodeGoRecommendedChatOverrides() map[string]ProviderModelOverride {
 		},
 		"deepseek-v4-flash": {
 			ReasoningProtocol: ReasoningProtocolDeepSeek,
-			SupportedEfforts:  []string{"disabled", "high", "max"},
+			SupportedEfforts:  []string{"disabled", "low", "high", "max"},
 			DefaultEffort:     "high",
 		},
 		"deepseek-v4-pro": {
 			ReasoningProtocol: ReasoningProtocolDeepSeek,
-			SupportedEfforts:  []string{"disabled", "high", "max"},
+			SupportedEfforts:  []string{"disabled", "low", "high", "max"},
 			DefaultEffort:     "high",
 		},
 		"kimi-k2.6": {
@@ -167,8 +189,8 @@ var opencodeGoRecommendedPreset = ProviderPreset{
 			Name:            "opencode-go-anthropic",
 			Kind:            "anthropic",
 			BaseURL:         "https://opencode.ai/zen/go",
-			Models:          []string{"qwen3.8-max", "qwen3.7-plus", "qwen3.7-max", "qwen3.6-plus", "minimax-m3", "minimax-m2.7", "minimax-m2.5"},
-			VisionModels:    []string{"qwen3.8-max", "qwen3.7-plus", "qwen3.6-plus"},
+			Models:          opencodeGoAnthropicModels,
+			VisionModels:    opencodeGoAnthropicVisionModels,
 			Default:         "qwen3.7-plus",
 			APIKeyEnv:       "OPENCODE_GO_API_KEY",
 			Thinking:        "adaptive",
@@ -181,8 +203,8 @@ var opencodeGoRecommendedPreset = ProviderPreset{
 			Name:             "opencode-go-responses",
 			Kind:             "responses",
 			BaseURL:          "https://opencode.ai/zen/go/v1",
-			Models:           []string{"grok-4.5", "gpt-5.6-luna", "muse-spark-1.2-contributor"},
-			VisionModels:     []string{"grok-4.5", "gpt-5.6-luna", "muse-spark-1.2-contributor"},
+			Models:           opencodeGoResponsesModels,
+			VisionModels:     opencodeGoResponsesVisionModels,
 			Default:          "grok-4.5",
 			APIKeyEnv:        "OPENCODE_GO_API_KEY",
 			ResponsesMode:    "stateless",
@@ -211,8 +233,8 @@ var opencodeGoAnthropicPreset = ProviderPreset{
 		Name:            "opencode-go-anthropic",
 		Kind:            "anthropic",
 		BaseURL:         "https://opencode.ai/zen/go",
-		Models:          []string{"qwen3.8-max", "qwen3.7-plus", "qwen3.7-max", "qwen3.6-plus", "minimax-m3", "minimax-m2.7", "minimax-m2.5"},
-		VisionModels:    []string{"qwen3.8-max", "qwen3.7-plus", "qwen3.6-plus"},
+		Models:          opencodeGoAnthropicModels,
+		VisionModels:    opencodeGoAnthropicVisionModels,
 		Default:         "qwen3.7-plus",
 		APIKeyEnv:       "OPENCODE_GO_API_KEY",
 		Thinking:        "adaptive",
@@ -238,8 +260,8 @@ var opencodeGoResponsesPreset = ProviderPreset{
 		Name:             "opencode-go-responses",
 		Kind:             "responses",
 		BaseURL:          "https://opencode.ai/zen/go/v1",
-		Models:           []string{"grok-4.5", "gpt-5.6-luna", "muse-spark-1.2-contributor"},
-		VisionModels:     []string{"grok-4.5", "gpt-5.6-luna", "muse-spark-1.2-contributor"},
+		Models:           opencodeGoResponsesModels,
+		VisionModels:     opencodeGoResponsesVisionModels,
 		Default:          "grok-4.5",
 		APIKeyEnv:        "OPENCODE_GO_API_KEY",
 		ResponsesMode:    "stateless",
@@ -265,19 +287,20 @@ var opencodeGoDeepSeekAnthropicPreset = ProviderPreset{
 	Optional:       true,
 	DisplayOrder:   40,
 	Entries: []ProviderEntry{{
-		Name:             "opencode-go-deepseek-anthropic",
-		Kind:             "anthropic",
-		BaseURL:          "https://opencode.ai/zen/go",
-		Models:           []string{"deepseek-v4-flash"},
-		Default:          "deepseek-v4-flash",
-		APIKeyEnv:        "OPENCODE_GO_API_KEY",
-		Thinking:         "adaptive",
-		WebSearch:        boolPointer(true),
-		ContextWindow:    1_000_000,
-		MaxOutputTokens:  32_768,
-		SupportedEfforts: []string{"disabled", "high", "max"},
-		DefaultEffort:    "high",
-		BillingMode:      "subscription_equivalent",
+		Name:              "opencode-go-deepseek-anthropic",
+		ReasoningProtocol: ReasoningProtocolDeepSeek,
+		Kind:              "anthropic",
+		BaseURL:           "https://opencode.ai/zen/go",
+		Models:            []string{"deepseek-v4-flash"},
+		Default:           "deepseek-v4-flash",
+		APIKeyEnv:         "OPENCODE_GO_API_KEY",
+		Thinking:          "adaptive",
+		WebSearch:         boolPointer(true),
+		ContextWindow:     1_000_000,
+		MaxOutputTokens:   32_768,
+		SupportedEfforts:  []string{"disabled", "low", "high", "max"},
+		DefaultEffort:     "high",
+		BillingMode:       "subscription_equivalent",
 	}},
 }
 
@@ -294,18 +317,19 @@ var opencodeGoDeepSeekResponsesPreset = ProviderPreset{
 	Optional:       true,
 	DisplayOrder:   50,
 	Entries: []ProviderEntry{{
-		Name:             "opencode-go-deepseek-responses",
-		Kind:             "responses",
-		BaseURL:          "https://opencode.ai/zen/go/v1",
-		Models:           []string{"deepseek-v4-flash"},
-		Default:          "deepseek-v4-flash",
-		APIKeyEnv:        "OPENCODE_GO_API_KEY",
-		ResponsesMode:    "stateless",
-		WebSearch:        boolPointer(true),
-		ContextWindow:    1_000_000,
-		MaxOutputTokens:  32_768,
-		SupportedEfforts: []string{"disabled", "high", "max"},
-		DefaultEffort:    "high",
-		BillingMode:      "subscription_equivalent",
+		Name:              "opencode-go-deepseek-responses",
+		ReasoningProtocol: ReasoningProtocolDeepSeek,
+		Kind:              "responses",
+		BaseURL:           "https://opencode.ai/zen/go/v1",
+		Models:            []string{"deepseek-v4-flash"},
+		Default:           "deepseek-v4-flash",
+		APIKeyEnv:         "OPENCODE_GO_API_KEY",
+		ResponsesMode:     "stateless",
+		WebSearch:         boolPointer(true),
+		ContextWindow:     1_000_000,
+		MaxOutputTokens:   32_768,
+		SupportedEfforts:  []string{"none", "low", "high", "max"},
+		DefaultEffort:     "high",
+		BillingMode:       "subscription_equivalent",
 	}},
 }

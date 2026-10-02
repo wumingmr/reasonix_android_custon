@@ -37,6 +37,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
+import { selectSession } from "./app-page-actions.mjs";
 
 const frontendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // Keep the browser download inside the repo when the caller did not pin one.
@@ -222,9 +223,9 @@ async function rendererTaskDuration(cdp) {
 }
 
 const INTERACTIVE_FN = () => {
-  const input = document.querySelector("textarea.composer__input");
+  const input = document.querySelector("textarea.composer__input:not([aria-hidden=true])");
   const inputReady = Boolean(input && !input.disabled);
-  const rows = document.querySelectorAll(".transcript__row").length;
+  const rows = document.querySelectorAll(".chat-node").length;
   return inputReady && rows > 0;
 };
 
@@ -246,7 +247,7 @@ async function coldOpenOnce(browser) {
 async function waitForSessionVisible(page, tab, timeoutMs = 15_000) {
   await page.waitForFunction(
     ({ label, marker }) => {
-      const active = document.querySelector(".project-tree__topic--active .project-tree__topic-label");
+      const active = document.querySelector('.project-tree__topic--active .project-tree__topic-label');
       if (!active || !active.textContent?.includes(label)) return false;
       const transcript = document.querySelector(".transcript");
       return Boolean(transcript && transcript.textContent?.includes(marker));
@@ -258,7 +259,7 @@ async function waitForSessionVisible(page, tab, timeoutMs = 15_000) {
 
 async function switchTo(page, tab) {
   const startedAt = await page.evaluate(() => performance.now());
-  await page.click(`.project-tree__topic-main:has-text("${tab.label}")`);
+  await selectSession(page, tab.label);
   await waitForSessionVisible(page, tab);
   const settledAt = await page.evaluate(() => performance.now());
   return settledAt - startedAt;
@@ -283,7 +284,7 @@ async function settleMarkdownMounts(page, timeoutMs = 10_000) {
   try {
     await page.waitForFunction(() => (
       [...document.querySelectorAll(".transcript [data-markdown-blocks]")].every((element) => (
-        Number(element.getAttribute("data-markdown-visible-blocks")) > 0
+        Number(element.getAttribute("data-markdown-blocks")) > 0
       ))
     ), undefined, { timeout: timeoutMs, polling: 100 });
   } catch (error) {
@@ -370,7 +371,7 @@ async function main() {
       if ((i + 1) % 10 === 0) {
         // INP-ish probe: real key events against the composer while the
         // pipeline is warm; event-timing entries capture the latency.
-        const composer = page.locator("textarea.composer__input");
+        const composer = page.locator("textarea.composer__input:not([aria-hidden=true])");
         await composer.click();
         await page.keyboard.type("x", { delay: 5 });
         await page.keyboard.press("Backspace");

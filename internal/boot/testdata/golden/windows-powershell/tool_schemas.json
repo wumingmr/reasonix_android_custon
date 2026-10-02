@@ -1,0 +1,520 @@
+[
+  {
+    "Name": "ask",
+    "Description": "Ask the user one or more multiple-choice questions when you hit a decision that is genuinely theirs to make — one you can't resolve from the request, the code, or sensible defaults. The frontend shows the options for the user to pick; their choices are returned to you. Prefer this over asking in prose for any real fork (which approach, which library, scope). Don't use it for decisions with an obvious default — pick the sensible option and proceed. Permission presets do not answer these questions for the user. Each question has a short `header` (a tab label), the `question` text, 2-4 `options` (each a `label` and optional `description`; put any recommended option first), and `multiSelect` when more than one may apply.",
+    "ReadOnly": true,
+    "Schema": {
+      "properties": {
+        "decision_id": {
+          "description": "Required when reopening a previously accepted decision; cite the original decision_id.",
+          "type": "string"
+        },
+        "new_evidence": {
+          "description": "Required with decision_id when asking again after the user already accepted a consequence.",
+          "type": "string"
+        },
+        "questions": {
+          "description": "1-3 related questions to ask together. Same ambiguity is asked only once.",
+          "items": {
+            "properties": {
+              "header": {
+                "description": "Very short label for the question (a tab title), e.g. \"Library\".",
+                "type": "string"
+              },
+              "multiSelect": {
+                "description": "Allow selecting more than one option.",
+                "type": "boolean"
+              },
+              "options": {
+                "description": "The choices. Put any recommended option first.",
+                "items": {
+                  "properties": {
+                    "description": {
+                      "description": "Optional one-line explanation of the choice.",
+                      "type": "string"
+                    },
+                    "label": {
+                      "description": "The choice text (concise).",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "label"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 4,
+                "minItems": 2,
+                "type": "array"
+              },
+              "question": {
+                "description": "The full question to ask.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "header",
+              "options",
+              "question"
+            ],
+            "type": "object"
+          },
+          "maxItems": 3,
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "questions"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "Name": "compress",
+    "Description": "Compress a selected part of the current model-visible conversation without deleting visible history. Use only when the user explicitly asks for context compression. Choose `before` to summarize everything before the uniquely matched user turn while keeping that turn and later context, or `after` to summarize from that turn through the last completed turn while keeping the active turn. The anchor must be an exact, unique excerpt from a real user message; use a longer excerpt if the tool reports multiple matches.",
+    "ReadOnly": true,
+    "Schema": {
+      "additionalProperties": false,
+      "properties": {
+        "anchor": {
+          "description": "An exact, unique excerpt from one real user message in the current model-visible conversation.",
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        "direction": {
+          "description": "Which side of the anchor user turn to compress.",
+          "enum": [
+            "before",
+            "after"
+          ],
+          "type": "string"
+        },
+        "focus": {
+          "description": "Optional guidance about facts or decisions the summary must preserve.",
+          "maxLength": 2000,
+          "type": "string"
+        }
+      },
+      "required": [
+        "anchor",
+        "direction"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "Name": "create_goal",
+    "Description": "Create one persisted same-session goal when the current direct human request is a long-running objective that should continue across autonomous rounds. You may infer that intent without requiring the user to name goal mode. Do not use this for routine single-turn work.",
+    "ReadOnly": false,
+    "Schema": {
+      "additionalProperties": false,
+      "properties": {
+        "max_goal_rounds": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional positive automatic-round limit; omit or null for unlimited."
+        },
+        "objective": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "objective"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "Name": "edit_file",
+    "Description": "Replace an exact string in a file with another. old_string must occur exactly once; add surrounding context to disambiguate. Use for targeted edits instead of rewriting the whole file.",
+    "ReadOnly": false,
+    "Schema": {
+      "properties": {
+        "new_string": {
+          "description": "Replacement text (may be empty to delete)",
+          "type": "string"
+        },
+        "old_string": {
+          "description": "Exact text to replace (must be unique in the file)",
+          "type": "string"
+        },
+        "path": {
+          "description": "File path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "new_string",
+        "old_string",
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "Name": "get_goal",
+    "Description": "Read the current same-session goal, including its exact id/revision, objective, phase, admitted rounds, optional round limit, blocker reason, and live activation. Call this before update_goal.",
+    "ReadOnly": true,
+    "Schema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "Name": "job_kill",
+    "Description": "Request cancellation of a running background job by job id. Returns immediately; the process tree settles as killed once shutdown completes.",
+    "ReadOnly": false,
+    "Schema": {
+      "properties": {
+        "job_id": {
+          "description": "Job id returned by the tool that started the background work.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Optional short reason for stopping the job.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "Name": "job_output",
+    "Description": "Read output from a background job. Reads are non-blocking unless wait=true; every response includes the current status. Do not busy-poll a running job.",
+    "ReadOnly": true,
+    "Schema": {
+      "properties": {
+        "filter": {
+          "description": "Optional regular expression; only matching lines of new output are returned.",
+          "type": "string"
+        },
+        "job_id": {
+          "description": "Job id returned by the tool that started the background work.",
+          "type": "string"
+        },
+        "timeout_ms": {
+          "description": "Maximum wait in milliseconds. Defaults to 30000 and is capped at 600000.",
+          "maximum": 600000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "wait": {
+          "description": "Wait until the job finishes or timeout_ms elapses. A timeout leaves the job running.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "Name": "pwsh",
+    "Description": "Execute one PowerShell command in an isolated process and return combined stdout/stderr. The host prefers PowerShell 7 and can fall back to Windows PowerShell 5.1, so use syntax accepted by both:\n  - chaining: ';' runs both commands; use 'if ($?) { ... }' for conditional execution.\n  - redirect/vars: $null not /dev/null; $env:VAR not $VAR; '2\u003e$null' drops stderr.\n  - file ops: Get-ChildItem (ls), Remove-Item -Recurse -Force (rm -rf), Copy-Item (cp), Select-String (grep).\n  - file text: read with read_file and change with edit_file/write_file, not Get-Content, Set-Content, Out-File or '\u003e'. Windows PowerShell 5.1 reads BOM-less UTF-8 as the ANSI code page and writes ANSI or UTF-16; the built-in tools keep each file's encoding and BOM.\n  - no head/tail/which/touch: use Select-Object -First/-Last N, (Get-Command x).Source, New-Item.\n  - services/watchers: set run_in_background=true and manage the returned job id with job_output/job_kill.\n  - multi-line text to a native exe (e.g. git commit -m): use a single-quoted here-string @'...'@ (closing '@ at column 0). Use for builds, tests, git, package managers, etc. To search/read/list/edit/move files, prefer the dedicated tools (grep, read_file, ls, glob, edit_file, move_file) over shell grep/cat/ls/find/sed/mv/Move-Item — they behave identically on every OS. For symbol search or architecture questions, prefer LSP/read tools and targeted grep before shell commands.",
+    "ReadOnly": false,
+    "Schema": {
+      "properties": {
+        "additional_write_dirs": {
+          "description": "Directories this command must write outside the workspace. Directories only, no globs. Accepts absolute paths, workspace-relative paths, ~, and ${HOME}. Request the smallest set needed; the host will not infer paths from the command text.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "command": {
+          "description": "PowerShell command to execute",
+          "type": "string"
+        },
+        "denial_id": {
+          "description": "Host-issued denial identifier required when retrying with danger-full-access.",
+          "type": "string"
+        },
+        "description": {
+          "description": "Clear 5-10 word active-voice description shown in the UI",
+          "type": "string"
+        },
+        "justification": {
+          "description": "Required when additional_write_dirs or sandbox_permissions is set. Explain why the access is needed.",
+          "type": "string"
+        },
+        "run_in_background": {
+          "description": "Run without a foreground timeout and return a pwsh job id immediately. Read it with job_output or stop it with job_kill.",
+          "type": "boolean"
+        },
+        "sandbox_permissions": {
+          "description": "Optional per-call permission escalation. Use workspace-write for an authorized write while the session is read-only. danger-full-access is accepted only after a host-recorded denial and explicit authorization.",
+          "enum": [
+            "workspace-write",
+            "danger-full-access"
+          ],
+          "type": "string"
+        },
+        "timeout_ms": {
+          "description": "Optional foreground timeout in milliseconds, capped by the configured shell timeout",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "command",
+        "description"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "Name": "read_file",
+    "Description": "Read one bounded text window with optional line offset/limit. Output prefixes each line with its 1-based number. Any successful window observes the current file version for later structured edits. Use the next-window hint to page only when more content is useful. Legacy intent and cursor fields are accepted as navigation hints and never create a whole-file completion requirement.",
+    "ReadOnly": true,
+    "Schema": {
+      "properties": {
+        "cursor": {
+          "description": "Optional continuation cursor from a prior result. Invalid legacy cursors should be replaced with an explicit offset and limit.",
+          "type": "string"
+        },
+        "intent": {
+          "description": "Compatibility hint. Every value reads only this bounded window and creates no whole-file obligation.",
+          "enum": [
+            "inspect",
+            "range",
+            "full"
+          ],
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum lines to return (default 2000)",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "0-based line offset to start reading from (default 0)",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "description": "File path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "Name": "todo_write",
+    "Description": "Replace the current turn's complete task list. Send the full flat list on every call; an empty list clears it. Items may be reordered, removed, replanned, or have any number in progress. Each item contains only content and status (pending|in_progress|completed).",
+    "ReadOnly": true,
+    "Schema": {
+      "additionalProperties": false,
+      "properties": {
+        "todos": {
+          "description": "The complete flat task list for this turn. Replaces the previous list; [] clears it.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "content": {
+                "description": "Task text. Leading and trailing whitespace is removed.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "pending",
+                  "in_progress",
+                  "completed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "content",
+              "status"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "todos"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "Name": "update_goal",
+    "Description": "Update the exact current goal revision. edit, pause, and resume require current direct-human authority; complete and blocked are also allowed during the exact autonomous goal round. There is no continue action: leaving an active goal unchanged continues it automatically. Only edit consumes objective/max_goal_rounds; only blocked consumes blocked_reason. Omit unused fields; supplied unused fields are ignored.",
+    "ReadOnly": false,
+    "Schema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "edit",
+            "pause",
+            "resume",
+            "complete",
+            "blocked"
+          ],
+          "type": "string"
+        },
+        "blocked_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Non-empty concrete blocker required for blocked. Ignored for other actions."
+        },
+        "goal_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "max_goal_rounds": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Replacement limit for edit; omit to keep it, null removes the limit. Ignored for other actions."
+        },
+        "objective": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Replacement non-empty objective for edit; omit or null to keep it. Ignored for other actions."
+        },
+        "revision": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "action",
+        "goal_id",
+        "revision"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "Name": "use_capability",
+    "Description": "Fixed-schema capability proxy. Prefer search(query, limit\u003c=8), then inspect one exact capability, then call it. list is a compact diagnostic inventory only. Supports stable ids such as tool:grep, skill:review, mcp-tool:server/tool, task:subagent, workflow:name, and web:/lsp:/session:/memory: namespaces. memory:remember saves facts (description+body required; activation=\"relevant\" on create; omit activation on update; \"pinned\" only if user asks); memory:forget(name); tool:memory(operation=search|read|list). decline records a reason for a prefer capability. Independent list/search/inspect calls are read-only and may be issued together. Calls keep the provider-visible schema fixed; real writers still pass permission, plan mode, sandbox, write-path, and workspace-lease checks.",
+    "ReadOnly": true,
+    "Schema": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "description": "Use search for discovery, inspect one exact result, then call. list is diagnostic only.",
+          "enum": [
+            "list",
+            "search",
+            "inspect",
+            "call",
+            "decline"
+          ],
+          "type": "string"
+        },
+        "arguments": {
+          "description": "Raw MCP tool arguments for action=call",
+          "type": "object"
+        },
+        "capability_id": {
+          "description": "Capability id such as skill:review, mcp-server:github, or mcp-tool:github/search_issues. Not required for action=list.",
+          "type": "string"
+        },
+        "cursor": {
+          "description": "Opaque cursor returned by action=list. It is valid only for the same catalog version.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum results. Search defaults to 5 and allows at most 8; list defaults to 50 and allows at most 100.",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "query": {
+          "description": "Local catalog query required for action=search. No process or network is started.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Required non-empty reason when action=decline",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "Name": "view_image",
+    "Description": "Read a local PNG, JPEG, GIF, or WebP image by path and return visual content through native vision or the configured image-understanding model. Use this for image paths instead of read_file. Maximum file size: 3 MiB; maximum dimensions: 40 million pixels.",
+    "ReadOnly": true,
+    "Schema": {
+      "properties": {
+        "path": {
+          "description": "Image file path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "Name": "write_file",
+    "Description": "Write content to a file at the given path (overwriting existing content). Creates parent directories as needed.",
+    "ReadOnly": false,
+    "Schema": {
+      "properties": {
+        "content": {
+          "description": "Full content to write",
+          "type": "string"
+        },
+        "path": {
+          "description": "File path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "path"
+      ],
+      "type": "object"
+    }
+  }
+]

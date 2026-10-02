@@ -9,6 +9,8 @@ channel="${RELEASE_CHANNEL:?RELEASE_CHANNEL is required}"
 tag="${RELEASE_TAG:?RELEASE_TAG is required}"
 orchestrated="${IN_ORCHESTRATED:-false}"
 orchestrator="${IN_ORCHESTRATOR:-}"
+candidate_preparation="${CANDIDATE_PREPARATION:-false}"
+candidate_rehearsal="${CANDIDATE_REHEARSAL:-false}"
 approved_sha="${APPROVED_SHA:-}"
 caller_event="${CALLER_EVENT_NAME:-}"
 caller_ref="${CALLER_REF:-}"
@@ -28,17 +30,35 @@ true | false) ;;
 esac
 if [ "$orchestrated" = "true" ]; then
 	case "$orchestrator" in
-	stable | preview) ;;
+	stable | preview | candidate | promote) ;;
 	*)
 		echo "::error::IN_ORCHESTRATOR must be stable or preview for an orchestrated Desktop release, got: $orchestrator" >&2
 		exit 2
 		;;
 	esac
-	if [ "$orchestrator" != "$channel" ]; then
+	if [ "$orchestrator" != "$channel" ] && [ "$orchestrator" != candidate ] && [ "$orchestrator" != promote ]; then
 		echo "::error::the $orchestrator orchestrator cannot authorize a Desktop $channel candidate" >&2
 		exit 1
 	fi
 fi
+case "$candidate_preparation" in
+true | false) ;;
+*)
+	echo "::error::CANDIDATE_PREPARATION must be true or false, got: $candidate_preparation" >&2
+	exit 2
+	;;
+esac
+if [ "$candidate_preparation" = true ] && { [ "$orchestrated" != true ] || [ "$orchestrator" != candidate ] || [ "$channel" != stable ]; }; then
+	echo "::error::candidate preparation requires the protected candidate orchestrator" >&2
+	exit 1
+fi
+case "$candidate_rehearsal" in
+true)
+	[ "$candidate_preparation" = true ] || { echo "::error::rehearsal requires non-publishing candidate preparation" >&2; exit 1; }
+	;;
+false) ;;
+*) echo "::error::CANDIDATE_REHEARSAL must be true or false" >&2; exit 2 ;;
+esac
 case "$require_current_main" in
 true | false) ;;
 *)
@@ -54,7 +74,7 @@ true | false) ;;
 	;;
 esac
 
-stable_tag_pattern='^desktop-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+)(\.[0-9A-Za-z-]+)*)?)?$'
+stable_tag_pattern='^desktop-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+)(\.[0-9A-Za-z-]+)*)?$'
 preview_tag_pattern='^desktop-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-preview\.(0|[1-9][0-9]*)$'
 
 case "$channel" in
@@ -113,10 +133,17 @@ if ! git merge-base --is-ancestor "$candidate" "$main_sha"; then
 fi
 
 if [ "$channel" = "stable" ]; then
-	tag_sha="$(git rev-parse "$tag^{commit}")"
-	if [ "$tag_sha" != "$candidate" ]; then
-		echo "::error::$tag points to $tag_sha, expected Desktop candidate $candidate" >&2
-		exit 1
+	if [ "$candidate_preparation" = true ]; then
+		if [ "$candidate_rehearsal" != true ] && git show-ref --verify --quiet "refs/tags/$tag"; then
+			echo "::error::candidate preparation refuses an existing release tag: $tag" >&2
+			exit 1
+		fi
+	else
+		tag_sha="$(git rev-parse "$tag^{commit}")"
+		if [ "$tag_sha" != "$candidate" ]; then
+			echo "::error::$tag points to $tag_sha, expected Desktop candidate $candidate" >&2
+			exit 1
+		fi
 	fi
 elif git show-ref --verify --quiet "refs/tags/$tag"; then
 	echo "::error::Desktop Preview uses an immutable asset directory, not a Git tag: $tag" >&2

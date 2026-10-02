@@ -10,15 +10,35 @@ import (
 	"reasonix/internal/plugin"
 )
 
+type invokedSkillsKey struct{}
+
+func withInvokedSkills(ctx context.Context, names []string) context.Context {
+	if len(names) == 0 {
+		return ctx
+	}
+	invoked := make(map[string]bool, len(names))
+	for _, name := range names {
+		invoked[strings.ToLower(name)] = true
+	}
+	return context.WithValue(ctx, invokedSkillsKey{}, invoked)
+}
+
+func invokedSkills(ctx context.Context) map[string]bool {
+	invoked, _ := ctx.Value(invokedSkillsKey{}).(map[string]bool)
+	return invoked
+}
+
 func (c *Controller) withCapabilityRoute(ctx context.Context, composed, routeInput string) string {
 	if c == nil {
 		return composed
 	}
 	routeInput = strings.TrimSpace(agent.StripTransientUserBlocks(routeInput))
-	if routeInput == "" {
+	// A resolved inline invocation already supplies the skill body. With no
+	// typed task, routing on that body would invent a second skill request.
+	if routeInput == "" && len(invokedSkills(ctx)) == 0 {
 		routeInput = strings.TrimSpace(agent.StripTransientUserBlocks(composed))
 	}
-	if routeInput == "" {
+	if routeInput == "" && len(invokedSkills(ctx)) == 0 {
 		return composed
 	}
 	decision := c.routeCapabilities(ctx, routeInput)
@@ -46,7 +66,10 @@ func (c *Controller) routeCapabilities(ctx context.Context, routeInput string) c
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	tools := c.ToolContractEntries()
+	// The catalog must reflect every registered tool, not just the provider-visible
+	// surface: optional tools (skills, subagents, …) stay off that surface but are
+	// reachable through use_capability, so their readiness decides the route.
+	tools := c.AllToolContractEntries()
 	// Deterministic routing is first. The semantic router runs only when that
 	// catalog match is itself ambiguous — never as a per-turn classification.
 	var proxyTools map[string][]plugin.CachedTool
@@ -90,6 +113,15 @@ func (c *Controller) routeCapabilities(ctx context.Context, routeInput string) c
 		}
 	}
 	catalog := capability.BuildCatalog(opts)
+	if invoked := invokedSkills(ctx); len(invoked) > 0 {
+		entries := make([]capability.Entry, 0, len(catalog.Entries))
+		for _, entry := range catalog.Entries {
+			if entry.Kind != capability.KindSkill || !invoked[strings.ToLower(entry.Name)] {
+				entries = append(entries, entry)
+			}
+		}
+		catalog.Entries = entries
+	}
 	decision := capability.Route(routeInput, catalog.Entries)
 	if c.capabilityProxy {
 		decision.CapabilityProxy = true
@@ -130,7 +162,7 @@ func (c *Controller) WireCapabilityRouting(plugins []config.PluginEntry, specs [
 		return
 	}
 	c.pluginCfg = append([]config.PluginEntry(nil), plugins...)
-	c.capCachedTools, c.capCacheKeyOK = capability.LoadCachedToolsForSpecs(specs)
+	c.capCachedTools, c.capCacheKeyOK = capability.LoadCachedToolsForSpecs(specs, c.mcpHostProfile())
 	c.semanticRouter = router
 	c.capabilityAudit = audit
 }

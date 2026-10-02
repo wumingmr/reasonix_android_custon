@@ -8,6 +8,19 @@ import (
 	"reasonix/internal/agent"
 )
 
+// TopicFolded consults only an already-proved catalog relationship. It cannot
+// create a new relationship by reading a source or matching its filename.
+func (c *Catalog) TopicFolded(ctx context.Context, scope, root, topicID string) bool {
+	scope, root = normalizeScope(scope, root)
+	key := c.workspaceRootKey(scope, root)
+	var folded bool
+	err := c.readDB(ctx).QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM catalog_folded_topics
+		WHERE scope=? AND workspace_root_key=? AND topic_id=?) AND NOT EXISTS(
+		SELECT 1 FROM catalog_sessions WHERE scope=? AND workspace_root_key=? AND topic_id=?
+		AND ordinary_visible=1 AND missing_since=0 LIMIT 1)`, scope, key, topicID, scope, key, topicID).Scan(&folded)
+	return err == nil && folded
+}
+
 // PreferredOrdinarySessionPaths returns the session paths that may appear in
 // the ordinary project tree for one workspace. Covered recovery copies and
 // non-preferred conflict forks are omitted so the sidebar matches the 1.23
@@ -27,13 +40,19 @@ func (c *Catalog) PreferredOrdinarySessionPaths(ctx context.Context, scope, work
 	if c == nil || c.db == nil {
 		return out, nil
 	}
+	if c.opts.MetadataOnly {
+		// Metadata discovery cannot infer branch coverage. The persisted
+		// per-row visibility already records any previously proved relation;
+		// do not rescan the workspace or fold sources from their filenames.
+		return nil, nil
+	}
 	scope, workspaceRoot = normalizeScope(scope, workspaceRoot)
-	rows, err := c.db.QueryContext(ctx, `
+	rows, err := c.readDB(ctx).QueryContext(ctx, `
 		SELECT path, recovered, parent_id, recovery_copy, recovery_group_id,
 		       recovery_role, recovery_canonical, turns, last_activity_at
 		FROM catalog_sessions
-		WHERE scope=? AND workspace_root=? AND missing_since=0 AND health<>'missing'`,
-		scope, workspaceRoot)
+		WHERE scope=? AND workspace_root_key=? AND missing_since=0 AND health<>'missing'`,
+		scope, c.workspaceRootKey(scope, workspaceRoot))
 	if err != nil {
 		return out, err
 	}
@@ -81,6 +100,10 @@ func PreferredOrdinarySessionPaths(sessions []SessionRecord) map[string]struct{}
 		if session.RecoveryCopy || session.RecoveryRole == RecoveryRoleCoveredCopy {
 			continue
 		}
+		if session.OrdinaryVisible && session.Recovered {
+			preferred[path] = struct{}{}
+			continue
+		}
 		if !session.Recovered {
 			preferred[path] = struct{}{}
 			normalRoots[agent.BranchID(path)] = struct{}{}
@@ -107,6 +130,9 @@ func PreferredOrdinarySessionPaths(sessions []SessionRecord) map[string]struct{}
 func OrdinaryTreeSession(session SessionRecord, open, running bool, preferred map[string]struct{}) bool {
 	if open || running {
 		return true
+	}
+	if session.Health == HealthCorrupt || session.Health == HealthMissing {
+		return false
 	}
 	if session.RecoveryCopy || session.RecoveryRole == RecoveryRoleCoveredCopy {
 		return false

@@ -67,6 +67,9 @@ func webBrowserURL(srv *serve.Server, addr, sessionID string) string {
 		}
 		return base + "/login"
 	default:
+		if token := srv.AuthToken(); token != "" {
+			return base + entryPath + "#token=" + url.QueryEscape(token)
+		}
 		return base + entryPath
 	}
 }

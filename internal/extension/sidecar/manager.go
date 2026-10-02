@@ -84,6 +84,60 @@ func StartPackages(ctx context.Context, home string, sessionCtx protocol.Session
 	return StartPackagesWithPlan(ctx, home, sessionCtx, ui, nil, nil)
 }
 
+// StartPackagesByName starts only the named packages and their declared
+// package-provided dependencies. It is used by bounded provider-only work so a
+// title request for one extension model does not launch unrelated MCP/UI/tool
+// runtimes. Host-provided requirements are intentionally not added to the
+// package set.
+func StartPackagesByName(ctx context.Context, home string, sessionCtx protocol.SessionContext, ui UIHandler, names ...string) (*Manager, []string, error) {
+	packages, warnings := LoadRuntimePackages(home)
+	wanted := make(map[string]bool, len(names))
+	for _, name := range names {
+		if name = strings.TrimSpace(name); name != "" {
+			wanted[name] = true
+		}
+	}
+	if len(wanted) == 0 {
+		return &Manager{clients: make(map[string]*Client)}, warnings, nil
+	}
+	// Resolve a transitive closure by capability identity. Version/schema
+	// compatibility is validated by the normal extension handshake and claims
+	// pipeline; this pass only decides which installed processes may start.
+	for changed := true; changed; {
+		changed = false
+		for _, item := range packages {
+			if !wanted[item.Installed.Name] {
+				continue
+			}
+			for _, requirement := range item.Package.Requires() {
+				for _, candidate := range packages {
+					if wanted[candidate.Installed.Name] {
+						continue
+					}
+					for _, provided := range candidate.Package.ProvidesCapabilities() {
+						if provided.Key == requirement.Key {
+							wanted[candidate.Installed.Name] = true
+							changed = true
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+	selected := make([]pluginpkg.InstalledPackage, 0, len(wanted))
+	for _, item := range packages {
+		if wanted[item.Installed.Name] {
+			selected = append(selected, item)
+		}
+	}
+	startupCtx, cancel := context.WithTimeout(ctx, packageStartupBudget)
+	defer cancel()
+	manager, runtimeWarnings, err := startLoadedPackages(startupCtx, selected, sessionCtx, ui, StartClient)
+	warnings = append(warnings, runtimeWarnings...)
+	return manager, warnings, err
+}
+
 // startLoadedPackages starts a previously discovered, deterministically ordered
 // package set. Handler binding stays serial; process startup and handshakes use
 // a bounded worker pool and the caller's shared generation context. Results are

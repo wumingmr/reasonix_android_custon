@@ -125,7 +125,7 @@ func TestPruneSidecarWriteFailureRollsBackWithoutAppliedReceipt(t *testing.T) {
 	}
 
 	a.sess.compactionRunMu.Lock()
-	advanced, err := a.pruneToolResultsToProjectionLocked(CompactionTriggerPressure)
+	advanced, err := a.pruneToolResultsToProjectionLocked(context.Background(), CompactionTriggerPressure)
 	a.sess.compactionRunMu.Unlock()
 	if err == nil {
 		t.Fatal("prune unexpectedly succeeded with an unwritable sidecar destination")
@@ -294,7 +294,7 @@ func TestPrunePreservesToolEnvelopeMetadata(t *testing.T) {
 	}}
 	a := New(nil, tool.NewRegistry(), sess, Options{}, event.Discard)
 	a.sess.compactionRunMu.Lock()
-	advanced, err := a.pruneToolResultsToProjectionLocked(CompactionTriggerPressure)
+	advanced, err := a.pruneToolResultsToProjectionLocked(context.Background(), CompactionTriggerPressure)
 	a.sess.compactionRunMu.Unlock()
 	if err != nil || !advanced {
 		t.Fatalf("prune advanced=%v err=%v", advanced, err)

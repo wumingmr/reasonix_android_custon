@@ -81,6 +81,7 @@ effort = "max"
 	if err := os.WriteFile(filepath.Join(projectRoot, "reasonix.toml"), []byte(configBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	approveWorkspace(t, projectRoot)
 
 	app := NewApp()
 	tab := testTab("project", projectRoot)
@@ -110,6 +111,7 @@ api_key_env = "PROJECT_API_KEY"
 	if err := os.WriteFile(filepath.Join(projectRoot, "reasonix.toml"), []byte(configBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	approveWorkspace(t, projectRoot)
 
 	app := NewApp()
 	tab := testTab("project", projectRoot)
@@ -181,6 +183,7 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 	if err := os.WriteFile(filepath.Join(root, "reasonix.toml"), []byte(configBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	approveWorkspace(t, root)
 
 	app := NewApp()
 	app.readyHook = func() {}
@@ -223,9 +226,6 @@ func TestSaveTabsPersistsNonBalancedTokenModes(t *testing.T) {
 			t.Fatalf("tabs len = %d, want 1", len(got.Tabs))
 		}
 		wantToken, wantPreset := boot.TokenModeFull, boot.AgentPresetStandard
-		if inMemory == "delivery" {
-			wantToken, wantPreset = boot.TokenModeDelivery, boot.AgentPresetDelivery
-		}
 		if got.Tabs[0].TokenMode != wantToken || got.Tabs[0].AgentPreset != wantPreset {
 			t.Fatalf("saved compat after in-memory %q = token:%q preset:%q, want %q/%q",
 				inMemory, got.Tabs[0].TokenMode, got.Tabs[0].AgentPreset, wantToken, wantPreset)
@@ -249,16 +249,14 @@ func TestLoadTabsFileDecodesLegacyTokenModes(t *testing.T) {
 	}
 }
 
-// TestSaveTabsPersistsYoloMode is the regression for #3517: yolo used to be
-// dropped on save, so relaunching reverted to normal. It now round-trips through
-// the real saveTabsLocked/loadTabsFile path.
-func TestSaveTabsPersistsYoloMode(t *testing.T) {
+func TestSaveTabsPersistsFullAccessSeparatelyFromCollaborationMode(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
 	app := NewApp()
 	tab := testTab("a", t.TempDir())
-	tab.mode = "yolo"
-	tab.Ctrl.SetAutoApproveTools(true)
+	tab.mode = "normal"
+	tab.toolApprovalMode = control.ToolApprovalDangerFullAccess
+	tab.Ctrl.SetToolApprovalMode(control.ToolApprovalDangerFullAccess)
 	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
 	app.tabOrder = []string{tab.ID}
 	app.activeTabID = tab.ID
@@ -271,18 +269,20 @@ func TestSaveTabsPersistsYoloMode(t *testing.T) {
 	if len(got.Tabs) != 1 {
 		t.Fatalf("tabs len = %d, want 1", len(got.Tabs))
 	}
-	if got.Tabs[0].Mode != "yolo" {
-		t.Fatalf("saved yolo mode = %q, want yolo (#3517)", got.Tabs[0].Mode)
+	if got.Tabs[0].Mode != "" || got.Tabs[0].ToolApprovalMode != control.ToolApprovalDangerFullAccess {
+		t.Fatalf("saved profile = mode:%q permission:%q, want normal/full access", got.Tabs[0].Mode, got.Tabs[0].ToolApprovalMode)
 	}
 }
 
-func TestSaveTabsPersistsPlanYoloMode(t *testing.T) {
+func TestSaveTabsPersistsPlanAndFullAccessAsIndependentAxes(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
 	app := NewApp()
 	tab := testTab("a", t.TempDir())
-	tab.mode = "plan-yolo"
-	tab.Ctrl.SetMode(true, true)
+	tab.mode = "plan"
+	tab.toolApprovalMode = control.ToolApprovalDangerFullAccess
+	tab.Ctrl.SetPlanMode(true)
+	tab.Ctrl.SetToolApprovalMode(control.ToolApprovalDangerFullAccess)
 	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
 	app.tabOrder = []string{tab.ID}
 	app.activeTabID = tab.ID
@@ -295,8 +295,8 @@ func TestSaveTabsPersistsPlanYoloMode(t *testing.T) {
 	if len(got.Tabs) != 1 {
 		t.Fatalf("tabs len = %d, want 1", len(got.Tabs))
 	}
-	if got.Tabs[0].Mode != "plan-yolo" {
-		t.Fatalf("saved mode = %q, want plan-yolo", got.Tabs[0].Mode)
+	if got.Tabs[0].Mode != "plan" || got.Tabs[0].ToolApprovalMode != control.ToolApprovalDangerFullAccess {
+		t.Fatalf("saved profile = mode:%q permission:%q, want plan/full access", got.Tabs[0].Mode, got.Tabs[0].ToolApprovalMode)
 	}
 }
 
@@ -489,7 +489,9 @@ func TestMetaReportsGoalStatus(t *testing.T) {
 	}
 
 	app.SetCollaborationModeForTab(tab.ID, "plan")
+	app.mu.Lock()
 	tab.qualityFloor = ""
+	app.mu.Unlock()
 	meta = app.MetaForTab(tab.ID)
 	if meta.CollaborationMode != "plan" || meta.TokenMode != boot.TokenModeFull || meta.AgentPreset != boot.AgentPresetStandard {
 		t.Fatalf("profile meta = %+v, want plan + full/standard", meta)
@@ -522,12 +524,12 @@ func TestMetaReportsStoredCollaborationModeWhileControllerRebuilds(t *testing.T)
 	}
 }
 
-func TestSetPlanModePreservesAutoApproveTools(t *testing.T) {
+func TestSetPlanModePreservesFullAccess(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
 	app := NewApp()
 	tab := testTab("a", t.TempDir())
-	tab.Ctrl.SetAutoApproveTools(true)
+	tab.Ctrl.SetToolApprovalMode(control.ToolApprovalDangerFullAccess)
 	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
 	app.tabOrder = []string{tab.ID}
 	app.activeTabID = tab.ID
@@ -536,8 +538,8 @@ func TestSetPlanModePreservesAutoApproveTools(t *testing.T) {
 	if !tab.Ctrl.PlanMode() || !tab.Ctrl.AutoApproveTools() {
 		t.Fatalf("after SetPlanMode(true): plan=%v autoApproveTools=%v, want true/true", tab.Ctrl.PlanMode(), tab.Ctrl.AutoApproveTools())
 	}
-	if got := currentTabMode(tab); got != "plan-yolo" {
-		t.Fatalf("current mode = %q, want plan-yolo", got)
+	if got := currentTabCollaborationMode(tab); got != "plan" {
+		t.Fatalf("collaboration mode = %q, want plan", got)
 	}
 
 	app.SetPlanMode(false)
@@ -546,7 +548,7 @@ func TestSetPlanModePreservesAutoApproveTools(t *testing.T) {
 	}
 }
 
-func TestSetBypassPreservesPlanMode(t *testing.T) {
+func TestLegacyBypassMigratesToWorkspaceWriteAndPreservesPlanMode(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
 	app := NewApp()
@@ -557,16 +559,16 @@ func TestSetBypassPreservesPlanMode(t *testing.T) {
 	app.activeTabID = tab.ID
 
 	app.SetBypass(true)
-	if !tab.Ctrl.PlanMode() || !tab.Ctrl.AutoApproveTools() {
-		t.Fatalf("after SetBypass(true): plan=%v autoApproveTools=%v, want true/true", tab.Ctrl.PlanMode(), tab.Ctrl.AutoApproveTools())
+	if !tab.Ctrl.PlanMode() || tab.Ctrl.ToolApprovalMode() != control.ToolApprovalWorkspaceWrite {
+		t.Fatalf("after SetBypass(true): plan=%v permission=%v, want true/workspace-write", tab.Ctrl.PlanMode(), tab.Ctrl.ToolApprovalMode())
 	}
-	if got := currentTabMode(tab); got != "plan-yolo" {
-		t.Fatalf("current mode = %q, want plan-yolo", got)
+	if got := currentTabCollaborationMode(tab); got != "plan" {
+		t.Fatalf("collaboration mode = %q, want plan", got)
 	}
 
 	app.SetBypass(false)
-	if !tab.Ctrl.PlanMode() || tab.Ctrl.AutoApproveTools() {
-		t.Fatalf("after SetBypass(false): plan=%v autoApproveTools=%v, want true/false", tab.Ctrl.PlanMode(), tab.Ctrl.AutoApproveTools())
+	if !tab.Ctrl.PlanMode() || tab.Ctrl.ToolApprovalMode() != control.ToolApprovalWorkspaceWrite {
+		t.Fatalf("after SetBypass(false): plan=%v permission=%v, want true/workspace-write", tab.Ctrl.PlanMode(), tab.Ctrl.ToolApprovalMode())
 	}
 }
 

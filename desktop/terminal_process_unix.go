@@ -16,6 +16,7 @@ type unixTerminalProcess struct {
 	cmd       *exec.Cmd
 	pty       *os.File
 	closeOnce sync.Once
+	cleanup   func()
 }
 
 func terminalPlatformAvailable() (bool, string) {
@@ -23,14 +24,19 @@ func terminalPlatformAvailable() (bool, string) {
 }
 
 func startTerminalProcess(spec terminalStartSpec) (terminalProcess, error) {
-	cmd := exec.Command(spec.command.path, spec.command.args...)
-	cmd.Dir = spec.dir
-	cmd.Env = spec.env
-	file, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(spec.rows), Cols: uint16(spec.cols)})
+	env, cleanup, err := terminalInputEnvironment(spec)
 	if err != nil {
 		return nil, err
 	}
-	return &unixTerminalProcess{cmd: cmd, pty: file}, nil
+	cmd := exec.Command(spec.command.path, spec.command.args...)
+	cmd.Dir = spec.dir
+	cmd.Env = env
+	file, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(spec.rows), Cols: uint16(spec.cols)})
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
+	return &unixTerminalProcess{cmd: cmd, pty: file, cleanup: cleanup}, nil
 }
 
 func (p *unixTerminalProcess) Read(data []byte) (int, error) {
@@ -46,6 +52,7 @@ func (p *unixTerminalProcess) Resize(cols, rows int) error {
 }
 
 func (p *unixTerminalProcess) Wait() (int, error) {
+	defer p.cleanup()
 	err := p.cmd.Wait()
 	if p.cmd.ProcessState != nil {
 		return p.cmd.ProcessState.ExitCode(), err
@@ -58,6 +65,7 @@ func (p *unixTerminalProcess) Wait() (int, error) {
 }
 
 func (p *unixTerminalProcess) Close() error {
+	defer p.cleanup()
 	var closeErr error
 	p.closeOnce.Do(func() {
 		if p.cmd.Process != nil {

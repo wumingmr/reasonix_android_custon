@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,8 +16,7 @@ import (
 
 	"mvdan.cc/sh/v3/syntax"
 
-	"reasonix/internal/i18n"
-	"reasonix/internal/jobs"
+	"reasonix/internal/persistentshell"
 	"reasonix/internal/proc"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/secrets"
@@ -36,13 +34,10 @@ func init() { tool.RegisterBuiltin(bash{}) }
 
 var bashShellPATH = cachedBashShellPATH
 
-var (
-	bashSandboxCommand             = sandbox.Command
-	bashSandboxEscapePromptEnabled = func() bool { return runtime.GOOS == "windows" }
-)
+var bashSandboxCommand = sandbox.Command
 
-// cachedBashShellPATH memoizes the login-shell PATH probe per login shell so a
-// shell isn't spawned on every bash tool call (the probe runs up to three
+// cachedBashShellPATH memoizes the login-shell PATH lookup per login shell so a
+// shell isn't spawned on every POSIX shell tool call (the lookup runs up to three
 // interactive-login shells with a 2s timeout each). Empty results are cached too,
 // so a host without a usable login shell doesn't re-probe each command.
 var (
@@ -77,9 +72,10 @@ func cachedBashShellPATH(ctx context.Context) string {
 // still kills the process tree. guard appends a warning to the output of
 // commands that reference Reasonix's own session stores (see SessionDataGuard).
 // sessionTemp, when non-nil, supplies the logical-session private temporary
-// directory shared across Bash calls (see package sessiontemp). A Manager on
+// directory shared across shell calls (see package sessiontemp). A Manager on
 // the execution context overrides this for sub-agent isolation.
 type bash struct {
+	name    string
 	sb      sandbox.Spec
 	rootSet *sandbox.WritableRootSet
 	shell   sandbox.Shell
@@ -92,35 +88,43 @@ type bash struct {
 	// and never for background jobs, which need the local job manager.
 	terminal    TerminalRunner
 	sessionTemp *sessiontemp.Manager
+	// persistent runs ordinary foreground commands in a session PTY. A
+	// context-attached manager isolates sub-agents. Nil keeps one-shot processes.
+	persistent *persistentshell.Manager
 }
 
 type bashParams struct {
 	Command                     string   `json:"command"`
+	Description                 string   `json:"description,omitempty"`
+	TimeoutMS                   int      `json:"timeout_ms,omitempty"`
 	RunInBackground             bool     `json:"run_in_background"`
 	PreserveBackgroundProcesses bool     `json:"preserve_background_processes"`
 	AdditionalWriteDirs         []string `json:"additional_write_dirs,omitempty"`
 	Justification               string   `json:"justification,omitempty"`
+	SandboxPermissions          string   `json:"sandbox_permissions,omitempty"`
+	DenialID                    string   `json:"denial_id,omitempty"`
 }
 
-func (bash) Name() string { return "bash" }
+func (b bash) Name() string {
+	if strings.TrimSpace(b.name) != "" {
+		return b.name
+	}
+	return "bash"
+}
 
 func (b bash) Description() string {
 	sh := b.resolved()
 	if sh.Kind == sandbox.ShellPowerShell {
-		shellName := "Windows PowerShell"
-		chaining := "';' runs both regardless; 'if ($?) { ... }' is conditional. '&&' and '||' are NOT parsed."
-		if sh.SupportsChaining() {
-			shellName = "PowerShell 7 (pwsh)"
-			chaining = "'&&' and '||' are parsed for conditional chaining; ';' runs both regardless."
-		}
-		return fmt.Sprintf("Execute a command in the shell and return combined stdout/stderr. "+
-			"NOTE: bash is not available on this host — commands run under %s, so write PowerShell, not bash:\n"+
-			"  - chaining: %s\n"+
-			"  - redirect/vars: $null not /dev/null; $env:VAR not $VAR; '2>$null' drops stderr.\n"+
-			"  - file ops: Get-ChildItem (ls), Get-Content (cat), Remove-Item -Recurse -Force (rm -rf), Copy-Item (cp), Select-String (grep).\n"+
-			"  - no head/tail/which/touch: use Select-Object -First/-Last N, (Get-Command x).Source, New-Item.\n"+
-			"  - multi-line text to a native exe (e.g. git commit -m): use a single-quoted here-string @'...'@ (closing '@ at column 0)."+
-			bashToolSteer, shellName, chaining)
+		return "Execute one PowerShell command in an isolated process and return combined stdout/stderr. " +
+			"The host prefers PowerShell 7 and can fall back to Windows PowerShell 5.1, so use syntax accepted by both:\n" +
+			"  - chaining: ';' runs both commands; use 'if ($?) { ... }' for conditional execution.\n" +
+			"  - redirect/vars: $null not /dev/null; $env:VAR not $VAR; '2>$null' drops stderr.\n" +
+			"  - file ops: Get-ChildItem (ls), Remove-Item -Recurse -Force (rm -rf), Copy-Item (cp), Select-String (grep).\n" +
+			"  - file text: read with read_file and change with edit_file/write_file, not Get-Content, Set-Content, Out-File or '>'. Windows PowerShell 5.1 reads BOM-less UTF-8 as the ANSI code page and writes ANSI or UTF-16; the built-in tools keep each file's encoding and BOM.\n" +
+			"  - no head/tail/which/touch: use Select-Object -First/-Last N, (Get-Command x).Source, New-Item.\n" +
+			"  - services/watchers: set run_in_background=true and manage the returned job id with job_output/job_kill.\n" +
+			"  - multi-line text to a native exe (e.g. git commit -m): use a single-quoted here-string @'...'@ (closing '@ at column 0)." +
+			bashToolSteer
 	}
 	return "Execute a command in the shell and return combined stdout/stderr. " +
 		"To write outside the workspace, pass additional_write_dirs with the smallest concrete directories (no globs; absolute, workspace-relative, ~, or ${HOME}) and a justification. " +
@@ -188,14 +192,11 @@ func (b bash) ExecuteDetailed(ctx context.Context, args json.RawMessage) (tool.D
 	}
 
 	sh := b.resolved()
-	if !sh.SupportsChaining() && (hasUnquotedSeq(p.Command, "&&") || hasUnquotedSeq(p.Command, "||")) {
-		ex.State = tool.ShellStateNotRun
-		ex.FailurePhase = tool.ShellPhasePreflight
-		ex.MutationRisk = tool.ShellMutationNotStarted
-		ex.DurationMs = time.Since(start).Milliseconds()
-		return tool.DetailedResult{Execution: ex}, fmt.Errorf("this shell is Windows PowerShell, which does not parse '&&' or '||'. " +
-			"Sequence with ';' (both run regardless of the first's result), use 'if ($?) { ... }' for " +
-			"conditional chaining, or issue the commands as separate calls")
+	if err := sandbox.ValidateShellPolicy(b.specForCall(ctx), sh); err != nil {
+		return bashPreflightFailure(ex, start, err)
+	}
+	if res, err, reject := rejectPowerShellChaining(ex, start, sh, p.Command); reject {
+		return res, err
 	}
 
 	// Pin the session-private temporary generation before any launch path so
@@ -203,14 +204,7 @@ func (b bash) ExecuteDetailed(ctx context.Context, args json.RawMessage) (tool.D
 	// so a failed start still releases the lease.
 	prepared, lease, err := b.prepareLaunch(ctx, sh, p.Command, args)
 	if err != nil {
-		ex.State = tool.ShellStateNotRun
-		ex.FailurePhase = tool.ShellPhaseAuthorization
-		if strings.Contains(err.Error(), "session temporary") {
-			ex.FailurePhase = tool.ShellPhaseLaunch
-		}
-		ex.MutationRisk = tool.ShellMutationNotStarted
-		ex.DurationMs = time.Since(start).Milliseconds()
-		return tool.DetailedResult{Execution: ex}, err
+		return bashLaunchFailure(ex, start, err)
 	}
 	// Background jobs take ownership of the lease until the job goroutine ends.
 	// Foreground/terminal paths release after the process exits.
@@ -227,7 +221,7 @@ func (b bash) ExecuteDetailed(ctx context.Context, args json.RawMessage) (tool.D
 	// (the host terminal spawns with its own unfiltered environment, which
 	// would leak the credentials the user asked to strip), and never for
 	// background jobs. ok=false falls back to local execution unchanged.
-	if b.terminal != nil && !p.RunInBackground && !b.sb.Enforce() && !secrets.FilterSubprocessEnv() {
+	if b.terminal != nil && sh.Kind != sandbox.ShellPowerShell && !p.RunInBackground && !b.sb.Enforce() && !secrets.FilterSubprocessEnv() {
 		envMap := sandbox.SessionTempEnvMap(prepared.SessionTemp, prepared.LinuxSandboxed)
 		if out, ok, termErr := b.terminal.RunCommand(ctx, p.Command, b.workDir, b.timeout, envMap); ok {
 			out = appendSessionDataHint(out, b.guard.CommandHint(b.workDir, p.Command))
@@ -239,56 +233,23 @@ func (b bash) ExecuteDetailed(ctx context.Context, args json.RawMessage) (tool.D
 
 	argv, wrapped := prepared.Argv, prepared.Wrapped
 	cmdEnv := applyEnvOverrides(bashCommandEnv(ctx), prepared.EnvOverrides)
+	if res, err, used := b.tryPersistent(ctx, p, sh, prepared, persistEnv(cmdEnv), start, ex); used {
+		return res, err
+	}
+	if err := checkCommandLine(argv); err != nil {
+		return bashPreflightFailure(ex, start, err)
+	}
 
 	if p.RunInBackground {
-		jm, ok := jobs.FromContext(ctx)
-		if !ok {
-			ex.State = tool.ShellStateNotRun
-			ex.FailurePhase = tool.ShellPhaseDependency
-			ex.MutationRisk = tool.ShellMutationNotStarted
-			ex.DurationMs = time.Since(start).Milliseconds()
-			return tool.DetailedResult{Execution: ex}, fmt.Errorf("background execution is not available in this context")
-		}
-		workDir := b.workDir
-		// Transfer lease ownership to the job closure; it releases when the
-		// background process ends (including start failures inside the job).
-		jobLease := lease
-		releaseLease = false
-		// The job runs under the manager's session context (no foreground timeout), so it
-		// survives this turn; its combined output streams to the job buffer.
-		job := jm.StartForSession(jobs.SessionFromContext(ctx), "bash", commandPreview(p.Command), func(jobCtx context.Context, out io.Writer) (string, error) {
-			if jobLease != nil {
-				defer jobLease.Release()
-			}
-			cmd := proc.CommandContext(jobCtx, argv[0], argv[1:]...)
-			cmd.Dir = workDir
-			cmd.Env = cmdEnv
-			cmd.WaitDelay = bashWaitDelay
-			cmd.Stdout = out
-			cmd.Stderr = out
-			tracked, runErr := runShellProcess(jobCtx, cmd, sh, p.Command, shouldTrackShellProcess(wrapped, sh, p.Command, p.PreserveBackgroundProcesses))
-			if shouldReapAfterRun(jobCtx, sh, p.Command, p.PreserveBackgroundProcesses) {
-				reapShellProcess(cmd, tracked) // reap process-group stragglers the job left running (#3702)
-			}
-			return "", normalizeBashRunError(jobCtx, runErr, p.PreserveBackgroundProcesses)
-		})
-		msg := fmt.Sprintf("Started background job %q. It keeps running across turns; read new output with bash_output(job_id=%q), wait for it with wait, or stop it with kill_shell(job_id=%q).", job.ID, job.ID, job.ID)
-		// Background start is not a completed execution: completion is reported
-		// later by bash_output/wait. Do not masquerade as success with exit 0.
-		ex.State = tool.ShellStateBackgroundStarted
-		ex.MutationRisk = tool.ShellMutationUnknown
-		ex.DurationMs = time.Since(start).Milliseconds()
-		return tool.DetailedResult{
-			Output:    appendSessionDataHint(msg, b.guard.CommandHint(b.workDir, p.Command)),
-			Execution: ex,
-		}, nil
+		return b.startBackground(ctx, p, sh, argv, wrapped, cmdEnv, lease, &releaseLease, start, ex)
 	}
 
 	out, runEx, err := b.runForegroundDetailed(ctx, p, sh, argv, wrapped, cmdEnv)
 	mergeRunInto(ex, runEx)
 	ex.DurationMs = time.Since(start).Milliseconds()
+	out = b.appendWriteHints(ctx, out, err, p, wrapped)
 	return tool.DetailedResult{
-		Output:    b.appendWriteHints(ctx, out, err, p, wrapped),
+		Output:    out,
 		Execution: ex,
 	}, err
 }
@@ -362,45 +323,31 @@ func (b bash) prepareLaunch(ctx context.Context, sh sandbox.Shell, command strin
 	// bashSandboxCommand is injectable for tests; production points at
 	// sandbox.Command. Attach SessionTemp so Linux bwrap binds the private dir.
 	spec := b.specForCall(ctx)
-	spec.SessionTemp = sessionDir
+	effectiveSessionDir := sessionDir
+	spec.SessionTemp = effectiveSessionDir
 	argv, wrapped := bashSandboxCommand(spec, sh, command)
-	linuxSB := wrapped && sessionDir != "" && runtime.GOOS == "linux"
+	linuxSB := wrapped && effectiveSessionDir != "" && runtime.GOOS == "linux"
 	prepared := sandbox.Prepared{
 		Argv:           argv,
 		Wrapped:        wrapped,
-		SessionTemp:    sessionDir,
-		EnvOverrides:   sandbox.SessionTempEnv(sessionDir, linuxSB),
+		SessionTemp:    effectiveSessionDir,
+		EnvOverrides:   sandbox.SessionTempEnv(effectiveSessionDir, linuxSB),
 		LinuxSandboxed: linuxSB,
 	}
 
-	if b.sb.Enforce() && bashSandboxEscapeSessionAllowed(ctx, command, rawArgs) {
-		prepared.Argv = unconfinedShellArgv(sh, command)
-		prepared.Wrapped = false
-		// Escaped commands still inherit private temp env vars pointing at the
-		// host private directory (no virtual /tmp mapping).
-		prepared.LinuxSandboxed = false
-		prepared.EnvOverrides = sandbox.SessionTempEnv(sessionDir, false)
-	} else if b.sb.Enforce() && !prepared.Wrapped {
-		allow, reason, err := approveBashSandboxEscape(ctx, command, rawArgs, i18n.M.SandboxEscapeWrapReason)
-		if err != nil {
+	if spec.Enforce() && !prepared.Wrapped {
+		if lease != nil {
+			lease.Release()
+		}
+		return sandbox.Prepared{}, nil, fmt.Errorf("%s", sandbox.UnavailableMessage())
+	}
+	if prepared.Wrapped {
+		if err := sandbox.CheckGitMetadata(spec); err != nil {
 			if lease != nil {
 				lease.Release()
 			}
 			return sandbox.Prepared{}, nil, err
 		}
-		if !allow {
-			if lease != nil {
-				lease.Release()
-			}
-			if reason != "" {
-				return sandbox.Prepared{}, nil, fmt.Errorf("%s", reason)
-			}
-			return sandbox.Prepared{}, nil, fmt.Errorf("%s", sandbox.UnavailableMessage())
-		}
-		prepared.Argv = unconfinedShellArgv(sh, command)
-		prepared.Wrapped = false
-		prepared.LinuxSandboxed = false
-		prepared.EnvOverrides = sandbox.SessionTempEnv(sessionDir, false)
 	}
 	return prepared, lease, nil
 }
@@ -440,40 +387,6 @@ func unconfinedShellArgv(sh sandbox.Shell, command string) []string {
 	return argv
 }
 
-func approveBashSandboxEscape(ctx context.Context, command string, args json.RawMessage, reason string) (bool, string, error) {
-	if !bashSandboxEscapePromptEnabled() {
-		return false, "", nil
-	}
-	approver, ok := sandbox.EscapeApproverFrom(ctx)
-	if !ok {
-		return false, "", nil
-	}
-	return approver.ApproveSandboxEscape(ctx, sandbox.EscapeRequest{
-		Command: command,
-		Args:    append(json.RawMessage(nil), args...),
-		Reason:  reason,
-	})
-}
-
-func bashSandboxEscapeSessionAllowed(ctx context.Context, command string, args json.RawMessage) bool {
-	if !bashSandboxEscapePromptEnabled() {
-		return false
-	}
-	approver, ok := sandbox.EscapeApproverFrom(ctx)
-	if !ok {
-		return false
-	}
-	checker, ok := approver.(sandbox.EscapeSessionChecker)
-	if !ok {
-		return false
-	}
-	return checker.SandboxEscapeSessionAllowed(ctx, sandbox.EscapeRequest{
-		Command: command,
-		Args:    append(json.RawMessage(nil), args...),
-		Reason:  i18n.M.SandboxEscapeRuntimeReason,
-	})
-}
-
 // runForegroundDetailed uses the shared shellrun collector so model bash and
 // user !command share exit-code / phase / output-tail classification.
 func (b bash) runForegroundDetailed(ctx context.Context, p bashParams, sh sandbox.Shell, argv []string, wrapped bool, cmdEnv []string) (string, *tool.ShellExecution, error) {
@@ -487,12 +400,12 @@ func (b bash) runForegroundDetailed(ctx context.Context, p bashParams, sh sandbo
 		Argv:              argv,
 		Dir:               b.workDir,
 		Env:               cmdEnv,
-		Timeout:           b.foregroundTimeout(),
+		Timeout:           b.foregroundTimeoutFor(p),
 		WaitDelay:         bashWaitDelay,
 		CommandPreview:    commandPreview(p.Command),
 		ShellKind:         sh.Kind.String(),
 		ShellPath:         sh.Path,
-		Source:            "bash_tool",
+		Source:            b.Name() + "_tool",
 		Track:             track,
 		PreserveWaitDelay: p.PreserveBackgroundProcesses,
 		Progress:          progress,
@@ -548,7 +461,7 @@ func shouldReapAfterRun(ctx context.Context, sh sandbox.Shell, command string, p
 	if preserveBackgroundProcesses {
 		return false
 	}
-	return sh.Kind != sandbox.ShellBash || !hasExplicitBackgroundKeepalive(command)
+	return !sh.Kind.IsPOSIX() || !hasExplicitBackgroundKeepalive(command)
 }
 
 // hasExplicitBackgroundKeepalive detects common shell-level daemonization intent
@@ -589,25 +502,48 @@ func (b bash) foregroundTimeout() time.Duration {
 	return b.timeout
 }
 
+func (b bash) foregroundTimeoutFor(p bashParams) time.Duration {
+	configured := b.foregroundTimeout()
+	if p.TimeoutMS <= 0 {
+		return configured
+	}
+	return cappedMilliseconds(p.TimeoutMS, configured)
+}
+
+// Clamp in milliseconds before multiplication so integer overflow can never
+// turn a positive timeout into an unlimited (negative) duration.
+func cappedMilliseconds(ms int, cap time.Duration) time.Duration {
+	const maxDuration = time.Duration(1<<63 - 1)
+	if cap <= 0 {
+		cap = maxDuration
+	}
+	if int64(ms) > int64(cap/time.Millisecond) {
+		return cap
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
 func shouldTrackShellProcess(wrapped bool, sh sandbox.Shell, command string, preserveBackgroundProcesses bool) bool {
 	if preserveBackgroundProcesses {
 		return false
 	}
-	if runtime.GOOS == "windows" && wrapped {
-		return false
-	}
-	return sh.Kind != sandbox.ShellBash || !hasExplicitBackgroundKeepalive(command)
+	return !sh.Kind.IsPOSIX() || !hasExplicitBackgroundKeepalive(command)
 }
 
 func runShellProcess(ctx context.Context, cmd *exec.Cmd, sh sandbox.Shell, command string, track bool) (*proc.TrackedCommand, error) {
-	return proc.RunCommand(ctx, cmd, proc.RunOptions{
+	source := "bash_tool"
+	if sh.Kind == sandbox.ShellPowerShell {
+		source = "pwsh_tool"
+	}
+	tracked, err := proc.RunCommand(ctx, cmd, proc.RunOptions{
 		Track:           track,
 		CancelWaitGrace: bashWaitDelay + time.Second,
-		Source:          "bash_tool",
+		Source:          source,
 		ShellKind:       sh.Kind.String(),
 		ShellPath:       sh.Path,
 		CommandPreview:  commandPreview(command),
 	})
+	return tracked, err
 }
 
 func reapShellProcess(cmd *exec.Cmd, tracked *proc.TrackedCommand) {
@@ -719,9 +655,9 @@ func loginShell() string {
 			return p
 		}
 	}
-	for _, name := range []string{"zsh", "bash", "sh"} {
-		if p, err := exec.LookPath(name); err == nil {
-			return p
+	for _, shell := range []string{"/bin/zsh", "/bin/bash", "/bin/sh"} {
+		if isExecutableFile(shell) {
+			return shell
 		}
 	}
 	return ""

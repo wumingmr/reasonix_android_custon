@@ -118,7 +118,7 @@ base_url = "https://example.com/v1"
 model = "中文模型"
 api_key_env = "LOCAL_KEY"
 `
-	if err := os.WriteFile(path, fileencoding.Encode(body, fileencoding.GB18030), 0o644); err != nil {
+	if err := os.WriteFile(path, fileencoding.MustEncode(body, fileencoding.GB18030), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

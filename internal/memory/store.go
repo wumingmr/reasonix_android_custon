@@ -27,7 +27,7 @@ import (
 // current project or every project, while Type only classifies its contents.
 // List() and Index() merge both directories so every session sees the full set.
 type Store struct {
-	Dir       string // ...reasonix/projects/<slug>/memory
+	Dir       string // ...reasonix/projects/<project directory>/memory
 	GlobalDir string // ...reasonix/memory/global (shared across projects)
 }
 
@@ -111,7 +111,7 @@ func StoreFor(userDir, cwd string) Store {
 		return Store{}
 	}
 	return Store{
-		Dir:       filepath.Join(userDir, "projects", config.WorkspaceSlug(absOf(cwd)), "memory"),
+		Dir:       filepath.Join(config.ProjectStateDir(userDir, absOf(cwd)), "memory"),
 		GlobalDir: filepath.Join(userDir, "memory", "global"),
 	}
 }
@@ -200,7 +200,7 @@ func (s Store) archiveLocked(name string) (string, error) {
 	ref := strings.TrimSpace(name)
 	parsed := parseMemoryReference(ref)
 	if active, path, ok := s.findActive(ref); ok && ref == active.ID {
-		return archiveMemoryInDir(filepath.Dir(path), active.Name)
+		return s.archiveByID(active.Name, ref)
 	} else if ok && parsed.qualified {
 		return archiveMemoryInDir(filepath.Dir(path), active.Name)
 	} else if ok {
@@ -221,12 +221,16 @@ func (s Store) archiveLocked(name string) (string, error) {
 		if dir == "" {
 			continue
 		}
+		lines, contains, err := indexLinesExceptIn(dir, name)
+		if err != nil {
+			return "", err
+		}
 		p, err := archiveInDir(dir, name)
 		if err != nil {
 			return "", err
 		}
-		if p != "" || indexContainsIn(dir, name) {
-			if err := flushIndexIn(dir, indexLinesExceptIn(dir, name)); err != nil {
+		if p != "" || contains {
+			if err := flushIndexIn(dir, lines); err != nil {
 				return "", err
 			}
 		}
@@ -238,12 +242,16 @@ func (s Store) archiveLocked(name string) (string, error) {
 }
 
 func archiveMemoryInDir(dir, name string) (string, error) {
+	lines, contains, err := indexLinesExceptIn(dir, name)
+	if err != nil {
+		return "", err
+	}
 	path, err := archiveInDir(dir, name)
 	if err != nil {
 		return "", err
 	}
-	if path != "" || indexContainsIn(dir, name) {
-		if err := flushIndexIn(dir, indexLinesExceptIn(dir, name)); err != nil {
+	if path != "" || contains {
+		if err := flushIndexIn(dir, lines); err != nil {
 			return "", err
 		}
 	}
@@ -373,38 +381,15 @@ func repairOwnerWrite(root *os.Root, path string, dir bool) {
 // MEMORY.md.
 var indexLineRe = regexp.MustCompile(`(?m)^\s*-\s\[.+?\]\(([^)]+)\.md\)\s*—\s.*$`)
 
-// indexLinesExceptIn returns the managed MEMORY.md lines keyed by filename stem
-// in the given directory, dropping the entry for name (a missing index → empty map).
-func indexLinesExceptIn(dir, name string) map[string]string {
-	existing, _ := fileencoding.ReadFileUTF8(filepath.Join(dir, indexFile))
-	keep := map[string]string{}
-	for line := range strings.SplitSeq(string(existing), "\n") {
-		if mt := indexLineRe.FindStringSubmatch(line); mt != nil && mt[1] != name {
-			keep[mt[1]] = strings.TrimRight(line, "\r")
-		}
-	}
-	return keep
-}
-
-func indexContainsIn(dir, name string) bool {
-	existing, err := fileencoding.ReadFileUTF8(filepath.Join(dir, indexFile))
-	if err != nil {
-		return false
-	}
-	for line := range strings.SplitSeq(string(existing), "\n") {
-		if mt := indexLineRe.FindStringSubmatch(line); mt != nil && mt[1] == name {
-			return true
-		}
-	}
-	return false
-}
-
 // flushIndexIn rewrites MEMORY.md in the given directory from the managed lines,
 // preserving hand-written content. Managed lines are updated or removed, and
 // new managed entries are appended in sorted order.
 func flushIndexIn(dir string, lines map[string]string) error {
 	path := filepath.Join(dir, indexFile)
-	existing, _ := fileencoding.ReadFileUTF8(path)
+	existing, err := readIndexIn(dir)
+	if err != nil {
+		return err
+	}
 	processed := map[string]bool{}
 	var preserved strings.Builder
 	preservedEmpty := true
@@ -450,14 +435,17 @@ func flushIndexIn(dir string, lines map[string]string) error {
 		result += "\n"
 	}
 	// The index is derived state, but a torn write would still hide facts
-	// from the next session's prefix until the next reindex.
+	// from the next real turn's session-context until the next reindex.
 	return fileutil.AtomicWriteFile(path, []byte(result), 0o644)
 }
 
 // reindexIn rewrites the MEMORY.md line for name in the given directory,
 // preserving every other managed line.
 func reindexIn(dir, name string, m Memory) error {
-	lines := indexLinesExceptIn(dir, name)
+	lines, _, err := indexLinesExceptIn(dir, name)
+	if err != nil {
+		return err
+	}
 	lines[name] = renderIndexLine(name, m)
 	return flushIndexIn(dir, lines)
 }
@@ -465,7 +453,7 @@ func reindexIn(dir, name string, m Memory) error {
 func renderIndexLine(name string, m Memory) string {
 	marker := ""
 	if ResolveActivation(m) == ActivationPinned {
-		marker = " pinned" // the body already rides the prefix; no need to read it
+		marker = " pinned" // the body already rides session-context; no need to read it
 	}
 	return fmt.Sprintf("- [%s](%s.md) — [%s/%s%s] %s",
 		displayTitle(m.Title, name), name,
@@ -551,16 +539,16 @@ func (s Store) ListAll() []Memory {
 	return out
 }
 
-// PinnedGuidanceBudgetChars caps the total pinned-body runes the stable prefix
+// PinnedGuidanceBudgetChars caps the total pinned-body runes session-context
 // carries. Guidance that must always hold belongs in REASONIX.md/AGENTS.md
 // instructions; pinned memory is the bounded middle tier between instructions
 // and retrieval-only facts, and the cap is enforced at write time so the
-// prefix always equals exactly what the user curated.
+// snapshot always equals exactly what the user curated.
 const PinnedGuidanceBudgetChars = 1500
 
 // pinnedGuidance snapshots explicitly pinned facts (plus legacy global
 // user/feedback, which ResolveActivation keeps pinned for compatibility) for
-// the stable session prefix, most recently updated first.
+// session-context, most recently updated first.
 func (s Store) pinnedGuidance() []Memory {
 	var out []Memory
 	for _, dir := range s.dirs() {

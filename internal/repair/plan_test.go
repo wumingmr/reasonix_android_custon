@@ -22,17 +22,12 @@ func TestCanonicalRepairPathUsesFilesystemCaseSemantics(t *testing.T) {
 	upper := filepath.Join(root, "Project")
 	lower := filepath.Join(root, "project")
 
-	original := repairPathCaseInsensitive
-	t.Cleanup(func() { repairPathCaseInsensitive = original })
-
-	repairPathCaseInsensitive = func(string) bool { return false }
-	if canonicalRepairPath(upper) == canonicalRepairPath(lower) {
-		t.Fatal("case-sensitive filesystem identities were conflated")
+	if err := os.Mkdir(upper, 0o700); err != nil {
+		t.Fatal(err)
 	}
-
-	repairPathCaseInsensitive = func(string) bool { return true }
-	if canonicalRepairPath(upper) != canonicalRepairPath(lower) {
-		t.Fatal("case-insensitive filesystem aliases did not converge")
+	_, lookupErr := os.Stat(lower)
+	if same := canonicalRepairPath(upper) == canonicalRepairPath(lower); same != (lookupErr == nil) {
+		t.Fatalf("identity equality = %v, lowercase lookup error = %v", same, lookupErr)
 	}
 }
 

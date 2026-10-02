@@ -38,11 +38,13 @@ func takeTopicArchiveSessionLease(tab *WorkspaceTab, sessionPath string) *agent.
 func topicArchiveLeaseOwners(removed []removedSessionRuntime) map[string]*WorkspaceTab {
 	owners := make(map[string]*WorkspaceTab, len(removed))
 	for _, item := range removed {
-		if item.tab == nil || item.readOnly || item.sessionPath == "" {
+		if item.tab == nil || item.readOnly {
 			continue
 		}
-		key := sessionRuntimeKey(item.sessionPath)
-		if key != "" && item.tab.sessionLeaseRuntimeKey() == key {
+		// A migrated runtime publishes a SessionID and clears its legacy path,
+		// but can still hold the imported file's compatibility lease. Ownership
+		// follows the actual lease, not the controller's current display path.
+		if key := item.tab.sessionLeaseRuntimeKey(); key != "" {
 			owners[key] = item.tab
 		}
 	}

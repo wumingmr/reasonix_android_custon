@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"reasonix/internal/hook"
+	"reasonix/internal/session"
 )
 
 // TestCloseIsIdempotent guards the desktop tab-lifecycle contract: rebind,
@@ -21,7 +22,7 @@ func TestCloseIsIdempotent(t *testing.T) {
 		sessionEnds.Add(1)
 		return hook.SpawnResult{ExitCode: 0}
 	}, nil)
-	c := New(Options{Runner: &fakeTurnRunner{}, Hooks: hooks})
+	c := newOwnedTestController(t, Options{Runner: &fakeTurnRunner{}, Hooks: hooks})
 	// A completed turn arms startedOnce so SessionEnd is eligible to fire.
 	if err := c.Run(context.Background(), "hi"); err != nil {
 		t.Fatal(err)
@@ -37,5 +38,21 @@ func TestCloseIsIdempotent(t *testing.T) {
 
 	if got := sessionEnds.Load(); got != 1 {
 		t.Fatalf("SessionEnd hooks fired %d times across concurrent Close calls, want 1", got)
+	}
+}
+
+func TestCloseFinalizesRunningMarkerWithoutLiveTurn(t *testing.T) {
+	finalized := make(chan struct{})
+	c := New(Options{Cleanup: func() { close(finalized) }})
+	t.Cleanup(c.finalizeControllerClose)
+	c.mu.Lock()
+	c.turns.phase = session.RuntimeRunning
+	c.mu.Unlock()
+
+	c.Close()
+	select {
+	case <-finalized:
+	default:
+		t.Fatal("close treated a running phase without a live turn as active")
 	}
 }

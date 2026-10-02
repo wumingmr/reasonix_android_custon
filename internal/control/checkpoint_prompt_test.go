@@ -20,7 +20,7 @@ func TestCheckpointsReturnUserPromptWithoutComposedPrefixes(t *testing.T) {
 	sess := agent.NewSession("sys")
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
 	runner := &recordingSessionRunner{session: sess}
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Runner:      runner,
 		Executor:    exec,
 		SessionDir:  dir,
@@ -53,7 +53,7 @@ func TestHeadlessRunOpensCheckpoint(t *testing.T) {
 	dir := t.TempDir()
 	sess := agent.NewSession("sys")
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Runner:      &fakeTurnRunner{},
 		Executor:    exec,
 		SessionDir:  dir,
@@ -67,5 +67,35 @@ func TestHeadlessRunOpensCheckpoint(t *testing.T) {
 	checkpoints := c.Checkpoints()
 	if len(checkpoints) != 1 || checkpoints[0].Turn != 0 || checkpoints[0].Prompt != "headless edit" {
 		t.Fatalf("headless checkpoints = %+v, want one checkpoint for the submitted turn", checkpoints)
+	}
+}
+
+func TestHeadlessRunStoresRawCheckpointPrompt(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSession("sys")
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	runner := &fakeTurnRunner{}
+	c := newOwnedTestController(t, Options{
+		Runner:            runner,
+		Executor:          exec,
+		SessionDir:        dir,
+		SessionPath:       filepath.Join(dir, "headless-raw.jsonl"),
+		Label:             "test",
+		ReasoningLanguage: "zh",
+	})
+
+	const typed = "inspect the auth flow"
+	if err := c.Run(context.Background(), typed); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.inputs) != 1 || !strings.Contains(runner.inputs[0], "<reasoning-language>") {
+		t.Fatalf("runner inputs = %q, want one composed prompt", runner.inputs)
+	}
+	checkpoints := c.checkpoints.list()
+	if len(checkpoints) != 1 || checkpoints[0].Prompt != typed {
+		t.Fatalf("stored checkpoints = %+v, want raw prompt %q", checkpoints, typed)
+	}
+	if strings.Contains(checkpoints[0].Prompt, "<reasoning-language>") {
+		t.Fatalf("stored checkpoint contains composed prefix: %q", checkpoints[0].Prompt)
 	}
 }

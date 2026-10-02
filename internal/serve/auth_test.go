@@ -46,8 +46,8 @@ func TestAuthGateModeNone(t *testing.T) {
 	if ag.Mode() != "none" {
 		t.Errorf("mode = %q, want none", ag.Mode())
 	}
-	if ag.Token() != "" {
-		t.Errorf("token = %q, want empty", ag.Token())
+	if ag.Token() == "" {
+		t.Error("auth-disabled gate has no launch token for human decisions")
 	}
 
 	// In none mode, requests pass through.
@@ -731,8 +731,11 @@ func TestAuthCookieSecurePolicy(t *testing.T) {
 }
 
 func TestPlainHTTPAuthWarning(t *testing.T) {
-	if got := PlainHTTPAuthWarning(config.ServeConfig{AuthMode: "none"}, "0.0.0.0:8787"); got != "" {
-		t.Fatalf("none auth warning = %q, want empty", got)
+	if got := PlainHTTPAuthWarning(config.ServeConfig{AuthMode: "none"}, "0.0.0.0:8787"); !strings.Contains(got, "authentication disabled") {
+		t.Fatalf("none auth warning = %q, want the loudest unauthenticated warning", got)
+	}
+	if got := PlainHTTPAuthWarning(config.ServeConfig{AuthMode: "none"}, "0.0.0.0:8787"); strings.Contains(got, "drive the agent") || !strings.Contains(got, "read sessions") {
+		t.Fatalf("none auth warning = %q, want reads exposed and changes held to the launch token", got)
 	}
 	if got := PlainHTTPAuthWarning(config.ServeConfig{AuthMode: "password"}, "127.0.0.1:8787"); got != "" {
 		t.Fatalf("loopback warning = %q, want empty", got)

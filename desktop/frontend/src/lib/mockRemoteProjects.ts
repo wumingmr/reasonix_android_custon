@@ -1,0 +1,210 @@
+import type { ProjectNode, RemoteProjectView, RemoteSessionView, TabMeta } from "./types";
+import type { RemoteProjectBindings } from "./remoteProjectBridge";
+import { desktopHost } from "./desktopHost";
+import { __emitMockRemoteTab, __emitMockRemoteTabOpened } from "./remoteTabEvents";
+
+export type MockRemoteTabCatalog = {
+  get(id: string): TabMeta | undefined;
+  publish(tab: TabMeta): void;
+  remove(id: string): void;
+};
+
+export function createMockRemoteProjects(tabs: MockRemoteTabCatalog): {
+  bindings: RemoteProjectBindings;
+  appendToTree: (tree: ProjectNode[]) => ProjectNode[];
+} {
+  // Browser-only fault fixtures exercise the real remote hook and recovery commands.
+  const recoveryScenario = typeof window !== "undefined" && desktopHost().kind === "none"
+    ? new URLSearchParams(window.location.search).get("session-recovery") : null;
+  let recoveryInjected = false;
+  let disconnectedTab = "";
+  let historyFailures = 0;
+  let projects: RemoteProjectView[] = [{ hostId: "demo", workspace: "~/app" }];
+  const sessions: Record<string, RemoteSessionView[]> = {
+    "demo\u0000~/app": [
+      { name: "intro", title: "远程会话演示 / Remote demo session", turns: 18, current: true, lastActivityAt: Date.now() - 45 * 60 * 1000 },
+    ],
+  };
+  const key = (hostId: string, workspace: string) => `${hostId}\u0000${workspace}`;
+  const tabIdFor = (hostId: string, workspace: string) => `remote-mock-${hostId}-${workspace}`.replace(/[^a-z0-9-]/gi, "_");
+  const status = (tabId: string) => ({
+    sessionPath: tabs.get(tabId)?.sessionPath,
+    label: tabs.get(tabId)?.label ?? "", running: false, pendingPrompt: false,
+    backgroundJobs: 0, plan: false, toolApprovalMode: "workspace-write", goal: "",
+  });
+
+  const bindings: RemoteProjectBindings = {
+    async AddRemoteProject(hostId, workspace) {
+      const existing = projects.find((project) => project.hostId === hostId && project.workspace === workspace);
+      if (existing) return { ...existing, merged: true };
+      const project = { hostId, workspace, title: `${hostId}:${workspace}` };
+      projects = [...projects, project];
+      return project;
+    },
+    async RemoveRemoteProject(hostId, workspace) {
+      projects = projects.filter((project) => project.hostId !== hostId || project.workspace !== workspace);
+    },
+    async ListRemoteProjects() {
+      return projects.slice();
+    },
+    async OpenRemoteProjectTab(hostId, workspace, opts) {
+      const id = tabIdFor(hostId, workspace);
+      if (!recoveryInjected && (recoveryScenario === "connection" || recoveryScenario === "history")) {
+        recoveryInjected = true;
+        if (recoveryScenario === "connection") disconnectedTab = id;
+        else historyFailures = 3;
+      } else if (disconnectedTab === id) disconnectedTab = "";
+      let tab = tabs.get(id);
+      if (!tab) {
+        const workspaceName = workspace.split("/").filter(Boolean).pop() || workspace;
+        tab = {
+          id,
+          scope: "project",
+          workspaceRoot: workspace,
+          sessionPath: `${workspace}/sessions/${opts?.sessionName || "intro"}.jsonl`,
+          sessionGeneration: 1,
+          workspaceName,
+          topicId: "",
+          topicTitle: workspaceName,
+          label: "remote/mock",
+          ready: true,
+          running: false,
+          mode: "normal",
+          active: true,
+          cwd: workspace,
+          remote: { hostId, workspace },
+          remoteState: "ready",
+        };
+      }
+      if (opts?.newSession) {
+        tab.topicTitle = "New session";
+        tab.sessionPath = `${workspace}/sessions/${crypto.randomUUID()}.jsonl`;
+      }
+      // Canonical rows are addressed by their immutable session id and may
+      // carry no legacy basename or path at all; legacy rows keep the
+      // basename route this mock has always synthesized. Mirrors the Serve
+      // contract, where opts.SessionID outranks SessionPath/SessionName and
+      // the opened session becomes the current one (desktop/remote_projects.go).
+      const requestedSessionID = opts?.sessionId?.trim() ?? "";
+      const requestedName = opts?.sessionName?.trim() ?? "";
+      if (requestedSessionID || requestedName) {
+        const rows = sessions[key(hostId, workspace)] ?? [];
+        const identity = requestedSessionID || requestedName;
+        const row = rows.find((candidate) => (candidate.sessionId || candidate.name) === identity);
+        tab.sessionId = requestedSessionID || row?.sessionId;
+        tab.sessionPath = requestedSessionID
+          ? row?.path ?? opts?.sessionPath ?? undefined
+          : `${workspace}/sessions/${requestedName}.jsonl`;
+        tab.topicTitle = row?.title || tab.workspaceName;
+        for (const candidate of rows) candidate.current = (candidate.sessionId || candidate.name) === identity;
+      }
+      tabs.publish(tab);
+      __emitMockRemoteTab(id, "state", { state: "ready" });
+      __emitMockRemoteTabOpened({ ...tab });
+      return { ...tab };
+    },
+    async RemoteProjectSessions(hostId, workspace) {
+      return (sessions[key(hostId, workspace)] ?? []).map((row) => ({ ...row }));
+    },
+    async EnsureRemoteProjectSessions(hostId, workspace) {
+      return (sessions[key(hostId, workspace)] ?? []).map((row) => ({ ...row }));
+    },
+    async SetRemoteSessionPinned(hostId, workspace, name, pinned) {
+      const row = (sessions[key(hostId, workspace)] ?? []).find((item) => (item.sessionId || item.name) === name);
+      if (row) row.pinned = pinned;
+    },
+    async SetRemoteProjectTitle(hostId, workspace, title) {
+      const project = projects.find((item) => item.hostId === hostId && item.workspace === workspace);
+      if (project) project.title = title.trim() || undefined;
+    },
+    async RenameRemoteProjectSession(hostId, workspace, name, title) {
+      const row = (sessions[key(hostId, workspace)] ?? []).find((item) => (item.sessionId || item.name) === name);
+      if (row) row.title = title.trim();
+    },
+    async DeleteRemoteProjectSession(hostId, workspace, name) {
+      sessions[key(hostId, workspace)] = (sessions[key(hostId, workspace)] ?? []).filter((item) => (item.sessionId || item.name) !== name);
+    },
+    async CloseRemoteTab(tabId) { tabs.remove(tabId); },
+    async SubmitRemoteTab(tabId, text) {
+      __emitMockRemoteTab(tabId, "event", { kind: "turn_started" });
+      __emitMockRemoteTab(tabId, "event", { kind: "message", text: `Mock remote reply: ${text}` });
+      __emitMockRemoteTab(tabId, "event", { kind: "turn_done" });
+    },
+    async ClearRemoteTabSession(tabId) {
+      __emitMockRemoteTab(tabId, "state", { state: "ready" });
+    },
+    async CancelRemoteTab(tabId) { __emitMockRemoteTab(tabId, "event", { kind: "turn_done" }); },
+    async ApproveRemoteTab() {},
+    async ResolveRemoteTabPlanDecision() {},
+    async SetRemoteTabQualityFloor() {},
+    async AnswerRemoteTab() {},
+    async SubmitRemoteTabExtensionForm() {},
+    async ReclaimRemoteTabSession() {},
+    async SetRemoteTabModel(tabId, ref) {
+      const tab = tabs.get(tabId);
+      if (tab) {
+        tab.label = ref;
+        tabs.publish(tab);
+        __emitMockRemoteTabOpened({ ...tab });
+      }
+    },
+    async RewindRemoteTab() {},
+    async SetRemoteTabGoal() {},
+    async EditRemoteTabGoal() {},
+    async RemoteTabSnapshot(tabId) {
+      if (disconnectedTab === tabId) {
+        __emitMockRemoteTab(tabId, "state", { state: "serve_down", error: "Mock remote tunnel closed" });
+        throw new Error("Mock remote tunnel closed");
+      }
+      if (historyFailures > 0) { historyFailures--; throw new Error("Mock remote history unavailable"); }
+      return { history: [], status: status(tabId) };
+    },
+    async RemoteTabStatus(tabId) { return status(tabId); },
+    async SetRemoteTabEffort() {},
+    async PauseRemoteTabGoal() {},
+    async ResumeRemoteTabGoal() {},
+    async CancelRemoteTabJobs() {},
+    async SteerRemoteTab() {},
+    async SetRemoteTabComposerProfile() { return []; },
+    async SetRemoteTabToolApprovalMode() {},
+    async SetRemoteTabPlanMode() {},
+    async CompactRemoteTab() {},
+    async ReplayRemoteTabPrompts() { return []; },
+    async ForkRemoteTab() {},
+    // The dev mock stands in for a serve that advertises the create-only fork
+    // capability: a target list that is always present, verifiable, and opens.
+    async ForkTargetsRemoteTab(tabId) {
+      if (!tabId) return { targets: [], verifiable: false };
+      return {
+        sourceSessionId: tabId, sessionGeneration: 1,
+        targets: [{ sourceSessionId: tabId, sessionGeneration: 1, turnId: `${tabId}:turn-1`, boundarySequence: 3, turnNumber: 1, status: "committed", available: true }],
+        verifiable: true,
+      };
+    },
+    async CreateForkRemoteTab(tabId, anchor) {
+      if (!tabId || !anchor.turnId) return { opened: false };
+      return { sessionId: `mock-remote-fork-${anchor.turnId}`, operationId: crypto.randomUUID(), opened: true };
+    },
+    async SummarizeRemoteTab() {},
+    async ForgetRemoteTab() {},
+    async RemoteTabBranches() { return []; },
+    async RemoteTabSkills() { return []; },
+  };
+
+  return {
+    bindings,
+    appendToTree(tree) {
+      for (const project of projects) {
+        if (tree.some((node) => node.key === `project_remote_${project.hostId}_${project.workspace}`)) continue;
+        tree.push({
+          key: `project_remote_${project.hostId}_${project.workspace}`,
+          kind: "project",
+          label: project.workspace.split("/").filter(Boolean).pop() || project.workspace,
+          root: project.workspace,
+          remote: { hostId: project.hostId, workspace: project.workspace },
+        });
+      }
+      return tree;
+    },
+  };
+}

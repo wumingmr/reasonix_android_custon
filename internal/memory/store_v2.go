@@ -254,11 +254,7 @@ func (s Store) SaveWithOptions(m Memory, opts SaveOptions) (SaveResult, error) {
 		return SaveResult{}, err
 	}
 	if exists && cleanMemoryPath(existingPath) != cleanMemoryPath(path) {
-		if err := os.Remove(existingPath); err != nil && !os.IsNotExist(err) {
-			return SaveResult{}, err
-		}
-		oldDir := filepath.Dir(existingPath)
-		if err := flushIndexIn(oldDir, indexLinesExceptIn(oldDir, existing.Name)); err != nil {
+		if err := removeMemoryFromDir(existingPath, existing.Name); err != nil {
 			return SaveResult{}, err
 		}
 	}
@@ -274,10 +270,7 @@ func (s Store) SaveWithOptions(m Memory, opts SaveOptions) (SaveResult, error) {
 				continue
 			}
 			if duplicate, _, ok := s.findActiveInDir(otherDir, m.Name); ok && duplicate.ID != m.ID {
-				if _, err := archiveInDir(otherDir, duplicate.Name); err != nil {
-					return SaveResult{}, err
-				}
-				if err := flushIndexIn(otherDir, indexLinesExceptIn(otherDir, duplicate.Name)); err != nil {
+				if _, err := archiveMemoryInDir(otherDir, duplicate.Name); err != nil {
 					return SaveResult{}, err
 				}
 			}

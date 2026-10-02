@@ -165,7 +165,7 @@ func TestToolBeforeWriterReplacementSignalsBeforeParallelPeerCompletes(t *testin
 	}
 }
 
-func TestToolBeforeFailedWriterReplacementOpensDependencyBarrier(t *testing.T) {
+func TestToolBeforeFailedWriterReplacementDoesNotBlockNextCall(t *testing.T) {
 	client := &fakeDispatchClient{interceptFn: func(ev protocol.InterceptEvent, payload json.RawMessage) (protocol.InterceptResult, error) {
 		if ev != protocol.EventToolBefore {
 			return protocol.InterceptResult{Decision: protocol.DecisionContinue}, nil
@@ -189,11 +189,11 @@ func TestToolBeforeFailedWriterReplacementOpensDependencyBarrier(t *testing.T) {
 		{ID: "first", Name: "read_file", Arguments: `{"path":"original.go"}`},
 		{ID: "second", Name: "write_two", Arguments: `{"path":"second.go"}`},
 	})
-	if secondCalls != 0 {
-		t.Fatalf("later writer executed %d times after the replaced writer failed", secondCalls)
+	if secondCalls != 1 {
+		t.Fatalf("later writer executed %d times, want once", secondCalls)
 	}
-	if len(batch.results) != 2 || !strings.Contains(batch.results[1], "skipped because an earlier modification") {
-		t.Fatalf("dependency results = %+v", batch.results)
+	if len(batch.results) != 2 || strings.Contains(batch.results[1], "skipped because an earlier modification") {
+		t.Fatalf("later call was dependency-blocked: %+v", batch.results)
 	}
 }
 

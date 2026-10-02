@@ -42,3 +42,15 @@ func TestSearchSkipsGeneratedClassFiles(t *testing.T) {
 		t.Fatalf("the source file should still match: %v", got)
 	}
 }
+
+func TestSearchSkipsRepoOutputPathsThatBrowsingShows(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "tmp", "scratch_notes.py"))
+
+	if got := resultPaths(Search(root, "scratch", 50)); len(got) != 0 {
+		t.Fatalf("@ search must keep skipping top-level tmp/: %v", got)
+	}
+	if SkipBrowseEntry("tmp", true) {
+		t.Fatal("a browsing surface must show a top-level tmp/ directory")
+	}
+}

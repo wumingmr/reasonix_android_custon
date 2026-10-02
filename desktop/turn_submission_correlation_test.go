@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -145,12 +146,13 @@ func TestTabEventSinkClearsRejectedSubmissionCorrelation(t *testing.T) {
 }
 
 func TestSubmitToTabWithIDCorrelatesOnlyAdmittedGuardedTurn(t *testing.T) {
-	delivered := make(chan any, 8)
+	delivered := make(chan any, 64)
 	sink := &tabEventSink{tabID: "tab", ctx: context.Background()}
 	sink.runtimeEvents.emit = func(_ context.Context, _ string, payload ...any) {
 		delivered <- payload[0]
 	}
-	ctrl := control.New(control.Options{Sink: sink})
+	dir := t.TempDir()
+	ctrl := control.New(control.Options{Sink: sink, SessionDir: dir, SessionPath: filepath.Join(dir, "session.jsonl")})
 	defer ctrl.Close()
 	tab := &WorkspaceTab{ID: "tab", Scope: "global", Ready: true, Ctrl: ctrl, sink: sink}
 	app := &App{tabs: map[string]*WorkspaceTab{tab.ID: tab}, activeTabID: tab.ID}
@@ -188,7 +190,8 @@ func TestBeginTabTurnWaitsForTurnDoneFanoutBeforeRetry(t *testing.T) {
 	sink := &tabEventSink{tabID: "tab", ctx: context.Background()}
 	gate := &turnFanoutGate{kind: event.TurnDone, entered: make(chan struct{}), release: make(chan struct{})}
 	sink.SetBotSink(gate)
-	ctrl := control.New(control.Options{Sink: sink})
+	dir := t.TempDir()
+	ctrl := control.New(control.Options{Sink: sink, SessionDir: dir, SessionPath: filepath.Join(dir, "session.jsonl")})
 	t.Cleanup(ctrl.Close)
 	tab := &WorkspaceTab{ID: "tab", Scope: "global", Ready: true, Ctrl: ctrl, sink: sink}
 	app := &App{tabs: map[string]*WorkspaceTab{tab.ID: tab}, activeTabID: tab.ID}

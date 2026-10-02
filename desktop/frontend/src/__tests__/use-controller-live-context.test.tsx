@@ -10,6 +10,7 @@ import type { AppBindings } from "../lib/bridge";
 import { LocaleProvider } from "../lib/i18n";
 import type { BalanceInfo, ContextInfo, ContextPanelInfo, EffortInfo, Meta, TabMeta, WireEvent } from "../lib/types";
 import { useController } from "../lib/useController";
+import { installDesktopHostStub } from "./desktopHostStub";
 
 let passed = 0;
 let failed = 0;
@@ -127,7 +128,6 @@ globalThis.localStorage = dom.window.localStorage;
 globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
 globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
 
-const eventHandlers: Array<(event: WireEvent) => void> = [];
 const effort: EffortInfo = { supported: true, current: "auto", default: "auto", levels: ["auto"] };
 let backendContext: ContextInfo = {
   used: 100,
@@ -167,16 +167,10 @@ const stalePanelInfo: ContextPanelInfo = {
   changedFiles: [],
 };
 
-window.runtime = {
-  EventsOn: (name: string, cb: (payload: unknown) => void) => {
-    if (name === "agent:event") eventHandlers.push(cb as (event: WireEvent) => void);
-    return () => {};
-  },
-  BrowserOpenURL: () => {},
-};
-window.go = {
+const desktopStub = installDesktopHostStub(({
   main: {
     App: {
+      RegisterNavigationIntent: async () => {},
       ListTabs: async () => [tabMeta()],
       MetaForTab: async () => meta(),
       ContextUsageForTab: async () => {
@@ -206,6 +200,7 @@ window.go = {
       },
       JobsForTab: async () => [],
       CheckpointsForTab: async () => [],
+      ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
       HistoryForTab: async () => [],
       HistoryPageForTab: async () => ({ messages: [], startTurn: 0, endTurn: 0, totalTurns: 0, hasOlder: false }),
       HistorySliceForTab: async (tabID, req) => historySliceFromMessages(tabID, [], req),
@@ -213,7 +208,7 @@ window.go = {
       ReplayPendingPrompts: async () => {},
     } as Partial<AppBindings> as AppBindings,
   },
-};
+}).main.App);
 
 type Controller = ReturnType<typeof useController>;
 let controller: Controller | undefined;
@@ -309,10 +304,8 @@ backendContext = {
   cacheMissTokens: 100,
 };
 await act(async () => {
-  for (const handler of eventHandlers) {
-    handler({ kind: "turn_started", tabId: "tab-live-context" });
-    handler(usageEvent());
-  }
+  desktopStub.emit("agent:event", { kind: "turn_started", tabId: "tab-live-context" });
+  desktopStub.emit("agent:event", usageEvent());
   await flushPromises();
 });
 
@@ -324,13 +317,18 @@ eq(renderedAverage(), "90.00%", "status bar renders the live executor-era sessio
 eq(renderedPanelAverage(), "90.00%", "panel ignores its stale private snapshot and matches the status bar");
 ok(contextCalls > initialContextCalls, "usage triggers a new ContextUsageForTab snapshot");
 
+// v2 creates the stable assistant host at sampling start. Only subsequent
+// token deltas are non-structural updates to the live subscriber.
+await act(async () => {
+  desktopStub.emit("agent:event", { kind: "stream_attempt", tabId: "tab-live-context",
+    messageId: "mock-active:tab-live-context", streamAttempt: { id: "mock-active:tab-live-context", action: "begin" } });
+  await flushPromises(20);
+});
 const rendersBeforeTextBurst = controllerProbeRenders;
 await act(async () => {
-  for (const handler of eventHandlers) {
-    handler({ kind: "text", tabId: "tab-live-context", text: "one " });
-    handler({ kind: "text", tabId: "tab-live-context", text: "two " });
-    handler({ kind: "text", tabId: "tab-live-context", text: "three" });
-  }
+  desktopStub.emit("agent:event", { kind: "text", tabId: "tab-live-context", text: "one " });
+desktopStub.emit("agent:event", { kind: "text", tabId: "tab-live-context", text: "two " });
+desktopStub.emit("agent:event", { kind: "text", tabId: "tab-live-context", text: "three" });
   await flushPromises(20);
 });
 eq(document.querySelector("[data-live-text]")?.textContent, "one two three", "live subscriber receives the coalesced text burst");
@@ -348,7 +346,7 @@ backendContext = {
   cacheMissTokens: 40,
 };
 await act(async () => {
-  for (const handler of eventHandlers) handler(usageEvent("subagent"));
+  desktopStub.emit("agent:event", usageEvent("subagent"));
   await flushPromises();
 });
 
@@ -367,13 +365,13 @@ contextLoader = async () => pendingSnapshots.shift() ?? backendContext;
 const raceStartCalls = contextCalls;
 
 await act(async () => {
-  for (const handler of eventHandlers) handler(usageEvent());
+  desktopStub.emit("agent:event", usageEvent());
   await flushPromises();
 });
 ok(await settleUntil(() => contextCalls === raceStartCalls + 1), "first live snapshot starts");
 
 await act(async () => {
-  for (const handler of eventHandlers) handler(usageEvent());
+  desktopStub.emit("agent:event", usageEvent());
   await flushPromises();
 });
 ok(await settleUntil(() => contextCalls === raceStartCalls + 2), "newer live snapshot starts");
@@ -411,7 +409,7 @@ const staleBalance = deferred<BalanceInfo>();
 balanceLoader = () => staleBalance.promise;
 const balanceRaceStartCalls = balanceCalls;
 await act(async () => {
-  for (const handler of eventHandlers) handler({ kind: "turn_done", tabId: "tab-live-context" });
+  desktopStub.emit("agent:event", { kind: "turn_done", tabId: "tab-live-context" });
   await flushPromises();
 });
 ok(await settleUntil(() => balanceCalls === balanceRaceStartCalls + 1), "pre-switch balance refresh starts");

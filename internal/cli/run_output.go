@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"reasonix/internal/billing"
+	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/eventwire"
 )
@@ -53,15 +55,18 @@ type runResultUsage struct {
 }
 
 type runResult struct {
-	Type       string  `json:"type"`
-	Subtype    string  `json:"subtype"`
-	IsError    bool    `json:"is_error"`
-	DurationMS int64   `json:"duration_ms"`
-	NumTurns   int     `json:"num_turns"`
-	Result     string  `json:"result"`
-	SessionID  string  `json:"session_id,omitempty"`
-	TotalCost  float64 `json:"total_cost,omitempty"`
-	Currency   string  `json:"currency,omitempty"`
+	Type       string `json:"type"`
+	Subtype    string `json:"subtype"`
+	IsError    bool   `json:"is_error"`
+	DurationMS int64  `json:"duration_ms"`
+	NumTurns   int    `json:"num_turns"`
+	Result     string `json:"result"`
+	// ResultFromReasoning marks a Result taken from the turn's reasoning
+	// because the model emitted no visible text. Omitted when false.
+	ResultFromReasoning bool    `json:"result_from_reasoning,omitempty"`
+	SessionID           string  `json:"session_id,omitempty"`
+	TotalCost           float64 `json:"total_cost,omitempty"`
+	Currency            string  `json:"currency,omitempty"`
 	// TotalCostUSD is the released compatibility alias. It mirrors TotalCost;
 	// new consumers must pair TotalCost with Currency instead of assuming USD.
 	TotalCostUSD float64 `json:"total_cost_usd,omitempty"`
@@ -75,6 +80,9 @@ type runResult struct {
 	OriginalTotals []billing.Money    `json:"original_totals,omitempty"`
 	CostQuote      *billing.CostQuote `json:"cost_quote,omitempty"`
 	Usage          runResultUsage     `json:"usage"`
+	ErrorCode      string             `json:"error_code,omitempty"`
+	Authentication string             `json:"authentication_status,omitempty"`
+	Recovery       []string           `json:"recovery_actions,omitempty"`
 }
 
 type machineEventUsage struct {
@@ -89,41 +97,82 @@ type machineEventUsage struct {
 // format is a rich UI transport and includes prompts, tool arguments, results,
 // and reasoning; this contract is for automation that must not receive them.
 type machineEventRecord struct {
-	SchemaVersion  int                `json:"schema_version"`
-	Sequence       uint64             `json:"sequence"`
-	Kind           string             `json:"kind"`
-	Code           string             `json:"code,omitempty"`
-	Level          string             `json:"level,omitempty"`
-	ToolID         string             `json:"tool_id,omitempty"`
-	ToolName       string             `json:"tool_name,omitempty"`
-	ToolReadOnly   bool               `json:"tool_read_only,omitempty"`
-	ToolError      bool               `json:"tool_error,omitempty"`
-	ToolTruncated  bool               `json:"tool_truncated,omitempty"`
-	ToolDurationMS int64              `json:"tool_duration_ms,omitempty"`
-	Usage          *machineEventUsage `json:"usage,omitempty"`
-	ApprovalID     string             `json:"approval_id,omitempty"`
-	ApprovalKind   string             `json:"approval_kind,omitempty"`
-	AskID          string             `json:"ask_id,omitempty"`
-	Outcome        string             `json:"outcome,omitempty"`
-	Cancelled      bool               `json:"cancelled,omitempty"`
-	Error          bool               `json:"error,omitempty"`
-	RetryAttempt   int                `json:"retry_attempt,omitempty"`
-	RetryMax       int                `json:"retry_max,omitempty"`
-	CompactionType string             `json:"compaction_type,omitempty"`
-	CompactionMsgs int                `json:"compaction_messages,omitempty"`
-	GuardianResult string             `json:"guardian_result,omitempty"`
-	GuardianRisk   string             `json:"guardian_risk,omitempty"`
+	SchemaVersion  int                   `json:"schema_version"`
+	Sequence       uint64                `json:"sequence"`
+	Kind           string                `json:"kind"`
+	Code           string                `json:"code,omitempty"`
+	Level          string                `json:"level,omitempty"`
+	ToolID         string                `json:"tool_id,omitempty"`
+	ToolName       string                `json:"tool_name,omitempty"`
+	ToolReadOnly   bool                  `json:"tool_read_only,omitempty"`
+	ToolError      bool                  `json:"tool_error,omitempty"`
+	ToolTruncated  bool                  `json:"tool_truncated,omitempty"`
+	ToolDurationMS int64                 `json:"tool_duration_ms,omitempty"`
+	Usage          *machineEventUsage    `json:"usage,omitempty"`
+	ApprovalID     string                `json:"approval_id,omitempty"`
+	ApprovalKind   string                `json:"approval_kind,omitempty"`
+	AskID          string                `json:"ask_id,omitempty"`
+	Outcome        string                `json:"outcome,omitempty"`
+	Cancelled      bool                  `json:"cancelled,omitempty"`
+	Error          bool                  `json:"error,omitempty"`
+	Recovery       *event.RecoveryStatus `json:"recovery,omitempty"`
+	RetryAttempt   int                   `json:"retry_attempt,omitempty"`
+	RetryMax       int                   `json:"retry_max,omitempty"`
+	CompactionType string                `json:"compaction_type,omitempty"`
+	CompactionMsgs int                   `json:"compaction_messages,omitempty"`
+	GuardianResult string                `json:"guardian_result,omitempty"`
+	GuardianRisk   string                `json:"guardian_risk,omitempty"`
 }
 
 type machineRunDone struct {
-	SchemaVersion int               `json:"schema_version"`
-	Sequence      uint64            `json:"sequence"`
-	Kind          string            `json:"kind"`
-	SessionID     string            `json:"session_id,omitempty"`
-	OK            bool              `json:"ok"`
-	DurationMS    int64             `json:"duration_ms"`
-	NumTurns      int               `json:"num_turns"`
-	Usage         machineEventUsage `json:"usage"`
+	SchemaVersion  int               `json:"schema_version"`
+	Sequence       uint64            `json:"sequence"`
+	Kind           string            `json:"kind"`
+	SessionID      string            `json:"session_id,omitempty"`
+	OK             bool              `json:"ok"`
+	DurationMS     int64             `json:"duration_ms"`
+	NumTurns       int               `json:"num_turns"`
+	Usage          machineEventUsage `json:"usage"`
+	ErrorCode      string            `json:"error_code,omitempty"`
+	Authentication string            `json:"authentication_status,omitempty"`
+	Recovery       []string          `json:"recovery_actions,omitempty"`
+}
+
+func runAuthenticationMetadata(err error) (code, status string, actions []string) {
+	var authErr *control.AuthenticationError
+	if !errors.As(err, &authErr) || authErr == nil {
+		return "", "", nil
+	}
+	state := authErr.State
+	code = state.Code
+	if code == "" {
+		code = string(state.Status)
+	}
+	status = string(state.Status)
+	switch state.Status {
+	case control.AuthenticationMissingCredential:
+		actions = []string{"configure_credentials", "select_model", "diagnose_credentials"}
+	case control.AuthenticationRejected:
+		actions = []string{"update_credentials", "select_model", "test_connection", "retry_authentication"}
+	case control.AuthenticationCredentialStoreUnavailable:
+		actions = []string{"diagnose_credentials", "select_model"}
+	}
+	return code, status, actions
+}
+
+// finalAnswer is the turn's answer together with where it came from. A
+// thinking model may answer entirely in the reasoning channel, finishing with
+// non-empty reasoning and an empty visible message - an accepted shape. The
+// transcript renderer prints a "thinking" marker for it, and the reasoning
+// itself under --show-thinking; these sinks print nothing at all and still
+// report success, so the answer is lost and nothing says so.
+//
+// The two fields are one value because they are only ever correct together: a
+// fromReasoning left over from an earlier turn would misreport the provenance
+// of a later visible answer.
+type finalAnswer struct {
+	text          string
+	fromReasoning bool
 }
 
 type runOutputSink struct {
@@ -131,7 +180,7 @@ type runOutputSink struct {
 	format              runOutputFormat
 	out                 io.Writer
 	encoder             *json.Encoder
-	final               string
+	final               finalAnswer
 	usage               runResultUsage
 	cost                float64
 	currency            string
@@ -166,7 +215,10 @@ func (s *runOutputSink) Emit(e event.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if e.Kind == event.Message {
-		s.final = e.Text
+		s.final = finalAnswer{text: e.Text}
+		if e.Text == "" && e.Reasoning != "" {
+			s.final = finalAnswer{text: e.Reasoning, fromReasoning: true}
+		}
 	}
 	if e.Kind == event.Usage && e.Usage != nil {
 		s.usage.InputTokens += e.Usage.PromptTokens
@@ -234,12 +286,13 @@ func (s *runOutputSink) Finalize(sessionID string, started time.Time, runErr err
 	// Mixed original currencies no longer error: totals use shared display
 	// valuations when complete, otherwise cost_complete=false with original_costs.
 	if s.format == runOutputText {
-		if s.final != "" {
-			_, s.err = fmt.Fprintln(s.out, s.final)
+		if s.final.text != "" {
+			_, s.err = fmt.Fprintln(s.out, s.final.text)
 		}
 		return s.err
 	}
 	completion := classifyRunCompletion(runErr)
+	errorCode, authentication, recovery := runAuthenticationMetadata(runErr)
 	if s.format == runOutputEventsJSONL {
 		s.sequence++
 		turns := s.turns
@@ -247,21 +300,22 @@ func (s *runOutputSink) Finalize(sessionID string, started time.Time, runErr err
 			turns = 1
 		}
 		return s.encoder.Encode(machineRunDone{
-			SchemaVersion: machineSchemaVersion,
-			Sequence:      s.sequence,
-			Kind:          "run_done",
-			SessionID:     sessionID,
-			OK:            !completion.isError,
-			DurationMS:    time.Since(started).Milliseconds(),
-			NumTurns:      turns,
-			Usage:         machineEventUsage{InputTokens: s.usage.InputTokens, OutputTokens: s.usage.OutputTokens, CacheHitTokens: s.usage.CacheReadInputTokens, CacheMissTokens: s.usage.CacheCreationInputTokens},
+			SchemaVersion:  machineSchemaVersion,
+			Sequence:       s.sequence,
+			Kind:           "run_done",
+			SessionID:      sessionID,
+			OK:             !completion.isError,
+			DurationMS:     time.Since(started).Milliseconds(),
+			NumTurns:       turns,
+			Usage:          machineEventUsage{InputTokens: s.usage.InputTokens, OutputTokens: s.usage.OutputTokens, CacheHitTokens: s.usage.CacheReadInputTokens, CacheMissTokens: s.usage.CacheCreationInputTokens},
+			ErrorCode:      errorCode,
+			Authentication: authentication,
+			Recovery:       recovery,
 		})
 	}
-	resultText := s.final
-	if runErr != nil {
-		if resultText == "" {
-			resultText = runErr.Error()
-		}
+	answer := s.final
+	if runErr != nil && answer.text == "" {
+		answer = finalAnswer{text: runErr.Error()}
 	}
 	turns := s.turns
 	if turns == 0 && !completion.isError {
@@ -288,24 +342,28 @@ func (s *runOutputSink) Finalize(sessionID string, started time.Time, runErr err
 		}
 	}
 	return s.encoder.Encode(runResult{
-		Type:            "result",
-		Subtype:         completion.subtype,
-		IsError:         completion.isError,
-		DurationMS:      time.Since(started).Milliseconds(),
-		NumTurns:        turns,
-		Result:          resultText,
-		SessionID:       sessionID,
-		TotalCost:       s.cost,
-		Currency:        s.currency,
-		TotalCostUSD:    s.cost,
-		CostComplete:    s.costComplete || (!s.sawQuote && s.currency != ""),
-		DisplayComplete: s.displayComplete,
-		DisplayStatus:   s.displayStatus,
-		AggregateMode:   s.aggregateMode,
-		OriginalCosts:   s.originalCosts,
-		OriginalTotals:  s.originalTotals,
-		CostQuote:       aggQuote,
-		Usage:           s.usage,
+		Type:                "result",
+		Subtype:             completion.subtype,
+		IsError:             completion.isError,
+		DurationMS:          time.Since(started).Milliseconds(),
+		NumTurns:            turns,
+		Result:              answer.text,
+		ResultFromReasoning: answer.fromReasoning,
+		SessionID:           sessionID,
+		TotalCost:           s.cost,
+		Currency:            s.currency,
+		TotalCostUSD:        s.cost,
+		CostComplete:        s.costComplete || (!s.sawQuote && s.currency != ""),
+		DisplayComplete:     s.displayComplete,
+		DisplayStatus:       s.displayStatus,
+		AggregateMode:       s.aggregateMode,
+		OriginalCosts:       s.originalCosts,
+		OriginalTotals:      s.originalTotals,
+		CostQuote:           aggQuote,
+		Usage:               s.usage,
+		ErrorCode:           errorCode,
+		Authentication:      authentication,
+		Recovery:            recovery,
 	})
 }
 
@@ -350,6 +408,7 @@ func (s *runOutputSink) machineEventRecordFor(e event.Event, sequence uint64) ma
 		record.GuardianResult = e.Guardian.Outcome
 		record.GuardianRisk = e.Guardian.RiskLevel
 	case event.Retrying:
+		record.Recovery = e.Recovery
 		record.RetryAttempt = e.RetryAttempt
 		record.RetryMax = e.RetryMax
 	}

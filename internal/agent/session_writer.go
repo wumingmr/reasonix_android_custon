@@ -140,7 +140,7 @@ func (w *SessionWriter) Bind(sess *Session, generation uint64) error {
 		return err
 	}
 	sess.BindWriteAuthority(auth)
-	sess.syncWriterBaseline(w.Path())
+	sess.syncWriterBaseline(w.lease.accessPath)
 	return nil
 }
 

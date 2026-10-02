@@ -68,9 +68,11 @@ func TestRunFlushesUnconsumedSteersOnCancel(t *testing.T) {
 
 	var persisted []string
 	var localOnly bool
+	var persistedID string
 	for _, m := range a.Session().Messages {
 		if text, ok := SteerText(m.Content); ok {
 			persisted = append(persisted, text)
+			persistedID = m.ID
 			localOnly = m.LocalOnly && m.Role == provider.RoleTool &&
 				m.ToolCallID == provider.LocalOnlyToolID && m.Name == provider.LocalOnlyToolName
 		}
@@ -90,6 +92,9 @@ func TestRunFlushesUnconsumedSteersOnCancel(t *testing.T) {
 		!strings.Contains(notices[0].Text, "use plan B") ||
 		!strings.Contains(notices[0].Text, "not applied") {
 		t.Fatalf("flushed steer should emit an explicit warning, got %+v", notices)
+	}
+	if persistedID == "" || notices[0].MessageID != persistedID {
+		t.Fatalf("warning and durable steer have different identities: message=%q notice=%q", persistedID, notices[0].MessageID)
 	}
 	if n := a.steerQueueLen(); n != 0 {
 		t.Fatalf("steer queue should be empty after the turn, len=%d", n)

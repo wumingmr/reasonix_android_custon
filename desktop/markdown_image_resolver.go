@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
@@ -180,7 +179,7 @@ func (a *App) authorizedMarkdownImagePath(tabID, source string) (string, error) 
 		}
 	}
 
-	pathSource, err := markdownFileSourcePath(source)
+	pathSource, err := localPathSource(source)
 	if err != nil {
 		return "", err
 	}
@@ -201,63 +200,6 @@ func (a *App) authorizedMarkdownImagePath(tabID, source string) (string, error) 
 	if err != nil || !inside {
 		return "", os.ErrPermission
 	}
-	return canonicalPathWithin(base, candidate)
-}
-
-func markdownFileSourcePath(source string) (string, error) {
-	// Raw Windows drive/UNC paths are valid Markdown image sources even though
-	// net/url would otherwise interpret the drive letter as a URL scheme.
-	if filepath.IsAbs(source) && !strings.ContainsAny(source, "?#") {
-		return filepath.Clean(source), nil
-	}
-	if strings.HasPrefix(strings.ToLower(source), "file:") {
-		u, err := url.Parse(source)
-		if err != nil || !strings.EqualFold(u.Scheme, "file") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-			return "", os.ErrInvalid
-		}
-		if u.Host != "" && !strings.EqualFold(u.Host, "localhost") {
-			return "", os.ErrPermission
-		}
-		path, err := url.PathUnescape(u.Path)
-		if err != nil {
-			return "", os.ErrInvalid
-		}
-		if runtime.GOOS == "windows" && len(path) >= 3 && path[0] == '/' && path[2] == ':' {
-			path = path[1:]
-		}
-		return filepath.FromSlash(path), nil
-	}
-	u, err := url.Parse(source)
-	if err != nil || u.Scheme != "" {
-		return "", os.ErrInvalid
-	}
-	path, err := url.PathUnescape(u.Path)
-	if err != nil || strings.ContainsRune(path, 0) {
-		return "", os.ErrInvalid
-	}
-	return filepath.FromSlash(path), nil
-}
-
-func canonicalPathWithin(root, candidate string) (string, error) {
-	realRoot, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return "", err
-	}
-	realCandidate, err := filepath.EvalSymlinks(candidate)
-	if err != nil {
-		return "", err
-	}
-	rel, err := filepath.Rel(realRoot, realCandidate)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return "", os.ErrPermission
-	}
-	return filepath.Clean(realCandidate), nil
-}
-
-func localFileHref(path string) string {
-	slash := filepath.ToSlash(path)
-	if runtime.GOOS == "windows" && len(slash) >= 2 && slash[1] == ':' {
-		slash = "/" + slash
-	}
-	return (&url.URL{Scheme: "file", Path: slash}).String()
+	contained, _, err := canonicalPathWithin(base, candidate)
+	return contained, err
 }

@@ -36,6 +36,7 @@ func TestGatewayIntentionalTransitionMovesLeaseAndMapping(t *testing.T) {
 		Sink: event.Discard, OnSessionTransition: state.onSessionTransition,
 	})
 	state.ctrl = ctrl
+	t.Cleanup(ctrl.Close)
 	gw.controllers[key] = state
 	gw.sessionOverrides[key] = sessionRuntimeOverride{sessionPath: originalPath}
 	if err := rebindBotSessionWriteAuthority(state, originalPath); err != nil {

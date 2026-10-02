@@ -206,12 +206,14 @@ func (m chatTUI) primaryStatusLine(modeTag string, shellMode, cancelRequested bo
 		status += " · " + yellow(i18n.M.ClipboardImagePastingHint)
 	case m.copyNoticeText != "":
 		status += " · " + green(m.copyNoticeText)
+	case m.maintenance != nil:
+		status += " · " + footerValue(i18n.M.CompactionWorking)
 	case cancelRequested:
 		status += " · " + i18n.M.CtrlCQuitHint
 	case shellMode:
 		status += " · " + i18n.M.ShellModeHint
 	case m.ctrl != nil && m.ctrl.AutoApproveTools():
-		status += " · " + footerValue(i18n.M.ChatStatusYoloIdle) + " · " + footerHint(i18n.M.ChatStatusCycleHintCompact)
+		status += " · " + footerHint(i18n.M.ChatStatusCycleHintCompact)
 	default:
 		status += " · " + footerValue(i18n.M.ChatStatusIdle) + " · " + footerHint(i18n.M.ChatStatusCycleHintCompact)
 	}
@@ -219,6 +221,12 @@ func (m chatTUI) primaryStatusLine(modeTag string, shellMode, cancelRequested bo
 		status += " · " + mt
 	}
 	return status
+}
+
+// presetTag is retained for the stable footer composition contract. Retired
+// role settings have no status-line representation.
+func (m chatTUI) presetTag() string {
+	return ""
 }
 
 // statusModelWorkGroup is the bounded, session-level group placed at the right
@@ -234,9 +242,12 @@ func (m chatTUI) statusModelWorkGroup(maxWidth int) string {
 	}
 
 	const separator = "   "
-	tail := make([]string, 0, 2)
+	tail := make([]string, 0, 3)
 	if effort := m.effortTag(); effort != "" {
 		tail = append(tail, effort)
+	}
+	if preset := m.presetTag(); preset != "" {
+		tail = append(tail, preset)
 	}
 	if model == "" && len(tail) == 0 {
 		return ""

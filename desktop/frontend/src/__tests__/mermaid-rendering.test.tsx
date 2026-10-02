@@ -23,6 +23,7 @@ import {
 import { createMermaidPanZoom } from "../components/mermaidPanZoom";
 import { LocaleProvider } from "../lib/i18n";
 import { REMOTE_MARKDOWN_IMAGE_PATH } from "../lib/markdownImage";
+import { installDesktopHostStub } from "./desktopHostStub";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const styles = readFileSync(resolve(testDir, "../styles.css"), "utf8");
@@ -204,7 +205,7 @@ console.log("\nmermaid rendering");
 {
   ok(markdownSource.includes("requestAnimationFrame"), "streaming markdown commits on an animation frame");
   ok(markdownSource.includes("streamingMarkdownCommitInterval"), "streaming markdown applies an adaptive parse budget");
-  ok(markdownSource.includes('className="md md--stream-tail"'), "streaming markdown exposes an immediate lightweight tail");
+  ok(markdownSource.includes('text.slice(renderedText.length)'), "streaming markdown exposes an immediate lightweight tail");
   ok(markdownSource.includes("requestIdleCallback"), "large Markdown finalization waits for browser idle time");
   ok(markdownSource.includes("reasonix:markdown-finalize"), "large Markdown finalization emits a performance measure");
   ok(markdownSource.includes("splitStableMarkdownSections"), "large Markdown retains completed top-level sections");
@@ -479,7 +480,7 @@ console.log("\nmermaid rendering");
 
 {
   const dom = installDom();
-  Object.defineProperty(dom.window, "runtime", { configurable: true, value: {} });
+  installDesktopHostStub({});
   const dirtySvg = `
     <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" onload="steal()">
       <script>alert(1)</script>
@@ -522,6 +523,22 @@ console.log("\nmermaid rendering");
 
   const renders: Array<{ definition: string; theme: string }> = [];
   const panZoomCalls: string[] = [];
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  dom.window.requestAnimationFrame = (callback) => {
+    frames.set(++frameId, callback);
+    return frameId;
+  };
+  dom.window.cancelAnimationFrame = (id) => { frames.delete(id); };
+  const advanceFrame = async () => {
+    await act(async () => {
+      const current = [...frames.entries()];
+      for (const [id, callback] of current) {
+        if (!frames.delete(id)) continue;
+        callback(dom.window.performance.now());
+      }
+    });
+  };
 
   __setMermaidRenderAdapterForTest(async (_svgId, definition, theme, signal) => {
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
@@ -569,7 +586,13 @@ console.log("\nmermaid rendering");
   ok(!document.querySelector(".mermaid-diagram__preview svg")?.hasAttribute("onload"), "rendered SVG root event handler is stripped");
   ok(!document.querySelector(".mermaid-diagram__preview script"), "rendered SVG script nodes are removed");
 
-  await waitFor("pan zoom instance initialized", () => panZoomCalls.includes("fit") && panZoomCalls.includes("center"));
+  // Initialization and layout sync own separate animation frames. Advance
+  // those frames explicitly instead of racing JSDOM's 60 Hz clock with timers.
+  eq(panZoomCalls.length, 0, "pan zoom waits for its initialization frame");
+  await advanceFrame();
+  ok(!panZoomCalls.includes("fit"), "pan zoom layout waits for the following frame");
+  await advanceFrame();
+  ok(panZoomCalls.includes("fit") && panZoomCalls.includes("center"), "pan zoom instance initialized");
 
   const zoomIn = document.querySelector<HTMLButtonElement>('button[aria-label="Zoom in"]');
   const zoomOut = document.querySelector<HTMLButtonElement>('button[aria-label="Zoom out"]');
@@ -622,6 +645,10 @@ console.log("\nmermaid rendering");
   eq(split?.lang, "js", "the open fence split keeps the info-string language");
   eq(split?.code, "const a = 1;\nconst b", "the open fence split drops the opener line from the code body");
   eq(splitStreamingTailFence("para\n\n```\nx")?.head, "para\n\n", "text before the open fence stays plain");
+  eq(splitStreamingTailFence("```type"), null, "a partial opening line does not hide the language being streamed");
+  eq(splitStreamingTailFence("```ts title=demo\nx")?.lang, "ts", "fence metadata does not become the grammar name");
+  eq(splitStreamingTailFence("```ts\nx\n```", true)?.code, "x\n", "a just-closed tail keeps its code surface until parser handoff");
+  eq(splitStreamingTailFence("~~~python\nx = 1", true)?.lang, "python", "tilde fences share the streaming viewer");
 }
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

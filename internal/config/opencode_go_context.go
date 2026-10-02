@@ -15,6 +15,7 @@ const (
 
 func normalizeLegacyOpenCodeGoInstalls(c *Config) bool {
 	changed := normalizeLegacyOpenCodeGoKimiK3Catalog(c)
+	changed = normalizeLegacyOpenCodeGoVisionCatalog(c) || changed
 	changed = normalizeLegacyOpenCodeGoRouteCatalog(c) || changed
 	changed = normalizeLegacyOpenCodeGoContextWindows(c) || changed
 	changed = normalizeLegacyOpenCodeGoBilling(c) || changed
@@ -53,7 +54,7 @@ func normalizeLegacyOpenCodeGoRouteCatalog(c *Config) bool {
 		for _, model := range models {
 			routes := openCodeGoModelRoutes(model)
 			route := currentRoute
-			if !providerModelSupportsOpenCodeGoRoute(currentRoute, p.BaseURL, p.Kind, model) && len(routes) == 1 {
+			if !providerModelSupportsOpenCodeGoRoute(currentRoute, p.BaseURL, p.Kind, model) && len(routes) == 1 && !openCodeGoKeepsCorrectedModel(*p, model) {
 				route = routes[0]
 			}
 			groups[route] = append(groups[route], model)
@@ -112,6 +113,24 @@ func normalizeLegacyOpenCodeGoRouteCatalog(c *Config) bool {
 		}
 	}
 	return changed
+}
+
+// openCodeGoKeepsCorrectedModel keeps a route-corrected model where the user
+// put it unless the connection still holds a chat preset list we shipped.
+func openCodeGoKeepsCorrectedModel(p ProviderEntry, model string) bool {
+	if !provider.OpenCodeGoRouteCorrected(model) {
+		return false
+	}
+	route, ok := provider.OfficialOpenCodeGoRoute(p.Kind, p.BaseURL)
+	if !ok || route != provider.OpenCodeGoRouteChat || strings.TrimSpace(p.PresetID) != "opencode-go" || strings.TrimSpace(p.Model) != "" {
+		return true
+	}
+	for _, shipped := range shippedMiniMaxChatOpenCodeGoModels {
+		if stringSlicesEqual(p.Models, shipped) {
+			return false
+		}
+	}
+	return true
 }
 
 func openCodeGoModelRoutes(model string) []string {

@@ -37,6 +37,8 @@ func NewTaskRecorder(store WriteStore, projectDir string, sessionIDFn func() str
 	return &TaskRecorder{store: store, projectDir: projectDir, sessionIDFn: sessionIDFn, monitorIDs: make(map[string]string), heartbeats: make(map[string]context.CancelFunc), runtimeOwnerID: newRuntimeOwnerID()}
 }
 
+func (r *TaskRecorder) RuntimeOwnerID() string { return r.runtimeOwnerID }
+
 const (
 	runtimeLeaseTTL       = 30 * time.Second
 	runtimeHeartbeatEvery = 5 * time.Second

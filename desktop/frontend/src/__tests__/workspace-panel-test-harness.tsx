@@ -7,6 +7,9 @@ import type { AppBindings } from "../lib/bridge";
 import { LocaleProvider } from "../lib/i18n";
 import type { GitCommitView, WireCompletionSummary, WorkspaceChangeDetailView, WorkspaceChangesView } from "../lib/types";
 import { resetWorkspaceTreeMemoryForTests } from "../lib/workspaceTreeMemory";
+import { setFileNavigationOwner } from "../lib/fileNavigationCommands";
+import { useActivityBarStore } from "../store/activityBar";
+import { installDesktopHostStub } from "./desktopHostStub";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -26,6 +29,11 @@ class TestResizeObserver {
 export function flushPromises(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
+
+// Text input events dispatched in this jsdom do not reach React's onChange, so
+// a suite that must drive a controlled field calls the mounted element's own
+// `onChange` through its `__reactProps$` entry instead (see
+// `ask-card-layout.test.ts` and `remote-file-navigation-races.test.tsx`).
 
 export async function waitFor(label: string, predicate: () => boolean) {
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -96,21 +104,27 @@ function installDom() {
 
 export async function renderWorkspace(
   changes: WorkspaceChangesView,
-  options: { creationMode?: boolean; history?: GitCommitView[]; detail?: WorkspaceChangeDetailView; completionSummary?: WireCompletionSummary } = {},
+  options: { history?: GitCommitView[]; detail?: WorkspaceChangeDetailView; completionSummary?: WireCompletionSummary } = {},
 ) {
   resetWorkspaceTreeMemoryForTests();
+  setFileNavigationOwner(null);
   const dom = installDom();
-  window.go = {
+  await act(async () => {
+    useActivityBarStore.setState({ workspaceRoot: "/repo", tabs: [], activeTabId: null });
+  });
+  const dockTabId = useActivityBarStore.getState().openEntry("file", "Files");
+  const desktopStub = installDesktopHostStub(({
     main: {
       App: {
         ListDirForTab: async () => [],
         WorkspaceGitHistory: async () => options.history ?? [],
         WorkspaceChanges: async () => changes,
         WorkspaceChangeDetail: async () => options.detail ?? {},
+        ResolveWorkspacePathForTab: async (_tabID, path) => path.startsWith("/") ? path : `/repo/${path}`,
         ReadFileForTab: async (_tabID, path) => ({ path, body: "", size: 0, truncated: false, binary: false }),
       } as Partial<AppBindings> as AppBindings,
     },
-  };
+  }).main.App);
   const rootEl = document.getElementById("root");
   if (!rootEl) throw new Error("missing root");
   const root = createRoot(rootEl);
@@ -120,10 +134,10 @@ export async function renderWorkspace(
         <WorkspacePanel
           open
           tabId="tab-a"
+          dockTabId={dockTabId}
           cwd="/repo"
           maximized={false}
           initialViewMode="changed"
-          creationMode={options.creationMode}
           completionSummary={options.completionSummary}
           onClose={() => {}}
           onToggleMaximized={() => {}}
@@ -133,13 +147,20 @@ export async function renderWorkspace(
     await flushPromises();
   });
   await waitFor("workspace changes", () => Boolean(document.querySelector(".workspace-preview__body")));
-  return { dom, root };
+  return { dom, root, dockTabId };
 }
 
 export async function renderFilesWorkspace(methods: Partial<AppBindings>, props: Partial<Parameters<typeof WorkspacePanel>[0]> = {}) {
   resetWorkspaceTreeMemoryForTests();
+  // Each mount gets its own navigation instance, and the file dock tab a
+  // command targets is the one this panel renders — exactly as the region does.
+  setFileNavigationOwner(null);
   const dom = installDom();
-  window.go = {
+  await act(async () => {
+    useActivityBarStore.setState({ workspaceRoot: "/repo", tabs: [], activeTabId: null });
+  });
+  const dockTabId = useActivityBarStore.getState().openEntry("file", "Files");
+  const desktopStub = installDesktopHostStub(({
     main: {
       App: {
         ListDirForTab: async () => [],
@@ -147,11 +168,13 @@ export async function renderFilesWorkspace(methods: Partial<AppBindings>, props:
         WorkspaceGitHistory: async () => [],
         WorkspaceChanges: async () => ({ files: [], gitAvailable: true }),
         WorkspaceChangeDetail: async () => ({}),
+        ResolveWorkspacePathForTab: async (_tabID, path) => path.startsWith("/") ? path : `/repo/${path}`,
+        ResolvePresentedPathForTab: async (_tabID, _toolCallID, path) => path.startsWith("/") ? path : `/repo/${path}`,
         ReadFileForTab: async (_tabID, path) => ({ path, body: "", size: 0, truncated: false, binary: false }),
         ...methods,
       } as Partial<AppBindings> as AppBindings,
     },
-  };
+  }).main.App);
   const rootEl = document.getElementById("root");
   if (!rootEl) throw new Error("missing root");
   const root = createRoot(rootEl);
@@ -163,6 +186,7 @@ export async function renderFilesWorkspace(methods: Partial<AppBindings>, props:
     initialViewMode: "files",
     onClose: () => {},
     onToggleMaximized: () => {},
+    dockTabId,
     ...props,
   };
   const rerender = async (nextProps: Partial<Parameters<typeof WorkspacePanel>[0]> = {}) => {
@@ -177,5 +201,5 @@ export async function renderFilesWorkspace(methods: Partial<AppBindings>, props:
     });
   };
   await rerender();
-  return { dom, root, rerender };
+  return { dom, root, rerender, dockTabId };
 }

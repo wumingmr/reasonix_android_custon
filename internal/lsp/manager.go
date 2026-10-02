@@ -25,6 +25,8 @@ type ServerSpec struct {
 	Extensions  []string
 	Fallbacks   []string
 	InstallHint string
+	// Verify, when set, runs before each start; an error refuses the start.
+	Verify func() error
 }
 
 // Manager owns the lazily-spawned language servers for a session. Servers start
@@ -171,6 +173,11 @@ func resolveCommand(spec ServerSpec) (string, error) {
 }
 
 func (m *Manager) spawn(_ string, spec ServerSpec) (*client, error) {
+	if spec.Verify != nil {
+		if err := spec.Verify(); err != nil {
+			return nil, err
+		}
+	}
 	bin, err := resolveCommand(spec)
 	if err != nil {
 		return nil, err
@@ -282,11 +289,15 @@ func (m *Manager) formatLocations(kind string, locs []Location) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d %s(s):\n", len(locs), kind)
 	for _, l := range locs {
-		p := uriToPath(l.URI)
 		line := l.Range.Start.Line + 1
-		fmt.Fprintf(&b, "%s:%d", m.rel(p), line)
-		if snippet := readLine(p, l.Range.Start.Line); snippet != "" {
-			fmt.Fprintf(&b, "  %s", snippet)
+		p, err := uriToPath(l.URI)
+		if err != nil {
+			fmt.Fprintf(&b, "%s:%d", l.URI, line)
+		} else {
+			fmt.Fprintf(&b, "%s:%d", m.rel(p), line)
+			if snippet := readLine(p, l.Range.Start.Line); snippet != "" {
+				fmt.Fprintf(&b, "  %s", snippet)
+			}
 		}
 		b.WriteByte('\n')
 	}

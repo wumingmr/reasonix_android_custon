@@ -41,6 +41,18 @@ func TestBypassed(t *testing.T) {
 		{"api.deepseek.com", "api.deepseek.com", true},
 		{"API.DeepSeek.com", "api.deepseek.com", true},
 		{"api.deepseek.com", "", false},
+		{"127.0.0.1", "127.*", true},
+		{"192.168.1.20", "10.*;192.168.*", true},
+		{"192.169.1.20", "192.168.*", false},
+		{"10.0.0.5", "10.*", true},
+		{"110.0.0.5", "10.*", false},
+		{"api.corp.example", "api.*.example", true},
+		{"api.example", "api.*.example", false},
+		{"127.0.0.1", "", true},
+		{"localhost", "", true},
+		{"::1", "", true},
+		{"127.0.0.1", "<-loopback>", false},
+		{"::1", "[::1];<-loopback>", true},
 	} {
 		if got := bypassed(tc.host, tc.bypass); got != tc.want {
 			t.Errorf("bypassed(%q, %q) = %v, want %v", tc.host, tc.bypass, got, tc.want)

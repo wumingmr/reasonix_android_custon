@@ -36,14 +36,24 @@ func Load() (*Config, error) {
 // mergeRuntimeTOMLFileSnapshot). Callers that must not mutate config files should use
 // LoadForRootReadOnly instead.
 func LoadForRoot(root string) (*Config, error) {
-	return loadForRoot(root, true)
+	return loadForRoot(root, loadForRootOptions{migrateOnDisk: true, loadCredentials: true})
 }
 
 // LoadForRootReadOnly is like LoadForRoot but never writes config files: it skips
 // on-disk legacy MCP tier migration. Prefer this for diagnostics, doctor, and
 // other read-only inspection paths.
 func LoadForRootReadOnly(root string) (*Config, error) {
-	return loadForRoot(root, false)
+	return loadForRoot(root, loadForRootOptions{loadCredentials: true})
+}
+
+// LoadForRootWithoutCredentialsReadOnly is the credential-free form of
+// LoadForRootReadOnly. It still merges the effective user + project config and
+// carries project .env values for workspace-scoped expansion, but it neither
+// pins Reasonix credentials into the process environment nor resolves provider
+// API keys. Settings probes use it when they need runtime network policy before
+// resolving only the edited provider's credential explicitly.
+func LoadForRootWithoutCredentialsReadOnly(root string) (*Config, error) {
+	return loadForRoot(root, loadForRootOptions{})
 }
 
 // LoadUserConfigReadOnly loads only the trusted user-global config. It never
@@ -62,12 +72,21 @@ func LoadUserConfigReadOnly() (*Config, error) {
 		}
 	}
 	normalizeConfigForEdit(cfg)
+	cfg.loadOpenCodeGoJournal(userConfigLoadPath())
 	return cfg, nil
 }
 
-func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
+type loadForRootOptions struct {
+	migrateOnDisk   bool
+	loadCredentials bool
+}
+
+func loadForRoot(root string, opts loadForRootOptions) (*Config, error) {
 	root = resolveRoot(root)
-	expansionEnv := loadDotEnvForRoot(root)
+	expansionEnv := loadProjectDotEnvForExpansion(root)
+	if opts.loadCredentials {
+		loadCredentialStoreForRoot(root)
+	}
 	cfg := Default()
 	cfg.setExpansionEnv(expansionEnv)
 	cfg.CredentialsStore = credentialsStoreMode()
@@ -86,7 +105,7 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 	}
 
 	mergeTOML := mergeFileSnapshot
-	if migrateOnDisk {
+	if opts.migrateOnDisk {
 		mergeTOML = mergeRuntimeTOMLFileSnapshot
 	}
 
@@ -129,11 +148,9 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 	userDefaultModel := cfg.DefaultModel
 	globalCLI := cfg.CLI
 	globalSecrets := cfg.Secrets
-	globalRemote := cfg.Remote.Clone()
-	globalDesktopLanguage := cfg.Desktop.Language
-	globalPricingCurrency := cfg.Desktop.Currency
-	globalBillingDisplayCurrency := cfg.Billing.DisplayCurrency
-	globalTelemetry, globalLegacyAnchorSafetyGate := cfg.Telemetry, cfg.Agent.LegacyAnchorSafetyGate
+	globalRemote, globalServe := cfg.Remote.Clone(), cfg.Serve
+	held := holdUserScope(cfg)
+	globalTelemetry, globalLegacyAnchorSafetyGate, globalStatusline := cfg.Telemetry, cfg.Agent.LegacyAnchorSafetyGate, cfg.Statusline
 
 	tomlSources = append(tomlSources, projectTOML)
 	projectMeta, err := mergeTOML(cfg, projectTOML)
@@ -157,18 +174,13 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 	// reasonix.toml must not be able to flip on the workflow-breaking env/path
 	// protections.
 	cfg.Secrets = globalSecrets
-	// Remote SSH hosts are equally user-global: a cloned repo's reasonix.toml
-	// must not be able to inject hosts, jump chains, or port forwards that
-	// steer where Reasonix opens connections.
-	cfg.Remote = globalRemote
-	// Desktop language and pricing currency are user-level regional preferences.
-	// A repository must not be able to alter how the user's spend is shown.
-	cfg.Desktop.Language = globalDesktopLanguage
-	cfg.Desktop.Currency = globalPricingCurrency
-	cfg.Billing.DisplayCurrency = globalBillingDisplayCurrency
-	// CLI telemetry is an explicit user-global privacy choice. Project config
-	// cannot opt a user in or out, including when the global value is absent.
-	cfg.Telemetry, cfg.Agent.LegacyAnchorSafetyGate = globalTelemetry, globalLegacyAnchorSafetyGate
+	// Remote SSH hosts and serve authentication are equally user-global: a repo
+	// must not inject hosts, jump chains, or port forwards, nor choose serve's
+	// launch token, auth mode, or trust in forwarded headers.
+	cfg.Remote, cfg.Serve = globalRemote, globalServe
+	// Telemetry is a user-global privacy choice and the statusline a command the
+	// TUI runs unprompted: project config sets neither, even with no global value.
+	cfg.Telemetry, cfg.Agent.LegacyAnchorSafetyGate, cfg.Statusline = globalTelemetry, globalLegacyAnchorSafetyGate, globalStatusline
 	// TOML decoding replaces [[plugins]] wholesale, so cfg.Plugins now holds
 	// only the last file's. Re-merge by name across all sources (later wins) so a
 	// project reasonix.toml doesn't drop the global config's MCP servers.
@@ -191,6 +203,8 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 	} else if ok {
 		cfg.Desktop.ProviderAccess = access
 	}
+	// Sandbox, permission, program and regional grants only narrow (see heldScope).
+	held.narrow(cfg, root)
 
 	// Claude Code's .mcp.json (project root) is read last and merged into
 	// [[plugins]], so a server configured for Claude works here unchanged.
@@ -215,32 +229,17 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 		cfg.mergeMCPJSON(loadLegacyMCP(legacyConfigPath()))
 	}
 	_ = mergeInstalledPluginPackages(cfg, root)
-	normalizePluginCommandLines(cfg)
-	normalizeLegacyEffort(cfg)
-	cfg.ignoredLegacyStepLimits = normalizeLegacyAgentStepLimits(cfg)
-	normalizeRetiredAutoPlan(cfg)
-	normalizeLegacyMCPTiers(cfg)
-	normalizeLegacyStepFunBaseURLs(cfg)
-	normalizeLegacyLongCatContextWindows(cfg)
-	normalizeLegacyQwenContextWindows(cfg)
-	normalizeLegacyKimiK3Catalog(cfg)
-	normalizeLegacyOpenCodeGoInstalls(cfg)
-	normalizeLegacyMimoCustomProviders(cfg)
-	normalizeLegacyProviderModels(cfg)
-	normalizeDesktopOfficialProviderAccess(cfg)
-	normalizeOfficialDeepSeekModels(cfg)
-	migrateBillingDisplayCurrency(cfg)
-	freezeProviderBillingCurrencies(cfg)
-	applyDeepSeekOfficialDefaultPricing(cfg)
-	backfillDeepSeekOfficialPrices(cfg)
-	normalizeEffortConfig(cfg)
-	backfillDeepSeekPro(cfg)
+	if err := normalizeRuntimeConfigWithMigrationJournal(cfg); err != nil {
+		return nil, err
+	}
 	if userDefaultModelExplicit {
 		restoreUnresolvableProjectDefaultModel(cfg, userDefaultModel)
 	}
 	cfg.CredentialsStore = credentialsStoreMode()
 	cfg.setExpansionEnv(expansionEnv)
-	resolveProviderCredentialsForRoot(root, cfg)
+	if opts.loadCredentials {
+		resolveProviderCredentialsForRoot(root, cfg)
+	}
 	return cfg, nil
 }
 
@@ -276,7 +275,12 @@ func (c *Config) setExpansionEnv(env map[string]string) {
 	}
 	c.expansionEnv = cloneStringMap(env)
 	for i := range c.Plugins {
-		c.Plugins[i].expansionEnv = c.expansionEnv
+		// A project .env belongs to the project: it expands only servers the
+		// project declares, whose decision covers the values it supplies.
+		c.Plugins[i].expansionEnv = nil
+		if RepositoryDeclared(c.Plugins[i]) {
+			c.Plugins[i].expansionEnv = c.expansionEnv
+		}
 	}
 }
 
@@ -329,27 +333,6 @@ func tomlFileDefinesKey(path string, key ...string) bool {
 		return false
 	}
 	return meta.IsDefined(key...)
-}
-
-// ConfigFileDefinesCompactRatio reports whether path explicitly overrides the
-// automatic compaction threshold. It is used by config surfaces that need to
-// explain whether the effective value came from defaults, user config, or the
-// current project.
-func ConfigFileDefinesCompactRatio(path string) bool {
-	return tomlFileDefinesKey(path, "agent", "compact_ratio")
-}
-
-// ConfigFileDefinesSkillKey reports whether a project or user TOML file
-// explicitly owns one of the supported [skills] settings. Desktop settings use
-// this narrow provenance check to edit the file that wins at runtime instead
-// of persisting a shadowed value to the global config.
-func ConfigFileDefinesSkillKey(path, key string) bool {
-	switch strings.TrimSpace(key) {
-	case "paths", "excluded_paths", "disabled_skills", "disable_implicit_invocation", "max_depth":
-		return tomlFileDefinesKey(path, "skills", key)
-	default:
-		return false
-	}
 }
 
 // backfillDeepSeekPro restores deepseek-pro for configs the pre-fix setup wizard
@@ -767,6 +750,7 @@ func loadForEditStrict(path string, loadCredentials, persistMigrations bool) (*C
 	}
 	markExplicitDefaultProjectSkillKeys(cfg, path, meta)
 	changed := normalizeConfigForEdit(cfg)
+	cfg.loadOpenCodeGoJournal(path)
 	if persistMigrations && changed && strings.TrimSpace(path) != "" {
 		if _, err := os.Stat(path); err == nil {
 			if err := cfg.SaveTo(path); err != nil {
@@ -806,6 +790,7 @@ func normalizeConfigForEdit(cfg *Config) bool {
 	changed = normalizeLegacyStepFunBaseURLs(cfg) || changed
 	changed = normalizeLegacyLongCatContextWindows(cfg) || changed
 	changed = normalizeLegacyQwenContextWindows(cfg) || changed
+	changed = normalizeLegacyStepFunContextWindows(cfg) || changed
 	changed = normalizeLegacyKimiK3Catalog(cfg) || changed
 	changed = normalizeLegacyOpenCodeGoInstalls(cfg) || changed
 	changed = normalizeLegacyMimoCustomProviders(cfg) || changed
@@ -1163,6 +1148,19 @@ func stripLegacyMultiThresholdCompactionLines(raw string) (string, bool) {
 func migrateLegacyMCPTiersFile(path string) error {
 	_, err := migrateRetiredConfigKeysFile(path, stripLegacyMCPTierLines)
 	return err
+}
+
+// MigrateLegacyMCPTiersForRoot keeps boot's historical on-disk migration
+// separate from immutable snapshots, whose freshness checks must be read-only.
+func MigrateLegacyMCPTiersForRoot(root string) {
+	for _, path := range []string{userConfigLoadPath(), filepath.Join(resolveRoot(root), "reasonix.toml")} {
+		if path == "" {
+			continue
+		}
+		if err := migrateLegacyMCPTiersFile(path); err != nil {
+			slog.Warn("config: legacy mcp tier migration failed", "path", path, "err", err)
+		}
+	}
 }
 
 func stripLegacyMCPTierLines(raw string) (string, bool) {
@@ -1553,6 +1551,61 @@ func normalizeLegacyOpenCodeGoKimiK3Catalog(c *Config) (changed bool) {
 	return changed
 }
 
+// normalizeLegacyOpenCodeGoVisionCatalog upgrades only the untouched Chat
+// catalog that predates OpenCode Go's DeepSeek vision SKU. Custom model lists
+// and explicit image-input choices remain user-owned.
+func normalizeLegacyOpenCodeGoVisionCatalog(c *Config) (changed bool) {
+	if c == nil {
+		return false
+	}
+	for i := range c.Providers {
+		p := &c.Providers[i]
+		presetID := strings.TrimSpace(p.PresetID)
+		if (presetID != "opencode-go" && (presetID != "" || strings.TrimSpace(p.Name) != "opencode-go")) ||
+			!strings.EqualFold(strings.TrimSpace(p.Kind), "openai") ||
+			normalizedBaseURLForMigration(p.BaseURL) != "https://opencode.ai/zen/go/v1" ||
+			!stringSlicesEqual(p.Models, preVisionOpenCodeGoModels) ||
+			strings.TrimSpace(p.Model) != "" {
+			continue
+		}
+		p.Models = append([]string(nil), opencodeGoModels...)
+		if p.VisionModels == nil || stringSlicesEqual(p.VisionModels, preVisionOpenCodeGoVisionModels) {
+			p.VisionModels = append([]string(nil), opencodeGoVisionModels...)
+		}
+		mergeMissingOpenCodeGoVisionOverride(p)
+		changed = true
+	}
+	return changed
+}
+
+func mergeMissingOpenCodeGoVisionOverride(p *ProviderEntry) {
+	if p.ModelOverrides == nil {
+		p.ModelOverrides = map[string]ProviderModelOverride{}
+	}
+	const model = "deepseek-v4-flash-vision-exp"
+	key := model
+	for candidate := range p.ModelOverrides {
+		if strings.EqualFold(strings.TrimSpace(candidate), model) {
+			key = candidate
+			break
+		}
+	}
+	override := p.ModelOverrides[key]
+	if strings.TrimSpace(override.ReasoningProtocol) == "" {
+		override.ReasoningProtocol = ReasoningProtocolDeepSeek
+	}
+	if override.SupportedEfforts == nil {
+		override.SupportedEfforts = []string{"disabled", "low", "high", "max"}
+	}
+	if strings.TrimSpace(override.DefaultEffort) == "" && containsString(normalizedEffortLevels(override.SupportedEfforts), "high") {
+		override.DefaultEffort = "high"
+	}
+	if override.ContextWindow <= 0 {
+		override.ContextWindow = 1_000_000
+	}
+	p.ModelOverrides[key] = override
+}
+
 func normalizeLegacyMimoProviderCatalogs(c *Config) bool {
 	if c == nil {
 		return false
@@ -1630,31 +1683,6 @@ func stringSlicesEqual(a, b []string) bool {
 	return true
 }
 
-func normalizeOfficialDeepSeekModels(c *Config) {
-	if c == nil {
-		return
-	}
-	for i := range c.Providers {
-		p := &c.Providers[i]
-		if officialProviderHost(p.BaseURL) != "api.deepseek.com" {
-			continue
-		}
-		switch strings.TrimSpace(p.Name) {
-		case "deepseek":
-			ensureProviderModels(p, []string{"deepseek-v4-flash", "deepseek-v4-pro"}, "deepseek-v4-flash")
-		case "deepseek-flash":
-			ensureProviderModels(p, []string{"deepseek-v4-flash"}, "deepseek-v4-flash")
-		case "deepseek-pro":
-			ensureProviderModels(p, []string{"deepseek-v4-pro"}, "deepseek-v4-pro")
-		case "deepseek-responses":
-			ensureProviderModels(p, []string{"deepseek-v4-flash", "deepseek-v4-pro"}, "deepseek-v4-flash")
-		}
-		backfillOfficialDeepSeekResponsesModels(p)
-		backfillDeepSeekAnthropicCapabilities(p)
-		backfillOfficialDeepSeekResponsesCapabilities(p)
-	}
-}
-
 func backfillDeepSeekAnthropicCapabilities(p *ProviderEntry) {
 	if p == nil || !strings.EqualFold(strings.TrimSpace(p.Kind), "anthropic") ||
 		!IsOfficialDeepSeekWebSearchEndpoint(p) {
@@ -1663,7 +1691,6 @@ func backfillDeepSeekAnthropicCapabilities(p *ProviderEntry) {
 	if strings.TrimSpace(p.Thinking) == "" {
 		p.Thinking = "enabled"
 	}
-	backfillOfficialDeepSeekEffortOverrides(p)
 }
 
 func officialProviderHost(baseURL string) string {
@@ -1758,6 +1785,7 @@ func legacyMimoConfigRefs(c *Config) []string {
 		c.DefaultModel,
 		c.Agent.PlannerModel,
 		c.Agent.VisionModel,
+		c.Agent.WebSearchModel,
 		c.Agent.SubagentModel,
 		c.Bot.Model,
 	}
@@ -1919,6 +1947,7 @@ func NormalizeLegacyDesktopProviderAccess(c *Config) {
 	addRef(c.DefaultModel)
 	addRef(c.Agent.PlannerModel)
 	addRef(c.Agent.VisionModel)
+	addRef(c.Agent.WebSearchModel)
 	addRef(c.Agent.SubagentModel)
 	for _, ref := range c.Agent.SubagentModels {
 		addRef(ref)
@@ -2011,18 +2040,17 @@ func ensureDeepSeekOfficialProvider(c *Config) {
 		return
 	}
 	entry := ProviderEntry{
-		Name:           "deepseek",
-		Kind:           "anthropic",
-		BaseURL:        deepSeekAnthropicBaseURL,
-		Models:         []string{"deepseek-v4-flash", "deepseek-v4-pro"},
-		Default:        "deepseek-v4-flash",
-		APIKeyEnv:      "DEEPSEEK_API_KEY",
-		BalanceURL:     "https://api.deepseek.com/user/balance",
-		Thinking:       "enabled",
-		WebSearch:      boolPointer(true),
-		ContextWindow:  1_000_000,
-		Prices:         deepSeekV4PricesForConfig(c),
-		ModelOverrides: deepSeekV4EffortOverrides(),
+		Name:          "deepseek",
+		Kind:          "anthropic",
+		BaseURL:       deepSeekAnthropicBaseURL,
+		Models:        append([]string(nil), deepSeekOfficialModels...),
+		Default:       "deepseek-flash",
+		APIKeyEnv:     "DEEPSEEK_API_KEY",
+		BalanceURL:    "https://api.deepseek.com/user/balance",
+		Thinking:      "enabled",
+		WebSearch:     boolPointer(true),
+		ContextWindow: 1_000_000,
+		Prices:        deepSeekV4PricesForConfig(c),
 	}
 	legacyProviders := officialLegacyDeepSeekProviders(c)
 	if len(legacyProviders) > 0 {
@@ -2137,6 +2165,7 @@ func canCanonicalizeLegacyDeepSeekProviders(c *Config) bool {
 	}
 	for i := 1; i < len(legacy); i++ {
 		if !legacyDeepSeekProviderWideFieldsEqual(legacy[0], legacy[i]) ||
+			!strings.EqualFold(strings.TrimSpace(legacy[0].Effort), strings.TrimSpace(legacy[i].Effort)) ||
 			!legacyDeepSeekModelFieldsCompatible(legacy[0], legacy[i]) {
 			return false
 		}
@@ -2176,8 +2205,12 @@ func legacyDeepSeekProviderWideProjection(entry *ProviderEntry) ProviderEntry {
 	out.BalanceURL = normalizedDeepSeekBalanceURL(out.BalanceURL)
 	out.ResponsesMode = strings.TrimSpace(out.ResponsesMode)
 	out.Thinking = strings.TrimSpace(out.Thinking)
-	out.Effort = strings.TrimSpace(out.Effort)
 	out.VisionDetail = strings.TrimSpace(out.VisionDetail)
+
+	// Effort is a per-provider selection that /effort writes to the canonical
+	// member, so it cannot decide canonical-vs-legacy equality (#8337). Legacy
+	// members are compared on it separately: merging keeps only the first's.
+	out.Effort = ""
 
 	// These fields can be represented independently for every model in the
 	// canonical provider. They are compared by legacyDeepSeekModelFieldsCompatible.
@@ -2434,7 +2467,7 @@ func mergeProviderModelOverride(dst *ProviderModelOverride, src ProviderModelOve
 
 func mergeModelLists(primary, extra []string) []string {
 	seen := map[string]bool{}
-	out := make([]string, 0, len(primary)+len(extra))
+	out := make([]string, 0, len(primary))
 	for _, list := range [][]string{primary, extra} {
 		for _, model := range list {
 			model = strings.TrimSpace(model)

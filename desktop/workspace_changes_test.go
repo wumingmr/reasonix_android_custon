@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"reasonix/internal/gitcmd"
 )
 
 // The probe must not spawn a background daemon that opens a console of its own
@@ -17,14 +19,15 @@ import (
 // it a second time here only guaranteed this test would break whenever the
 // baseline gained an entry.
 func TestWorkspaceGitDisablesDaemonSpawns(t *testing.T) {
-	cmd := workspaceGit("-C", "repo", "status", "--porcelain=v1")
-	for _, want := range []string{"core.fsmonitor=false", "maintenance.auto=false"} {
+	cmd := workspaceGit(gitcmd.Repo{}, "-C", "repo", "status", "--porcelain=v1")
+	for _, want := range []string{"core.fsmonitor=", "maintenance.auto=false"} {
 		if !hasGitConfigArg(cmd.Args, want) {
 			t.Fatalf("args = %v, want -c %s", cmd.Args, want)
 		}
 	}
-	if tail := cmd.Args[len(cmd.Args)-4:]; !slices.Equal(tail, []string{"-C", "repo", "status", "--porcelain=v1"}) {
-		t.Fatalf("args = %v, want the caller's arguments last", cmd.Args)
+	at := slices.Index(cmd.Args, "-C")
+	if at < 0 || !slices.Equal(cmd.Args[at:at+3], []string{"-C", "repo", "status"}) || cmd.Args[len(cmd.Args)-1] != "--porcelain=v1" {
+		t.Fatalf("args = %v, want the caller's arguments last and in order", cmd.Args)
 	}
 	if runtime.GOOS == "windows" && cmd.SysProcAttr == nil {
 		t.Fatal("workspaceGit must hide the console window on Windows")
@@ -61,7 +64,7 @@ func TestWorkspaceGitBranch(t *testing.T) {
 	runGit(t, "init")
 	runGit(t, "checkout", "-b", "feature/status")
 
-	if got := workspaceGitBranch(repo); got != "feature/status" {
+	if got := workspaceGitBranch(openWorkspaceRepo(repo)); got != "feature/status" {
 		t.Fatalf("branch = %q, want feature/status", got)
 	}
 }
@@ -87,11 +90,11 @@ func TestWorkspaceGitBranchReflectsImmediateCheckout(t *testing.T) {
 	runGit(t, "init")
 	runGit(t, "checkout", "-b", "feature/one")
 
-	if got := workspaceGitBranch(repo); got != "feature/one" {
+	if got := workspaceGitBranch(openWorkspaceRepo(repo)); got != "feature/one" {
 		t.Fatalf("branch before checkout = %q, want feature/one", got)
 	}
 	runGit(t, "checkout", "-b", "feature/two")
-	if got := workspaceGitBranch(repo); got != "feature/two" {
+	if got := workspaceGitBranch(openWorkspaceRepo(repo)); got != "feature/two" {
 		t.Fatalf("branch after checkout = %q, want feature/two", got)
 	}
 }
@@ -125,13 +128,13 @@ func TestWorkspaceGitBranchDetachedHead(t *testing.T) {
 	short := gitOutput(t, "rev-parse", "--short", "HEAD")
 	runGit(t, "checkout", "--detach", "HEAD")
 
-	if got := workspaceGitBranch(repo); got != "@"+short {
+	if got := workspaceGitBranch(openWorkspaceRepo(repo)); got != "@"+short {
 		t.Fatalf("branch = %q, want @%s", got, short)
 	}
 }
 
 func TestWorkspaceGitBranchNonGitDirectory(t *testing.T) {
-	if got := workspaceGitBranch(t.TempDir()); got != "" {
+	if got := workspaceGitBranch(openWorkspaceRepo(t.TempDir())); got != "" {
 		t.Fatalf("branch = %q, want empty", got)
 	}
 }
@@ -143,7 +146,7 @@ func TestWorkspaceGitBranchForMetaDoesNotBlockOnColdProbe(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	releaseProbe := func() { releaseOnce.Do(func() { close(release) }) }
-	workspaceGitBranchForMetaProbe = func(string) string {
+	workspaceGitBranchForMetaProbe = func(gitcmd.Repo) string {
 		close(started)
 		<-release
 		return "feature/async"
@@ -153,13 +156,11 @@ func TestWorkspaceGitBranchForMetaDoesNotBlockOnColdProbe(t *testing.T) {
 		workspaceGitBranchForMetaProbe = origProbe
 	}()
 
-	start := time.Now()
-	if got := workspaceGitBranchForMeta("/tmp/reasonix-cold-probe"); got != "" {
+	if got := workspaceGitBranchForMeta("/tmp/reasonix-cold-probe", gitcmd.Repo{}); got != "" {
 		t.Fatalf("cold branch = %q, want empty while async refresh runs", got)
 	}
-	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
-		t.Fatalf("cold metadata branch probe blocked for %s", elapsed)
-	}
+	// The probe is still blocked here, so returning is the deterministic proof
+	// that the metadata read did not wait for its refresh.
 	select {
 	case <-started:
 	case <-time.After(time.Second):
@@ -184,7 +185,7 @@ func TestWorkspaceGitBranchForMetaReturnsStaleDuringRefresh(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	releaseProbe := func() { releaseOnce.Do(func() { close(release) }) }
-	workspaceGitBranchForMetaProbe = func(string) string {
+	workspaceGitBranchForMetaProbe = func(gitcmd.Repo) string {
 		close(started)
 		<-release
 		return "feature/fresh"
@@ -194,13 +195,11 @@ func TestWorkspaceGitBranchForMetaReturnsStaleDuringRefresh(t *testing.T) {
 		workspaceGitBranchForMetaProbe = origProbe
 	}()
 
-	start := time.Now()
-	if got := workspaceGitBranchForMeta("/tmp/reasonix-stale-probe"); got != "feature/stale" {
+	if got := workspaceGitBranchForMeta("/tmp/reasonix-stale-probe", gitcmd.Repo{}); got != "feature/stale" {
 		t.Fatalf("stale branch = %q, want feature/stale", got)
 	}
-	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
-		t.Fatalf("stale metadata branch probe blocked for %s", elapsed)
-	}
+	// The probe is still blocked here, so returning the stale value proves that
+	// the read did not wait for its refresh.
 	select {
 	case <-started:
 	case <-time.After(time.Second):
@@ -222,7 +221,7 @@ func eventuallyBranchForMeta(t *testing.T, base, want string) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if got := workspaceGitBranchForMeta(base); got == want {
+		if got := workspaceGitBranchForMeta(base, gitcmd.Repo{}); got == want {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

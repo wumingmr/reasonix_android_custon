@@ -193,7 +193,7 @@ func TestReadFileOffsetLimit(t *testing.T) {
 		}
 	}
 	// Trailer announces what's left so the model can paginate.
-	if !strings.Contains(out, "more line") || !strings.Contains(out, "offset=15") {
+	if !strings.Contains(out, "PARTIAL view") || !strings.Contains(out, "offset=15") {
 		t.Errorf("pagination hint missing:\n%s", out)
 	}
 }
@@ -622,6 +622,29 @@ func TestGrepGB18030(t *testing.T) {
 	out := runTool(t, grepTool{}, map[string]any{"pattern": "函数", "path": dir})
 	if !strings.Contains(out, "函数") {
 		t.Errorf("expected match in decoded GB18030 text, got:\n%s", out)
+	}
+}
+
+// The 8 KiB peek ends inside a two-byte character whose lead byte is also a
+// UTF-8 continuation byte, so no UTF-8 rune trim removes it. Detection must not
+// read the cut as a sign the file is anything but GB18030.
+func TestGrepGB18030PeekCutMidCharacter(t *testing.T) {
+	enc := simplifiedchinese.GB18030.NewEncoder()
+	line, err := enc.String(strings.Repeat("啊", 50) + "\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if 8*1024%len(line)%2 == 0 {
+		t.Fatal("fixture does not cut a character at the peek boundary")
+	}
+	target, _ := enc.String("目标行\n")
+	path := filepath.Join(t.TempDir(), "long.gbk")
+	if err := os.WriteFile(path, []byte(strings.Repeat(line, 100)+target), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := runTool(t, grepTool{}, map[string]any{"pattern": "目标", "path": path})
+	if !strings.Contains(out, "目标行") {
+		t.Errorf("expected match past the peek in decoded GB18030 text, got:\n%s", out)
 	}
 }
 

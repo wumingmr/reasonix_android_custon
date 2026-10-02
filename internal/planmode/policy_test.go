@@ -26,7 +26,7 @@ func TestDecideLeavesSafetyToPermissionsAndSandbox(t *testing.T) {
 
 func TestDecideBlocksOnlyExplicitPhaseOptOut(t *testing.T) {
 	got := (Policy{}).Decide(Call{Name: "complete_step", ReadOnly: true, Safety: PlanSafetyUnsafe})
-	if !got.Blocked || !strings.Contains(got.Message, "only available after plan approval") {
+	if !got.Blocked || !strings.Contains(got.Message, "planning workflow") {
 		t.Fatalf("complete_step decision = %+v", got)
 	}
 

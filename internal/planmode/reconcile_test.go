@@ -34,16 +34,8 @@ func TestBuiltinPhaseClassifiersMatchPolicy(t *testing.T) {
 	}
 }
 
-func TestCompleteStepExplicitlyOptsOutOfPlanPhase(t *testing.T) {
-	for _, tl := range tool.Builtins() {
-		if tl.Name() != "complete_step" {
-			continue
-		}
-		classifier, ok := tl.(tool.PlanModeClassifier)
-		if !ok || classifier.PlanModeSafe() {
-			t.Fatal("complete_step must explicitly opt out of the planning phase")
-		}
-		return
+func TestRetiredCompleteStepIsNotDiscoverable(t *testing.T) {
+	if _, ok := tool.LookupBuiltin("complete_step"); ok {
+		t.Fatal("retired complete_step builtin remains discoverable")
 	}
-	t.Fatal("complete_step builtin not registered")
 }

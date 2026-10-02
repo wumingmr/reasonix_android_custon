@@ -38,13 +38,14 @@ func (l *Ledger) RestoreFinalReadinessCheckpoint(checkpoint FinalReadinessCheckp
 }
 
 func recoveryReceiptArgs(r Receipt) json.RawMessage {
-	switch r.ToolName {
-	case "bash":
+	if isShellToolName(r.ToolName) {
 		if r.Command == "" {
 			return nil
 		}
 		args, _ := json.Marshal(map[string]string{"command": r.Command})
 		return args
+	}
+	switch r.ToolName {
 	case "complete_step", "review_report", "complete_subtask":
 		return append(json.RawMessage(nil), r.Args...)
 	default:

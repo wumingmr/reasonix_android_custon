@@ -38,7 +38,7 @@ func TestNewSessionRebindsProjectionSidecarPath(t *testing.T) {
 		ModelRef:      "test/model",
 		WorkspaceID:   "ws",
 	}, event.Discard)
-	c := New(Options{Executor: exec, SessionDir: dir, Label: "test", DisableColdResumePrune: true})
+	c := newOwnedTestController(t, Options{Executor: exec, SessionDir: dir, Label: "test", DisableColdResumePrune: true})
 	c.Resume(sess, oldPath)
 	if got := exec.SessionPath(); got != oldPath {
 		t.Fatalf("after resume SessionPath = %q, want %q", got, oldPath)
@@ -96,7 +96,7 @@ func TestClearSessionRebindsProjectionSidecarPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{SessionPath: path}, event.Discard)
-	c := New(Options{Executor: exec, SessionDir: dir, Label: "test", DisableColdResumePrune: true})
+	c := newOwnedTestController(t, Options{Executor: exec, SessionDir: dir, Label: "test", DisableColdResumePrune: true})
 	c.Resume(sess, path)
 
 	if err := c.ClearSession(); err != nil {
@@ -111,7 +111,7 @@ func TestClearSessionRebindsProjectionSidecarPath(t *testing.T) {
 }
 
 func TestBranchRebindsProjectionSidecarPath(t *testing.T) {
-	dir := t.TempDir()
+	dir := schemaOneTempDir(t)
 	path := agent.NewSessionPath(dir, "main")
 	sess := agent.NewSession("sys")
 	sess.Add(provider.Message{Role: provider.RoleUser, Content: "task"})
@@ -131,7 +131,7 @@ func TestBranchRebindsProjectionSidecarPath(t *testing.T) {
 	exec := agent.New(prov, tool.NewRegistry(), agent.NewSession("sys"), agent.Options{
 		SessionPath: path, ContextWindow: 10_000, CompactRatio: 0.8, RecentKeep: 2,
 	}, event.Discard)
-	c := New(Options{Executor: exec, SessionDir: dir, Label: "test", DisableColdResumePrune: true})
+	c := newOwnedTestController(t, Options{Executor: exec, SessionDir: dir, Label: "test", DisableColdResumePrune: true})
 	c.Resume(sess, path)
 	if err := exec.CompactNow(context.Background(), ""); err != nil {
 		t.Fatalf("CompactNow: %v", err)

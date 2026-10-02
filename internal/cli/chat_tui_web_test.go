@@ -12,7 +12,7 @@ import (
 func TestWebSlashRequestsFrontendHandoff(t *testing.T) {
 	m := newTestChatTUI()
 	m.modelRef = "deepseek/deepseek-v4-flash"
-	ctrl := control.New(control.Options{SessionDir: t.TempDir()})
+	ctrl := newOwnedTestController(t, control.Options{SessionDir: t.TempDir()})
 	ctrl.EnsureSessionPath()
 	t.Cleanup(ctrl.Close)
 	m.ctrl = ctrl
@@ -45,7 +45,7 @@ func TestWebSlashRequestsFrontendHandoff(t *testing.T) {
 
 func TestWebSlashResumesMaterializedSession(t *testing.T) {
 	m := newTestChatTUI()
-	ctrl := control.New(control.Options{SessionDir: t.TempDir()})
+	ctrl := newOwnedTestController(t, control.Options{SessionDir: t.TempDir()})
 	ctrl.EnsureSessionPath()
 	t.Cleanup(ctrl.Close)
 	path := ctrl.SessionPath()

@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"reasonix/internal/agent"
 	"reasonix/internal/control"
+	"reasonix/internal/sessioncatalog"
 )
 
 func TestProjectTreeRuntimeSnapshotWailsArraysAreNonNil(t *testing.T) {
@@ -22,14 +25,19 @@ func TestProjectTreeRuntimeSnapshotWailsArraysAreNonNil(t *testing.T) {
 func TestProjectTreeRuntimeSnapshotLocalizesAutoTopicTitle(t *testing.T) {
 	app := NewApp()
 	app.setDesktopLocale("en-US")
+	const sessionID = "desktop-runtime-title"
 	app.tabs["auto"] = &WorkspaceTab{
 		ID: "auto", Scope: "global", TopicID: "topic-auto",
 		TopicTitle: defaultTopicTitle, topicTitleSource: topicTitleSourceAuto,
+		SessionID: sessionID, SessionPath: sessionRoute(sessionID),
 	}
 
 	snapshot := app.GetProjectTreeRuntimeSnapshot()
 	if len(snapshot.Topics) != 1 || snapshot.Topics[0].Node.Label != defaultTopicTitleEn {
 		t.Fatalf("runtime topic = %+v, want localized %q", snapshot.Topics, defaultTopicTitleEn)
+	}
+	if strings.Contains(snapshot.Topics[0].Node.Label, "session-id:") {
+		t.Fatalf("canonical route leaked into user-visible title: %+v", snapshot.Topics[0].Node)
 	}
 }
 
@@ -43,8 +51,8 @@ func TestProjectTreeRuntimeSnapshotFindsRestoredTabBeforeFirstEvent(t *testing.T
 		Ready:       true,
 	}
 	snapshot := app.GetProjectTreeRuntimeSnapshot()
-	if snapshot.Revision != 0 || len(snapshot.Topics) != 1 {
-		t.Fatalf("initial runtime snapshot = %+v, want one topic at revision 0", snapshot)
+	if snapshot.Revision == 0 || len(snapshot.Topics) != 1 {
+		t.Fatalf("initial runtime snapshot = %+v, want one committed topic with a revision", snapshot)
 	}
 	topic := snapshot.Topics[0]
 	if topic.Node.TopicID != "topic-restored" || !topic.Node.Open || !topic.Node.Running {
@@ -240,5 +248,28 @@ func TestOpenProjectTabPublishesTaggedRuntimeInvalidation(t *testing.T) {
 		case <-deadline:
 			t.Fatal("opening a project topic emitted no tagged runtime invalidation")
 		}
+	}
+}
+
+// A tab opened from a legacy row carries the identity that row is listed by,
+// so the sidebar overlays the tab on it instead of adding a second row.
+func TestProjectTreeRuntimeLegacyTabSharesHistoricalRowIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "20260926-091447.469029500-fake-model.jsonl")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	app.tabs["legacy"] = &WorkspaceTab{
+		ID: "legacy", Scope: "global", TopicID: "topic-legacy", SessionPath: path,
+		Ctrl: &activationStubController{sessionPath: path}, Ready: true,
+	}
+	snapshot := app.GetProjectTreeRuntimeSnapshot()
+	if len(snapshot.Topics) != 1 {
+		t.Fatalf("runtime topics = %+v, want one", snapshot.Topics)
+	}
+	source := snapshot.Topics[0].Node.Source
+	want := agent.SessionSourceKeyFromIdentity(sessioncatalog.PathIdentityKey(path), "")
+	if source == nil || source.SourceKey != want {
+		t.Fatalf("runtime source = %+v, want the historical row's key %s", source, want)
 	}
 }

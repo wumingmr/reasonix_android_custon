@@ -55,6 +55,8 @@ func TestGenManifest(t *testing.T) {
 	names := []string{
 		"Reasonix-darwin-arm64.zip",
 		"Reasonix-darwin-amd64.zip",
+		"Reasonix-darwin-arm64.dmg",
+		"Reasonix-darwin-amd64.dmg",
 		"Reasonix-darwin-universal.dmg",
 		"Reasonix-windows-amd64-installer.exe",
 		"Reasonix-windows-amd64.zip", // portable download, not the updater channel
@@ -85,6 +87,18 @@ func TestGenManifest(t *testing.T) {
 	}
 	if m.Version != "v1.2.0" {
 		t.Fatalf("version = %q, want v1.2.0", m.Version)
+	}
+	// Published v1.38.x readers accept only empty/versioned-v1. They must stop
+	// before the old helper can discard the app tree. DownloadPage stays usable.
+	for group, assets := range map[string]map[string]update.Asset{"platforms": m.Platforms, "native_packages": m.NativePackages, "downloads": m.Downloads} {
+		for name, asset := range assets {
+			if asset.InstallLayout != update.ElectronInstallLayout {
+				t.Errorf("%s/%s lacks the manual migration boundary: %q", group, name, asset.InstallLayout)
+			}
+			if asset.InstallLayout == "" || asset.InstallLayout == "versioned-v1" {
+				t.Errorf("v1.38.x would hand %s to the incompatible old installer", name)
+			}
+		}
 	}
 	if m.DownloadPage != "https://reasonix.io/?download=desktop#start" {
 		t.Fatalf("download_page = %q, want official install page", m.DownloadPage)
@@ -140,10 +154,10 @@ func TestGenManifest(t *testing.T) {
 	if deb.Sig != deb.URL+".minisig" || deb.SHA256 == "" || deb.Size == 0 {
 		t.Fatalf("native linux asset incomplete: %+v", deb)
 	}
-	if len(m.Downloads) != 2 {
-		t.Fatalf("want 2 website downloads, got %d: %+v", len(m.Downloads), m.Downloads)
+	if len(m.Downloads) != 4 {
+		t.Fatalf("want 4 website downloads, got %d: %+v", len(m.Downloads), m.Downloads)
 	}
-	for _, name := range []string{"Reasonix-darwin-universal.dmg", "Reasonix-windows-amd64.zip"} {
+	for _, name := range []string{"Reasonix-darwin-arm64.dmg", "Reasonix-darwin-amd64.dmg", "Reasonix-darwin-universal.dmg", "Reasonix-windows-amd64.zip"} {
 		asset, ok := m.Downloads[name]
 		if !ok {
 			t.Fatalf("website download %q missing", name)

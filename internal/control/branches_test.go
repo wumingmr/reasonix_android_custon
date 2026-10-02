@@ -10,15 +10,16 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
+	"reasonix/internal/session"
 	"reasonix/internal/store"
 	"reasonix/internal/tool"
 )
 
 func TestBranchAndSwitch(t *testing.T) {
-	dir := t.TempDir()
+	dir := schemaOneTempDir(t)
 	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
 	exec.Session().Add(provider.Message{Role: provider.RoleUser, Content: "root prompt"})
-	c := New(Options{Executor: exec, SessionDir: dir, Label: "test"})
+	c := newOwnedTestController(t, Options{Executor: exec, SessionDir: dir, Label: "test"})
 	c.SetSessionPath(agent.NewSessionPath(dir, "test"))
 	if err := c.Snapshot(); err != nil {
 		t.Fatal(err)
@@ -60,12 +61,13 @@ func TestBranchAndSwitch(t *testing.T) {
 }
 
 func TestSnapshotExternalRemovalMovesOnceToStableRecovery(t *testing.T) {
+	t.Setenv(agent.SessionLogSchemaEnv, "v1")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "root.jsonl")
 	session := agent.NewSession("sys")
 	session.Add(provider.Message{Role: provider.RoleUser, Content: "keep me"})
 	exec := agent.New(nil, nil, session, agent.Options{}, event.Discard)
-	c := New(Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+	c := newOwnedTestController(t, Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
 	if err := c.Snapshot(); err != nil {
 		t.Fatal(err)
 	}
@@ -94,10 +96,10 @@ func TestSnapshotExternalRemovalMovesOnceToStableRecovery(t *testing.T) {
 }
 
 func TestSwitchBranchRejectsCleanupPending(t *testing.T) {
-	dir := t.TempDir()
+	dir := schemaOneTempDir(t)
 	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
 	exec.Session().Add(provider.Message{Role: provider.RoleUser, Content: "root prompt"})
-	c := New(Options{Executor: exec, SessionDir: dir, Label: "test"})
+	c := newOwnedTestController(t, Options{Executor: exec, SessionDir: dir, Label: "test"})
 	c.SetSessionPath(filepath.Join(dir, "root.jsonl"))
 	if err := c.Snapshot(); err != nil {
 		t.Fatal(err)
@@ -138,16 +140,16 @@ func TestSwitchBranchRejectsCleanupPending(t *testing.T) {
 func TestBranchResetsTwoModelPlannerContext(t *testing.T) {
 	dir := t.TempDir()
 	planner := &recordingProvider{name: "planner", streams: [][]provider.Chunk{
-		textTurn("OLD PLAN: inspect alpha.go"),
-		textTurn("BRANCH PLAN: inspect beta.go"),
+		planTurn("OLD PLAN: inspect alpha.go"),
+		planTurn("BRANCH PLAN: inspect beta.go"),
 	}}
 	execProv := &recordingProvider{name: "executor", streams: [][]provider.Chunk{
 		textTurn("old done"),
 		textTurn("branch done"),
 	}}
 	exec := agent.New(execProv, tool.NewRegistry(), agent.NewSession("exec sys"), agent.Options{}, event.Discard)
-	coord := agent.NewCoordinator(planner, agent.NewSession("planner sys"), nil, tool.NewRegistry(), agent.Options{}, exec, 0, event.Discard, nil)
-	c := New(Options{Runner: coord, Executor: exec, SystemPrompt: "exec sys", SessionDir: dir, SessionPath: filepath.Join(dir, "root.jsonl"), Label: "test"})
+	coord := agent.NewCoordinator(planner, agent.NewSession("planner sys"), nil, agent.PlannerToolRegistry(tool.NewRegistry()), agent.Options{}, exec, 0, event.Discard, nil)
+	c := newOwnedTestController(t, Options{Runner: coord, Executor: exec, SystemPrompt: "exec sys", SessionDir: dir, SessionPath: filepath.Join(dir, "root.jsonl"), Label: "test"})
 
 	if err := c.Run(context.Background(), "old task alpha"); err != nil {
 		t.Fatal(err)
@@ -174,9 +176,9 @@ func TestBranchResetsTwoModelPlannerContext(t *testing.T) {
 func TestSwitchBranchResetsTwoModelPlannerContext(t *testing.T) {
 	dir := t.TempDir()
 	planner := &recordingProvider{name: "planner", streams: [][]provider.Chunk{
-		textTurn("ROOT PLAN: inspect alpha.go"),
-		textTurn("CHILD PLAN: inspect beta.go"),
-		textTurn("ROOT AGAIN PLAN: inspect gamma.go"),
+		planTurn("ROOT PLAN: inspect alpha.go"),
+		planTurn("CHILD PLAN: inspect beta.go"),
+		planTurn("ROOT AGAIN PLAN: inspect gamma.go"),
 	}}
 	execProv := &recordingProvider{name: "executor", streams: [][]provider.Chunk{
 		textTurn("root done"),
@@ -184,9 +186,10 @@ func TestSwitchBranchResetsTwoModelPlannerContext(t *testing.T) {
 		textTurn("root again done"),
 	}}
 	exec := agent.New(execProv, tool.NewRegistry(), agent.NewSession("exec sys"), agent.Options{}, event.Discard)
-	coord := agent.NewCoordinator(planner, agent.NewSession("planner sys"), nil, tool.NewRegistry(), agent.Options{}, exec, 0, event.Discard, nil)
+	coord := agent.NewCoordinator(planner, agent.NewSession("planner sys"), nil, agent.PlannerToolRegistry(tool.NewRegistry()), agent.Options{}, exec, 0, event.Discard, nil)
 	rootPath := filepath.Join(dir, "root.jsonl")
-	c := New(Options{Runner: coord, Executor: exec, SystemPrompt: "exec sys", SessionDir: dir, SessionPath: rootPath, Label: "test"})
+	c := newOwnedTestController(t, Options{Runner: coord, Executor: exec, SystemPrompt: "exec sys", SessionDir: dir, SessionPath: rootPath, Label: "test"})
+	t.Cleanup(c.Close)
 
 	if err := c.Run(context.Background(), "root task alpha"); err != nil {
 		t.Fatal(err)
@@ -218,13 +221,13 @@ func TestSwitchBranchResetsTwoModelPlannerContext(t *testing.T) {
 }
 
 func TestSubmitBranchHonorsNumericTurnTarget(t *testing.T) {
-	dir := t.TempDir()
+	dir := schemaOneTempDir(t)
 	sess := agent.NewSession("sys")
 	sess.Add(provider.Message{Role: provider.RoleUser, Content: "first prompt"})
 	sess.Add(provider.Message{Role: provider.RoleAssistant, Content: "first answer"})
 	sess.Add(provider.Message{Role: provider.RoleUser, Content: "second prompt"})
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
-	c := New(Options{Executor: exec, SessionDir: dir, Label: "test"})
+	c := newOwnedTestController(t, Options{Executor: exec, SessionDir: dir, Label: "test"})
 	c.SetSessionPath(agent.NewSessionPath(dir, "test"))
 	if err := c.Snapshot(); err != nil {
 		t.Fatal(err)
@@ -270,7 +273,7 @@ func TestSubmitSwitchEmitsErrorNotice(t *testing.T) {
 	sess := agent.NewSession("sys")
 	sess.Add(provider.Message{Role: provider.RoleUser, Content: "hi"})
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Executor: exec,
 		Sink: event.FuncSink(func(e event.Event) {
 			if e.Kind == event.Notice {
@@ -299,7 +302,7 @@ func TestSubmitBranchEmitsErrorNoticeWhileRunning(t *testing.T) {
 	sess := agent.NewSession("sys")
 	sess.Add(provider.Message{Role: provider.RoleUser, Content: "hi"})
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Executor:   exec,
 		SessionDir: t.TempDir(),
 		Label:      "test",
@@ -312,7 +315,7 @@ func TestSubmitBranchEmitsErrorNoticeWhileRunning(t *testing.T) {
 	c.SetSessionPath(agent.NewSessionPath(c.sessionDir, "test"))
 
 	c.mu.Lock()
-	c.running = true
+	c.turns.phase = session.RuntimeRunning
 	c.mu.Unlock()
 
 	c.Submit("/branch experiment")

@@ -8,6 +8,7 @@ import { WorkspacePanel } from "../components/WorkspacePanel";
 import type { AppBindings } from "../lib/bridge";
 import { LocaleProvider } from "../lib/i18n";
 import { resetWorkspaceTreeMemoryForTests } from "../lib/workspaceTreeMemory";
+import { installDesktopHostStub } from "./desktopHostStub";
 
 let passed = 0;
 let failed = 0;
@@ -105,7 +106,7 @@ console.log("\nworkspace file context menu");
 resetWorkspaceTreeMemoryForTests();
 const dom = installDom();
 const openCalls: Array<{ tabId: string; path: string }> = [];
-window.go = {
+installDesktopHostStub(({
   main: {
     App: {
       ListDirForTab: async (_tabId, dir) => dir === ""
@@ -121,12 +122,13 @@ window.go = {
       ReadFileForTab: async (_tabId, path) => ({ path, body: "", size: 0, truncated: false, binary: false }),
       ResolveWorkspacePathForTab: async (_tabId, path) => `/repo/${path}`,
       RevealWorkspacePathForTab: async () => {},
+      GetPinnedFilesForTab: async () => [],
       OpenWorkspacePathForTab: async (tabId, path) => {
         openCalls.push({ tabId, path });
       },
     } as Partial<AppBindings> as AppBindings,
   },
-};
+}).main.App);
 
 const rootElement = document.getElementById("root");
 if (!rootElement) throw new Error("missing root");
@@ -160,6 +162,7 @@ const fileLabels = [
   "Copy absolute path",
   "Add file reference",
   "Add file contents",
+  "Pin to Session Context",
 ];
 ok(JSON.stringify(menuLabels()) === JSON.stringify(fileLabels), "file menu keeps the default-open action first and preserves command order");
 ok(document.querySelectorAll(".workspace-tree-menu [role=separator]").length === 1, "file menu separates path commands from chat commands");

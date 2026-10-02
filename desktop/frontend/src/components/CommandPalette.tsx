@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Command, Search } from "lucide-react";
+import { Activity, AlarmClock, BarChart3, Brain, Command, Cpu, Palette, Puzzle, RotateCw, Search, Server, Settings, SquarePen, TerminalSquare, Trash2 } from "lucide-react";
 import { useT } from "../lib/i18n";
 import { useMountTransition } from "../lib/useMountTransition";
 
@@ -22,6 +22,32 @@ import { useMountTransition } from "../lib/useMountTransition";
 // Fuzzy match is a small case-insensitive substring scorer — every query
 // token must appear in the candidate's title or hint, in order, but they
 // may overlap (a real fuzzy matcher would be overkill for 50-200 items).
+export type PaletteIconName = "appearance" | "automation" | "extension" | "memory" | "models" | "new" | "reload" | "remote" | "settings" | "tasks" | "terminal" | "trash" | "usage";
+
+const paletteIcons = {
+  appearance: Palette,
+  automation: AlarmClock,
+  extension: Puzzle,
+  memory: Brain,
+  models: Cpu,
+  new: SquarePen,
+  reload: RotateCw,
+  remote: Server,
+  settings: Settings,
+  tasks: Activity,
+  terminal: TerminalSquare,
+  trash: Trash2,
+  usage: BarChart3,
+} as const;
+
+function PaletteIcon({ icon }: { icon?: ReactNode | PaletteIconName }) {
+  if (typeof icon === "string" && icon in paletteIcons) {
+    const Icon = paletteIcons[icon as PaletteIconName];
+    return <Icon size={15} />;
+  }
+  return icon ?? <Command size={15} />;
+}
+
 export interface PaletteItem {
   // id is stable and unique within a single open of the palette.
   id: string;
@@ -34,7 +60,7 @@ export interface PaletteItem {
   // badge is a right-aligned counter or label (e.g. turn count).
   badge?: string;
   // icon overrides the default Command icon shown on the left.
-  icon?: ReactNode;
+  icon?: ReactNode | PaletteIconName;
   // compact renders the item as a grid chip (icon + title, no hint/meta).
   compact?: boolean;
   // group is the section header this item belongs to.
@@ -201,6 +227,7 @@ export function CommandPalette({
   return (
     <div
       className="drawer-backdrop"
+      data-app-overlay=""
       data-state={status}
       onClick={onClose}
       role="presentation"
@@ -256,7 +283,7 @@ export function CommandPalette({
                         }}
                       >
                         <span className="palette__chip-icon" aria-hidden="true">
-                          {it.icon ?? <Command size={15} />}
+                          <PaletteIcon icon={it.icon} />
                         </span>
                         <span className="palette__chip-label">{it.title}</span>
                       </button>
@@ -281,7 +308,7 @@ export function CommandPalette({
                         }}
                       >
                         <span className="palette__item-icon" aria-hidden="true">
-                          {it.icon ?? <Command size={15} />}
+                          <PaletteIcon icon={it.icon} />
                         </span>
                         <span className="palette__body">
                           <span className="palette__title">{it.title}</span>

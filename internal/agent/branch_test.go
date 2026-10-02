@@ -93,6 +93,32 @@ func TestBranchMetaCrossProcessReadModifyWrite(t *testing.T) {
 	}
 }
 
+func TestPreserveBranchMetaPersistenceKeepsListingProjectionGenerationTogether(t *testing.T) {
+	existing := BranchMeta{
+		Revision: 2, ContentDigest: "new-digest", WriterID: "new-writer",
+		SchemaVersion: BranchMetaCountsVersion, Turns: 2, Preview: "new preview",
+		ListingRevision: 2, ListingContentDigest: "new-digest",
+	}
+	for _, next := range []BranchMeta{
+		{
+			Revision: 1, ContentDigest: "old-digest", WriterID: "old-writer",
+			SchemaVersion: BranchMetaCountsVersion, Turns: 1, Preview: "old preview",
+			ListingRevision: 1, ListingContentDigest: "old-digest",
+		},
+		{
+			Revision: 2, ContentDigest: "new-digest", WriterID: "new-writer",
+			SchemaVersion: BranchMetaCountsVersion, Turns: 1, Preview: "stale preview",
+		},
+	} {
+		preserveBranchMetaPersistence(&next, existing)
+		if next.Revision != existing.Revision || next.ContentDigest != existing.ContentDigest ||
+			next.SchemaVersion != existing.SchemaVersion || next.Turns != existing.Turns || next.Preview != existing.Preview ||
+			next.ListingRevision != existing.ListingRevision || next.ListingContentDigest != existing.ListingContentDigest {
+			t.Fatalf("projection generation split after preservation: got %+v want projection %+v", next, existing)
+		}
+	}
+}
+
 func TestBranchMetaIgnoresRetiredAutoRecoveryField(t *testing.T) {
 	dir := t.TempDir()
 	sessionPath := filepath.Join(dir, "legacy.jsonl")
@@ -165,6 +191,22 @@ func TestBranchMetaRoundTripAndList(t *testing.T) {
 	}
 	if !childFound {
 		t.Fatalf("child with parent root and name experiment not found among %+v", branches)
+	}
+}
+
+func TestBranchMetaEffectiveVersionKindKeepsLegacyRecoveryReadable(t *testing.T) {
+	if got := (BranchMeta{Recovered: true}).EffectiveVersionKind(); got != VersionRecovery {
+		t.Fatalf("legacy recovered kind = %q, want %q", got, VersionRecovery)
+	}
+	if got := (BranchMeta{}).EffectiveVersionKind(); got != VersionNormal {
+		t.Fatalf("legacy normal kind = %q, want %q", got, VersionNormal)
+	}
+	if got := (BranchMeta{}).EffectiveVersionState(); got != VersionActive {
+		t.Fatalf("legacy version state = %q, want %q", got, VersionActive)
+	}
+	meta := BranchMeta{VersionKind: VersionSubagent, VersionState: VersionPending}
+	if meta.EffectiveVersionKind() != VersionSubagent || meta.EffectiveVersionState() != VersionPending {
+		t.Fatalf("explicit version identity was not preserved: %+v", meta)
 	}
 }
 

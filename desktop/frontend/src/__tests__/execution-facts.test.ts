@@ -1,0 +1,28 @@
+import assert from "node:assert/strict";
+import { normalizeCompletionSummary, completionSummaryNeedsAttention } from "../lib/completionSummary";
+import { historyMessagesToItems } from "../lib/historyItems";
+import type { HistoryMessage, WireCompletionSummary } from "../lib/types";
+import { createLegacyRemotePolicyNoticeTracker } from "../lib/legacyRemotePolicyNotice";
+
+const base: WireCompletionSummary = { preset: "standard", constraint_degraded: false, verdict: "unknown", mutations: 1, checks_passed: 0, checks_failed: 0, checks_suppressed: 0, review: "", receipt: { assessmentKind: "facts", verdict: "unknown", changes: [{path: "auth.go", reviewed: false}] } };
+assert.equal(normalizeCompletionSummary(base).receipt?.assessmentKind, "facts");
+assert.equal(completionSummaryNeedsAttention(base), false, "unknown facts do not imply failure");
+const failed = structuredClone(base);
+failed.receipt!.verifications = [{ command: "go test ./...", passed: false, exitCode: 1 }];
+assert.equal(completionSummaryNeedsAttention(failed), true, "actual failure remains visible");
+assert.equal(normalizeCompletionSummary(failed).receipt?.verifications?.[0].exitCode, 1);
+const old: HistoryMessage[] = [{ role: "notice", content: "historical", code: "historical_checks", pending: false, readiness: { missing: ["verification"], attempts: 1 } }];
+const snapshot = structuredClone(old);
+const history = historyMessagesToItems(old, "history");
+assert.deepEqual(old, snapshot, "history projection is read-only");
+assert.equal(history.items.some(item => item.kind === "notice" && item.action === "continue_delivery"), false, "retired local checks do not block");
+const remoteOld: HistoryMessage[] = [{ ...old[0], code: "final_readiness", pending: true }];
+assert.equal(historyMessagesToItems(remoteOld, "remote").items.some(item => item.kind === "notice" && item.action === "continue_delivery"), true, "old remote recovery remains available");
+console.log("execution facts and historical compatibility passed");
+const notice = createLegacyRemotePolicyNoticeTracker();
+assert.equal(notice("remote:a"), undefined, "missing version or state does not imply an old policy");
+assert.equal(notice("remote:a", "standard", "evaluator_unavailable"), "remote.legacyExecutionPolicy");
+assert.equal(notice("remote:a", "delivery"), undefined, "polling and policy updates do not repeat warnings");
+assert.equal(notice("remote:b", "delivery"), "remote.legacyDeliveryPolicy", "another session gets its own warning");
+assert.equal(notice("remote:c", "standard", undefined, true), "remote.legacyExecutionPolicy");
+assert.equal(notice("remote:d", "standard", "budget_spend"), undefined, "actual budget pauses are not retired quality policy");

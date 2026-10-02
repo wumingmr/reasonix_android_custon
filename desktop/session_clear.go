@@ -1,16 +1,40 @@
 package main
 
 import (
+	"fmt"
+
 	"reasonix/internal/agent"
+	"reasonix/internal/control"
+	"reasonix/internal/session"
 )
 
 // SessionClearResult is the post-clear session identity the frontend must apply
 // atomically so hydrate/mode-switch cannot re-bind to the destroyed transcript.
 type SessionClearResult struct {
-	SessionPath       string `json:"sessionPath"`
-	SessionRevision   int64  `json:"sessionRevision,omitempty"`
-	SessionDigest     string `json:"sessionDigest,omitempty"`
-	SessionGeneration uint64 `json:"sessionGeneration"`
+	SessionPath       string              `json:"sessionPath"`
+	SessionID         string              `json:"sessionId,omitempty"`
+	Session           *session.SessionRef `json:"session,omitempty"`
+	SessionRevision   int64               `json:"sessionRevision,omitempty"`
+	SessionDigest     string              `json:"sessionDigest,omitempty"`
+	SessionGeneration uint64              `json:"sessionGeneration"`
+}
+
+func initClearedPins(path string, newCtrl, oldCtrl control.SessionAPI, tab *WorkspaceTab) error {
+	if err := savePinnedContextState(path, []string{}); err != nil {
+		newCtrl.Close()
+		tab.releaseSessionLease()
+		oldCtrl.CloseAfterDestroy()
+		return fmt.Errorf("initialize empty pinned context for cleared session: %w", err)
+	}
+	return nil
+}
+
+func setFreshControllerPath(ctrl control.SessionAPI, path string) {
+	if fresh, ok := ctrl.(interface{ SetFreshSessionPath(string) }); ok {
+		fresh.SetFreshSessionPath(path)
+	} else {
+		ctrl.SetSessionPath(path)
+	}
 }
 
 // ClearSession discards the current conversation and rotates to a fresh unsaved one.
@@ -40,9 +64,28 @@ func (a *App) ClearSessionForTab(tabID string) (SessionClearResult, error) {
 	if controllerHasActiveRuntimeWork(ctrl) {
 		return a.clearActiveSessionRuntime(tab, ctrl)
 	}
+	unlockRuntime := a.lockRuntimeMutation("clear session")
+	defer unlockRuntime()
+	tab.turnStartMu.Lock()
+	defer tab.turnStartMu.Unlock()
+	ctrl = a.controllerForTab(tab)
+	if ctrl == nil {
+		return SessionClearResult{}, a.workspaceNotReadyErr(tab)
+	}
+	if controllerHasActiveRuntimeWork(ctrl) {
+		return SessionClearResult{}, errTopicHasActiveWork
+	}
 	if err := ctrl.ClearSession(); err != nil {
+		a.syncTabSessionIdentity(tab, ctrl)
 		return SessionClearResult{}, err
 	}
+	a.syncTabSessionIdentity(tab, ctrl)
+	if path := ctrl.SessionPath(); path != "" {
+		if err := savePinnedContextState(path, []string{}); err != nil {
+			return SessionClearResult{}, fmt.Errorf("initialize empty pinned context for cleared session: %w", err)
+		}
+	}
+	tab.setPinnedFiles(nil)
 	if err := a.ensureTabSessionLeaseForRebuild(tab, ctrl.SessionPath(), ""); err != nil {
 		// Wails bridge return: a raw lease error would carry the session path
 		// and holder id across to the frontend.
@@ -63,11 +106,20 @@ func (a *App) bumpAndSnapshotSessionClear(tab *WorkspaceTab) SessionClearResult 
 	a.mu.Lock()
 	tab.SessionGeneration++
 	gen := tab.SessionGeneration
+	if tab.sink != nil {
+		tab.sink.setSessionGeneration(gen)
+	}
 	path := tab.currentSessionPath()
+	sessionID := tab.SessionID
 	if path == "" && tab.Ctrl != nil {
 		path = tab.Ctrl.SessionPath()
 	}
 	a.mu.Unlock()
+	var sessionRef *session.SessionRef
+	if sessionID != "" {
+		ref := session.SessionRef{HostID: localDesktopHostID, SessionID: sessionID}
+		sessionRef = &ref
+	}
 	var revision int64
 	var digest string
 	if meta, ok, err := agent.LoadBranchMeta(path); err == nil && ok {
@@ -75,7 +127,8 @@ func (a *App) bumpAndSnapshotSessionClear(tab *WorkspaceTab) SessionClearResult 
 		digest = meta.ContentDigest
 	}
 	return SessionClearResult{
-		SessionPath: path, SessionRevision: revision, SessionDigest: digest, SessionGeneration: gen,
+		SessionPath: path, SessionID: sessionID, Session: sessionRef,
+		SessionRevision: revision, SessionDigest: digest, SessionGeneration: gen,
 	}
 }
 

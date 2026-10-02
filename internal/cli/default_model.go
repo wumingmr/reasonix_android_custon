@@ -36,7 +36,9 @@ func resolveModelForCLI(explicitRef string, cfg *config.Config) (ref string, fal
 			return "", false, fmt.Errorf("unknown model %q", explicitRef)
 		}
 		if !entry.Configured() {
-			return "", false, fmt.Errorf("provider %q requires %s", explicitRef, entry.APIKeyEnv)
+			// Provider keys resolve only from the Reasonix credentials file, so
+			// naming the variable alone sends users to their shell environment.
+			return "", false, fmt.Errorf("model %q has no API key: add %s=<key> to %s or run `reasonix setup` (shell environment variables are not read)", explicitRef, entry.APIKeyEnv, config.UserCredentialsPath())
 		}
 		return entry.Name + "/" + entry.Model, false, nil
 	}

@@ -2,6 +2,8 @@ package builtin
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -10,15 +12,18 @@ import (
 	"reasonix/internal/evidence"
 	"reasonix/internal/jobs"
 	"reasonix/internal/planmode"
+	"reasonix/internal/tool"
 )
 
 // End-to-end through the actual tools: a background bash job runs under a manager
 // injected on the context, the wait tool collects its output, and bash_output
 // reads it — the same path the agent drives.
 func TestBackgroundBashWaitAndOutput(t *testing.T) {
+	requirePOSIXShellTest(t)
 	m := jobs.NewManager(event.Discard)
 	defer m.Close()
 	ctx := jobs.WithManager(context.Background(), m)
+	ctx = fullAccessBashTestContext(ctx)
 
 	start, err := bash{}.Execute(ctx, []byte(`{"command":"printf hello; sleep 0.3","run_in_background":true}`))
 	if err != nil {
@@ -51,6 +56,100 @@ func TestBackgroundBashWaitAndOutput(t *testing.T) {
 	}
 	if !strings.Contains(bo, "hello") {
 		t.Errorf("bash_output = %q, want hello", bo)
+	}
+}
+
+func TestJobOutputWaitsAndReturnsIncrementalStatus(t *testing.T) {
+	m := jobs.NewManager(event.Discard)
+	defer m.Close()
+	ctx := jobs.WithManager(context.Background(), m)
+	j := m.Start("pwsh", "server", func(_ context.Context, out io.Writer) (string, error) {
+		_, _ = io.WriteString(out, "ready\n")
+		return "", nil
+	})
+
+	got, err := (jobOutput{}).Execute(ctx, []byte(`{"job_id":"`+j.ID+`","wait":true,"timeout_ms":1000}`))
+	if err != nil {
+		t.Fatalf("job_output: %v", err)
+	}
+	if !strings.Contains(got, "ready") || !strings.Contains(got, "[status: done]") {
+		t.Fatalf("job_output = %q", got)
+	}
+	if !strings.HasPrefix(j.ID, "pwsh-") {
+		t.Fatalf("job id = %q, want pwsh prefix", j.ID)
+	}
+}
+
+func TestJobOutputTimeoutLeavesJobRunningAndJobKillStopsIt(t *testing.T) {
+	m := jobs.NewManager(event.Discard)
+	defer m.Close()
+	ctx := jobs.WithManager(context.Background(), m)
+	j := m.Start("pwsh", "server", func(ctx context.Context, _ io.Writer) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	})
+
+	got, err := (jobOutput{}).Execute(ctx, []byte(`{"job_id":"`+j.ID+`","wait":true,"timeout_ms":10}`))
+	if err != nil {
+		t.Fatalf("job_output timeout: %v", err)
+	}
+	if !strings.Contains(got, "[status: running]") {
+		t.Fatalf("timed wait = %q", got)
+	}
+	killed, err := (jobKill{}).Execute(ctx, []byte(`{"job_id":"`+j.ID+`","reason":"test complete"}`))
+	if err != nil || !strings.Contains(killed, "Requested cancellation") {
+		t.Fatalf("job_kill = %q, %v", killed, err)
+	}
+	res := m.Wait(ctx, []string{j.ID}, 5)
+	if len(res) != 1 || res[0].Status != jobs.Killed {
+		t.Fatalf("job after kill = %+v", res)
+	}
+}
+
+func TestJobOutputCarriesBackgroundShellFailureMetadata(t *testing.T) {
+	m := jobs.NewManager(event.Discard)
+	defer m.Close()
+	ctx := jobs.WithSession(jobs.WithManager(context.Background(), m), "session")
+	j := m.StartForSession("session", "pwsh", "runner failure", func(jobCtx context.Context, _ io.Writer) (string, error) {
+		jobs.SetExecution(jobCtx, &tool.ShellExecution{
+			Kind:         "shell",
+			Shell:        tool.ShellNamePwsh,
+			State:        tool.ShellStateNotRun,
+			FailurePhase: tool.ShellPhaseAuthorization,
+			MutationRisk: tool.ShellMutationNotStarted,
+		})
+		return "", errors.New("ACL initialization failed")
+	})
+	result, err := (jobOutput{}).ExecuteDetailed(ctx, json.RawMessage(`{"job_id":"`+j.ID+`","wait":true,"timeout_ms":1000}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Execution == nil || result.Execution.FailurePhase != tool.ShellPhaseAuthorization || result.Execution.MutationRisk != tool.ShellMutationNotStarted {
+		t.Fatalf("job_output execution metadata = %+v", result.Execution)
+	}
+}
+
+func TestLegacyJobAliasesStayCallableButHiddenFromCapabilityCatalog(t *testing.T) {
+	registry := tool.NewRegistry()
+	registry.Add(jobOutput{})
+	registry.Add(jobKill{})
+	registry.Add(bashOutput{})
+	registry.Add(waitJob{})
+	registry.Add(killShell{})
+	want := map[string]bool{"job_output": true, "job_kill": true}
+	for _, entry := range registry.CapabilityContractEntries() {
+		if !want[entry.Name] {
+			t.Fatalf("compatibility alias leaked into catalog: %q", entry.Name)
+		}
+		delete(want, entry.Name)
+	}
+	if len(want) != 0 {
+		t.Fatalf("formal job tools missing from catalog: %v", want)
+	}
+	for _, legacy := range []string{"bash_output", "wait", "kill_shell"} {
+		if resolved, canonical, ambiguous := registry.ResolveCall(legacy); resolved == nil || canonical != legacy || len(ambiguous) != 0 {
+			t.Fatalf("legacy route %q is not executable", legacy)
+		}
 	}
 }
 
@@ -149,9 +248,11 @@ func TestWaitInPlanModeDefersBackgroundEvidence(t *testing.T) {
 
 // kill_shell terminates a long-running background job.
 func TestBackgroundKill(t *testing.T) {
+	requirePOSIXShellTest(t)
 	m := jobs.NewManager(event.Discard)
 	defer m.Close()
 	ctx := jobs.WithManager(context.Background(), m)
+	ctx = fullAccessBashTestContext(ctx)
 
 	if _, err := (bash{}).Execute(ctx, []byte(`{"command":"sleep 120","run_in_background":true}`)); err != nil {
 		t.Fatalf("bash background: %v", err)

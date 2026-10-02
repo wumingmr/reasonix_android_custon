@@ -111,6 +111,29 @@ func TestTabMetaReportsActiveTurnStartedAt(t *testing.T) {
 	}
 }
 
+func TestContextPanelSplitsRuntimeIntoCompletedAndRunningTurn(t *testing.T) {
+	tab := &WorkspaceTab{ID: "tab", WorkspaceRoot: t.TempDir()}
+	first := time.Now().Add(-time.Hour).UnixMilli()
+	tab.recordTurnStarted(first)
+	tab.recordTurnDone(first + 4_000)
+	running := time.Now().Add(-90 * time.Second).UnixMilli()
+	tab.recordTurnStarted(running)
+	app := &App{tabs: map[string]*WorkspaceTab{"tab": tab}}
+
+	panel := app.ContextPanel("tab")
+	if panel.ElapsedMs != 4_000 || panel.ActiveTurnStartedAt != running {
+		t.Fatalf("runtime = %d ms + running since %d, want 4000 ms + running since %d",
+			panel.ElapsedMs, panel.ActiveTurnStartedAt, running)
+	}
+
+	tab.recordTurnDone(running + 6_000)
+	panel = app.ContextPanel("tab")
+	if panel.ElapsedMs != 10_000 || panel.ActiveTurnStartedAt != 0 {
+		t.Fatalf("idle runtime = %d ms, running since %d; want 10000 ms and no running turn",
+			panel.ElapsedMs, panel.ActiveTurnStartedAt)
+	}
+}
+
 func TestWorkspaceTabMarksEstimatedExecutorTurn(t *testing.T) {
 	tab := &WorkspaceTab{}
 	tab.recordUsage(event.Event{
@@ -421,7 +444,7 @@ func TestContextGaugeMeasuresLiveViewAfterRebind(t *testing.T) {
 	)
 	tab := &WorkspaceTab{
 		ID:    "tab",
-		Ctrl:  control.New(control.Options{Executor: ag, Sink: event.Discard}),
+		Ctrl:  newFixtureController(t, control.Options{Executor: ag, Sink: event.Discard}),
 		Scope: "global",
 		Ready: true,
 	}
@@ -471,7 +494,7 @@ func TestContextFallbackUsesLatestAttemptAfterMultiAttemptUsage(t *testing.T) {
 	)
 	tab := &WorkspaceTab{
 		ID:    "tab",
-		Ctrl:  control.New(control.Options{Executor: ag, Sink: event.Discard}),
+		Ctrl:  newFixtureController(t, control.Options{Executor: ag, Sink: event.Discard}),
 		Scope: "global",
 		Ready: true,
 	}
@@ -569,7 +592,7 @@ func TestContextPanelUsesLastUsageBreakdownWithTelemetryTotal(t *testing.T) {
 	}
 	tab := &WorkspaceTab{
 		ID:    "tab",
-		Ctrl:  control.New(control.Options{Executor: ag, Sink: event.Discard}),
+		Ctrl:  newFixtureController(t, control.Options{Executor: ag, Sink: event.Discard}),
 		Scope: "global",
 		Ready: true,
 	}
@@ -642,31 +665,6 @@ func TestSyncTelemetryToSessionReKeysAcrossRotation(t *testing.T) {
 	}
 }
 
-func TestContextUsageForTabReKeysAfterControllerRotation(t *testing.T) {
-	dir := t.TempDir()
-	rotated := filepath.Join(dir, "rotated.jsonl")
-	stale := filepath.Join(dir, "stale.jsonl")
-
-	ag := agent.New(usageProvider{usage: &provider.Usage{}}, tool.NewRegistry(), agent.NewSession("system"), agent.Options{}, event.Discard)
-	tab := &WorkspaceTab{
-		ID:   "tab",
-		Ctrl: control.New(control.Options{Executor: ag, Sink: event.Discard, SessionDir: dir, SessionPath: rotated}),
-	}
-	// Telemetry still keyed to the pre-rotation session: a typed /new routes
-	// through Controller.Submit and rotates without App.NewSession running.
-	tab.syncTelemetryToSession(stale)
-	tab.recordUsage(costedUsageEvent())
-
-	app := &App{tabs: map[string]*WorkspaceTab{"tab": tab}}
-	info := app.ContextUsageForTab("tab")
-	if info.SessionCost != 0 || info.SessionTokens != 0 {
-		t.Fatalf("context after rotation = cost %f tokens %d, want zeros", info.SessionCost, info.SessionTokens)
-	}
-	if got := tab.telemetrySnapshot().Usage.RequestCount; got != 0 {
-		t.Fatalf("telemetry request count after rotation = %d, want 0", got)
-	}
-}
-
 func TestNewSessionResetsTabUsageTelemetry(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
@@ -695,7 +693,7 @@ func TestNewSessionResetsTabUsageTelemetry(t *testing.T) {
 		disabledMCP:   map[string]ServerView{},
 	}
 	tab.sink = &tabEventSink{tabID: tab.ID, app: app}
-	tab.Ctrl = control.New(control.Options{
+	tab.Ctrl = newFixtureController(t, control.Options{
 		Executor:    exec,
 		SessionDir:  dir,
 		SessionPath: sessPath,
@@ -722,6 +720,7 @@ func TestNewSessionResetsTabUsageTelemetry(t *testing.T) {
 }
 
 func TestSnapshotConflictRecoveryCarriesTelemetryToFork(t *testing.T) {
+	t.Setenv(agent.SessionLogSchemaEnv, "v1")
 	isolateDesktopUserDirs(t)
 
 	root := globalTabWorkspaceRoot()
@@ -758,7 +757,7 @@ func TestSnapshotConflictRecoveryCarriesTelemetryToFork(t *testing.T) {
 		disabledMCP:   map[string]ServerView{},
 	}
 	tab.sink = &tabEventSink{tabID: tab.ID, app: app}
-	tab.Ctrl = control.New(control.Options{
+	tab.Ctrl = newFixtureController(t, control.Options{
 		Executor:            staleExec,
 		SessionDir:          dir,
 		SessionPath:         originalPath,

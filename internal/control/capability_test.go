@@ -21,7 +21,7 @@ func TestLegacySkillProfilesDoNotFilterCapabilityRoutes(t *testing.T) {
 	runner := &capabilityRecordingRunner{}
 	reg := tool.NewRegistry()
 	reg.Add(capabilityTestTool{name: "run_skill"})
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Runner: runner,
 		Skills: []skill.Skill{
 			{Name: "economy-review", Description: "review code", Triggers: []string{"review code"}, Profiles: []string{"economy"}},
@@ -64,7 +64,7 @@ func TestRunInjectsCapabilityRouteForRelevantSkill(t *testing.T) {
 	runner := &capabilityRecordingRunner{}
 	reg := tool.NewRegistry()
 	reg.Add(capabilityTestTool{name: "run_skill"})
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Runner: runner,
 		Skills: []skill.Skill{{
 			Name:        "review",
@@ -86,10 +86,40 @@ func TestRunInjectsCapabilityRouteForRelevantSkill(t *testing.T) {
 	}
 }
 
+func TestSkillRouteUsesProxyWhenSkillToolsHiddenFromProviderSurface(t *testing.T) {
+	// Production hides run_skill from the provider-visible surface; the
+	// capability catalog must still see it in the registry, so the skill routes
+	// as ready via the concrete id instead of the retired connect_tool_source.
+	runner := &capabilityRecordingRunner{}
+	reg := tool.NewRegistry()
+	reg.Add(capabilityTestTool{name: "run_skill"})
+	reg.Add(capabilityTestTool{name: "use_capability"})
+	reg.SetProviderVisibleTools([]string{"use_capability"})
+	c := newOwnedTestController(t, Options{
+		Runner: runner,
+		Skills: []skill.Skill{{
+			Name:        "review",
+			Description: "review code",
+			Scope:       skill.ScopeBuiltin,
+		}},
+		Registry: reg,
+	})
+
+	if err := c.Run(context.Background(), "帮我看看这段代码有没有问题"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(runner.input, "skill:review prefer") {
+		t.Fatalf("hidden skill tool should still route as ready:\n%s", runner.input)
+	}
+	if strings.Contains(runner.input, "connect_tool_source") || strings.Contains(runner.input, "source:skills") {
+		t.Fatalf("route emitted the retired skill connector:\n%s", runner.input)
+	}
+}
+
 func TestCreateSkillWritesThroughAndIsImmediatelyReadable(t *testing.T) {
 	home := t.TempDir()
 	st := skill.New(skill.Options{HomeDir: home, DisableBuiltins: true})
-	c := New(Options{AllSkillStore: st, SkillStore: st})
+	c := newOwnedTestController(t, Options{AllSkillStore: st, SkillStore: st})
 
 	content := skill.RenderSkillFile(skill.SkillFileOptions{
 		Name: "helper", Description: "a helper", Body: "be helpful",
@@ -114,7 +144,7 @@ func TestCreateSkillWritesThroughAndIsImmediatelyReadable(t *testing.T) {
 }
 
 func TestCreateSkillRefusesWithoutWritableStore(t *testing.T) {
-	c := New(Options{Skills: []skill.Skill{}, AllSkills: []skill.Skill{}})
+	c := newOwnedTestController(t, Options{Skills: []skill.Skill{}, AllSkills: []skill.Skill{}})
 	if _, err := c.CreateSkill("x", skill.ScopeGlobal, "---\ndescription: x\n---\nbody"); err == nil {
 		t.Error("CreateSkill without a writable store should error")
 	}
@@ -126,7 +156,7 @@ func TestCreateSkillRefusesWithoutWritableStore(t *testing.T) {
 func TestUpdateSkillOverwritesAndIsImmediatelyReadable(t *testing.T) {
 	home := t.TempDir()
 	st := skill.New(skill.Options{HomeDir: home, DisableBuiltins: true})
-	c := New(Options{AllSkillStore: st, SkillStore: st})
+	c := newOwnedTestController(t, Options{AllSkillStore: st, SkillStore: st})
 
 	if _, err := c.CreateSkill("helper", skill.ScopeGlobal, skill.RenderSkillFile(skill.SkillFileOptions{
 		Name: "helper", Description: "v1", Body: "old", RunAs: skill.RunSubagent, Invocation: "manual",
@@ -140,8 +170,12 @@ func TestUpdateSkillOverwritesAndIsImmediatelyReadable(t *testing.T) {
 	}
 	for _, sk := range c.AllSkills() {
 		if sk.Name == "helper" {
-			if sk.Description != "v2" || sk.Body != "new" {
+			if sk.Description != "v2" || sk.Body != "" {
 				t.Fatalf("update did not take effect: description=%q body=%q", sk.Description, sk.Body)
+			}
+			loaded, ok := st.Read("helper")
+			if !ok || loaded.Body != "new" {
+				t.Fatalf("selected skill body = %q, ok=%v", loaded.Body, ok)
 			}
 			return
 		}
@@ -152,7 +186,7 @@ func TestUpdateSkillOverwritesAndIsImmediatelyReadable(t *testing.T) {
 func TestDeleteSkillRemovesLiveEntry(t *testing.T) {
 	home := t.TempDir()
 	st := skill.New(skill.Options{HomeDir: home, DisableBuiltins: true})
-	c := New(Options{AllSkillStore: st, SkillStore: st})
+	c := newOwnedTestController(t, Options{AllSkillStore: st, SkillStore: st})
 
 	content := skill.RenderSkillFile(skill.SkillFileOptions{Name: "temp", Description: "temp", Body: "b"})
 	if _, err := c.CreateSkill("temp", skill.ScopeGlobal, content); err != nil {

@@ -18,14 +18,14 @@ func intPtr(v int) *int { return &v }
 
 func TestHostReceiptsAttestChangesAndVerifications(t *testing.T) {
 	summary := evidence.ChildEvidenceSummary{Receipts: []evidence.Receipt{
-		{ToolName: "write_file", Success: true, Mutation: true, Paths: []string{"parser.go"}},
+		{ToolName: "write_file", Success: true, Mutation: true, Paths: []string{`src\parser.go`}},
 		{ToolName: "write_file", Success: true, Mutation: true, Paths: []string{"parser_test.go"}},
 		{ToolName: "bash", Success: true, Command: "go test ./parser", ExitCode: intPtr(0), Verification: evidence.VerificationPassed},
 		{ToolName: "bash", Success: true, Command: "ls -la", ExitCode: intPtr(0), Verification: evidence.VerificationNotVerification},
 	}}
 
 	got := formatHostReceipts(summary, WritePathSet{})
-	for _, want := range []string{"changed: parser.go, parser_test.go", "go test ./parser (verification passed, exit 0)"} {
+	for _, want := range []string{"changed: parser_test.go, src/parser.go", "go test ./parser (verification passed, exit 0)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("receipts block %q missing %q", got, want)
 		}

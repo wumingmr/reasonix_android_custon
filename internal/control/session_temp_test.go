@@ -12,7 +12,7 @@ import (
 
 func TestSessionTempSurvivesHotRebuildStyleRetain(t *testing.T) {
 	m := sessiontemp.New()
-	old := New(Options{SessionTemp: m, Sink: event.Discard})
+	old := newOwnedTestController(t, Options{SessionTemp: m, Sink: event.Discard})
 	lease, err := old.SessionTemp().Acquire()
 	if err != nil {
 		t.Fatal(err)
@@ -24,7 +24,7 @@ func TestSessionTempSurvivesHotRebuildStyleRetain(t *testing.T) {
 	lease.Release()
 
 	// Hot rebuild: replacement retains the same Manager before old closes.
-	replacement := New(Options{SessionTemp: old.SessionTemp(), Sink: event.Discard})
+	replacement := newOwnedTestController(t, Options{SessionTemp: old.SessionTemp(), Sink: event.Discard})
 	old.ReleaseResources()
 
 	again, err := replacement.SessionTemp().Acquire()
@@ -45,7 +45,7 @@ func TestSessionTempSurvivesHotRebuildStyleRetain(t *testing.T) {
 func TestNewSessionRotatesSessionTemp(t *testing.T) {
 	dir := t.TempDir()
 	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Executor:   exec,
 		SessionDir: dir,
 		Label:      "test",
@@ -82,7 +82,7 @@ func TestNewSessionRotatesSessionTemp(t *testing.T) {
 func TestSetSessionPathDoesNotRotateSessionTemp(t *testing.T) {
 	dir := t.TempDir()
 	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Executor:   exec,
 		SessionDir: dir,
 		Label:      "test",
@@ -113,7 +113,7 @@ func TestResumeOtherSessionRotatesSessionTemp(t *testing.T) {
 	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
 	pathA := agent.NewSessionPath(dir, "a")
 	pathB := agent.NewSessionPath(dir, "b")
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Executor:    exec,
 		SessionDir:  dir,
 		SessionPath: pathA,
@@ -172,7 +172,7 @@ func TestShouldRotateSessionTempOnResume(t *testing.T) {
 
 func TestFailedReplacementDoesNotDropOldSessionTemp(t *testing.T) {
 	m := sessiontemp.New()
-	old := New(Options{SessionTemp: m, Sink: event.Discard})
+	old := newOwnedTestController(t, Options{SessionTemp: m, Sink: event.Discard})
 	lease, err := old.SessionTemp().Acquire()
 	if err != nil {
 		t.Fatal(err)

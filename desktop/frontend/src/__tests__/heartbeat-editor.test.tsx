@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { HeartbeatView, TaskEditor } from "../custom/features/heartbeat/HeartbeatPanel";
 import type { HeartbeatTask } from "../custom/features/heartbeat/heartbeat.types";
 import { LocaleProvider } from "../lib/i18n";
+import { installDesktopHostStub } from "./desktopHostStub";
 
 let passed = 0;
 let failed = 0;
@@ -51,6 +52,10 @@ globalThis.HTMLTextAreaElement = dom.window.HTMLTextAreaElement;
 globalThis.Event = dom.window.Event;
 globalThis.MouseEvent = dom.window.MouseEvent;
 globalThis.ResizeObserver = NoopResizeObserver as unknown as typeof ResizeObserver;
+// React's legacy input-event fallback expects these IE hooks when JSDOM does
+// not advertise native InputEvent support.
+Object.defineProperty(dom.window.HTMLElement.prototype, "attachEvent", { configurable: true, value: () => {} });
+Object.defineProperty(dom.window.HTMLElement.prototype, "detachEvent", { configurable: true, value: () => {} });
 globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
 globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
 
@@ -58,23 +63,17 @@ let nextID = 0;
 let savedUpdate: { tasks?: HeartbeatTask[] } | null = null;
 let backendTasks: HeartbeatTask[] = [];
 let saveShouldFail = false;
-Object.assign(window, {
-  go: {
-    main: {
-      App: {
-        async HeartbeatReloadConfig() { return { revision: 1, etag: "test", tasks: backendTasks }; },
-        async HeartbeatSaveConfig(update: { tasks?: HeartbeatTask[] }) {
-          if (saveShouldFail) throw new Error("conflict");
-          savedUpdate = update;
-          backendTasks = update.tasks ?? [];
-          return { revision: 2, etag: "saved", tasks: backendTasks };
-        },
-        async HeartbeatTriggerNow() {},
-        async HeartbeatGenerateID() { nextID += 1; return `draft-${nextID}`; },
-        async ListWorkspaces() { return [{ name: "Project One", path: "/project-one", current: true }]; },
-      },
-    },
+installDesktopHostStub({
+  async HeartbeatReloadConfig() { return { revision: 1, etag: "test", tasks: backendTasks }; },
+  async HeartbeatSaveConfig(update: { tasks?: HeartbeatTask[] }) {
+    if (saveShouldFail) throw new Error("conflict");
+    savedUpdate = update;
+    backendTasks = update.tasks ?? [];
+    return { revision: 2, etag: "saved", tasks: backendTasks };
   },
+  async HeartbeatTriggerNow() {},
+  async HeartbeatGenerateID() { nextID += 1; return `draft-${nextID}`; },
+  async ListWorkspaces() { return [{ name: "Project One", path: "/project-one", current: true }]; },
 });
 
 const rootElement = document.getElementById("root");
@@ -173,6 +172,27 @@ ok(button("Custom")?.classList.contains("set-seg__btn--on") === true, "lossy cro
 ok(document.querySelector<HTMLInputElement>('.heartbeat-editor__freq-input--cron')?.value === "0 9 * * 1", "lossy conversion keeps the original cron expression");
 ok(document.querySelector('.heartbeat-editor__inline-error')?.textContent?.includes("cannot be converted") === true, "lossy conversion explains why the editor did not switch");
 
+console.log("\nheartbeat editor required fields");
+
+let untitledSaves = 0;
+await act(async () => {
+  renderEditor({ id: "untitled", title: "", prompt: "Check the build", interval: "1h", enabled: false }, async () => { untitledSaves += 1; return true; }, "untitled");
+  await flush();
+});
+await act(async () => {
+  button("Save")?.click();
+  await flush();
+});
+const titleInput = document.querySelector<HTMLInputElement>('[aria-label="Title"]');
+const titleError = titleInput?.getAttribute("aria-describedby")
+  ? document.getElementById(titleInput.getAttribute("aria-describedby") ?? "")
+  : null;
+ok(untitledSaves === 0, "an untitled task is not persisted");
+ok(titleInput?.getAttribute("aria-invalid") === "true", "save marks the missing title invalid");
+ok(document.activeElement === titleInput, "save moves focus to the missing title");
+ok(titleError?.textContent?.includes("title") === true, "save explains that the task needs a title");
+ok(document.querySelector('.heartbeat-editor__textarea')?.getAttribute("aria-invalid") !== "true", "a filled prompt is not reported as missing");
+
 console.log("\nheartbeat recommendation draft");
 
 await act(async () => {
@@ -187,14 +207,14 @@ await act(async () => {
 });
 ok(document.querySelector<HTMLInputElement>('[aria-label="Title"]')?.value === "Daily review", "recommendation keeps its prefilled editor open");
 ok(document.body.textContent?.includes("Select a task to view details") !== true, "recommendation is not cleared by the missing-task cleanup effect");
-ok(button("Ask")?.classList.contains("set-seg__btn--on") === true, "recommendation defaults to ask approval");
+ok(button("Read only")?.classList.contains("set-seg__btn--on") === true, "recommendation defaults to read-only approval");
 ok(button("Global") != null, "recommendation remains a new draft with editable scope");
 await act(async () => {
   button("Save")?.click();
   await flush();
 });
 ok(savedUpdate?.tasks?.[0]?.enabled === false, "recommendation stays disabled until the user explicitly enables it");
-ok(savedUpdate?.tasks?.[0]?.approvalMode === "ask", "recommendation persists the safe ask approval default");
+ok(savedUpdate?.tasks?.[0]?.approvalMode === "read-only", "recommendation persists the read-only approval default");
 
 saveShouldFail = true;
 await act(async () => {

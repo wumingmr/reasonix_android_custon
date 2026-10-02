@@ -23,7 +23,7 @@ var (
 // A failed authoritative event log must never be hidden by opening an empty
 // session or falling back to an older checkpoint.
 func friendlySessionLoadError(err error) error {
-	if err == nil || errors.Is(err, agent.ErrSessionReplayLimitExceeded) {
+	if err == nil || errors.Is(err, agent.ErrSessionReplayLimitExceeded) || errors.Is(err, errSessionWorkspaceConflict) {
 		return err
 	}
 	if friendly := friendlySessionFileError(err); !errors.Is(friendly, err) {

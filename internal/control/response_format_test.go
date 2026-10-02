@@ -108,7 +108,7 @@ func TestSubmitHTTPFormatBindsToTurn(t *testing.T) {
 		releaseFirst: make(chan struct{}),
 		allDone:      make(chan struct{}),
 	}
-	c := New(Options{Runner: formatRecordingRunner{observed: observed}, Sink: gate})
+	c := newOwnedTestController(t, Options{Runner: formatRecordingRunner{observed: observed}, Sink: gate})
 
 	c.SubmitHTTPFormat("first turn", "format-a")
 	first := receiveObservedTurnFormat(t, observed)
@@ -130,7 +130,7 @@ func TestSubmitHTTPFormatBindsToTurn(t *testing.T) {
 // TestWithTurnFormatInjectsFormatIntoContext：format 绑定 turn 的实际效果
 // ——withTurnFormat 注入后 agent 请求路径能读到（不是全局槽）。
 func TestWithTurnFormatInjectsFormatIntoContext(t *testing.T) {
-	c := New(Options{})
+	c := newOwnedTestController(t, Options{})
 	ctx := context.Background()
 	if got := agent.ResponseFormatFromRequest(c.withTurnFormat(ctx, "")); got != nil {
 		t.Fatalf("empty format must be no-op, got %+v", got)
@@ -143,7 +143,7 @@ func TestWithTurnFormatInjectsFormatIntoContext(t *testing.T) {
 // TestRefTurnFormatBound：@reference turn 同样绑定 format（统一架构——
 // format 是每个被接纳 turn 的属性，非 runGoalLoop 特例）。
 func TestRefTurnFormatBound(t *testing.T) {
-	c := New(Options{})
+	c := newOwnedTestController(t, Options{})
 	ctx := context.Background()
 	// runRefTurnWithFormat 注入后 agent 请求路径读到 json_object
 	if got := agent.ResponseFormatFromRequest(c.withTurnFormat(ctx, "json_object")); got == nil || got.Type != "json_object" {

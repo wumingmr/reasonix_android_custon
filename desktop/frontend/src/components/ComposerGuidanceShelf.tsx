@@ -13,6 +13,7 @@ export type PendingGuidance = {
   state?: string;
   intent?: string;
   source?: string;
+  blockReason?: string;
   paused?: boolean;
   recoveredCount?: number;
   structured?: StructuredInvocationSubmit;

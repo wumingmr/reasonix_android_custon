@@ -560,13 +560,15 @@ func TestRebindDropsOldGeneration(t *testing.T) {
 
 // fakeActionClient records UIAction/UISubmit calls for the action tests.
 type fakeActionClient struct {
-	mu           sync.Mutex
-	actionParams []protocol.UIActionParams
-	actionResult protocol.UIActionResult
-	actionErr    error
-	submitParams []protocol.UISubmitParams
-	submitResult protocol.UISubmitResult
-	submitErr    error
+	mu            sync.Mutex
+	actionParams  []protocol.UIActionParams
+	actionResult  protocol.UIActionResult
+	actionErr     error
+	submitParams  []protocol.UISubmitParams
+	submitResult  protocol.UISubmitResult
+	submitErr     error
+	submitStarted chan struct{}
+	submitRelease <-chan struct{}
 }
 
 func (f *fakeActionClient) UIAction(_ context.Context, p protocol.UIActionParams) (protocol.UIActionResult, error) {
@@ -578,9 +580,20 @@ func (f *fakeActionClient) UIAction(_ context.Context, p protocol.UIActionParams
 
 func (f *fakeActionClient) UISubmit(_ context.Context, p protocol.UISubmitParams) (protocol.UISubmitResult, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.submitParams = append(f.submitParams, p)
-	return f.submitResult, f.submitErr
+	started, release := f.submitStarted, f.submitRelease
+	result, err := f.submitResult, f.submitErr
+	f.mu.Unlock()
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if release != nil {
+		<-release
+	}
+	return result, err
 }
 
 func TestRegisterActionsRejectsInvalidIDs(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"reasonix/internal/event"
+	"reasonix/internal/evidence"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 	_ "reasonix/internal/tool/builtin"
@@ -143,6 +144,16 @@ type workspaceSignalSink struct {
 	mutations chan event.WorkspaceMutation
 }
 
+type failingToolDispatchSink struct{ err error }
+
+func (s failingToolDispatchSink) Emit(event.Event) {}
+func (s failingToolDispatchSink) EmitChecked(e event.Event) error {
+	if e.Kind == event.ToolDispatch {
+		return s.err
+	}
+	return nil
+}
+
 func newWorkspaceSignalSink() *workspaceSignalSink {
 	return &workspaceSignalSink{mutations: make(chan event.WorkspaceMutation, 8)}
 }
@@ -235,20 +246,16 @@ func TestPartitionToolCallsUnknownToolSerial(t *testing.T) {
 	}
 }
 
-// TestPartitionToolCallsCompleteStepSerial verifies complete_step never joins a
-// parallel read-only run: it reads the turn's receipts, so the prior reads must
-// finish (and record) in an earlier batch before it runs in its own serial one.
-func TestPartitionToolCallsCompleteStepSerial(t *testing.T) {
+// A retired tool accidentally present in an embedding registry carries no
+// active receipt semantics and does not change read-only partitioning.
+func TestPartitionToolCallsRetiredToolHasNoBarrier(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Add(fakeTool{name: "read_file", readOnly: true})
 	reg.Add(fakeTool{name: "complete_step", readOnly: true})
 
 	calls := []provider.ToolCall{{Name: "read_file"}, {Name: "complete_step"}}
 	got := partitionToolCalls(reg, calls)
-	want := []toolCallBatch{
-		{start: 0, end: 1, parallel: true},
-		{start: 1, end: 2},
-	}
+	want := []toolCallBatch{{start: 0, end: 2, parallel: true}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("partitionToolCalls = %+v, want %+v", got, want)
 	}
@@ -333,6 +340,25 @@ func TestExecuteBatchParallelReadOnly(t *testing.T) {
 	// Allow generous slack for CI; even 2x serial would prove we got parallelism.
 	if elapsed >= 2*delay {
 		t.Errorf("read-only batch took %v (>= %v) — not parallel", elapsed, 2*delay)
+	}
+}
+
+func TestExecuteBatchDoesNotRunAnyToolWhenDispatchPersistenceFails(t *testing.T) {
+	wantErr := errors.New("ledger unavailable")
+	var calls int32
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "read_file", readOnly: true, calls: &calls})
+	reg.Add(fakeTool{name: "write_file", calls: &calls})
+	a := New(nil, reg, NewSession(""), Options{}, failingToolDispatchSink{err: wantErr})
+	batch := a.executeBatch(context.Background(), &a.turn, []provider.ToolCall{
+		{ID: "read", Name: "read_file"},
+		{ID: "write", Name: "write_file"},
+	})
+	if !errors.Is(batch.err, wantErr) {
+		t.Fatalf("batch error = %v, want %v", batch.err, wantErr)
+	}
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Fatalf("executed %d tools after dispatch persistence failed", got)
 	}
 }
 
@@ -428,8 +454,8 @@ func TestExecuteBatchPublishesWorkspaceMutationBeforeLaterToolCompletes(t *testi
 	case <-time.After(2 * time.Second):
 		t.Fatal("writer completion did not publish before the later tool completed")
 	}
-	if results := sink.kinds(event.ToolResult); len(results) != 0 {
-		t.Fatalf("provider-ordered ToolResult events published before the batch completed: %+v", results)
+	if results := sink.kinds(event.ToolResult); len(results) != 1 || results[0].Tool.Name != "write_file" {
+		t.Fatalf("completed writer must be checkpointed before the next tool: %+v", results)
 	}
 	close(release)
 	select {
@@ -513,7 +539,7 @@ func TestExecuteBatchSegmentsAroundWrites(t *testing.T) {
 		t.Fatalf("got %d results, want %d: %v", len(results), len(want), results)
 	}
 	for i := range want {
-		if results[i] != want[i] {
+		if stripReceiptCitation(results[i]) != want[i] {
 			t.Fatalf("results out of order or wrong: got %v want %v", results, want)
 		}
 	}
@@ -527,16 +553,12 @@ func TestExecuteBatchSegmentsAroundWrites(t *testing.T) {
 	}
 }
 
-func TestExecuteBatchFeedsReceiptsToCompleteStep(t *testing.T) {
-	completeStep, ok := tool.LookupBuiltin("complete_step")
-	if !ok {
-		t.Fatal("complete_step builtin not registered")
-	}
+func TestExecuteBatchPairsRetiredCompleteStepWithoutBlockingPeers(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Add(fakeTool{name: "bash", readOnly: false})
-	reg.Add(completeStep)
 	a := New(nil, reg, NewSession(""), Options{}, event.Discard)
 
+	a.SeedTodoState([]evidence.TodoItem{{Content: "Run checks", Status: "pending"}})
 	batch := a.executeBatch(context.Background(), &a.turn, []provider.ToolCall{
 		{Name: "bash", Arguments: `{"command":"go test ./internal/..."}`},
 		{Name: "complete_step", Arguments: `{
@@ -550,8 +572,8 @@ func TestExecuteBatchFeedsReceiptsToCompleteStep(t *testing.T) {
 	if len(results) != 2 {
 		t.Fatalf("got %d results, want 2", len(results))
 	}
-	if !strings.Contains(results[1], "host-verified 1") {
-		t.Fatalf("complete_step did not see bash receipt: %q", results[1])
+	if !strings.Contains(results[1], "tool_retired") || !a.task.ledger.HasSuccessfulCommand("go test ./internal/...") {
+		t.Fatalf("retired result=%q bash receipt missing=%v", results[1], !a.task.ledger.HasSuccessfulCommand("go test ./internal/..."))
 	}
 }
 

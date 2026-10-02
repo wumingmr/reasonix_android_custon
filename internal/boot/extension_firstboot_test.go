@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"reasonix/internal/config"
+	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/extension"
 	"reasonix/internal/extension/protocol"
@@ -47,6 +48,7 @@ base_url = "https://example.invalid"
 model = "x"
 api_key_env = "REASONIX_TEST_KEY_UNSET"
 `, pluginRef))
+	approveWorkspace(t, dir)
 }
 
 // installProviderFake installs the fake sidecar in provider mode under name.
@@ -172,6 +174,9 @@ func TestBootSwitchToPluginModelStreams(t *testing.T) {
 	}
 	if got := newRes.Controller.ModelRef(); got != ref {
 		t.Fatalf("switched model ref = %q, want %q", got, ref)
+	}
+	if err := control.ActivateControllerReplacement(oldRes.Controller, newRes.Controller); err != nil {
+		t.Fatalf("publish replacement: %v", err)
 	}
 	assistant := runTurnAndCollectAssistant(t, newRes, "say hi")
 	if !strings.Contains(assistant, "fake-hello fake-world") {

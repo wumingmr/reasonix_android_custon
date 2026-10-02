@@ -77,6 +77,9 @@ func (a *App) liveRuntimeForTopicLocked(scope, workspaceRoot, topicID string) *W
 }
 
 func (a *App) resolveOpenSessionPath(scope, workspaceRoot, topicID, requested string) string {
+	if strings.TrimSpace(requested) != "" {
+		return requested
+	}
 	live := a.liveSessionPathForTopic(scope, workspaceRoot, topicID)
 	return preferLiveSessionPath(requested, live, a.ordinaryOpenSessionPaths(scope, workspaceRoot, topicID, requested)...)
 }

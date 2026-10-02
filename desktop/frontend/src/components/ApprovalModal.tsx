@@ -1,7 +1,8 @@
+import { isShellToolName } from "../lib/shellToolIdentity";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useT, type Translator } from "../lib/i18n";
-import type { ComposerInsertRequest, DirEntry, ToolApprovalMode, WireApproval } from "../lib/types";
+import { normalizeToolApprovalMode, type DirEntry } from "../lib/types";
 import {
   DecisionConfirmBar,
   PromptAction,
@@ -18,45 +19,17 @@ import {
   useFileReferenceMenu,
 } from "./FileReferenceMenu";
 import { WriteAccessApprovalDetails, writeAccessDecisionActions, type DecisionAction } from "./WriteAccessApproval";
+import { RetiredRecoveryApproval } from "./RetiredRecoveryApproval";
+import type { ApprovalModalProps } from "./approvalTypes";
+import { approvalToolLabel } from "./approvalToolLabel";
+import { usePromptStop } from "../lib/usePromptStop";
+export { approvalToolLabel } from "./approvalToolLabel";
 
 function requiresFreshHumanApproval(tool: string): boolean {
   return tool === "remember" || tool === "forget" || tool === "exit_plan_mode" || tool === "sandbox_escape" || tool === "config_write";
 }
 
-const APPROVAL_MODE_RANK: Record<ToolApprovalMode, number> = { ask: 0, auto: 1, yolo: 2 };
-
-export function approvalToolLabel(tool: string, t: Translator): string {
-  switch (tool) {
-    case "bash":
-      return t("approval.toolLabelBash");
-    case "edit_file":
-      return t("approval.toolLabelEditFile");
-    case "write_file":
-      return t("approval.toolLabelWriteFile");
-    case "multi_edit":
-      return t("approval.toolLabelMultiEdit");
-    case "move_file":
-      return t("approval.toolLabelMoveFile");
-    case "web_fetch":
-      return t("approval.toolLabelWebFetch");
-    case "run_skill":
-      return t("approval.toolLabelRunSkill");
-    case "remember":
-      return t("approval.toolLabelRemember");
-    case "forget":
-      return t("approval.toolLabelForget");
-    case "sandbox_escape":
-      return t("approval.toolLabelSandboxEscape");
-    case "config_write":
-      return t("approval.toolLabelConfigWrite");
-    case "plan_mode_read_only_command":
-      return t("approval.toolLabelPlanModeReadOnly");
-    case "exit_plan_mode":
-      return t("approval.toolLabelExitPlan");
-    default:
-      return tool;
-  }
-}
+const APPROVAL_MODE_RANK = { "read-only": 0, "workspace-write": 1, "danger-full-access": 2 } as const;
 
 const sandboxEscapeEnglishSubjectFallback = "run shell command unconfined once";
 const sandboxEscapeEnglishSubjectPrefix = "run unconfined once: ";
@@ -107,7 +80,10 @@ function localizeApprovalReason(tool: string, reason: string | undefined, t: Tra
     trimmed = remainingLines.join("\n").trim();
   }
   let localized = trimmed;
-  if (tool === "bash" && trimmed.includes("nested or indirect shell execution")) {
+  if (
+    isShellToolName(tool) &&
+    (trimmed.includes("nested or indirect shell execution") || trimmed.includes("requests access outside the active permission preset"))
+  ) {
     localized = t("approval.dynamicBashReason");
   }
   if (tool === "config_write") {
@@ -209,7 +185,20 @@ function planDelta(beforeRaw: string | undefined, afterRaw: string | undefined):
   return removed.length > 0 || added.length > 0 ? { removed, added } : null;
 }
 
-export function ApprovalModal({
+// Recovery approvals belong to the retired Auto Guard mechanism. Old sessions
+// can still decode them, but they are historical facts rather than decisions.
+// Keep the payload visible without exposing confirmation, retry, or grant
+// controls that could imply the retired gate is still active.
+export function ApprovalModal(props: ApprovalModalProps) {
+  const isHistoricalRecovery = props.approval.kind === "recovery" || Boolean(props.approval.recovery);
+  if (isHistoricalRecovery) return <RetiredRecoveryApproval approval={props.approval} />;
+  const { approval } = props;
+  const identity = JSON.stringify([props.tabId, approval.id, approval.kind,
+    approval.turnId, approval.runtimeEpoch, approval.generation, approval.permissionRevision]);
+  return <InteractiveApprovalModal key={identity} {...props} />;
+}
+
+function InteractiveApprovalModal({
   approval,
   onAnswer,
   onResolveRecovery,
@@ -222,20 +211,7 @@ export function ApprovalModal({
   insertRequest,
   onRevisionActiveChange,
   toolApprovalMode,
-}: {
-  approval: WireApproval;
-  onAnswer: (allow: boolean, session: boolean, persist: boolean) => void;
-  onResolveRecovery?: (action: "continue" | "continue_task" | "revise", feedback?: string) => void;
-  onRevisePlan?: (text: string) => void;
-  onExitPlan?: () => void;
-  onStop: () => void;
-  cwd?: string;
-  tabId?: string;
-  workspaceScopeKey?: string;
-  insertRequest?: ComposerInsertRequest | null;
-  onRevisionActiveChange?: (active: boolean) => void;
-  toolApprovalMode?: ToolApprovalMode;
-}) {
+}: ApprovalModalProps) {
   const t = useT();
   const isPlanApproval = approval.tool === "exit_plan_mode";
   const isWriteAccessApproval = approval.kind === "write_access" || Boolean(approval.write_access);
@@ -256,7 +232,7 @@ export function ApprovalModal({
     !isPlanApproval &&
     toolApprovalMode !== undefined &&
     initialToolApprovalModeRef.current !== undefined &&
-    APPROVAL_MODE_RANK[toolApprovalMode] > APPROVAL_MODE_RANK[initialToolApprovalModeRef.current];
+    APPROVAL_MODE_RANK[normalizeToolApprovalMode(toolApprovalMode)] > APPROVAL_MODE_RANK[normalizeToolApprovalMode(initialToolApprovalModeRef.current)];
   const subject = localizeApprovalSubject(approval.tool, approval.subject, t);
   const reason = localizePlanModeApprovalReason(approval.tool, localizeApprovalReason(approval.tool, approval.reason, t), t);
   const subjectSummary = subject.split(/\r?\n/).find((line) => line.trim())?.trim() ?? "";
@@ -280,7 +256,10 @@ export function ApprovalModal({
   const [recoveryGuidanceOpen, setRecoveryGuidanceOpen] = useState(false);
   const [recoveryGuidanceText, setRecoveryGuidanceText] = useState("");
   const [grantSimilarForTask, setGrantSimilarForTask] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  const [answerPending, setSubmitting] = useState(false);
+  const { stopping, stopFailed, stopTask } = usePromptStop(onStop);
+  const [submitFailed, setSubmitFailed] = useState(false);
+  const submitting = answerPending || stopping;
   const instanceId = useId();
   const cardRef = useRef<HTMLDivElement | null>(null);
   const shelfRef = useRef<HTMLDivElement | null>(null);
@@ -296,21 +275,27 @@ export function ApprovalModal({
   const closingRef = useRef(false);
   const fileMenu = useFileReferenceMenu(revisionText, cwd, tabId, workspaceScopeKey);
 
-  const answerWithExit = (fn: () => void) => {
+  const answerWithExit = (fn: () => void | Promise<void>) => {
     if (closingRef.current || submitting) return;
     closingRef.current = true;
     setSubmitting(true);
-    const el = shelfRef.current;
-    if (el) {
-      animateElementExit(el, {
-        opacity: 0,
-        y: 8,
-        duration: DUR_FAST,
-        onComplete: fn,
-      });
-    } else {
-      fn();
+    setSubmitFailed(false);
+    let result: void | Promise<void>;
+    try {
+      result = fn();
+    } catch {
+      closingRef.current = false;
+      setSubmitting(false);
+      setSubmitFailed(true);
+      return;
     }
+    void Promise.resolve(result).catch(() => {
+      closingRef.current = false;
+      setSubmitting(false);
+      setSubmitFailed(true);
+    });
+    const el = shelfRef.current;
+    if (el) animateElementExit(el, { opacity: 0, y: 8, duration: DUR_FAST, onComplete: () => undefined });
   };
 
   const resolveRecovery = useCallback(
@@ -318,10 +303,9 @@ export function ApprovalModal({
       const resolve = onResolveRecovery ?? ((a: "continue" | "continue_task" | "revise") => onAnswer(a !== "revise", false, false));
       if (action === "revise") {
         const text = feedback?.trim().slice(0, RECOVERY_FEEDBACK_MAX) ?? "";
-        resolve("revise", text || undefined);
-        return;
+        return resolve("revise", text || undefined);
       }
-      resolve(action);
+      return resolve(action);
     },
     [onResolveRecovery, onAnswer],
   );
@@ -439,13 +423,6 @@ export function ApprovalModal({
               },
               {
                 key: "3",
-                label: t("approval.allowRulePersistent"),
-                desc: t("approval.allowRulePersistentDesc"),
-                kind: "submit" as const,
-                run: () => onAnswer(true, true, true),
-              },
-              {
-                key: "4",
                 label: t("approval.deny"),
                 desc: t("approval.denyDesc"),
                 tone: "danger" as const,
@@ -465,17 +442,11 @@ export function ApprovalModal({
   const descriptionExpanded = selectedDescriptionId !== undefined && expandedDescriptionId === selectedDescriptionId;
 
   useEffect(() => {
-    cardRef.current?.focus();
-    setRevisionOpen(false);
-    setRevisionText("");
-    setRecoveryGuidanceOpen(false);
-    setRecoveryGuidanceText("");
-    setGrantSimilarForTask(false);
-    setReasonOpen(isRecoveryApproval ? false : Boolean(reason) && reason.length <= 160);
-    setSelectedIndex(isPlanApproval || isRecoveryApproval ? -1 : 0);
-    setSubmitting(false);
-    closingRef.current = false;
-  }, [approval.id, isPlanApproval, isRecoveryApproval, reason]);
+    // Ordinary permission cards must not steal focus from the composer or an
+    // active IME composition. Plan and recovery decisions retain focus because
+    // they replace the composer interaction rather than supplement it.
+    if (isPlanApproval || isRecoveryApproval) cardRef.current?.focus();
+  }, [isPlanApproval, isRecoveryApproval]);
 
   useEffect(() => {
     setExpandedDescriptionId(null);
@@ -518,6 +489,11 @@ export function ApprovalModal({
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape" && submitting) {
+        event.preventDefault();
+        stopTask();
+        return;
+      }
       if (submitting) return;
       if (isRecoveryApproval && recoveryGuidanceOpen && event.key === "Escape") {
         event.preventDefault();
@@ -576,12 +552,12 @@ export function ApprovalModal({
         setSelectedIndex(index);
       } else if (event.key === "Escape") {
         event.preventDefault();
-        answerWithExit(onStop);
+        stopTask();
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [actionCount, activateAction, confirmSelected, onStop, submitting, isPlanApproval, isRecoveryApproval, isRecoveryPlanChange, recoveryGuidanceOpen, toolActions]);
+  }, [actionCount, activateAction, confirmSelected, stopTask, submitting, isPlanApproval, isRecoveryApproval, isRecoveryPlanChange, recoveryGuidanceOpen, toolActions]);
 
   useEffect(() => {
     revisionActiveRef.current = revisionOpen;
@@ -774,9 +750,9 @@ export function ApprovalModal({
             )}
             {!isPlanApproval && !isRecoveryApproval && (
               <PromptHeaderAction
-                onClick={() => answerWithExit(onStop)}
+                onClick={stopTask}
                 ariaLabel={t("decision.stopTask")}
-                disabled={submitting}
+                disabled={stopping}
               >
                 {t("decision.stopTask")}
               </PromptHeaderAction>
@@ -915,6 +891,7 @@ export function ApprovalModal({
           )
         }
       >
+        {(submitFailed || stopFailed) && <p role="alert">{t("approval.submitFailed")}</p>}
         {(approvalModeRelaxed ||
           isRecoveryApproval ||
           (!isPlanApproval && !isRecoveryApproval && (subject || isWriteAccessApproval || (reasonOpen && reason))) ||

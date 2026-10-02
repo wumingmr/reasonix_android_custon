@@ -42,26 +42,21 @@ func TestReasonixGuideIndexLineOnly(t *testing.T) {
 	if !found {
 		t.Fatal("reasonix-guide missing from List")
 	}
+	if guide.Body != "" {
+		t.Fatal("catalog candidate carried the skill body")
+	}
 	idx := skill.IndexBlock(list)
 	if !strings.Contains(idx, "reasonix-guide") {
 		t.Fatal("index missing reasonix-guide line")
 	}
 	// Body must not appear in the index block.
-	if strings.Contains(idx, "First action") || strings.Contains(idx, skBodySnippet(guide)) {
+	if strings.Contains(idx, "First action") {
 		t.Fatal("skill body leaked into system-prompt index")
 	}
 	// Exactly one index line for the skill name.
 	if c := strings.Count(idx, "- reasonix-guide"); c != 1 {
 		t.Fatalf("index lines for reasonix-guide = %d, want 1", c)
 	}
-}
-
-func skBodySnippet(sk skill.Skill) string {
-	body := strings.TrimSpace(sk.Body)
-	if len(body) > 40 {
-		return body[:40]
-	}
-	return body
 }
 
 func TestReasonixGuideOverriddenByProject(t *testing.T) {

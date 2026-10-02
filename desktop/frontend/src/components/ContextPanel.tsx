@@ -1,18 +1,24 @@
 // ContextPanel shows the active tab's context gauge and token usage.
 // All visible text is routed through the i18n dictionary.
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useState, type ReactNode } from "react";
 import { asArray } from "../lib/array";
-import { app } from "../lib/bridge";
+import { useContextPanelSnapshot } from "../lib/useContextPanelSnapshot";
+import { useSessionRuntimeMs } from "../lib/useSessionRuntime";
 import { contextWindowPercentages } from "../lib/contextWindow";
 import { useI18n, type Locale, type Translator } from "../lib/i18n";
 import { formatMoneyLocalized } from "../lib/money";
 import { formatTokens, formatOptionalTokens } from "../lib/format";
 import { appendRateBand, normalizeRateBand, rateBandLabel, type DisplayRateBand } from "../lib/costRateBand";
-import type { DictKey } from "../locales/en";
 import type { BalanceInfo, ContextInfo, ContextPanelInfo, UsageSourceStats, WireUsage } from "../lib/types";
+import { contextSessionCache } from "../lib/contextSessionCache";
 import { ContextBudgetCard, resolveContextBudget } from "./ContextBudgetCard";
+import type { Item } from "../lib/useController";
+import { contextWindowStatus, formatCacheHitRate } from "../lib/contextPanelUtils";
+export { contextSessionCache } from "../lib/contextSessionCache";
+const McpListLayers = lazy(() => import("./McpListLayers").then((module) => ({ default: module.McpListLayers })));
 interface ContextPanelProps {
   tabId?: string;
+  items?: Item[];
   context?: ContextInfo;
   usage?: WireUsage;
   sessionTokens?: number;
@@ -67,11 +73,7 @@ function fmtUsageCacheRate(usage?: WireUsage): string {
   return `${((usage.cacheHitTokens / denom) * 100).toFixed(2)}%`;
 }
 
-export function formatCacheHitRate(hitTokens: number, missTokens: number): string {
-  const denom = hitTokens + missTokens;
-  if (denom <= 0) return "-";
-  return `${((hitTokens / denom) * 100).toFixed(2)}%`;
-}
+export { formatCacheHitRate } from "../lib/contextPanelUtils";
 
 type MetricTone = "accent" | "good" | "notice" | "warn";
 type UsageAnalysisView = "source" | "type";
@@ -106,11 +108,6 @@ export function formatSharePercent(value: number, total: number): string {
   const pct = (value / total) * 100;
   if (pct > 0 && pct < 1) return "<1%";
   return `${Math.round(pct)}%`;
-}
-
-interface ContextWindowStatus {
-  tone: "good" | "notice" | "warn";
-  key: DictKey;
 }
 
 export function contextCostDisplay({
@@ -204,27 +201,6 @@ export function contextCostDisplay({
   };
 }
 
-// contextSessionCache picks the session-cumulative cache hit/miss pair for the
-// panel's session average. The shared ContextInfo is refreshed after every
-// usage event and also drives StatusBar, so prefer it over the panel's
-// independently throttled snapshot. Panel telemetry remains the all-sources
-// fallback for callers without live context; executor-only wire counters only
-// bridge the pre-refresh gap. The pair always comes from one source so the
-// computed rate never mixes scopes.
-export function contextSessionCache(
-  info?: Pick<ContextPanelInfo, "sessionCacheHitTokens" | "sessionCacheMissTokens"> | null,
-  context?: Pick<ContextInfo, "cacheHitTokens" | "cacheMissTokens">,
-  usage?: Pick<WireUsage, "sessionCacheHitTokens" | "sessionCacheMissTokens">,
-): { hit: number; miss: number } {
-  const ctxHit = context?.cacheHitTokens ?? 0;
-  const ctxMiss = context?.cacheMissTokens ?? 0;
-  if (ctxHit + ctxMiss > 0) return { hit: ctxHit, miss: ctxMiss };
-  const infoHit = info?.sessionCacheHitTokens ?? 0;
-  const infoMiss = info?.sessionCacheMissTokens ?? 0;
-  if (infoHit + infoMiss > 0) return { hit: infoHit, miss: infoMiss };
-  return { hit: usage?.sessionCacheHitTokens ?? 0, miss: usage?.sessionCacheMissTokens ?? 0 };
-}
-
 interface ContextBreakdown {
   promptTokens: number;
   completionTokens: number;
@@ -309,14 +285,7 @@ export function contextBreakdown(
   };
 }
 
-export function contextWindowStatus(rawUsagePct: number, compactPct: number): ContextWindowStatus {
-  if (rawUsagePct > 100) return { tone: "warn", key: "context.windowStatusOverLimit" };
-  const usagePct = Math.min(100, Math.max(0, rawUsagePct));
-  if (usagePct >= 90) return { tone: "warn", key: "context.windowStatusNearLimit" };
-  if (compactPct > 0 && usagePct >= compactPct) return { tone: "warn", key: "context.windowStatusPastCompact" };
-  if (compactPct > 0 && usagePct >= Math.max(0, compactPct - 10)) return { tone: "notice", key: "context.windowStatusWatch" };
-  return { tone: "good", key: "context.windowStatusHealthy" };
-}
+export { contextWindowStatus } from "../lib/contextPanelUtils";
 
 const SOURCE_ORDER = ["executor", "planner", "subagent", "compaction", "classifier", "title"];
 
@@ -401,6 +370,7 @@ export function contextSourceRows(info: ContextPanelInfo | null, sessionCurrency
 
 export function ContextPanel({
   tabId,
+  items,
   context,
   usage,
   sessionTokens,
@@ -415,64 +385,19 @@ export function ContextPanel({
   usageSeq,
 }: ContextPanelProps) {
   const { locale, t } = useI18n();
-  const [info, setInfo] = useState<ContextPanelInfo | null>(null);
+  const info = useContextPanelSnapshot(tabId, sessionGen, refreshKey, contextUsageRefreshKey(usage), usageSeq);
+  const runtimeMs = useSessionRuntimeMs(info);
   const [analysisView, setAnalysisView] = useState<UsageAnalysisView>("source");
-  const refreshSeq = useRef(0);
-  const lastRefreshTime = useRef(0);
-  const usageRefreshKey = contextUsageRefreshKey(usage);
-
-  const refresh = useCallback(async () => {
-    if (!tabId) return;
-    const seq = ++refreshSeq.current;
-    try {
-      const next = await app.ContextPanel(tabId);
-      if (refreshSeq.current === seq) {
-        setInfo(next);
-      }
-    } catch {
-      /* bridge unavailable */
-    }
-  }, [tabId]);
-
-  useEffect(() => {
-    refreshSeq.current += 1;
-    setInfo(null);
-    void refresh();
-  }, [refresh, sessionGen]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh, refreshKey]);
-
-  // Refresh the panel snapshot while usage events stream — from any source:
-  // usageSeq covers sub-agent/title requests the executor-gated usage prop
-  // never reflects, and usageRefreshKey keeps ticking for providers whose
-  // events lack a seq. Throttled to once per second.
-  useEffect(() => {
-    if (!usageRefreshKey && !usageSeq) return;
-    const now = Date.now();
-    if (now - lastRefreshTime.current >= 1000) {
-      lastRefreshTime.current = now;
-      void refresh();
-    }
-  }, [usageRefreshKey, usageSeq, refresh]);
-
-  const usedTokens = context?.used && context.used > 0 ? context.used : info?.usedTokens ?? 0;
-  const windowTokens = context?.window && context.window > 0 ? context.window : info?.windowTokens ?? 0;
+  const usedTokens = context?.used ?? info?.usedTokens ?? 0;
+  const windowTokens = context?.window ?? info?.windowTokens ?? 0;
   // Prefer live usage props (updated in real-time by the reducer during streaming)
-  // over the async-fetched info snapshot (only refreshed on turn_done). Multi-
+  // over the throttled async-fetched info snapshot. Multi-
   // attempt stream recovery reports billable aggregates on prompt/completion
   // and latest-attempt shape on Context* — use the latter for turn breakdown.
   const turnBreakdown = liveTurnUsageBreakdown(usage, info);
   const promptTokens = turnBreakdown.promptTokens;
   const completionTokens = turnBreakdown.completionTokens;
-  const totalTokens = info?.totalTokens && info.totalTokens > 0
-    ? info.totalTokens
-    : sessionTokens && sessionTokens > 0
-      ? sessionTokens
-      : usage?.totalTokens && usage.totalTokens > 0
-        ? usage.totalTokens
-        : promptTokens + completionTokens;
+  const totalTokens = sessionTokens ?? context?.sessionTokens ?? info?.totalTokens ?? usage?.totalTokens ?? (promptTokens + completionTokens);
   const reasoningTokens = turnBreakdown.reasoningTokens;
   // Session-cumulative cache tokens for the top summary: all-sources telemetry
   // first (matching the session cost and per-source rows in this panel — the
@@ -509,7 +434,7 @@ export function ContextPanel({
     ...changedFiles.map((file) => file.latestTime ?? 0),
   ].filter((time) => time > 0);
   const derivedElapsed = eventTimes.length > 1 ? Math.max(...eventTimes) - Math.min(...eventTimes) : 0;
-  const elapsed = info?.elapsedMs && info.elapsedMs > 0 ? info.elapsedMs : derivedElapsed;
+  const elapsed = runtimeMs > 0 ? runtimeMs : derivedElapsed;
   const derivedRequestCount = Math.max(readFiles.length + changedFiles.length, 0);
   const requestCount = info?.requestCount && info.requestCount > 0 ? info.requestCount : derivedRequestCount;
   const windowStatus = contextWindowStatus(rawUsagePct, compactPct);
@@ -636,6 +561,9 @@ export function ContextPanel({
               </div>
             </div><ContextBudgetCard budget={resolveContextBudget(context, info)} t={t} />
           </section>
+          <Suspense fallback={null}>
+            <McpListLayers items={items} t={t} />
+          </Suspense>
           <section className="context-panel__section context-panel__session-section">
             <SectionHeading title={t("context.sessionMetrics")} />
             <div className="context-panel__session-metrics">

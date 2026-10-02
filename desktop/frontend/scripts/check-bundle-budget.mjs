@@ -23,7 +23,7 @@ function formatKiB(bytes) {
 
 function assertBudget(label, actual, budget) {
   if (actual > budget) {
-    throw new Error(`${label} is ${formatKiB(actual)}; budget is ${formatKiB(budget)}`);
+    throw new Error(`${label} is ${formatKiB(actual)} (${actual} B); budget is ${formatKiB(budget)} (${Math.floor(budget)} B)`);
   }
   process.stdout.write(`  PASS  ${label}: ${formatKiB(actual)} / ${formatKiB(budget)}\n`);
 }
@@ -94,7 +94,120 @@ console.log("\nbundle budgets");
 // its filtered count matches the assistant Sources panel. The measured build
 // is 431.509 KiB gzip; keep 0.1 KiB of explicit headroom for hash/toolchain
 // drift instead of relying on a rounded equality.
-const initialJSBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 431.6 : 431.6;
+// Remote onboarding [0.5/3] adds project-group and credential-chain wiring on
+// top of the lazy wizard. Exact-turn routing, the extracted event-gap
+// projector, checkpoint resets, and the navigation surface transaction bring
+// the current main-v2 path to 437.36 KiB gzip.
+// The full remote-session surface adds the lazy transcript bridge and tab
+// lifecycle on top of [0.5/3]. Keep the measured stack's narrow ratchet.
+// Remote approval hardening adds authoritative composer-profile hydration,
+// scoped rewind dispatch, and attachment/inbox fences to the always-mounted
+// remote hook. The measured production path is 438.38 KiB gzip after keeping
+// the integration modules below repolint's ownership ceilings; retain 0.12 KiB
+// toolchain headroom with a bounded 1.4 KiB ratchet.
+// Remote status isolation keeps the always-mounted status bar on the active
+// remote transcript and routes job cancellation to that host. Parsers and
+// retry policy remain lazy; the measured selector adds under 0.1 KiB gzip.
+// Remote runtime parity adds scoped approvals, status-only reconciliation,
+// session quality-floor routing, dropped-frame reconciliation, and remote
+// runtime-command dispatch. The measured initial path is 439.60 KiB;
+// retain 0.10 KiB of bounded toolchain headroom.
+// Closing the remaining review gaps adds generation-fenced hydration plus
+// remote-only tool payload, Todo, and terminal isolation. The measured path is
+// 439.74 KiB; retain 0.06 KiB of headroom with a 0.1 KiB ratchet.
+// The final remote-runtime parity pass adds remote run-strip telemetry,
+// explicit session verbs, and specialized plan decisions. The measured path
+// is 440.02 KiB. The current main-v2 turn-event, finish-protocol, and session
+// repair runtime then moves the combined path to 445.097 KiB; retain 0.103 KiB
+// of bounded build/toolchain headroom.
+// Atomic remote profile changes, exact approval draining, and generation-safe
+// history handoff bring the measured path to 445.228 KiB. Retain 0.072 KiB of
+// headroom with the smallest existing decimal ratchet.
+// Direct pending-prompt recovery and authoritative remote Goal state bring the
+// measured path to 445.473 KiB. Retain 0.027 KiB of bounded headroom.
+// Restored remote shells now activate their backend session immediately and
+// keep disconnected state out of the mounted surface. The merged production
+// path measures 445.614 KiB; retain 0.086 KiB of bounded build/toolchain
+// headroom with the smallest existing decimal ratchet.
+// Runtime-aware Todo presentation plus exact-tab continuation adds 0.3 KiB gzip
+// to the always-mounted footer path. Keep the state/routing guard with a narrow
+// ratchet rather than showing idle restored work as actively running. The
+// combined path measures 445.9 KiB; retain 0.1 KiB of toolchain headroom.
+// Transcript surface ownership and the token-fenced unloaded-question commit
+// move the exact main-v2 baseline from 445.865 to 447.587 KiB gzip (+0.39%).
+// The final 0.266 KiB retains jump ownership through paint-ready instead of
+// allowing a native scrollend to release it. Keep only 0.213 KiB headroom;
+// native validation hosts and test fixtures stay outside the production graph.
+// Cross-platform shell inventory, current-session vs after-reload rows,
+// manual repair guidance, and exact download-host allowlisting move the merged
+// path from 448.692 to 449.758 KiB (+1.066 KiB). Retain 0.142 KiB of bounded
+// build/toolchain headroom.
+// The reader transaction contract (geometry revisions, generation-fenced
+// writer requests, gesture travel proof, stabilized-shrink extent acceptance,
+// and the blank-rebound prepaint lane) adds a measured 3.978 KiB gzip on the
+// merged main-v2 baseline. MCP elicitation and the inline Apps lifecycle remain
+// on that startup graph; the combined path measures 455.0 KiB. Retain 0.2 KiB
+// of bounded build/toolchain headroom.
+// Generic elicitation validation adds field-specific localized accessibility
+// copy to the English startup dictionary. The interaction code and CSS remain
+// lazy; the measured path is 455.437 KiB. Retain 0.163 KiB of headroom.
+// Stream-failure visibility (#9560) adds the last-discard reason and one
+// terminal-notice dedupe flag, while provider no_proxy copy now states the
+// custom-proxy precedence. The merged path measures 455.9 KiB; retain 0.1 KiB
+// of bounded build/toolchain headroom.
+// Exhausted tail repair now releases ownership so jump-bottom remains usable
+// after a stranded native WebView extent. The WebView2 reachable-tail clamp
+// then absorbs a second post-quiet extent without an unbounded write loop.
+// The combined path measures 456.316 KiB; retain 0.084 KiB with the smallest
+// one-decimal ratchet.
+// The generation-bound history-prepend lease adds stable-key reader anchoring,
+// full mounted coverage, and one final arbiter-owned correction. The measured
+// path is 457.406 KiB after extracting the lease owner to satisfy repolint.
+// Latest-base transcript settle ownership measures 457.523 KiB with this UX.
+// Isolated conversation forks and their extracted browser mock adapter bring
+// the combined tree to 458.158 KiB; completion uncertainty adds a terminal
+// outcome and notice without exposing evaluator audits to the frontend,
+// measuring 458.287 KiB gzip.
+// Transactional Ask resolution and authoritative rejected-submit recovery add
+// 0.3 KiB gzip to the initial controller path. Retain the exact turn fence,
+// bounded ListTabs retry, and stale-prompt guard.
+// Session-catalog repair presentation stays in the lazy project-tree chunk;
+// compact shared helpers keep the combined initial path within the same gate.
+// Merge-Back adds identity-bound inspection, navigation, and retained-recovery
+// orchestration on top. The merged stable build measures 461.338 KiB and the
+// test channel measures 461.323 KiB. Deferring selection ownership until a
+// real range exists (#9703/#9711) and adding the session takeover banners
+// move the combined path to 462.2 KiB. Local spectator reclaim adds the
+// desktop-vs-remote command branch. Sticky Context's session-scoped file chips
+// bring the merged stable path to 462.587 KiB. Windows' embedded build metadata
+// lands just above the rounded 462.6 KiB boundary; retain one cross-platform
+// decimal step without widening any chunk or raw gate.
+// Reading the applied item-list transform (instead of the remembered offset)
+// keeps the reader/anchor visual guards from compounding under reduced-motion
+// WebView2; the merged path measures 462.827 KiB. Retain one decimal step.
+// Generation-bound native-thumb transactions and the rebased custom-scrollbar
+// drag add 0.3 KiB gzip; the merged path measures 463.102 KiB.
+// Absorbing content-preserving block-window prepends into the active reader
+// transaction adds 0.2 KiB gzip on top; the merged path measures 463.292 KiB,
+// 8 bytes under the next decimal. Retain one cross-platform decimal step.
+// The subagent outcome envelope, partial-state card, and history hydration add
+// 0.5 KiB gzip on the initial path. The model-capability resolver and its
+// read-only provider badges add a measured 0.2 KiB including gzip/toolchain
+// rounding. The integrated management shell, image capability controls, and
+// upstream updater refresh measure 465.4 KiB gzip (base: 464.7 KiB).
+// Keep the next decimal ceiling and leave feature editors lazy.
+// Durable protocol recovery controls and search-source status add 1.2 KiB
+// over the same-environment main-v2 build (465.4 -> 466.6 KiB gzip).
+// Keep one decimal of cross-platform headroom for this measured shell change.
+// Integrating main-v2 rich-link menus measures 466.905 KiB combined.
+// The AskCard session-draft wiring adds a bounded 30-byte gzip drift on the
+// initial route. The session-runtime ordering fence adds 56 bytes and
+// cross-platform zlib rounding reaches the same startup path; retain the
+// explicit budget rather than failing on a rounded 467.0 KiB display value.
+// The latest main-v2 session-runtime fence and exact prompt protocol measure
+// 468.2 KiB here; retain a 0.1 KiB ceiling for platform zlib rounding.
+// Mainline provider/settings integration measures 469.230 KiB gzip.
+const initialJSBudgetKiB = 469.3;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -111,9 +224,18 @@ if (initialCSS.length > 0) {
 // Navigation overlay styles add a bounded 0.1 KiB to the deferred shell.
 // The cleaned source panel adds 0.1 KiB gzip to the deferred shell on top of
 // the retained-transcript navigation allowance; keep the ratchet explicit.
-// The boxed KaTeX WebKit fallback adds 30 bytes gzip; keep the allowance
-// narrow instead of letting a CSS rendering fix fail at a rounded boundary.
-assertBudget("deferred app-shell CSS gzip", appShellCSSGzip, 114.4 * 1024);
+// The navigation mask's stable composer footprint and remote tab/surface
+// states bring the merged shell to roughly 115.7 KiB gzip.
+// The one-row model configuration list, responsive stacking, Automation's
+// shared title-safe shell, and the shared harness decision surface measure
+// 116.9 KiB gzip while reusing existing layout primitives. Retain a bounded
+// 0.1 KiB headroom ratchet.
+// Workbench welcome and recovery styles measure 122869 B gzip on main-v2.
+// Turn result styles add 388 B after removing obsolete metrics (123257 B).
+// The dock launcher, tab container and tab picker add ~0.6 KiB (the ported
+// card, branch switcher, tab strip, add menu, empty-state picker and the
+// spacer that starts the panel below the topic bar).
+assertBudget("deferred app-shell CSS gzip", appShellCSSGzip, 121.2 * 1024);
 if (localeChunks.length !== 2) {
   throw new Error(`expected 2 on-demand Chinese locale chunks, found ${localeChunks.length}`);
 }
@@ -140,7 +262,59 @@ for (const path of localeChunks) {
   // connection, fallback, and legacy-state copy while removing protocol
   // choices from the primary UI; keep that complete guidance with a bounded
   // 0.4–0.5 KiB locale-only ratchet.
-  const budget = name.startsWith("zh-TW-") ? 57.2 * 1024 : 56.5 * 1024;
+  // Git-Bash installation guidance adds localized copy across dialects.
+  // MCP elicitation adds fourteen short labels per locale (~40 B gzip).
+  // Generic schema validation adds complete field-error, privacy, and safe-
+  // fallback copy. Measured chunks are 58.574 KiB zh and 59.368 KiB zh-TW;
+  // retain roughly 0.13 KiB of platform headroom for each.
+  // Stream-failure diagnostics add five strings per dialect. Together with the
+  // reachable-tail recovery copy, the merged chunks measure 58.923 KiB zh and
+  // 59.710 KiB zh-TW. The isolated-fork guidance brings the measured chunks
+  // to 59.1 KiB zh and 59.9 KiB zh-TW; retain a narrow one-decimal ratchet.
+  // Merge-Back lifecycle and recovery guidance measure 59.819 KiB zh and
+  // 60.612 KiB zh-TW; retain only the next one-decimal ceiling for each.
+  // The retained-recovery receipt and copy action move zh to 59.911 KiB;
+  // session-catalog recovery guidance on the merged base moves zh-TW to
+  // 60.757 KiB; retain only its exact one-decimal ceiling.
+  // Session takeover adds ~20 locale keys per dialect (banners, dialog,
+  // reclaim), while Sticky Context adds file-state and limit diagnostics. The
+  // merged stable chunks measure 60.395 KiB zh and 61.232 KiB zh-TW; retain
+  // only the next one-decimal ceiling for each dialect.
+  // The outcome card adds one short localized status label per dialect. CI's
+  // Windows zlib measured zh at 60.4 KiB exactly; capability-status copy adds
+  // a small 0.1 KiB ratchet, so retain the next decimal ceiling rather than
+  // dropping the unknown-state explanation.
+  // Image input mode, provenance and unknown-state guidance measure 60.724 KiB
+  // zh and 61.570 KiB zh-TW. Keep the next decimal ceiling per locale.
+  // Protocol recovery and source-availability copy measure 60.927 KiB zh
+  // and 61.789 KiB zh-TW (base: 60.8 / 61.6 rounded).
+  // Rich-link action copy on the current base brings these to
+  // 61.027/61.881 KiB; retain bounded cross-platform headroom.
+  // Recovery retry copy reaches the rounded 61.1 KiB boundary on Node/zlib
+  // toolchains; keep the next one-decimal ceiling for cross-platform CI.
+  // The #9889/#9890 series adds recovery-wait, dialog-failure, and stall copy:
+  // zh-TW measures 63492 B (62.004 KiB) with the four PRs merged together.
+  // Integrated settings and ownership copy measures 61.415 / 62.212 KiB.
+  // Session-log head versions (head kinds, current/covered wording, and the
+  // three head notices) measure 61.7 / 62.4 KiB; keep the next one-decimal
+  // ceiling for cross-platform CI.
+  // Search assignment copy adds 239 / 231 B over main-v2 (63147 / 63920 B).
+  // Measured result: 63386 / 64151 B; retain bounded cross-platform headroom.
+  // Saved/pending/apply-failure guidance adds 233 / 245 B: 63619 / 64396 B
+  // with gzip level 9. Keep the next decimal ceiling for these four keys.
+  // Session recovery guidance adds 173 / 156 B over main-v2, measuring
+  // 62.173 / 62.887 KiB. Keep only the next one-decimal ceiling.
+  // Combined recovery and model-application copy measures 63791 / 64557 B.
+  // Turn result copy adds 554 / 566 B to the latest-base chunks, measuring
+  // 64219 / 64964 B with recovery guidance included. Round to the next tenth.
+  // Combined turn-result and model-application copy measures 64342 / 65119 B.
+  // Runtime/receipt confirmation copy adds 89 / 99 B to the integrated
+  // turn-result base (64219 / 64964 B). Measured: 64308 / 65063 B.
+  // Read-pause copy merges on top of that base: the combined chunks measure
+  // 64606 / 65349 B, so both dialect ceilings ratchet to the next tenth.
+  // Model-application copy on the read-pause base measures 64734 / 65499 B,
+  // adding 128 / 150 B. Retain only the next one-decimal ceiling.
+  const budget = name.startsWith("zh-TW-") ? 64.0 * 1024 : 63.3 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 
@@ -153,9 +327,240 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // KiB and test from 2346.2 to 2348.8 KiB; the pinned heading adds 0.5 KiB raw
 // (0.021%). The workspace panel rework (change-row hover/revert, status badges,
 // More menu, completion summary) makes the latest-base merge 2353.1 KiB in
-// production and 2358.3 KiB in test: about 9.0 KiB (0.38%) over main-v2's
-// channel gates. Retain that attributable UI capacity with 0.1 KiB of build-SHA
-// headroom without widening the gzip or largest-chunk exceptions.
-const rawInitialBudgetKiB = process.env.REASONIX_CHANNEL === "test" ? 2_358.4 : 2_353.2;
+// production and test channels both measure 2357.92 KiB after project-group
+// wiring. Exact-turn routing, checkpoint resets, and failure-atomic navigation
+// bring the current main-v2 path to 2379.22 KiB. The remote approval
+// fences, extracted ownership modules, and remote status-bar isolation bring
+// the measured initial payload to 2380.9 KiB; retain 0.1 KiB of bounded
+// raw/toolchain headroom. Scoped remote approvals, status reconciliation, and
+// runtime command dispatch bring the measured payload to 2382.9 KiB. The
+// remaining review fences measure 2383.2 KiB; retain 0.1 KiB of headroom.
+// Final remote-runtime parity measures 2384.4 KiB raw. The current main-v2
+// runtime additions bring the combined path to 2404.364 KiB. The final merged
+// restored-shell activation and disconnected-state revival path measures
+// 2404.898 KiB; retain 0.102 KiB of bounded headroom alongside the gzip
+// ratchet above.
+// Runtime-aware Todo status and exact-tab continuation then add to the same
+// initial path. The combined payload measures 2406.2 KiB; retain 0.1 KiB of
+// raw/toolchain headroom for both owners.
+// The same transcript transaction measures 2413.012 KiB raw (+0.28%) against
+// the 2406.204 KiB baseline. Retain 0.188 KiB of bounded headroom.
+// The notification-volume control adds one persisted master gain, per-source
+// loudness trims, and its accessible Settings surface. Current main-v2 moves
+// from 2413.183 to 2414.879 KiB raw (+1.696 KiB); retain 0.121 KiB of bounded
+// headroom.
+// Owner-lifecycle reasoning disclosure, pre-paint tail pinning, and the live
+// footer growth floor then add 2.390 KiB after extracting ownership modules
+// below repolint's source ceilings. Lifecycle fencing adds 0.258 KiB; the
+// combined path measures 2417.526 KiB. Retain 0.074 KiB while preventing
+// phase-boundary reverse flashes and cross-surface floor leaks.
+// The same shell-support surface moves the merged path from 2417.526 to
+// 2422.371 KiB raw (+4.845 KiB). Retain 0.129 KiB of bounded headroom without
+// widening unrelated chunk ceilings.
+// The WebView2 extent rebound prepaint handoff adds 0.204 KiB raw so a native
+// scroll delivery can restore mounted coverage before the next visible frame.
+// Retain 0.096 KiB of headroom without widening gzip or chunk ceilings.
+// The reader transaction contract then adds a measured 15.317 KiB raw on the
+// merged main-v2 baseline (including its own prepaint port). MCP elicitation
+// and Apps add their bounded payload on the shared graph; the combined path
+// measures 2442.6 KiB. Retain 0.4 KiB of bounded build/toolchain headroom.
+// The browser MCP interaction preview adds 0.6 KiB of route wiring while its
+// 0.75 KiB form fixture and lifecycle remain lazy. The combined path measures
+// 2443.2 KiB; retain 0.1 KiB of bounded build/toolchain headroom.
+// Generic field copy adds 1.134 KiB raw to the startup dictionary; all schema
+// parsing, rendering, and CSS remain lazy. The measured path is 2444.334 KiB;
+// retain 0.166 KiB of bounded build/toolchain headroom.
+// The off-flow composer measurement mirror adds 0.472 KiB raw while removing
+// live-textarea layout mutation. The merged path measures 2444.806 KiB; retain
+// 0.194 KiB of bounded toolchain headroom without widening gzip/chunk gates.
+// Stream-failure visibility and corrected proxy guidance bring the merged path
+// to 2446.6 KiB; retain the smallest existing decimal ratchet.
+// The stranded-tail recovery transition plus the WebView2 reachable-tail clamp
+// bring the measured initial payload to 2447.953 KiB. Retain 0.047 KiB with
+// the smallest one-decimal ratchet.
+// The extracted history-prepend owner adds 3.953 KiB of bounded transaction
+// state and stable-key coverage checks. Together with the compact
+// session-version host, they measure 2452.7 KiB; the recovery coordinator and
+// dialog remain lazy. Completion uncertainty adds a distinct terminal notice
+// and localized startup copy without collapsing into recovery-paused UX.
+// 2454.719 KiB on the release toolchain. Completion uncertainty brings the
+// final merged payload to 2455.154 KiB.
+// Ask turn fencing, rejection reconciliation, and the localized submit-failure
+// notice measure 2456.044 KiB raw; retain 0.056 KiB of one-decimal headroom.
+// Merge-Back's startup ownership and failure-atomic navigation fence add the
+// remaining bounded payload. The retained recovery receipt makes the stable
+// path 2465.105 KiB raw; the merged test channel measures 2464.979 KiB.
+// Session takeover banners and #9703/#9711's provisional-selection handoff
+// combine with Sticky Context's pinned-file state at 2469.125 KiB raw on the
+// merged stable path. Retain only the next one-decimal ceiling.
+// The passive reader-anchor lease for delayed WebView2 range commits measures
+// 2469.347 KiB raw (+0.222 KiB, +0.009%). Retain only the next one-decimal
+// ceiling; gzip and largest-chunk budgets remain unchanged.
+// Reading the applied item-list transform for the reader/anchor visual guards
+// adds 0.5 KiB raw on top; the merged path measures 2469.815 KiB.
+// The scrollbar generation fence and drag rebase add 1.1 KiB raw; the merged
+// path measures 2470.932 KiB.
+// The reader-transaction offset absorption adds 0.8 KiB raw on top; the merged
+// path measures 2471.741 KiB. Controller-owned management dispositions and
+// optimistic management settlement add 0.6 KiB raw; retain the smallest
+// one-decimal ceiling with bounded headroom.
+// The outcome card and history hydration add 2.3 KiB raw on the initial path
+// (2474.0 KiB measured in CI). Keep this narrowly attributable ratchet rather
+// than removing persisted-result visibility or changing chunk ownership.
+// On the current main-v2 base, the combined measured path is 2474.6 KiB;
+// the model-capability helper and localized status copy add 0.9 KiB; retain
+// the smallest bounded cross-platform ceiling.
+// Retain the upstream updater ceiling and independent chunk gates.
+// Recovery controls add 3.6 KiB raw over the measured 2480.9 KiB base;
+// current payload is 2484.509 KiB. Retain only bounded toolchain headroom.
+// With the current-base rich-link menus: 2485.715 KiB raw.
+// The shared harness decision surface adds a bounded startup stylesheet
+// payload. The current base plus exact prompt identity and stale-card recovery
+// measure 2496.4 KiB locally; retain the smallest bounded ceiling.
+// The context truncation-rescue notice and its three locale strings measure
+// 2496.6 KiB; retain the smallest bounded ceiling.
+// Deferred presentation measured 2381.4 KiB before first-materialization
+// preloading. Mainline Stop brings the payload to 2381.8 KiB;
+// Mainline recovery UI brings it to 2384.5 KiB, and tool elapsed/liveness
+// UI to 2384.9 KiB. Retain 0.2 KiB headroom.
+// Mainline provider/settings integration measures 2398.2 KiB in the
+// extracted shell. Retain the same bounded 0.2 KiB build headroom.
+// The head-version dialog copy and its covered-version cleanup control
+// measure 2399.2 KiB; retain the same bounded 0.2 KiB build headroom.
+// Search-assignment bridge and metadata add 1.0 KiB over the measured
+// main-v2 baseline (2399.3 KiB); result 2400.3 KiB plus 0.2 KiB headroom.
+// Workbench welcome plus toolbar-refresh integration measures 2401.108 KiB
+// against the 2398.0 KiB base; retain only the next one-decimal ceiling.
+// Shared availability, visible recovery and retry controls measure 2407.215 KiB
+// (+6.107 KiB, 0.25% over the prior welcome head). Retain the next tenth.
+// Integrated model settings and bounded receipt mock measure 2468523 B
+// (2410.667 KiB); retain 0.2 KiB headroom on the combined startup payload.
+// Turn results add 12585 B (0.51%) over main-v2's 2464923 B: bounded receipt
+// projection, status presentation and view bindings. Result: 2477508 B.
+// Combined turn-result and model-settings startup payload is 2481108 B
+// (2422.957 KiB), retaining the same bounded 0.2 KiB build headroom.
+// The integrated turn-result base measures 2477492 B. Runtime state and
+// session-bound receipt confirmation and its mock session contract add
+// 5944 B (0.240%): 2483436 B total.
+// Durable session isolation and missed-completion reconciliation add 1232 B
+// (0.050% over that head), measuring 2484668 B total.
+// The read-status line, read-pause card and their host wiring merge on top and
+// measure 2488853 B. Keep the next tenth; gzip, CSS, and chunk limits unchanged.
+// Combined model-settings and read-evidence integration measures 2492541 B,
+// adding 3688 B (0.148%) over the base. Retain the next one-decimal ceiling.
+// SessionRef bridge methods, active-row identity and the mock hydration event
+// contract measure 2439.8 KiB. Extracting exact-tab mock rebinding from the
+// startup bridge measures 2439.6 KiB; retain 0.3 KiB bounded toolchain headroom.
+// History preparation and cancellation across startup and paging add 884 B
+// (0.035%) to the 2498286 B base. Measured 2499170 B; retain 0.1 KiB headroom.
+// Independent-session identity, organization CAS and unread/lifecycle guards
+// measure 2443.0 KiB against the same-toolchain main-v2 base of 2440.7 KiB
+// (+2.3 KiB, 0.095%). Retain one tenth; all other limits stay unchanged.
+// Complete export execution/rendering remains lazy; only bounded progress,
+// lifecycle observation, and cross-page tool-state hydration enter startup.
+// A full 40-character identity measures 2064513 B in the browser build and
+// 2064459 B in Electron, versus 2064077 B on current main-v2 (+436 B, 0.021%).
+// Retain the smallest one-decimal ceiling; all other limits stay unchanged.
+// Reasoning capability recovery copy moves the same-toolchain local build from
+// 2064327 B to 2064614 B (+287 B, 0.014%). The stable build with a full source
+// identity measures 2064746 B; retain the next one-decimal ceiling.
+// The React error-family field adds 177 B to the same production build. The
+// measured 2064923 B payload keeps the existing gzip, CSS, and chunk limits.
+// Approval outcome recovery measures 2065149 B on current main-v2, versus the
+// 2015.6 KiB base. Retain 0.15 KiB headroom; all other limits stay unchanged.
+// Live-default draft fencing and frozen-model recovery measure 2066040 B
+// (2017.617 KiB). Retain 0.183 KiB; gzip, chunk, CSS, and locale gates stay fixed.
+// Session-id migration and cross-client takeover measure 2073794 B merged onto
+// that main-v2 payload, 7754 B (0.375%) over it. The startup-path growth is
+// attributable to this branch's remote session identity work: the remote
+// telemetry and status modules become static imports of useRemoteSession (they
+// leave their lazily loaded surface chunk), plus the canonical session-id
+// plumbing, the spectator reconcile loop and its ownership classification, the
+// pre-activation history prime, the rebased optimistic-submission settlement,
+// and the project tree's canonical row identity. The CI Linux stable build
+// measures 2073980 B (2025.4 KiB), 186 B above the same-toolchain macOS build;
+// the ceiling follows the CI producer. Retain 0.13 KiB headroom at the next
+// one-decimal ceiling; gzip, CSS, and chunk limits are unchanged.
+// Combining that migration with restored historical-tab preparation measures
+// 2074127 B locally. Preserve the measured 186 B Linux producer difference
+// above (2074313 B combined), with 0.11 KiB headroom. Historical preparation
+// remains lazy; compressed, chunk, CSS, and locale limits stay unchanged.
+// Tool-result identity coalescing and authoritative lazy-content projection
+// measure 2074766 B locally (+639 B over the preceding macOS measurement).
+// Preserve the established 186 B Linux producer difference: 2074952 B, with
+// the next one-decimal ceiling. Gzip, chunk, CSS, locale, and resident-history
+// budgets remain unchanged.
+// Conflict-preserving tool identity, anchored local rows, evidence-aware state
+// handoff, and idempotent projection replay measure 2081572 B locally (+6806 B,
+// 0.328%). The durable-user/live-turn anchor measures 2081799 B in the generic
+// Linux producer and 2081943 B in desktop-prepare. Retain 53 B of headroom over
+// the larger producer at the next decimal; compressed, chunk, CSS, locale, and
+// resident-history budgets remain fixed.
+// Native window ownership, stopping-state handling and bounded transcript crash
+// context measure 2075238 B locally (+1111 B, 0.054%). Preserve the same 186 B
+// Linux producer difference (2075424 B) and retain the next one-decimal ceiling;
+// gzip, chunk, CSS, and locale limits remain unchanged.
+// Integrating main-v2's HTML delivery and layout changes measures 2083186 B
+// locally (+264 B). Preserve the observed 186 B desktop Linux producer
+// difference (2083372 B) at the next decimal. Compressed, chunk, CSS, locale,
+// and resident-history budgets remain fixed.
+// Manual compaction lifecycle visibility and recovery add one keyed operation
+// projection, monotonic history/runtime reconciliation, and lazy persisted-row
+// decoding. Integrated with native window ownership, the measured payload is
+// 2084776 B (+9538 B, 0.46% over that base). Preserve the measured 186 B Linux
+// producer difference (2084962 B) and use the next one-decimal ceiling; gzip,
+// per-chunk, CSS, and locale gates remain unchanged.
+// Integrating browser deliverables and delayed loading feedback, then sharing
+// maintenance lookup/classification logic, measures 2084836 B locally and
+// 2084968 B in the Linux Electron producer, 2 B above the previous rounded
+// ceiling. Retain the next one-decimal ceiling (100 B headroom); all other
+// gates remain unchanged.
+// Combining maintenance with conflict-preserving tool projection measures
+// 2092520 B locally (+7684 B over main-v2, 0.37%). Preserve the established
+// 186 B Linux producer difference (2092706 B) at the next decimal; other
+// payload and resident-window budgets remain unchanged.
+// Resource-pressure reclamation and background update isolation add 1551 B
+// (0.074%) over the same-toolchain main-v2 build: 2094017 B versus 2092466 B.
+// Preserve the measured 186 B Linux producer difference at the next decimal;
+// compressed, chunk, CSS, locale, and resident-history limits stay unchanged.
+// Localized sandbox runtime, status, and write-scope labels add 1873 B (0.089%)
+// to the local startup path: 2095890 B versus 2094017 B. Retain the next
+// one-decimal ceiling; compressed, chunk, CSS, and locale limits stay fixed.
+// Complete turn navigation keeps its directory and target coordinator lazy.
+// On the localized-sandbox base, shared request fencing, Follow invalidation,
+// and local/remote callbacks measure 2098700 B (+2810 B, 0.134%). Retain the
+// established 186 B producer difference (2098886 B) at the next decimal;
+// compressed, chunk, CSS, locale, and body-residency budgets stay unchanged.
+// Archive management copy and viewport-bounded confirmation add 387 B to the
+// local startup path: 2099087 B versus 2098700 B on main-v2. Preserve the
+// measured 186 B Linux producer difference (2099273 B) at the next one-decimal
+// ceiling; all other bundle budgets remain unchanged.
+// Immutable list snapshots and their extracted presentation/expansion owners
+// add 698 B (0.033%) on the preceding base. Typed compaction receipts and their
+// local notice path measure 2099980 B on main-v2 (+893 B / 0.043%). The combined
+// local Node 26 build measures 2100846 B. Preserve the established 186 B Linux
+// producer difference at the next decimal (2051.8 KiB); compressed, chunk, CSS,
+// locale, and resident-history gates stay fixed.
+// Turn identity and settlement ordering measure 2102574 B versus 2100795 B
+// on the same base toolchain (+1779 B, 0.085%). Preserve the established 186 B
+// Linux producer difference at the next decimal; all other gates stay fixed.
+// Manual compaction admission feedback and its running summary hint measure
+// 2103022 B in the Linux Electron producer. Retain 69 B at the next one-decimal
+// ceiling; compressed, chunk, CSS, locale, and resident-history gates stay fixed.
+// Settled launch receipts and output-reader history states add 104 B over the
+// same-toolchain base (2102940 B versus 2102836 B). The Linux producer measures
+// 2103126 B; retain the next one-decimal ceiling with all other gates fixed.
+// Eager-session recovery adds 88 B with the same dependencies and embedded
+// commit: 2103296 B versus 2103208 B on main-v2. The latter already exceeds
+// the old gate by 15 B. Round to the next decimal; retain every other gate.
+// Source-bound history RPCs, synchronous navigation cancellation, and cold
+// startup hydration remain in the eager boundary while history conversion and
+// native paging stay lazy. The Linux producer measured 2106070 B; round the
+// gate to the smallest passing 2056.8 KiB ceiling and retain every compressed,
+// chunk, CSS, and residency budget.
+// Ready-event cold-history joining adds 163 B locally (2106326 B versus
+// 2106163 B); retain the producer margin and round to the smallest 2057.2 KiB
+// ceiling that covers the same Linux build. Other bundle budgets stay fixed.
+const rawInitialBudgetKiB = 2_057.2;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

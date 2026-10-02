@@ -78,7 +78,7 @@ func TestSubagentEffortRefHonorsPrecedence(t *testing.T) {
 		Name:   "review",
 		RunAs:  skill.RunSubagent,
 		Effort: "low",
-	})
+	}, cfg.Agent.SubagentEffort)
 	if got != "max" {
 		t.Fatalf("per-skill effort config should override skill frontmatter and default, got %q", got)
 	}
@@ -87,12 +87,12 @@ func TestSubagentEffortRefHonorsPrecedence(t *testing.T) {
 		Name:   "custom",
 		RunAs:  skill.RunSubagent,
 		Effort: "medium",
-	})
+	}, cfg.Agent.SubagentEffort)
 	if got != "medium" {
 		t.Fatalf("skill frontmatter effort should override default config, got %q", got)
 	}
 
-	got = subagentEffortRef(cfg, skill.Skill{Name: "other", RunAs: skill.RunSubagent})
+	got = subagentEffortRef(cfg, skill.Skill{Name: "other", RunAs: skill.RunSubagent}, cfg.Agent.SubagentEffort)
 	if got != "high" {
 		t.Fatalf("default subagent effort = %q, want high", got)
 	}
@@ -102,7 +102,7 @@ func TestSubagentEffortRefAcceptsToolNameAliases(t *testing.T) {
 	cfg := config.Default()
 	cfg.Agent.SubagentEfforts = map[string]string{"security_review": "max"}
 
-	got := subagentEffortRef(cfg, skill.Skill{Name: "security-review", RunAs: skill.RunSubagent})
+	got := subagentEffortRef(cfg, skill.Skill{Name: "security-review", RunAs: skill.RunSubagent}, "")
 	if got != "max" {
 		t.Fatalf("security_review alias should configure security-review effort, got %q", got)
 	}
@@ -164,7 +164,7 @@ func TestSubagentSkillOptionsPreserveScheduledQuoteContext(t *testing.T) {
 			}
 		},
 	}
-	factory := newSubagentSkillOptionsFactory(config.AgentConfig{}, quoteCtx, nil, 0, 1, ablation.Set{}, nil, nil)
+	factory := newSubagentSkillOptionsFactory(config.AgentConfig{}, quoteCtx, nil, 0, 1, ablation.Set{}, nil, nil, nil)
 	opts := factory(context.Background(), 5, &provider.Pricing{CacheHit: 0.30, Input: 9, Output: 27, Currency: "CNY"}, 1_000_000, 1)
 	if opts.QuoteContext != quoteCtx {
 		t.Fatal("skill subagent did not retain the host QuoteContext")

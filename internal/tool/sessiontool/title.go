@@ -9,6 +9,7 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/store"
+	"reasonix/internal/tool"
 )
 
 // TitleChangedFunc projects a successful canonical title write into optional
@@ -20,6 +21,13 @@ type setSessionTitleTool struct {
 	sessionDir         string
 	currentSessionPath func() string
 	onTitleChanged     TitleChangedFunc
+	currentSessionID   func() string
+	writeEventTitle    func(context.Context, string) error
+}
+
+// NewSetSessionTitleEventTool writes through the final session event owner.
+func NewSetSessionTitleEventTool(currentSessionID func() string, write func(context.Context, string) error) *setSessionTitleTool {
+	return &setSessionTitleTool{currentSessionID: currentSessionID, writeEventTitle: write}
 }
 
 const setSessionTitleMaxRunes = 120
@@ -35,7 +43,7 @@ func NewSetSessionTitleTool(sessionDir string, currentSessionPath func() string,
 	}
 }
 
-func (t *setSessionTitleTool) Name() string   { return "set_session_title" }
+func (t *setSessionTitleTool) Name() string   { return tool.HostSetSessionTitle }
 func (t *setSessionTitleTool) ReadOnly() bool { return false }
 func (t *setSessionTitleTool) Description() string {
 	return "Set or clear the current conversation's saved title. Pass an empty title to fall back to the topic title or first-message preview. The host binds the current session; this tool cannot rename other sessions."
@@ -68,6 +76,22 @@ func (t *setSessionTitleTool) Execute(ctx context.Context, args json.RawMessage)
 	if params.Title == nil {
 		return "", fmt.Errorf("set_session_title: 'title' argument is required")
 	}
+	title := strings.TrimSpace(*params.Title)
+	if len([]rune(title)) > setSessionTitleMaxRunes {
+		return "", fmt.Errorf("set_session_title: title exceeds %d characters", setSessionTitleMaxRunes)
+	}
+	if t != nil && t.writeEventTitle != nil {
+		if t.currentSessionID == nil || strings.TrimSpace(t.currentSessionID()) == "" {
+			return "", fmt.Errorf("set_session_title: current session is unavailable")
+		}
+		if err := t.writeEventTitle(ctx, title); err != nil {
+			return "", fmt.Errorf("set_session_title: %w", err)
+		}
+		if title == "" {
+			return "Cleared the current conversation title.", nil
+		}
+		return fmt.Sprintf("Set the current conversation title to %q.", title), nil
+	}
 	if t == nil || t.currentSessionPath == nil {
 		return "", fmt.Errorf("set_session_title: current session is unavailable")
 	}
@@ -80,10 +104,6 @@ func (t *setSessionTitleTool) Execute(ctx context.Context, args json.RawMessage)
 	}
 	if agent.IsCleanupPending(sessionPath) {
 		return "", fmt.Errorf("set_session_title: current session is pending cleanup")
-	}
-	title := strings.TrimSpace(*params.Title)
-	if len([]rune(title)) > setSessionTitleMaxRunes {
-		return "", fmt.Errorf("set_session_title: title exceeds %d characters", setSessionTitleMaxRunes)
 	}
 	if err := agent.RenameSession(sessionPath, title); err != nil {
 		return "", fmt.Errorf("set_session_title: %w", err)

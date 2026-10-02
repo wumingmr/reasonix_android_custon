@@ -23,6 +23,21 @@ func TestTryAcquireModeSharedIsNonBlocking(t *testing.T) {
 	second()
 }
 
+func TestExplicitLocalKeySerializesDifferentAccessPaths(t *testing.T) {
+	dir := t.TempDir()
+	first, err := TryAcquireModeWithKey(filepath.Join(dir, "first.lock"), "shared-identity", ModeExclusive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first()
+	if release, err := TryAcquireModeWithKey(filepath.Join(dir, "second.lock"), "shared-identity", ModeExclusive); !errors.Is(err, ErrHeld) {
+		if release != nil {
+			release()
+		}
+		t.Fatalf("second acquire error = %v, want ErrHeld", err)
+	}
+}
+
 func TestWaitingWriterBlocksNewLocalReaders(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.lock")
 	reader, err := AcquireMode(context.Background(), path, ModeShared)

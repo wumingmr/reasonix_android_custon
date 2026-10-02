@@ -13,17 +13,17 @@ import {
   activeSessionAncestorKeys,
   projectTreeTopicOpenRequest,
   projectTreeShouldSuppressOpenForRename,
+  projectTreeMigrateReadActivity,
   projectTreeReadActivityKey,
+  projectTreeSeedReadActivity,
   projectTreeTopicHasUnreadActivity,
   topicIsActive,
   topicStatusLabel,
   projectTreeTopicArchiveBlocked,
   projectTreeShouldRenderTopicActions,
   projectTreeTopicMetaLine,
-  arrangeClassicProjectTree,
+  arrangeWorkbenchTree,
   splitPinnedProjectTree,
-  classicTopicWindow,
-  projectTreeTopicHoverCardModel,
   projectTreeTopicMenuOffersPin,
   projectTreeDedupedExactTime,
   projectTreeShellSignature,
@@ -55,7 +55,7 @@ console.log("\nproject tree runtime sessions");
 eq(
   normalizeProjectTreeRuntimeSnapshot({ revision: 0, topics: null }),
   { revision: 0, topics: [] },
-  "runtime bridge normalizes a legacy/null Wails topic array",
+  "runtime bridge normalizes a legacy/null topic array",
 );
 
 const noTrashingTopics = new Set<string>();
@@ -112,8 +112,8 @@ const tree: ProjectNode[] = [
 
 eq(
   defaultExpandedProjectTreeKeys(tree),
-  [],
-  "without an active tab, no folders default to expanded",
+  ["global_folder"],
+  "without an active tab, the Global folder starts expanded so its history loads",
 );
 
 eq(
@@ -202,29 +202,81 @@ const completedTopic: ProjectNode = {
   root: "/repo",
   topicId: "topic-complete",
   lastActivityAt: 2000,
+  session: { hostId: "local", sessionId: "session-complete" },
+  resultSequence: 20,
+  turnsState: "ready",
 };
 const completedTopicKey = projectTreeReadActivityKey(completedTopic) ?? "";
+const legacyTopicKey = "project\u001f/repo\u001ftopic-complete";
+const legacyCompletedSessionKey = "session\u001flocal\u001fcomplete";
+const migratedReadActivity = projectTreeMigrateReadActivity({
+  [legacyCompletedSessionKey]: 0,
+  ["session\u001flocal\u001falready-read"]: 12,
+  [legacyTopicKey]: 2000,
+}, 1);
+eq(migratedReadActivity[legacyCompletedSessionKey], undefined, "read-state v2 removes a placeholder session zero baseline");
+eq(migratedReadActivity["session\u001flocal\u001falready-read"], 12, "read-state v2 preserves durable session read progress");
+eq(migratedReadActivity[legacyTopicKey], 2000, "read-state v2 preserves legacy topic read progress");
+eq(
+  projectTreeMigrateReadActivity({ [completedTopicKey]: 0 }, 2)[completedTopicKey],
+  0,
+  "read-state v2 migration runs only once so new-session zero baselines remain durable",
+);
+
+const zeroResultTopic = { ...completedTopic, resultSequence: 0 };
+const zeroResultKey = projectTreeReadActivityKey(zeroResultTopic) ?? "";
+const seededBeforeCompletion = projectTreeSeedReadActivity([zeroResultTopic], {});
+eq(seededBeforeCompletion[zeroResultKey], 0, "canonical sessions seed a zero result baseline before their first run completes");
+eq(
+  projectTreeTopicHasUnreadActivity(completedTopic, seededBeforeCompletion, "project", "/repo", "other-topic"),
+  true,
+  "the first background result after a zero baseline shows unread attention",
+);
+const seededHistorical = projectTreeSeedReadActivity([completedTopic], {});
+eq(
+  projectTreeTopicHasUnreadActivity(completedTopic, seededHistorical, "project", "/repo", "other-topic"),
+  false,
+  "historical results present on first observation seed as already read",
+);
+const pendingHistoricalTopic = { ...completedTopic, resultSequence: 0, turnsState: "pending" };
+const pendingHistorical = projectTreeSeedReadActivity([pendingHistoricalTopic], {});
+eq(
+  pendingHistorical[completedTopicKey],
+  undefined,
+  "pending catalog metadata does not persist a placeholder result baseline",
+);
+const rebuiltHistorical = projectTreeSeedReadActivity([completedTopic], pendingHistorical);
+eq(
+  rebuiltHistorical[completedTopicKey],
+  20,
+  "the first ready catalog projection seeds the durable historical result as read",
+);
+eq(
+  projectTreeTopicHasUnreadActivity(completedTopic, rebuiltHistorical, "project", "/repo", "other-topic"),
+  false,
+  "pending-to-ready catalog migration does not show historical results as unread",
+);
 
 eq(
-  projectTreeTopicHasUnreadActivity(completedTopic, { [completedTopicKey]: 1000 }, "project", "/repo", "other-topic"),
+  projectTreeTopicHasUnreadActivity(completedTopic, { [completedTopicKey]: 10 }, "project", "/repo", "other-topic"),
   true,
   "completed inactive topic with newer activity shows unread attention",
 );
 
 eq(
-  projectTreeTopicHasUnreadActivity(completedTopic, { [completedTopicKey]: 2000 }, "project", "/repo", "other-topic"),
+  projectTreeTopicHasUnreadActivity(completedTopic, { [completedTopicKey]: 20 }, "project", "/repo", "other-topic"),
   false,
   "completed topic stops showing unread attention once opened at its latest activity",
 );
 
 eq(
-  projectTreeTopicHasUnreadActivity(completedTopic, { [completedTopicKey]: 1000 }, "project", "/repo", "topic-complete"),
+  projectTreeTopicHasUnreadActivity(completedTopic, { [completedTopicKey]: 10 }, "project", "/repo", "topic-complete", "session-id:session-complete"),
   false,
   "active topic does not show unread attention",
 );
 
 eq(
-  projectTreeTopicHasUnreadActivity({ ...completedTopic, status: "streaming", running: true }, { [completedTopicKey]: 1000 }, "project", "/repo", "other-topic"),
+  projectTreeTopicHasUnreadActivity({ ...completedTopic, status: "streaming", running: true }, { [completedTopicKey]: 10 }, "project", "/repo", "other-topic"),
   false,
   "running topic keeps runtime status instead of completed-unread attention",
 );
@@ -237,24 +289,24 @@ eq(
   "unread key stays on the logical topic when the representative path changes",
 );
 eq(
-  projectTreeTopicHasUnreadActivity(relocatedTopic, { [relocatedKey]: 2000 }, "project", "/repo", "other-topic"),
+  projectTreeTopicHasUnreadActivity(relocatedTopic, { [relocatedKey]: 20 }, "project", "/repo", "other-topic"),
   false,
   "marking a topic read survives a later representative-path refresh",
 );
 eq(
   projectTreeTopicHasUnreadActivity(completedTopic, {}, "project", "/repo", "other-topic", undefined, 2000),
   false,
-  "activity at or before the first-seen baseline is not unread",
+  "a canonical session is initially seeded instead of treating history as unread",
 );
 eq(
-  projectTreeTopicHasUnreadActivity(completedTopic, {}, "project", "/repo", "other-topic", undefined, 1999),
-  true,
-  "activity newer than the first-seen baseline is unread",
+  projectTreeTopicHasUnreadActivity({ ...completedTopic, lastActivityAt: 999999 }, { [completedTopicKey]: 20 }, "project", "/repo", "other-topic"),
+  false,
+  "metadata activity does not re-arm a read canonical result",
 );
 eq(
   topicIsActive({ ...completedTopic, sessionPath: "/s/a.jsonl" }, "project", "/repo", "topic-complete", "/s/other.jsonl"),
-  true,
-  "logical topic stays active when the representative path is not the open file",
+  false,
+  "another canonical session cannot become active through a shared topic",
 );
 
 for (const status of ["thinking", "streaming", "waiting_confirmation", "background_job"] as const) {
@@ -311,31 +363,25 @@ eq(
 eq(
   projectTreeShouldRenderTopicActions(false, "workbench", false),
   true,
-  "read workbench topic renders hover actions",
+  "read workbench topic renders row actions",
 );
 
 eq(
-  projectTreeShouldRenderTopicActions(false, "classic", false),
-  true,
-  "read classic topic renders hover actions",
-);
-
-eq(
-  projectTreeShouldRenderTopicActions(false, "classic", true),
+  projectTreeShouldRenderTopicActions(false, "workbench", true),
   false,
-  "unread classic topic reserves the action column for unread attention",
+  "unread workbench topic reserves the action column for unread attention",
 );
 
 eq(
   projectTreeShouldRenderTopicActions(false, "creation", false),
   false,
-  "creation topic keeps hover actions disabled",
+  "creation topic keeps row actions disabled",
 );
 
 eq(
-  projectTreeShouldRenderTopicActions(true, "classic", false),
+  projectTreeShouldRenderTopicActions(true, "workbench", false),
   false,
-  "runtime session rows do not render topic hover actions",
+  "runtime session rows do not render topic actions",
 );
 
 eq(
@@ -398,9 +444,9 @@ eq(
   "expanded project folders can show the open-folder state only when children exist",
 );
 
-console.log("\nclassic project tree sorting");
+console.log("\nproject tree sorting");
 
-const classicTopic = (id: string, extra: Partial<ProjectNode> = {}): ProjectNode => ({
+const topicNode = (id: string, extra: Partial<ProjectNode> = {}): ProjectNode => ({
   key: `topic_${id}`,
   kind: "topic",
   label: id,
@@ -409,16 +455,16 @@ const classicTopic = (id: string, extra: Partial<ProjectNode> = {}): ProjectNode
   ...extra,
 });
 
-const classicTree: ProjectNode[] = [
+const sortTree: ProjectNode[] = [
   {
     key: "project_/repo/a",
     kind: "project",
     label: "a",
     root: "/repo/a",
     children: [
-      classicTopic("old", { lastActivityAt: 100 }),
-      classicTopic("newest", { lastActivityAt: 300 }),
-      classicTopic("blank", { createdAt: 200 }),
+      topicNode("old", { lastActivityAt: 100 }),
+      topicNode("newest", { lastActivityAt: 300 }),
+      topicNode("blank", { createdAt: 200 }),
     ],
   },
   {
@@ -426,18 +472,20 @@ const classicTree: ProjectNode[] = [
     kind: "project",
     label: "b",
     root: "/repo/b",
-    children: [classicTopic("only", { root: "/repo/b", lastActivityAt: 50 })],
+    children: [topicNode("only", { root: "/repo/b", lastActivityAt: 50 })],
   },
 ];
 
+// Creation mode is the surviving non-compact arrangement: project order, with
+// each folder's topics sorted by the stored sort mode.
 eq(
-  arrangeClassicProjectTree(classicTree, "updated").map((node) => (node.children ?? []).map((child) => child.topicId)),
+  arrangeWorkbenchTree(sortTree, "updated").map((node) => (node.children ?? []).map((child) => child.topicId)),
   [["newest", "blank", "old"], ["only"]],
-  "classic default sorts topics by last activity while keeping project order",
+  "project arrange sorts topics by last activity while keeping project order",
 );
 
 eq(
-  arrangeClassicProjectTree(
+  arrangeWorkbenchTree(
     [
       {
         key: "project_/repo/a",
@@ -445,19 +493,19 @@ eq(
         label: "a",
         root: "/repo/a",
         children: [
-          classicTopic("created-first", { createdAt: 100, lastActivityAt: 900 }),
-          classicTopic("created-last", { createdAt: 500, lastActivityAt: 600 }),
+          topicNode("created-first", { createdAt: 100, lastActivityAt: 900 }),
+          topicNode("created-last", { createdAt: 500, lastActivityAt: 600 }),
         ],
       },
     ],
     "created",
   ).map((node) => (node.children ?? []).map((child) => child.topicId)),
   [["created-last", "created-first"]],
-  "classic created mode sorts topics by creation time",
+  "created sort mode orders topics by creation time",
 );
 
 eq(
-  arrangeClassicProjectTree(
+  arrangeWorkbenchTree(
     [
       {
         key: "project_/repo/a",
@@ -465,18 +513,18 @@ eq(
         label: "a",
         root: "/repo/a",
         children: [
-          classicTopic("recent", { lastActivityAt: 900 }),
-          classicTopic("pinned-old", { lastActivityAt: 100, pinned: true }),
+          topicNode("recent", { lastActivityAt: 900 }),
+          topicNode("pinned-old", { lastActivityAt: 100, pinned: true }),
         ],
       },
     ],
     "updated",
   ).map((node) => (node.children ?? []).map((child) => child.topicId)),
   [["pinned-old", "recent"]],
-  "classic sorting keeps pinned topics above unpinned ones",
+  "topic sorting keeps pinned topics above unpinned ones",
 );
 
-const classicPinnedSections = splitPinnedProjectTree(
+const pinnedSections = splitPinnedProjectTree(
   [
     {
       key: "project_/repo/a",
@@ -484,8 +532,8 @@ const classicPinnedSections = splitPinnedProjectTree(
       label: "a",
       root: "/repo/a",
       children: [
-        classicTopic("pinned-old", { lastActivityAt: 100, pinned: true }),
-        classicTopic("recent", { lastActivityAt: 900 }),
+        topicNode("pinned-old", { lastActivityAt: 100, pinned: true }),
+        topicNode("recent", { lastActivityAt: 900 }),
       ],
     },
     {
@@ -494,7 +542,7 @@ const classicPinnedSections = splitPinnedProjectTree(
       label: "b",
       root: "/repo/b",
       pinned: true,
-      children: [classicTopic("pinned-new", { root: "/repo/b", lastActivityAt: 500, pinned: true })],
+      children: [topicNode("pinned-new", { root: "/repo/b", lastActivityAt: 500, pinned: true })],
     },
   ],
   "updated",
@@ -502,13 +550,13 @@ const classicPinnedSections = splitPinnedProjectTree(
 );
 
 eq(
-  classicPinnedSections.pinned.map((node) => node.topicId),
+  pinnedSections.pinned.map((node) => node.topicId),
   ["pinned-new", "pinned-old"],
-  "classic pinned section collects topics across projects by activity",
+  "creation pinned section collects topics across projects by activity",
 );
 
 eq(
-  classicPinnedSections.projects.map((node) => ({
+  pinnedSections.projects.map((node) => ({
     root: node.root,
     pinned: Boolean(node.pinned),
     topics: (node.children ?? []).map((child) => child.topicId),
@@ -517,7 +565,7 @@ eq(
     { root: "/repo/a", pinned: false, topics: ["recent"] },
     { root: "/repo/b", pinned: true, topics: [] },
   ],
-  "classic pinned topics appear once while pinned projects stay in project order",
+  "creation pinned topics appear once while pinned projects stay inline in project order",
 );
 
 eq(
@@ -528,7 +576,7 @@ eq(
         kind: "project",
         label: "a",
         root: "/repo/a",
-        children: [classicTopic("unpinned-again", { lastActivityAt: 100 })],
+        children: [topicNode("unpinned-again", { lastActivityAt: 100 })],
       },
     ],
     "updated",
@@ -542,7 +590,7 @@ eq(
         kind: "project",
         label: "a",
         root: "/repo/a",
-        children: [classicTopic("unpinned-again", { lastActivityAt: 100 })],
+        children: [topicNode("unpinned-again", { lastActivityAt: 100 })],
       },
     ],
   },
@@ -558,94 +606,18 @@ eq(
   "workbench pinned section still extracts pinned projects",
 );
 
-console.log("\nclassic topic window and hover card");
-
-const windowTopics = Array.from({ length: 7 }, (_, i) => classicTopic(`t${i}`, { lastActivityAt: 1000 - i }));
-
-eq(
-  (() => {
-    const { visible, hiddenCount } = classicTopicWindow(windowTopics, false);
-    return { ids: visible.map((node) => node.topicId), hiddenCount };
-  })(),
-  { ids: ["t0", "t1", "t2", "t3", "t4"], hiddenCount: 2 },
-  "classic window previews the first five topics and reports the hidden count",
-);
-
-eq(
-  (() => {
-    const { visible, hiddenCount } = classicTopicWindow(windowTopics, true);
-    return { count: visible.length, hiddenCount };
-  })(),
-  { count: 7, hiddenCount: 0 },
-  "classic window shows everything once the folder is toggled open",
-);
-
-eq(
-  classicTopicWindow(windowTopics.slice(0, 4), false),
-  { visible: windowTopics.slice(0, 4), hiddenCount: 0 },
-  "classic window leaves short folders untouched",
-);
-
-eq(
-  projectTreeTopicHoverCardModel(
-    { key: "topic_t", kind: "topic", label: "● Busy topic", preview: "Full first-message preview", root: "/repo", topicId: "t", turns: 3, status: "streaming" },
-    testT,
-    "my-project",
-  ),
-  {
-    title: "Full first-message preview",
-    statusLabel: "projectTree.status.streaming",
-    metaLine: "3 turns",
-    exactTime: "",
-    projectLabel: "my-project",
-  },
-  "hover card model shows the full preview and carries turns, status, and project",
-);
-
-const day = 24 * 60 * 60 * 1000;
-
-eq(
-  (() => {
-    const card = projectTreeTopicHoverCardModel(
-      { key: "topic_old", kind: "topic", label: "Old topic", root: "/repo", topicId: "old", turns: 3, lastActivityAt: Date.now() - 30 * day },
-      testT,
-      "my-project",
-    );
-    return { exactTime: card.exactTime, metaHasTurns: card.metaLine.startsWith("3 turns · ") };
-  })(),
-  { exactTime: "", metaHasTurns: true },
-  "hover card keeps a single calendar-date copy for week-old sessions",
-);
-
-eq(
-  (() => {
-    const card = projectTreeTopicHoverCardModel(
-      { key: "topic_recent", kind: "topic", label: "Recent topic", root: "/repo", topicId: "recent", turns: 2, lastActivityAt: Date.now() - 2 * day },
-      testT,
-      "my-project",
-    );
-    return { hasExactTime: card.exactTime.length > 0, metaRepeatsDate: card.metaLine.includes(card.exactTime) };
-  })(),
-  { hasExactTime: true, metaRepeatsDate: false },
-  "hover card for recent sessions still pairs relative time with the exact date",
-);
+console.log("\nproject tree topic labels");
 
 eq(
   projectTreeDedupedExactTime("3 turns · 2026/7/7", "2026/7/7"),
   "",
-  "row title and hover card drop the exact date the meta line already ends with",
+  "row title drops the exact date the meta line already ends with",
 );
 
 eq(
   projectTreeDedupedExactTime("3 turns · 2 days ago", "2026/7/12"),
   "2026/7/12",
   "recent sessions keep the exact date next to the relative meta line",
-);
-
-eq(
-  projectTreeTopicMenuOffersPin("classic"),
-  true,
-  "classic context menu offers the pin entry",
 );
 
 eq(
@@ -668,7 +640,7 @@ eq(
     ariaExpanded: false,
     iconStackClassName: "project-tree__icon-stack project-tree__icon-stack--expandable",
   },
-  "classic empty folders stay expandable so the placeholder row is reachable",
+  "empty project shells stay expandable so their first page can load",
 );
 
 eq(
@@ -679,7 +651,7 @@ eq(
     ariaExpanded: true,
     iconStackClassName: "project-tree__icon-stack project-tree__icon-stack--expandable",
   },
-  "expanded classic empty folders report the open state for the placeholder",
+  "expanded empty project shells report the open state before their first page arrives",
 );
 
 eq(

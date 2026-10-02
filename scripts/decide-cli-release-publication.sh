@@ -9,7 +9,7 @@ checksums="${5:-}"
 
 stable_tag_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 preview_tag_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-preview\.(0|[1-9][0-9]*)$'
-release_tag_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+)(\.[0-9A-Za-z-]+)*)?)?$'
+release_tag_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+)(\.[0-9A-Za-z-]+)*)?$'
 
 case "$channel" in
 	stable)
@@ -76,8 +76,8 @@ jq -e \
 	end) and
 	(.html_url == ("https://github.com/" + $repository + "/releases/tag/" + $tag)) and
 	(.assets | type == "array") and
-	(.assets | length == ($required | length)) and
-	((.assets | map(.name) | sort) == ($required | sort)) and
+	((.assets | map(.name) | sort) == ($required | sort) or
+	 (.assets | map(.name) | sort) == (($required + ["latest.json"]) | sort)) and
 	(.assets | all(
 		(type == "object") and
 		(.state == "uploaded") and
@@ -97,7 +97,7 @@ trap 'rm -f "$expected_checksums" "$actual_checksums"' EXIT
 
 jq -r '
 	.assets[] |
-	select(.name != "SHA256SUMS") |
+	select(.name != "SHA256SUMS" and .name != "latest.json") |
 	((.digest | sub("^sha256:"; "")) + "  " + .name)
 ' "$release_json" | LC_ALL=C sort >"$expected_checksums"
 

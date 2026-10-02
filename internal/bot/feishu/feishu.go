@@ -474,11 +474,11 @@ func (a *adapter) handleCardAction(raw []byte) bool {
 	}
 	chatType := cardActionChatType(payload.Event.Action.Value["chat_type"])
 	operatorID := firstNonEmpty(
-		payload.Event.Operator.OperatorID.UnionID,
 		payload.Event.Operator.OperatorID.OpenID,
+		payload.Event.Operator.OperatorID.UnionID,
 		payload.Event.Operator.OperatorID.UserID,
-		payload.Event.Operator.UnionID,
 		payload.Event.Operator.OpenID,
+		payload.Event.Operator.UnionID,
 		payload.Event.Operator.UserID,
 	)
 	routeUserID := firstNonEmpty(payload.Event.Action.Value["user_id"], operatorID)

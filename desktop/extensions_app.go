@@ -31,6 +31,21 @@ type extensionFormSubmitter interface {
 	SubmitExtensionForm(ctx context.Context, pluginID, surfaceID string, values map[string]any) error
 }
 
+type exactExtensionFormSubmitter interface {
+	SubmitExtensionFormExact(ctx context.Context, pluginID, surfaceID string, generation uint64, formInstanceID string, values map[string]any) error
+}
+
+type ExtensionFormTarget struct {
+	TabID             string `json:"tabId"`
+	HostID            string `json:"hostId"`
+	SessionID         string `json:"sessionId"`
+	SessionGeneration uint64 `json:"sessionGeneration"`
+	PluginID          string `json:"pluginId"`
+	SurfaceID         string `json:"surfaceId"`
+	PluginGeneration  uint64 `json:"pluginGeneration"`
+	FormInstanceID    string `json:"formInstanceId"`
+}
+
 // extensionActionsForCtrl maps the control port's action views to their JSON
 // twins. Nil controller → empty, so the palette simply shows no extension
 // group while a tab's runtime is still starting.
@@ -104,4 +119,28 @@ func (a *App) SubmitExtensionForm(tabID, pluginID, surfaceID string, values map[
 		return fmt.Errorf("extension form submission is unavailable on this runtime")
 	}
 	return submitter.SubmitExtensionForm(a.bootContext(), pluginID, surfaceID, values)
+}
+
+func (a *App) SubmitExtensionFormExact(target ExtensionFormTarget, values map[string]any) error {
+	if strings.TrimSpace(target.TabID) == "" || strings.TrimSpace(target.PluginID) == "" ||
+		strings.TrimSpace(target.SurfaceID) == "" || strings.TrimSpace(target.FormInstanceID) == "" {
+		return fmt.Errorf("exact extension form identity is required")
+	}
+	if target.HostID != "" && target.HostID != localDesktopHostID {
+		return fmt.Errorf("extension form host binding is stale")
+	}
+	a.mu.RLock()
+	tab := a.tabByIDLocked(target.TabID)
+	if tab == nil || tab.SessionID != target.SessionID || tab.SessionGeneration != target.SessionGeneration {
+		a.mu.RUnlock()
+		return fmt.Errorf("extension form binding is stale")
+	}
+	ctrl := tab.Ctrl
+	a.mu.RUnlock()
+	submitter, ok := ctrl.(exactExtensionFormSubmitter)
+	if !ok {
+		return fmt.Errorf("exact extension form submission is unavailable on this runtime")
+	}
+	return submitter.SubmitExtensionFormExact(a.bootContext(), target.PluginID, target.SurfaceID,
+		target.PluginGeneration, target.FormInstanceID, values)
 }

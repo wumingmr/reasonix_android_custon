@@ -48,3 +48,11 @@ export function workspaceFormatCommitDate(value: string): string {
   const month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][date.getMonth()];
   return `${String(date.getDate()).padStart(2, "0")} ${month} ${date.getFullYear()} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
+export function isAbsoluteDisplayPath(path: string): boolean {
+  return path.startsWith("/") || path.startsWith("\\\\") || /^[A-Za-z]:[\\/]/.test(path);
+}
+
+export function formatWorkspaceSource(path: string, body: string): string {
+  if (!/\.json$/i.test(path)) return body;
+  try { return JSON.stringify(JSON.parse(body), null, 2); } catch { return body; }
+}

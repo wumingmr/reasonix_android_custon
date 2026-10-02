@@ -153,3 +153,41 @@ func TestContextUsedTokensFollowsTheTranscript(t *testing.T) {
 		t.Fatalf("gauge %d -> %d, want the appended turn counted", before, after)
 	}
 }
+
+func TestContextUsedTokensFollowsSessionReplacement(t *testing.T) {
+	for _, lateRead := range []bool{false, true} {
+		t.Run(fmt.Sprintf("late_old_read=%v", lateRead), func(t *testing.T) {
+			a := usageFixture(t, 4)
+			original := a.Session()
+			oldUsed := a.ContextUsedTokens()
+			oldCache := a.sess.output.contextUsage.Load()
+			// Loaded/rebuilt transcripts have independent version counters. Even
+			// a replacement of the same logical session can have different bytes.
+			replacement := &Session{Messages: []provider.Message{
+				{Role: provider.RoleSystem, Content: "system"},
+				{Role: provider.RoleUser, Content: "short replacement"},
+			}}
+			if replacement.TranscriptVersion() != original.TranscriptVersion() {
+				t.Fatal("fixture must collide on transcript version")
+			}
+			a.SetSession(replacement)
+			if lateRead {
+				// Force an old gauge read publishing after reset. Cache identity
+				// must reject it even when clearing the cache lost that ordering.
+				a.sess.output.contextUsage.Store(oldCache)
+			}
+			want := a.ContextMaintenanceSnapshot().ProjectedTokens
+			if want >= oldUsed {
+				t.Fatalf("replacement estimate = %d, want less than %d", want, oldUsed)
+			}
+			if got := a.ContextUsedTokens(); got != want {
+				t.Fatalf("replacement gauge = %d, want its own trigger input %d (old %d)", got, want, oldUsed)
+			}
+			// Returning to the larger transcript must not keep the smaller gauge.
+			a.SetSession(original)
+			if got := a.ContextUsedTokens(); got != oldUsed {
+				t.Fatalf("restored gauge = %d, want %d", got, oldUsed)
+			}
+		})
+	}
+}

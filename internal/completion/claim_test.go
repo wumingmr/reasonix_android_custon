@@ -64,8 +64,8 @@ func TestBackedClaimAddsNoGap(t *testing.T) {
 	if len(rep.Gaps) != 0 {
 		t.Fatalf("gaps = %+v, want none: the claim matches a fresh successful receipt", rep.Gaps)
 	}
-	if rep.Verdict != VerdictDone {
-		t.Fatalf("verdict = %v, want done", rep.Verdict)
+	if rep.Verdict != VerdictUnknown {
+		t.Fatalf("verdict = %v, want unknown", rep.Verdict)
 	}
 	if len(rep.Claimed.Verified) != 1 {
 		t.Fatalf("claim not recorded: %+v", rep.Claimed)
@@ -96,8 +96,8 @@ func TestDeclaredUnverifiedAndRisksSurvive(t *testing.T) {
 	if got := gapKinds(rep); !slices.Equal(got, []string{"declared_unverified"}) {
 		t.Fatalf("gap kinds = %v, want the self-declared gap kept", got)
 	}
-	if rep.Verdict != VerdictPartial {
-		t.Fatalf("verdict = %v, want partial: declaring a gap is honest, not clean", rep.Verdict)
+	if rep.Verdict != VerdictUnknown {
+		t.Fatalf("verdict = %v, want unknown: declarations are not a quality verdict", rep.Verdict)
 	}
 	if !slices.Equal(rep.Risks, []string{"the migration is one-way"}) {
 		t.Fatalf("risks = %v", rep.Risks)
@@ -105,17 +105,10 @@ func TestDeclaredUnverifiedAndRisksSurvive(t *testing.T) {
 }
 
 // The invariant that makes the claim safe to accept at all.
-func TestClaimCannotClearAHostFoundGap(t *testing.T) {
-	receipts := []evidence.Receipt{wrote("parser.go"), ran("go test ./...", true)}
-	bare := Build(nil, ledgerOf(receipts...))
-	withClaim := Build(nil, ledgerOf(append(receipts,
-		claimed("complete", `{"verified":["go test ./..."],"unverified":[],"risks":[]}`))...))
-
-	if len(withClaim.Gaps) < len(bare.Gaps) {
-		t.Fatalf("a claim removed a host-found gap: %d -> %d", len(bare.Gaps), len(withClaim.Gaps))
-	}
-	if !slices.Contains(gapKinds(withClaim), "unreviewed_change") {
-		t.Fatalf("gap kinds = %v, want the host's own finding intact", gapKinds(withClaim))
+func TestClaimCannotClearFailedExecution(t *testing.T) {
+	rep := Build(nil, ledgerOf(wrote("parser.go"), ran("go test ./...", false), claimed("complete", `{"verified":["go test ./..."]}`)))
+	if len(rep.Verifications) != 1 || rep.Verifications[0].Passed || !slices.Contains(gapKinds(rep), "unbacked_claim") {
+		t.Fatalf("claim changed facts: %+v", rep)
 	}
 }
 

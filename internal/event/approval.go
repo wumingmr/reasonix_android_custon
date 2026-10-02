@@ -18,6 +18,12 @@ type Approval struct {
 	Kind        string
 	Recovery    *RecoveryApproval
 	WriteAccess *WriteAccessApproval
+	TurnID      string
+	// Generation and PermissionRevision bind a decision to the exact runtime
+	// permission snapshot that emitted it. New clients echo both values when
+	// resolving; older clients remain fenced by turn/runtime identity.
+	Generation         uint64
+	PermissionRevision uint64
 }
 
 // ApprovalKindWriteAccess is the Approval.Kind value for directory expansion.
@@ -34,7 +40,7 @@ type WriteAccessApproval struct {
 	PersistAllowed           bool     `json:"persist_allowed,omitempty"`
 }
 
-// NormalizeWriteAccessApproval makes list fields non-nil for Wails/JSON.
+// NormalizeWriteAccessApproval makes list fields non-nil for desktop/JSON.
 func NormalizeWriteAccessApproval(w *WriteAccessApproval) *WriteAccessApproval {
 	if w == nil {
 		return nil

@@ -158,45 +158,53 @@ func TestForkForTabDoesNotOverrideLaterActiveTab(t *testing.T) {
 		started:                   make(chan struct{}),
 		release:                   make(chan struct{}),
 	}
+	// Only the persistence-to-publish interleaving matters here; fork itself
+	// need not run in another goroutine or race a wall-clock deadline.
+	close(ctrl.release)
 	app := NewApp()
+	app.ctx = context.Background()
 	app.setTestCtrl(ctrl, "")
 	app.tabs["test"].TopicTitle = "Source topic"
 	app.tabs["other"] = &WorkspaceTab{ID: "other", Scope: "global", Ready: true, disabledMCP: map[string]ServerView{}}
 	app.tabOrder = []string{"test", "other"}
 
-	type forkResult struct {
-		meta TabMeta
-		err  error
+	// Match the app's asynchronous build path, but cancel and join the build
+	// before it acquires controllers or session leases unrelated to this test.
+	buildRelease := make(chan struct{})
+	app.tabBuildStartHook = func(string) { <-buildRelease }
+	t.Cleanup(func() {
+		app.mu.Lock()
+		var builds []<-chan struct{}
+		for _, tab := range app.tabs {
+			if tab.buildDone != nil {
+				builds = append(builds, tab.buildDone)
+			}
+			app.supersedeTabBuildLocked(tab)
+		}
+		app.mu.Unlock()
+		close(buildRelease)
+		for _, done := range builds {
+			if !waitChannelBefore(done, time.Now().Add(5*time.Second)) {
+				t.Error("fork controller build did not exit after cancellation")
+			}
+		}
+	})
+	hook := func() {
+		if err := app.SetActiveTab("other"); err != nil {
+			t.Fatalf("SetActiveTab(other): %v", err)
+		}
 	}
-	result := make(chan forkResult, 1)
-	go func() {
-		meta, err := app.ForkForTab("test", 1)
-		result <- forkResult{meta: meta, err: err}
-	}()
+	forkTabBeforePublishHookForTest.Store(&hook)
+	t.Cleanup(func() { forkTabBeforePublishHookForTest.Store(nil) })
 
-	select {
-	case <-ctrl.started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for ForkSession")
+	meta, err := app.ForkForTab("test", 1)
+	if err != nil {
+		t.Fatalf("ForkForTab: %v", err)
 	}
-	if err := app.SetActiveTab("other"); err != nil {
-		t.Fatalf("SetActiveTab(other): %v", err)
+	if meta.ID == "" || meta.ID == "test" {
+		t.Fatalf("fork tab ID = %q, want a fresh tab", meta.ID)
 	}
-	close(ctrl.release)
-
-	var got forkResult
-	select {
-	case got = <-result:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for ForkForTab")
-	}
-	if got.err != nil {
-		t.Fatalf("ForkForTab: %v", got.err)
-	}
-	if got.meta.ID == "" || got.meta.ID == "test" {
-		t.Fatalf("fork tab ID = %q, want a fresh tab", got.meta.ID)
-	}
-	if got.meta.Active {
+	if meta.Active {
 		t.Fatalf("fork meta active = true, want false after later tab switch")
 	}
 	if app.activeTabID != "other" {

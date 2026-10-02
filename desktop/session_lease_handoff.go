@@ -16,17 +16,21 @@ func (t *WorkspaceTab) handoffSessionLease(path string) (*agent.SessionLease, er
 	if t == nil || t.ReadOnly {
 		return nil, nil
 	}
-	key := sessionRuntimeKey(path)
-	if key == "" {
+	legacyPath, ok, err := legacySessionPathForFileAccess(path)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
 		return nil, nil
 	}
+	key := sessionRuntimeKey(string(legacyPath))
 	t.sessionLeaseMu.Lock()
 	if t.sessionLease != nil && sessionRuntimeKey(t.sessionLease.Path()) == key {
 		t.storeSessionLeaseRuntimeKey(key)
 		t.sessionLeaseMu.Unlock()
 		return nil, nil
 	}
-	lease, err := agent.TryAcquireSessionLease(key)
+	lease, err := agent.TryAcquireSessionLease(string(legacyPath))
 	if err != nil {
 		t.sessionLeaseMu.Unlock()
 		return nil, err
@@ -73,7 +77,17 @@ func (a *App) handoffTabRecoveryLease(tab *WorkspaceTab, recoveryPath string) er
 		if errors.Is(err, agent.ErrSessionLeaseHeld) {
 			reason = "lease_held"
 		}
-		a.emitRuntimeEvent("session:recovery-failed", sessionRecoveryFailedEvent{Reason: reason})
+		_ = agent.UpdateBranchMeta(recoveryPath, false, func(meta *agent.BranchMeta) error {
+			meta.VersionKind = agent.VersionRecovery
+			meta.VersionState = agent.VersionPending
+			return nil
+		})
+		a.emitRuntimeEvent("session:recovery-failed", sessionRecoveryFailedEvent{
+			Reason: reason, ConversationID: tab.TopicID, TopicID: tab.TopicID,
+			RecoveryPath:  recoveryPath,
+			WorkspaceRoot: tab.WorkspaceRoot,
+			CanContinue:   false, RecoveryPending: true,
+		})
 		return fmt.Errorf("acquire recovery session lease: %w", userFacingSessionLeaseError("", err))
 	}
 	if err := bindTabWriteAuthority(tab, tab.Ctrl); err != nil {
@@ -99,6 +113,15 @@ func (a *App) handleTabSessionTransition(tab *WorkspaceTab) func(control.Session
 	return func(info control.SessionTransitionInfo) error {
 		if tab == nil || tab.ReadOnly {
 			return nil
+		}
+		if info.Reason == "fork" || info.Reason == "branch" {
+			if err := copyPinnedContextState(info.OriginalPath, info.TargetPath); err != nil {
+				return fmt.Errorf("copy pinned context to %s: %w", info.Reason, err)
+			}
+		}
+		pinnedState, err := loadPinnedContextState(info.TargetPath)
+		if err != nil {
+			return fmt.Errorf("load target pinned context: %w", err)
 		}
 		transition, err := a.reserveSessionRuntimePath(tab, info.TargetPath)
 		if err != nil {
@@ -138,6 +161,10 @@ func (a *App) handleTabSessionTransition(tab *WorkspaceTab) func(control.Session
 		if oldLease != nil {
 			go oldLease.Release()
 		}
+		info.OnCommit(func() {
+			tab.setPinnedFiles(pinnedState.Files)
+			a.emitRuntimeEvent(tabMetaRefreshEventChannel, TabMetaRefreshEvent{TabID: tab.ID, Meta: a.MetaForTab(tab.ID)})
+		})
 		a.emitProjectTreeChangedForSessionDirs(sessionDirectoryForPath(info.TargetPath))
 		return nil
 	}

@@ -37,6 +37,10 @@ func (r *sessionTitleResolverStub) Resolve(selection provider.Selection) (provid
 	return r.provider, nil
 }
 
+func (p *sessionTitleProviderStub) ReasoningCapability() provider.ReasoningCapability {
+	return provider.ReasoningOptions("", "low", "high")
+}
+
 func (p *sessionTitleProviderStub) Name() string { return "session-title-stub" }
 
 func (p *sessionTitleProviderStub) Stream(_ context.Context, req provider.Request) (<-chan provider.Chunk, error) {
@@ -59,8 +63,8 @@ func (p *sessionTitleProviderStub) Stream(_ context.Context, req provider.Reques
 	return ch, nil
 }
 
-func sessionTitleTestController(prov provider.Provider, sink event.Sink) *Controller {
-	return New(Options{
+func sessionTitleTestController(t *testing.T, prov provider.Provider, sink event.Sink) *Controller {
+	return newOwnedTestController(t, Options{
 		ModelRef: "test/title-model",
 		Sink:     sink,
 		ProviderResolver: &provider.StaticResolver{
@@ -72,7 +76,7 @@ func sessionTitleTestController(prov provider.Provider, sink event.Sink) *Contro
 
 func TestGenerateSessionTitleUsesBoundedNoToolRequest(t *testing.T) {
 	prov := &sessionTitleProviderStub{out: "  “Fix login redirect loop”  "}
-	ctrl := sessionTitleTestController(prov, event.Discard)
+	ctrl := sessionTitleTestController(t, prov, event.Discard)
 	title, err := ctrl.GenerateSessionTitle(context.Background(), "User: login redirects forever")
 	if err != nil {
 		t.Fatalf("GenerateSessionTitle: %v", err)
@@ -107,7 +111,7 @@ func TestGenerateSessionTitleDisablesAdvertisedReasoning(t *testing.T) {
 			return thinking, nil
 		},
 	}
-	ctrl := New(Options{
+	ctrl := newOwnedTestController(t, Options{
 		ModelRef:         "test/title-model",
 		Sink:             event.Discard,
 		ProviderResolver: resolver,
@@ -124,9 +128,41 @@ func TestGenerateSessionTitleDisablesAdvertisedReasoning(t *testing.T) {
 	}
 }
 
+func TestGenerateSessionTitleForModelUsesTargetModelWithoutMutatingControllerSelection(t *testing.T) {
+	active := &sessionTitleProviderStub{out: "active title"}
+	target := &sessionTitleProviderStub{out: "target title"}
+	resolver := &sessionTitleResolverStub{
+		descriptors: []provider.Descriptor{{Ref: "active/model"}, {Ref: "target/model"}},
+		resolve: func(selection provider.Selection) (provider.Provider, error) {
+			if selection.Ref == "target/model" {
+				return target, nil
+			}
+			return active, nil
+		},
+	}
+	ctrl := newOwnedTestController(t, Options{
+		ModelRef:         "active/model",
+		Sink:             event.Discard,
+		ProviderResolver: resolver,
+	})
+	title, err := ctrl.GenerateSessionTitleForModel(t.Context(), "target/model", "cold target transcript")
+	if err != nil || title != "target title" {
+		t.Fatalf("GenerateSessionTitleForModel = %q, %v", title, err)
+	}
+	if len(resolver.selections) != 1 || resolver.selections[0].Ref != "target/model" {
+		t.Fatalf("provider selections = %+v", resolver.selections)
+	}
+	if len(active.requests) != 0 || len(target.requests) != 1 {
+		t.Fatalf("active requests = %d, target requests = %d", len(active.requests), len(target.requests))
+	}
+	if ctrl.ModelRef() != "active/model" {
+		t.Fatalf("controller model changed to %q", ctrl.ModelRef())
+	}
+}
+
 func TestGenerateSessionTitleBoundsTranscriptAndOutput(t *testing.T) {
 	prov := &sessionTitleProviderStub{out: strings.Repeat("long title ", 20)}
-	ctrl := sessionTitleTestController(prov, event.Discard)
+	ctrl := sessionTitleTestController(t, prov, event.Discard)
 	title, err := ctrl.GenerateSessionTitle(context.Background(), strings.Repeat("界", sessionTitleMaxTranscriptRunes+100))
 	if err != nil {
 		t.Fatalf("GenerateSessionTitle: %v", err)
@@ -140,13 +176,13 @@ func TestGenerateSessionTitleBoundsTranscriptAndOutput(t *testing.T) {
 }
 
 func TestGenerateSessionTitleRejectsMissingInputsAndProviderFailures(t *testing.T) {
-	if _, err := sessionTitleTestController(&sessionTitleProviderStub{}, event.Discard).GenerateSessionTitle(context.Background(), " "); err == nil {
+	if _, err := sessionTitleTestController(t, &sessionTitleProviderStub{}, event.Discard).GenerateSessionTitle(context.Background(), " "); err == nil {
 		t.Fatal("empty transcript should fail")
 	}
-	if _, err := New(Options{ModelRef: "test/title-model"}).GenerateSessionTitle(context.Background(), "hello"); err == nil {
+	if _, err := newOwnedTestController(t, Options{ModelRef: "test/title-model"}).GenerateSessionTitle(context.Background(), "hello"); err == nil {
 		t.Fatal("missing resolver should fail")
 	}
-	ctrl := sessionTitleTestController(&sessionTitleProviderStub{err: errors.New("boom")}, event.Discard)
+	ctrl := sessionTitleTestController(t, &sessionTitleProviderStub{err: errors.New("boom")}, event.Discard)
 	if _, err := ctrl.GenerateSessionTitle(context.Background(), "hello"); err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("provider error = %v", err)
 	}

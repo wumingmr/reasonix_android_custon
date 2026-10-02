@@ -19,6 +19,7 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/secrets"
+	"reasonix/internal/session"
 	"reasonix/internal/sessioninbox"
 )
 
@@ -73,7 +74,7 @@ type GatewayConfig struct {
 	// recovered the controller for an inbound remote. Hosts may persist the
 	// concrete session ID or keep the remote as a read-only channel.
 	OnSessionReady func(InboundMessage, string) error
-	// OnToolApprovalModeChange persists a remote IM request such as /yolo on.
+	// OnToolApprovalModeChange persists a remote IM /mode request.
 	// The gateway updates the live session and in-memory defaults first; this
 	// callback lets desktop save the chosen connection mode to user config.
 	OnToolApprovalModeChange func(InboundMessage, string) error
@@ -82,6 +83,10 @@ type GatewayConfig struct {
 	// status, event subscriptions, and remote approvals for any live desktop
 	// session. Nil when the gateway runs standalone (reasonix bot start).
 	Desktop DesktopBridge
+	// SessionServiceForRoot lets an embedded host share ownership of a session
+	// store. The host keeps the returned service alive until after Stop drains
+	// all gateway controllers; the gateway never shuts that service down.
+	SessionServiceForRoot func(string) (*session.Service, error)
 }
 
 // ChannelConfig overrides gateway defaults for one IM channel.
@@ -196,6 +201,9 @@ type BotGateway struct {
 	sessionOverrides        map[string]sessionRuntimeOverride
 	buildController         func(context.Context, boot.Options) (*control.Controller, error)
 
+	sessionServicesMu sync.Mutex
+	sessionServices   map[string]*session.Service
+
 	logger *slog.Logger
 }
 
@@ -221,6 +229,8 @@ type sessionState struct {
 	workspaceRoot       string
 	toolApprovalMode    string
 	sessionPath         string
+	sessionRef          session.SessionRef
+	releaseRuntimeOnly  bool
 	onSessionTransition func(control.SessionTransitionInfo) error
 	// mappingDegraded records that this state intentionally runs on a fresh
 	// session because its session_mappings target could not be used at build
@@ -244,11 +254,13 @@ type sessionRuntimeProfile struct {
 	workspaceRoot    string
 	toolApprovalMode string
 	sessionPath      string
+	sessionRef       session.SessionRef
 	// sessionPathOptional marks sessionPath as a persisted session_mappings
 	// binding rather than an explicit /attach: when the mapped file cannot be
 	// loaded or leased, the session degrades to a fresh path instead of
 	// dropping the message (#6917).
 	sessionPathOptional bool
+	sessionRefOptional  bool
 }
 
 type sessionRuntimeOverride struct {
@@ -324,6 +336,7 @@ func NewGatewayWithAdapterBindings(cfg GatewayConfig, adapters []AdapterBinding,
 		outboundMessageIDs:      make(map[string]time.Time),
 		adapterHealth:           make(map[string]*AdapterHealthSnapshot),
 		sessionOverrides:        make(map[string]sessionRuntimeOverride),
+		sessionServices:         make(map[string]*session.Service),
 		buildController:         boot.Build,
 		logger:                  logger.With("component", "bot_gateway"),
 	}
@@ -634,7 +647,7 @@ func (gw *BotGateway) Stop() {
 	gw.gatewayWG.Wait()
 	gw.closeSessions()
 	gw.turnWG.Wait()
-	gw.closeSessions()
+	gw.finishSessionTeardown()
 }
 
 func (gw *BotGateway) closeSessions() {
@@ -680,7 +693,15 @@ func (gw *BotGateway) closeSessionState(state *sessionState) {
 		cancel()
 	}
 	if state.ctrl != nil {
-		state.ctrl.Close()
+		if state.releaseRuntimeOnly {
+			if releaser, ok := state.ctrl.(interface{ ReleaseResources() }); ok {
+				releaser.ReleaseResources()
+			} else {
+				state.ctrl.Close()
+			}
+		} else {
+			state.ctrl.Close()
+		}
 	}
 	if state.leases != nil {
 		state.leases.Release()
@@ -1396,7 +1417,7 @@ func (gw *BotGateway) handleSlashCommandCore(ctx context.Context, adapter Adapte
 				_ = gw.sendText(ctx, adapter, msg, "新会话创建失败，请稍后重试。")
 				return
 			}
-			if state.leases != nil {
+			if state.leases != nil && strings.TrimSpace(state.ctrl.SessionPath()) != "" {
 				if err := rebindBotSessionWriteAuthority(state, state.ctrl.SessionPath()); err != nil {
 					gw.logger.Warn("new session lease failed", "err", control.SessionInUseMessage(err))
 					gw.unlinkAndCloseSessionState(key, state)
@@ -1405,16 +1426,24 @@ func (gw *BotGateway) handleSlashCommandCore(ctx context.Context, adapter Adapte
 					return
 				}
 			}
-			// /new 后把旋转出的新路径钉为会话覆盖，避免下一条消息重新解析回旧路径。
+			// /new 后把旋转出的不可变身份钉为会话覆盖，避免下一条消息重新解析回旧绑定。
 			gw.mu.Lock()
 			if gw.controllers[key] == state {
 				rotated := state.ctrl.SessionPath()
-				state.sessionPath = rotated
 				override, exists := gw.sessionOverrides[key]
 				if !exists {
 					override = sessionRuntimeOverride{}
 				}
-				override.sessionPath = rotated
+				if identity, ok := state.ctrl.(control.IdentityLifecycle); ok && identity.UsesExclusiveSession() {
+					if ref, bound := identity.SessionRef(); bound {
+						state.sessionRef = ref
+						state.sessionPath = ""
+						override.sessionPath = botSessionRefTarget(ref)
+					}
+				} else {
+					state.sessionPath = rotated
+					override.sessionPath = rotated
+				}
 				gw.sessionOverrides[key] = override
 			}
 			gw.mu.Unlock()
@@ -1599,13 +1628,13 @@ func (gw *BotGateway) handleSlashCommandCore(ctx context.Context, adapter Adapte
 		state.ctrl.AnswerQuestion(askID, answers)
 		_ = gw.sendText(ctx, adapter, msg, "已提交回答。")
 
-	case strings.HasPrefix(msg.Text, "/yolo") || strings.HasPrefix(msg.Text, "/mode"):
+	case strings.HasPrefix(msg.Text, "/mode"):
 		if !gw.requireCommandRole(ctx, adapter, msg, "admin") {
 			return
 		}
 		mode, statusOnly, ok := parseToolApprovalModeCommand(msg.Text)
 		if !ok {
-			_ = gw.sendText(ctx, adapter, msg, "用法: /yolo on|off|auto|status，或 /mode yolo|ask|auto")
+			_ = gw.sendText(ctx, adapter, msg, "用法: /mode read-only|workspace-write|danger-full-access|status")
 			return
 		}
 		if statusOnly {
@@ -1952,16 +1981,10 @@ func botSessionHasActiveWork(state *sessionState) bool {
 	return status.Running || status.PendingPrompt || status.BackgroundJobs > 0
 }
 
-func safeBotControllerRuntimeStatus(ctrl botController) (status control.RuntimeStatus, ok bool) {
+func safeBotControllerRuntimeStatus(ctrl botController) (control.RuntimeStatus, bool) {
 	if ctrl == nil {
 		return control.RuntimeStatus{}, false
 	}
-	defer func() {
-		if recover() != nil {
-			status = control.RuntimeStatus{}
-			ok = false
-		}
-	}()
 	return ctrl.RuntimeStatus(), true
 }
 
@@ -2059,11 +2082,6 @@ func parseToolApprovalModeCommand(text string) (mode string, statusOnly bool, ok
 	}
 	cmd := strings.ToLower(strings.TrimSpace(parts[0]))
 	switch cmd {
-	case "/yolo":
-		if len(parts) == 1 {
-			return control.ToolApprovalYolo, false, true
-		}
-		return parseToolApprovalModeArg(parts[1])
 	case "/mode":
 		if len(parts) == 1 {
 			return "", true, true
@@ -2078,12 +2096,12 @@ func parseToolApprovalModeArg(arg string) (mode string, statusOnly bool, ok bool
 	switch strings.ToLower(strings.TrimSpace(arg)) {
 	case "status", "state", "show", "状态", "查看":
 		return "", true, true
-	case "on", "enable", "enabled", "true", "1", "yolo", "full", "full-access", "bypass", "开启", "打开":
-		return control.ToolApprovalYolo, false, true
-	case "off", "disable", "disabled", "false", "0", "ask", "询问", "关闭":
-		return control.ToolApprovalAsk, false, true
-	case "auto", "自动":
-		return control.ToolApprovalAuto, false, true
+	case "danger-full-access", "full", "full-access", "完全权限":
+		return control.ToolApprovalDangerFullAccess, false, true
+	case "read-only", "readonly", "ask", "仅可查看":
+		return control.ToolApprovalReadOnly, false, true
+	case "workspace-write", "workspace", "auto", "yolo", "工作区内修改":
+		return control.ToolApprovalWorkspaceWrite, false, true
 	default:
 		return "", false, false
 	}
@@ -2147,28 +2165,28 @@ func (gw *BotGateway) currentToolApprovalMode(key string, msg InboundMessage) st
 
 func (gw *BotGateway) toolApprovalModeStatusText(key string, msg InboundMessage) string {
 	mode := gw.currentToolApprovalMode(key, msg)
-	return fmt.Sprintf("当前工具审批模式：%s\n用法：/yolo on|off|auto|status，或 /mode yolo|ask|auto", toolApprovalModeLabel(mode))
+	return fmt.Sprintf("当前权限：%s\n用法：/mode read-only|workspace-write|danger-full-access|status", toolApprovalModeLabel(mode))
 }
 
 func toolApprovalModeChangedText(mode string) string {
 	switch normalizeBotToolApprovalMode(mode) {
-	case control.ToolApprovalYolo:
-		return "已开启 YOLO：普通工具审批将自动放行；Ask 问题和计划批准仍会等待确认。"
-	case control.ToolApprovalAuto:
-		return "已切换为自动模式：策略允许的工具会自动放行，仍保留需要询问或拒绝的规则。"
+	case control.ToolApprovalDangerFullAccess:
+		return "已切换为完全权限：普通工具审批将自动放行，显式禁止仍然生效。"
+	case control.ToolApprovalWorkspaceWrite:
+		return "已切换为工作区内修改：工作区与会话临时目录可写，越界操作需要授权。"
 	default:
-		return "已切回询问模式：工具执行前会请求确认。"
+		return "已切换为仅可查看：读取可直接执行，写入与外部副作用需要授权。"
 	}
 }
 
 func toolApprovalModeLabel(mode string) string {
 	switch normalizeBotToolApprovalMode(mode) {
-	case control.ToolApprovalYolo:
-		return "YOLO"
-	case control.ToolApprovalAuto:
-		return "自动"
+	case control.ToolApprovalDangerFullAccess:
+		return "完全权限"
+	case control.ToolApprovalWorkspaceWrite:
+		return "工作区内修改"
 	default:
-		return "询问"
+		return "仅可查看"
 	}
 }
 
@@ -2180,10 +2198,8 @@ func (gw *BotGateway) runTurnItem(ctx context.Context, adapter Adapter, key stri
 	gw.logger.Info("bot turn started", "platform", msg.Platform, "chat_type", msg.ChatType, "chat", hashID(msg.ChatID), "session", key[:8])
 	defer gw.finishTurnItem(ctx, adapter, key, msg, cleanup)
 
-	// 获取或创建 Controller
-	state := gw.getOrCreateSession(ctx, key, msg)
-	if state == nil || state.ctrl == nil {
-		_ = gw.sendText(ctx, adapter, msg, "内部错误：无法创建会话。")
+	state := gw.sessionForNewTurn(ctx, adapter, key, msg)
+	if state == nil {
 		return
 	}
 	gw.rememberSessionReady(msg, state.ctrl)
@@ -2304,30 +2320,18 @@ func (gw *BotGateway) inputTextWithMedia(ctx context.Context, adapter Adapter, m
 
 func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg InboundMessage) *sessionState {
 	profile := gw.sessionProfileForMessage(msg)
-	var stale *sessionState
-	gw.mu.Lock()
-	if state, ok := gw.controllers[key]; ok {
-		if !sessionStateMatchesRuntime(state, profile) {
-			if botSessionHasActiveWork(state) {
-				gw.mu.Unlock()
-				safeBotSetToolApprovalMode(state.ctrl, profile.toolApprovalMode)
-				gw.logger.Warn("bot session runtime change deferred while work is active", "platform", msg.Platform, "chat_type", msg.ChatType, "chat", hashID(msg.ChatID), "session", key[:8])
-				return state
-			}
-			delete(gw.controllers, key)
-			stale = state
-			gw.mu.Unlock()
-			gw.closeSessionState(stale)
-			gw.logger.Warn("bot session runtime changed; rebuilding", "platform", msg.Platform, "chat_type", msg.ChatType, "chat", hashID(msg.ChatID), "session", key[:8], "old_workspace_set", strings.TrimSpace(stale.workspaceRoot) != "", "new_workspace_set", profile.workspaceRoot != "", "old_model", stale.model, "new_model", profile.model)
-		} else {
-			updateSessionStateRuntime(state, msg, profile)
-			gw.mu.Unlock()
-			safeBotSetToolApprovalMode(state.ctrl, profile.toolApprovalMode)
-			gw.logger.Info("bot session reused", "platform", msg.Platform, "chat_type", msg.ChatType, "chat", hashID(msg.ChatID), "session", key[:8])
-			return state
-		}
-	} else {
-		gw.mu.Unlock()
+	switch state, claim := gw.claimSession(key, msg, profile); claim {
+	case sessionReused:
+		safeBotSetToolApprovalMode(state.ctrl, profile.toolApprovalMode)
+		gw.logger.Info("bot session reused", "platform", msg.Platform, "chat_type", msg.ChatType, "chat", hashID(msg.ChatID), "session", key[:8])
+		return state
+	case sessionChangeDeferred:
+		safeBotSetToolApprovalMode(state.ctrl, profile.toolApprovalMode)
+		gw.logger.Warn("bot session runtime change deferred while work is active", "platform", msg.Platform, "chat_type", msg.ChatType, "chat", hashID(msg.ChatID), "session", key[:8])
+		return state
+	case sessionRetired:
+		gw.closeSessionState(state)
+		gw.logger.Warn("bot session runtime changed; rebuilding", "platform", msg.Platform, "chat_type", msg.ChatType, "chat", hashID(msg.ChatID), "session", key[:8], "old_workspace_set", strings.TrimSpace(state.workspaceRoot) != "", "new_workspace_set", profile.workspaceRoot != "", "old_model", state.model, "new_model", profile.model)
 	}
 
 	// Create the lease owner first so recovery or intentional transitions can
@@ -2349,7 +2353,7 @@ func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg In
 	}
 	state.onSessionTransition = gw.botSessionTransitionHandler(key, msg, state)
 	gw.logger.Info("bot session creating", "platform", msg.Platform, "chat_type", msg.ChatType, "chat", hashID(msg.ChatID), "session", key[:8], "model", profile.model, "workspace_set", profile.workspaceRoot != "", "tool_approval_mode", profile.toolApprovalMode)
-	ctrl, err := boot.Build(ctx, boot.Options{
+	ctrl, err := gw.buildBotController(ctx, boot.Options{
 		Model:               profile.model,
 		MaxSteps:            gw.cfg.MaxSteps,
 		MaxStepsKey:         "bot.max_steps",
@@ -2368,7 +2372,22 @@ func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg In
 		return nil
 	}
 	state.ctrl = ctrl
-	if profile.sessionPath != "" {
+	if identity, ok := any(ctrl).(control.IdentityLifecycle); ok && identity.UsesExclusiveSession() {
+		ref, bindErr := bindBotSessionIdentity(ctx, identity, profile, msg)
+		if bindErr != nil && (profile.sessionRefOptional || profile.sessionPathOptional) {
+			gw.logger.Warn("mapped bot session unavailable; starting fresh", "err", bindErr)
+			ref, bindErr = identity.BindFreshSession(ctx, "")
+			state.mappingDegraded = bindErr == nil
+		}
+		if bindErr != nil {
+			ctrl.Close()
+			leases.Release()
+			gw.logger.Error("bind bot v3 session failed", "err", secrets.RedactError(bindErr))
+			return nil
+		}
+		state.sessionRef = ref
+		state.sessionPath = ""
+	} else if profile.sessionPath != "" {
 		// A mapped binding degrades to a fresh session on failure; only an
 		// explicit /attach is allowed to hard-fail the message, because the
 		// user named that exact session.
@@ -2410,12 +2429,14 @@ func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg In
 	}
 	ctrl.EnableInteractiveApproval()
 	ctrl.SetToolApprovalMode(profile.toolApprovalMode)
-	ctrl.EnsureSessionPath()
-	if err := rebindBotSessionWriteAuthority(state, ctrl.SessionPath()); err != nil {
-		ctrl.Close()
-		leases.Release()
-		gw.logger.Error("bot session lease failed", "err", control.SessionInUseMessage(err))
-		return nil
+	if identity, ok := any(ctrl).(control.IdentityLifecycle); !ok || !identity.UsesExclusiveSession() {
+		ctrl.EnsureSessionPath()
+		if err := rebindBotSessionWriteAuthority(state, ctrl.SessionPath()); err != nil {
+			ctrl.Close()
+			leases.Release()
+			gw.logger.Error("bot session lease failed", "err", control.SessionInUseMessage(err))
+			return nil
+		}
 	}
 	var replace *sessionState
 	gw.mu.Lock()
@@ -2457,6 +2478,12 @@ func updateSessionStateRuntime(state *sessionState, msg InboundMessage, profile 
 	state.workspaceRoot = profile.workspaceRoot
 	state.toolApprovalMode = profile.toolApprovalMode
 	state.sessionPath = profile.sessionPath
+	if profile.sessionRef.SessionID != "" {
+		if profile.sessionRef.HostID == "" {
+			profile.sessionRef.HostID = state.sessionRef.HostID
+		}
+		state.sessionRef = profile.sessionRef
+	}
 	state.lastActive = time.Now()
 }
 
@@ -2468,29 +2495,38 @@ func (gw *BotGateway) sessionProfileForMessage(msg InboundMessage) sessionRuntim
 func (gw *BotGateway) sessionProfileForResolvedOverride(msg InboundMessage, override sessionRuntimeOverride, enabled bool) sessionRuntimeProfile {
 	model, workspaceRoot, toolApprovalMode := gw.sessionOptionsForResolvedOverride(msg, override, enabled)
 	var sessionPath string
+	var sessionRef session.SessionRef
 	sessionPathOptional := false
+	sessionRefOptional := false
 	if enabled {
-		sessionPath = override.sessionPath
+		if ref, ok := parseBotSessionRefTarget(override.sessionPath); ok {
+			sessionRef = ref
+		} else {
+			sessionPath = override.sessionPath
+		}
 	}
 	// A persisted session_mappings binding is the durable chat→session link
 	// the desktop writes into the connection config. Without consuming it
 	// here, every gateway restart or runtime rebuild opened a brand-new
 	// session file for the chat and the configured binding was display-only
 	// (#6917, #6934).
-	if sessionPath == "" {
-		if mapped := gw.sessionMappingPathForMessage(msg); mapped != "" {
-			sessionPath = mapped
-			sessionPathOptional = true
+	if sessionPath == "" && sessionRef.SessionID == "" {
+		if mapped := gw.sessionMappingTargetForMessage(msg); mapped != "" {
+			if ref, ok := parseBotSessionRefTarget(mapped); ok {
+				sessionRef = ref
+				sessionRefOptional = true
+			} else if path := botSessionPathFromTarget(mapped); path != "" {
+				sessionPath = path
+				sessionPathOptional = true
+			}
 		}
 	}
 	// No explicit binding: pin a deterministic per-chat file so the chat reuses
 	// one conversation across restarts (dsh-dingtalk-channel's `ding-<chatId>`
 	// analogue). Optional, mirroring mapping degrade semantics.
-	if sessionPath == "" {
-		if stable := BotSessionPathForChat(botSessionDir(workspaceRoot), msg.Session()); stable != "" {
-			sessionPath = stable
-			sessionPathOptional = true
-		}
+	if sessionPath == "" && sessionRef.SessionID == "" && strings.TrimSpace(msg.ChatID) != "" {
+		sessionRef = session.SessionRef{SessionID: "bot-" + BuildSessionKey(msg.Session())}
+		sessionRefOptional = true
 	}
 	return sessionRuntimeProfile{
 		model:               strings.TrimSpace(model),
@@ -2498,6 +2534,8 @@ func (gw *BotGateway) sessionProfileForResolvedOverride(msg InboundMessage, over
 		toolApprovalMode:    normalizeBotToolApprovalMode(toolApprovalMode),
 		sessionPath:         canonicalBotPath(sessionPath),
 		sessionPathOptional: sessionPathOptional,
+		sessionRef:          sessionRef,
+		sessionRefOptional:  sessionRefOptional,
 	}
 }
 
@@ -2505,7 +2543,7 @@ func (gw *BotGateway) sessionProfileForResolvedOverride(msg InboundMessage, over
 // for a message to an existing session file. Only bindings that resolve to a
 // present, readable file participate — a moved or deleted target quietly
 // degrades to normal session creation rather than blocking the chat.
-func (gw *BotGateway) sessionMappingPathForMessage(msg InboundMessage) string {
+func (gw *BotGateway) sessionMappingTargetForMessage(msg InboundMessage) string {
 	gw.mu.Lock()
 	var mappings []SessionMapping
 	if msg.ConnectionID != "" {
@@ -2523,10 +2561,14 @@ func (gw *BotGateway) sessionMappingPathForMessage(msg InboundMessage) string {
 	if !ok {
 		return ""
 	}
-	path := botSessionPathFromTarget(mapping.SessionID)
-	if path == "" {
-		path = botSessionPathFromTarget(mapping.SessionSource)
+	target := strings.TrimSpace(mapping.SessionID)
+	if target == "" {
+		target = strings.TrimSpace(mapping.SessionSource)
 	}
+	if _, ok := parseBotSessionRefTarget(target); ok {
+		return target
+	}
+	path := botSessionPathFromTarget(target)
 	if path == "" {
 		return ""
 	}
@@ -2563,6 +2605,23 @@ func sessionStateMatchesRuntime(state *sessionState, profile sessionRuntimeProfi
 	if profile.sessionPathOptional && state.mappingDegraded {
 		return true
 	}
+	if profile.sessionRefOptional && state.mappingDegraded {
+		return true
+	}
+	if profile.sessionRef.SessionID != "" {
+		if state.sessionRef.SessionID != profile.sessionRef.SessionID {
+			return false
+		}
+		if profile.sessionRef.HostID != "" && state.sessionRef.HostID != profile.sessionRef.HostID {
+			return false
+		}
+		identity, ok := state.ctrl.(control.IdentityLifecycle)
+		if !ok {
+			return false
+		}
+		ref, bound := identity.SessionRef()
+		return bound && ref == state.sessionRef
+	}
 	if canonicalBotPath(state.sessionPath) != canonicalBotPath(profile.sessionPath) {
 		return false
 	}
@@ -2572,16 +2631,10 @@ func sessionStateMatchesRuntime(state *sessionState, profile sessionRuntimeProfi
 	return true
 }
 
-func safeBotControllerWorkspaceRoot(ctrl botController) (root string, ok bool) {
+func safeBotControllerWorkspaceRoot(ctrl botController) (string, bool) {
 	if ctrl == nil {
 		return "", false
 	}
-	defer func() {
-		if recover() != nil {
-			root = ""
-			ok = false
-		}
-	}()
 	return ctrl.WorkspaceRoot(), true
 }
 
@@ -2589,9 +2642,6 @@ func safeBotSetToolApprovalMode(ctrl botController, mode string) {
 	if ctrl == nil {
 		return
 	}
-	defer func() {
-		_ = recover()
-	}()
 	ctrl.SetToolApprovalMode(mode)
 }
 
@@ -2640,20 +2690,48 @@ func (gw *BotGateway) rememberSessionReady(msg InboundMessage, ctrl botControlle
 	if gw.cfg.OnSessionReady == nil || ctrl == nil {
 		return
 	}
+	if identity, ok := ctrl.(control.IdentityLifecycle); ok && identity.UsesExclusiveSession() {
+		if ref, bound := identity.SessionRef(); bound {
+			gw.rememberSessionTarget(msg, botSessionRefTarget(ref))
+			return
+		}
+	}
 	gw.rememberSessionPath(msg, ctrl.SessionPath())
 }
 
 func (gw *BotGateway) rememberSessionPath(msg InboundMessage, sessionPath string) {
+	gw.rememberSessionTarget(msg, botSessionTarget(sessionPath))
+}
+
+func (gw *BotGateway) rememberSessionTarget(msg InboundMessage, sessionID string) {
 	if gw.cfg.OnSessionReady == nil {
 		return
 	}
-	sessionID := botSessionTarget(sessionPath)
 	if sessionID == "" {
 		return
 	}
 	if err := gw.cfg.OnSessionReady(msg, sessionID); err != nil {
 		gw.logger.Warn("remember bot session failed", "platform", msg.Platform, "connection", msg.ConnectionID, "err", err)
 	}
+}
+
+func botSessionRefTarget(ref session.SessionRef) string {
+	if strings.TrimSpace(ref.HostID) == "" || strings.TrimSpace(ref.SessionID) == "" {
+		return ""
+	}
+	return "session:" + ref.HostID + ":" + ref.SessionID
+}
+
+func parseBotSessionRefTarget(target string) (session.SessionRef, bool) {
+	target = strings.TrimSpace(target)
+	if !strings.HasPrefix(target, "session:") {
+		return session.SessionRef{}, false
+	}
+	parts := strings.SplitN(strings.TrimPrefix(target, "session:"), ":", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return session.SessionRef{}, false
+	}
+	return session.SessionRef{HostID: strings.TrimSpace(parts[0]), SessionID: strings.TrimSpace(parts[1])}, true
 }
 
 // botSessionRecoveredHandler keeps the controller path, its writer lease, and
@@ -2717,7 +2795,7 @@ func (gw *BotGateway) sessionOptionsForMessage(msg InboundMessage) (model string
 
 func (gw *BotGateway) sessionOptionsForResolvedOverride(msg InboundMessage, override sessionRuntimeOverride, enabled bool) (model string, workspaceRoot string, toolApprovalMode string) {
 	// cfg.ToolApprovalMode / Channels / ConnectionChannels are rewritten under
-	// gw.mu at runtime (/yolo, UpdateConnectionToolApprovalMode), so snapshot them
+	// gw.mu at runtime (/mode, UpdateConnectionToolApprovalMode), so snapshot them
 	// under a short lock and resolve outside it. Copying the ChannelConfig value is enough: writers
 	// replace whole map entries and never mutate SessionMappings in place.
 	gw.mu.Lock()
@@ -2859,20 +2937,14 @@ func normalizeBotToolApprovalMode(mode string) string {
 	if value := normalizeOptionalBotToolApprovalMode(mode); value != "" {
 		return value
 	}
-	return control.ToolApprovalAsk
+	return control.ToolApprovalWorkspaceWrite
 }
 
 func normalizeOptionalBotToolApprovalMode(mode string) string {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case control.ToolApprovalAsk:
-		return control.ToolApprovalAsk
-	case control.ToolApprovalAuto:
-		return control.ToolApprovalAuto
-	case control.ToolApprovalYolo, "full", "full-access", "bypass":
-		return control.ToolApprovalYolo
-	default:
+	if strings.TrimSpace(mode) == "" {
 		return ""
 	}
+	return config.NormalizeToolApprovalMode(mode)
 }
 
 func (gw *BotGateway) sendText(ctx context.Context, adapter Adapter, msg InboundMessage, text string) error {

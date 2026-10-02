@@ -9,48 +9,45 @@ export interface ParsedMarkdownValue {
   bytes: number;
 }
 
-/** Byte-bounded LRU whose active selection entries may be pinned. */
+/**
+ * Byte-bounded LRU whose active selection entries may be pinned. Entries are
+ * addressed by source content, not by row id: a parse is a pure function of
+ * its text, and row ids differ between the live and history projections.
+ */
 export class TranscriptMarkdownCache {
-  private readonly entries = new Map<string, { value: ParsedMarkdownValue; bytes: number }>();
-  private readonly pins = new Map<string, number>();
+  private readonly entries = new Map<number, { value: ParsedMarkdownValue; bytes: number }>();
+  private readonly pins = new Map<number, number>();
   bytes = 0;
   evictions = 0;
 
   constructor(readonly budgetBytes: number) {}
 
-  private key(entryId: string, revision: number): string {
-    return `${entryId}@${revision}`;
-  }
-
-  get(entryId: string, revision: number): ParsedMarkdownValue | undefined {
-    const key = this.key(entryId, revision);
-    const entry = this.entries.get(key);
-    if (!entry) return undefined;
-    this.entries.delete(key);
-    this.entries.set(key, entry);
+  get(source: string, revision: number): ParsedMarkdownValue | undefined {
+    const entry = this.entries.get(revision);
+    if (!entry || entry.value.source !== source) return undefined;
+    this.entries.delete(revision);
+    this.entries.set(revision, entry);
     return entry.value;
   }
 
-  set(entryId: string, revision: number, value: ParsedMarkdownValue): void {
-    const key = this.key(entryId, revision);
-    const previous = this.entries.get(key);
+  set(revision: number, value: ParsedMarkdownValue): void {
+    const previous = this.entries.get(revision);
     if (previous) this.bytes -= previous.bytes;
     const bytes = Math.max(0, value.bytes);
-    this.entries.set(key, { value, bytes });
+    this.entries.set(revision, { value, bytes });
     this.bytes += bytes;
     this.enforceBudget();
   }
 
-  pin(entryId: string, revision: number): () => void {
-    const key = this.key(entryId, revision);
-    this.pins.set(key, (this.pins.get(key) ?? 0) + 1);
+  pin(revision: number): () => void {
+    this.pins.set(revision, (this.pins.get(revision) ?? 0) + 1);
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      const count = this.pins.get(key) ?? 0;
-      if (count <= 1) this.pins.delete(key);
-      else this.pins.set(key, count - 1);
+      const count = this.pins.get(revision) ?? 0;
+      if (count <= 1) this.pins.delete(revision);
+      else this.pins.set(revision, count - 1);
       this.enforceBudget();
     };
   }
@@ -62,7 +59,7 @@ export class TranscriptMarkdownCache {
   private enforceBudget(): void {
     while (this.bytes > this.budgetBytes && this.entries.size > 1) {
       const victimKey = Array.from(this.entries.keys()).find((key) => !this.pins.has(key));
-      if (!victimKey) break;
+      if (victimKey === undefined) break;
       const victim = this.entries.get(victimKey);
       if (victim) this.bytes -= victim.bytes;
       this.entries.delete(victimKey);

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"reasonix/internal/filelock"
+	"reasonix/internal/pathidentity"
 )
 
 const backgroundGrace = 30 * time.Second
@@ -69,6 +70,7 @@ type Owner struct {
 	lockDir       string
 	canonical     string
 	compatibility string
+	rootPath      string
 	onWait        WaitNotice
 	graceAfter    time.Duration
 
@@ -78,7 +80,7 @@ type Owner struct {
 }
 
 // State is a sanitized process-local snapshot used by Desktop. WaitingKeys are
-// internal canonical identities; they are never copied into the Wails payload.
+// internal canonical identities; they are never copied into the desktop payload.
 type State struct {
 	Acquired    bool
 	Waiting     bool
@@ -156,8 +158,9 @@ func New(workspaceRoot, lockDir string, onWait WaitNotice) (*Owner, error) {
 	lockPath := workspaceLockPath(lockDir, compatibility)
 	return &Owner{
 		lockPath: lockPath, canonical: canonical, compatibility: compatibility,
-		lockDir: lockDir,
-		onWait:  onWait, graceAfter: backgroundGrace,
+		rootPath: workspaceRoot,
+		lockDir:  lockDir,
+		onWait:   onWait, graceAfter: backgroundGrace,
 		lease: ownerLease{
 			changed: make(chan struct{}), holds: map[uint64]*systemHold{},
 			shared: map[string]*sharedSystemHold{},
@@ -202,23 +205,24 @@ func workspaceIdentities(root string) (canonical, compatibility string, err erro
 	if root == "" {
 		return "", "", errors.New("workspace root is empty")
 	}
-	abs, err := filepath.Abs(root)
+	baseDir := ""
+	if !filepath.IsAbs(root) {
+		baseDir, err = os.Getwd()
+		if err != nil {
+			return "", "", fmt.Errorf("resolve workspace root base: %w", err)
+		}
+	}
+	identity, err := pathidentity.Resolve(root, pathidentity.Options{BaseDir: baseDir, FollowLeaf: true})
 	if err != nil {
 		return "", "", fmt.Errorf("resolve workspace root: %w", err)
 	}
-	abs = filepath.Clean(abs)
-	if resolved, resolveErr := filepath.EvalSymlinks(abs); resolveErr == nil {
-		abs = filepath.Clean(resolved)
-	} else if !os.IsNotExist(resolveErr) {
-		return "", "", fmt.Errorf("canonicalize workspace root: %w", resolveErr)
+	gitRoot := nearestGitWorktreeRoot(identity.PhysicalPath)
+	identity, err = pathidentity.Resolve(gitRoot, pathidentity.Options{FollowLeaf: true})
+	if err != nil {
+		return "", "", fmt.Errorf("resolve workspace lease root: %w", err)
 	}
-	abs = nearestGitWorktreeRoot(abs)
-	compatibility = compatibilityIdentityPath(abs)
-	return normalizeIdentityPath(compatibility), compatibility, nil
-}
-
-func caseInsensitivePlatform() bool {
-	return runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+	compatibility, err = legacyWorkspaceIdentity(root)
+	return identity.Key, compatibility, err
 }
 
 func nearestGitWorktreeRoot(path string) string {
@@ -323,7 +327,17 @@ func (o *Owner) HoldWrite(ctx context.Context) (func(), error) {
 		o.mu.Unlock()
 
 		notified := false
-		release, err := o.acquireWorkspace(ctx, filelock.ModeExclusive, &notified)
+		snapshots, err := snapshotWorkspaceRoots([]string{o.rootPath})
+		var release func()
+		if err == nil {
+			release, err = o.acquireWorkspace(ctx, filelock.ModeExclusive, &notified)
+		}
+		if err == nil {
+			err = o.revalidateRoot(snapshots[0])
+			if err != nil {
+				release()
+			}
+		}
 		o.mu.Lock()
 		var id uint64
 		if err == nil {
@@ -340,6 +354,22 @@ func (o *Owner) HoldWrite(ctx context.Context) (func(), error) {
 		}
 		return o.releaseHoldFunc(id), nil
 	}
+}
+
+func (o *Owner) revalidateRoot(snapshot workspaceRootSnapshot) error {
+	canonical, _, err := workspaceIdentities(snapshot.path)
+	if err != nil {
+		return fmt.Errorf("revalidate workspace root: %w", err)
+	}
+	currentInfo, statErr := os.Stat(snapshot.path)
+	currentExists := statErr == nil
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return fmt.Errorf("revalidate workspace root: %w", statErr)
+	}
+	if canonical != snapshot.key || currentExists != snapshot.exists || (currentExists && !os.SameFile(snapshot.info, currentInfo)) {
+		return errors.New("workspace root identity changed while waiting")
+	}
+	return nil
 }
 
 // ReleaseWrite releases the most recent legacy AcquireWrite/AcquireWriteForPath.
@@ -688,15 +718,27 @@ func compatibilityIdentityPath(path string) string {
 }
 
 func normalizeIdentityPath(path string) string {
-	path = filepath.Clean(path)
-	if caseInsensitivePlatform() {
-		path = strings.ToLower(filepath.ToSlash(path))
+	identity, err := pathidentity.Resolve(path, pathidentity.Options{FollowLeaf: true})
+	if err != nil {
+		return ""
 	}
-	return path
+	return identity.Key
+}
+
+func lockIdentityKey(path string) (string, error) {
+	identity, err := pathidentity.Resolve(path, pathidentity.Options{FollowLeaf: false})
+	if err != nil {
+		return "", err
+	}
+	return identity.Key, nil
 }
 
 func (o *Owner) acquireMode(ctx context.Context, path string, mode filelock.Mode, notified *bool) (func(), error) {
-	release, err := filelock.TryAcquireMode(path, mode)
+	localKey, err := lockIdentityKey(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve workspace lock identity: %w", err)
+	}
+	release, err := filelock.TryAcquireModeWithKey(path, localKey, mode)
 	if err == nil {
 		return release, nil
 	}
@@ -709,7 +751,7 @@ func (o *Owner) acquireMode(ctx context.Context, path string, mode filelock.Mode
 			o.onWait()
 		}
 	}
-	release, err = filelock.AcquireMode(ctx, path, mode)
+	release, err = filelock.AcquireModeWithKey(ctx, path, localKey, mode)
 	if err != nil {
 		return nil, fmt.Errorf("acquire workspace write lease: %w", err)
 	}

@@ -13,9 +13,36 @@ reasonix crash report   # when available in your build
 ```
 
 - **doctor** inspects configuration, derived desktop state, and common install
-  problems without loading the Wails shell.
+  problems without loading the desktop shell.
 - **doctor repair** applies safe, explicit repairs the user opts into.
 - Crash reports remain opt-in and never force a degraded product mode.
+
+## When a conversation cannot continue
+
+In `transcript gate ... at message N`, `N` is an index in the model request,
+not the user's message number. Keep the complete error for diagnosis.
+
+- Invalid tool arguments are recovered using recorded execution evidence.
+  Calls that cannot be safely reconstructed become historical records for the
+  model. Original arguments, results and chat history stay intact; recovery
+  never executes the tools again.
+- Missing or damaged local images from earlier turns are marked unavailable;
+  text and remaining usable images continue. The model is told to request a
+  replacement if needed. A failed image in the current turn must be reattached.
+- Invalid requests from optional extensions are skipped. Required extensions
+  and explicit blocking decisions still pause the operation with guidance.
+- Context preparation has one five-minute generation budget, including queued
+  and chunked work. Heartbeats do not extend it. A failed summary keeps the last
+  committed context; it no longer triggers additional lossy truncation. If that
+  context cannot be sent safely, the current attempt stops with a recoverable
+  error. Retry with `/compact`, shorten the latest message, or select a model
+  with a larger context window. Original chat history stays available.
+- On save failures, keep the conversation open, export a backup if available,
+  and check disk space and write permissions. Model requests and tool execution
+  remain paused until the required save has been confirmed.
+
+These recovery paths do not require deleting chat history or editing session
+files. Derived recovery caches are rebuilt when needed.
 
 ## Install layout (v1.20+)
 
@@ -78,7 +105,7 @@ showing only exit code 1.
 
 ## macOS
 
-macOS keeps LaunchServices launching the Wails app bundle directly. Updates
+macOS keeps LaunchServices launching the desktop app bundle directly. Updates
 replace the signed `.app` atomically; there is no Guard process.
 
 After the replacement window becomes visible, Reasonix commits only the exact

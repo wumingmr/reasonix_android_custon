@@ -1,4 +1,4 @@
-import { mergeSearchSources, parseSearchSources, searchSourcesFromHistory, type SearchSource } from "./searchSources";
+import { mergeSearchSources, parseSearchSources, searchSourcesFromHistory, searchOutputMetadata, type SearchSource } from "./searchSources";
 import type { Item } from "./useController";
 
 type SearchState = {
@@ -8,7 +8,7 @@ type SearchState = {
 };
 
 export function historySearchCards(
-  searches: { id?: string; query?: string; results?: { title?: string; url?: string }[] }[] | undefined,
+  searches: { id?: string; query?: string; sources_status?: "available" | "not_provided"; results?: { title?: string; url?: string }[] }[] | undefined,
 ): Extract<Item, { kind: "tool" }>[] {
   const cards: Extract<Item, { kind: "tool" }>[] = [];
   for (const search of searches ?? []) {
@@ -21,6 +21,7 @@ export function historySearchCards(
       args: search.query ? JSON.stringify({ query: search.query }) : "",
       readOnly: true,
       status: "done",
+      searchSourcesStatus: search.sources_status,
       searchSources: (search.results ?? []).map((hit) => ({ title: hit.title, url: hit.url })),
       output: lines.join("\n"),
     });
@@ -37,11 +38,12 @@ export function historySearchSources(
 
 export function historySearchAndAnswer(
   id: string,
-  m: { content: string; reasoning?: string; workDurationMs?: number; memoryCitations?: Extract<Item, { kind: "assistant" }>["memoryCitations"]; serverSearch?: { id?: string; query?: string; results?: { title?: string; url?: string }[] }[] },
+  m: { content: string; reasoning?: string; turnFinal?: boolean; samplingCount?: number; toolCount?: number; workDurationMs?: number; turnDurationMs?: number; turnUsage?: Extract<Item, { kind: "assistant" }>["turnUsage"]; createdAt?: number; memoryCitations?: Extract<Item, { kind: "assistant" }>["memoryCitations"]; serverSearch?: { id?: string; query?: string; sources_status?: "available" | "not_provided"; results?: { title?: string; url?: string }[] }[] },
+  preserveEmpty = false,
 ): Item[] {
   const out: Item[] = historySearchCards(m.serverSearch);
   const searchSources = historySearchSources(m.serverSearch);
-  if (m.content.trim() !== "" || (m.reasoning ?? "").trim() !== "" || searchSources) {
+  if (preserveEmpty || m.content.trim() !== "" || (m.reasoning ?? "").trim() !== "" || searchSources) {
     out.push({
       kind: "assistant",
       id,
@@ -49,6 +51,12 @@ export function historySearchAndAnswer(
       reasoning: m.reasoning ?? "",
       streaming: false,
       workDurationMs: m.workDurationMs,
+      turnFinal: m.turnFinal,
+      samplingCount: m.samplingCount,
+      toolCount: m.toolCount,
+      turnDurationMs: m.turnDurationMs,
+      turnUsage: m.turnUsage,
+      createdAt: m.createdAt,
       memoryCitations: m.memoryCitations,
       searchSources,
     });
@@ -58,13 +66,18 @@ export function historySearchAndAnswer(
 
 export function attachSearchSources<T extends SearchState>(s: T, sources: SearchSource[]): T {
   if (sources.length === 0) return s;
-  const pendingSearchSources = mergeSearchSources(s.pendingSearchSources, sources);
-  if (!s.currentAssistant) return { ...s, pendingSearchSources };
+  const currentAssistant = s.currentAssistant && s.items.some(
+    (it) => it.kind === "assistant" && it.id === s.currentAssistant,
+  )
+    ? s.currentAssistant
+    : undefined;
+  if (!currentAssistant) {
+    return { ...s, pendingSearchSources: mergeSearchSources(s.pendingSearchSources, sources) };
+  }
   return {
     ...s,
-    pendingSearchSources,
     items: s.items.map((it) =>
-      it.kind === "assistant" && it.id === s.currentAssistant
+      it.kind === "assistant" && it.id === currentAssistant
         ? { ...it, searchSources: mergeSearchSources(it.searchSources, sources) }
         : it,
     ),
@@ -83,7 +96,7 @@ export function attachWebSearchOutput<T extends SearchState>(s: T, name: string,
         ...s,
         items: s.items.map((it) =>
           it.kind === "tool" && it.id === toolId
-            ? { ...it, searchSources: mergeSearchSources(it.searchSources, sources) }
+            ? { ...it, searchSources: mergeSearchSources(it.searchSources, sources), searchSourcesStatus: searchOutputMetadata(output).status, searchSummary: searchOutputMetadata(output).summary }
             : it,
         ),
       }

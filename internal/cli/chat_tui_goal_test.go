@@ -11,7 +11,7 @@ import (
 
 func TestGoalLegacyBudgetFlagNoticesExactlyOnce(t *testing.T) {
 	m := newTestChatTUI()
-	m.ctrl = control.New(control.Options{})
+	m.ctrl = newOwnedTestController(t, control.Options{})
 	t.Cleanup(m.ctrl.Close)
 
 	m.runGoalSubcommand("/goal --research investigate the failure")
@@ -24,7 +24,7 @@ func TestGoalLegacyBudgetFlagNoticesExactlyOnce(t *testing.T) {
 
 func TestMissingLegacyGoalCommandDoesNotStartTUITurn(t *testing.T) {
 	m := newTestChatTUI()
-	m.ctrl = control.New(control.Options{WorkspaceRoot: t.TempDir()})
+	m.ctrl = newOwnedTestController(t, control.Options{WorkspaceRoot: t.TempDir()})
 	t.Cleanup(m.ctrl.Close)
 
 	if cmd := m.runGoalSubcommand("/goal resume .reasonix/autoresearch/missing-task/"); cmd != nil {

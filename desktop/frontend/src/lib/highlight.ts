@@ -1,7 +1,7 @@
 // Syntax highlighting via highlight.js core with a hand-picked language set
 // (registering only what a coding agent surfaces keeps the bundle lean). This is
 // the engine behind the editor seam's HljsCode / HljsDiff; token colors are
-// themed in styles.css (.hljs-*) to match the app palette rather than a stock CSS.
+// themed in CodeSyntax.css (.hljs-*) to match the app palette rather than stock CSS.
 
 import hljs from "highlight.js/lib/core";
 import apache from "highlight.js/lib/languages/apache";

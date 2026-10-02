@@ -21,7 +21,7 @@ func TestGoalStateWritesAreConcurrencySafe(t *testing.T) {
 	path := filepath.Join(dir, "session.jsonl")
 	sess := agent.NewSession("sys")
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
-	c := New(Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+	c := newOwnedTestController(t, Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
 	c.SetGoalWithResearchMode("concurrent goal", GoalResearchOn)
 
 	stop := make(chan struct{})

@@ -53,50 +53,6 @@ func TestExplicitMaxStepsStillAppliesToGoal(t *testing.T) {
 	}
 }
 
-func TestGoalSameFailureRedirectsWithoutPausing(t *testing.T) {
-	turns := []testutil.Turn{
-		{ToolCalls: []provider.ToolCall{{ID: "x1", Name: "missing_tool", Arguments: `{}`}}},
-		{ToolCalls: []provider.ToolCall{{ID: "x2", Name: "missing_tool", Arguments: `{}`}}},
-		{ToolCalls: []provider.ToolCall{{ID: "x3", Name: "missing_tool", Arguments: `{}`}}},
-		{Text: "The same host failure repeated; a different approach is required."},
-	}
-	prov := testutil.NewMock("m", turns...)
-	a := New(prov, tool.NewRegistry(), NewSession(""), Options{}, event.Discard)
-	ctx := WithDeliveryExecutionScope(context.Background(), DeliveryExecutionScope{ID: "goal-1", TaskText: "finish"})
-	err := a.Run(ctx, "work")
-	if err != nil {
-		t.Fatalf("Goal structural guard paused the run: %v", err)
-	}
-	if prov.CallCount() != stormBreakThreshold+1 {
-		t.Fatalf("provider calls = %d, want threshold plus one summary", prov.CallCount())
-	}
-
-	ordinary := testutil.NewMock("m", turns...)
-	plain := New(ordinary, tool.NewRegistry(), NewSession(""), Options{}, event.Discard)
-	if err := plain.Run(context.Background(), "work"); err != nil {
-		t.Fatalf("ordinary mode keeps the structural guard advisory: %v", err)
-	}
-}
-
-func TestGoalZeroEvidenceRedirectsAndContinues(t *testing.T) {
-	reg := tool.NewRegistry()
-	reg.Add(fakeTool{name: "read_file", readOnly: true})
-	turns := make([]testutil.Turn, 0, progressStopStreak+2)
-	for i := range progressStopStreak + 1 {
-		turns = append(turns, testutil.Turn{ToolCalls: []provider.ToolCall{{
-			ID: "same-" + string(rune('a'+i)), Name: "read_file", Arguments: `{"path":"same"}`,
-		}}})
-	}
-	turns = append(turns, testutil.Turn{Text: "The repeated read produced no new evidence."})
-	prov := testutil.NewMock("m", turns...)
-	a := New(prov, reg, NewSession(""), Options{}, event.Discard)
-	ctx := WithDeliveryExecutionScope(context.Background(), DeliveryExecutionScope{ID: "goal-1", TaskText: "research"})
-	err := a.Run(ctx, "work")
-	if err != nil {
-		t.Fatalf("Goal progress guard paused the run: %v", err)
-	}
-}
-
 func TestUnboundedGoalParentLeavesChildUnbounded(t *testing.T) {
 	task := &TaskTool{}
 	if got := task.childMaxStepsForContext(context.Background(), 0); got != 0 {

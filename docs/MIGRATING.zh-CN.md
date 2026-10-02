@@ -4,6 +4,8 @@
 
 Reasonix 1.0 是一次从零开始的 **Go 重写**。它使用全新的代码库，并不是 `0.x` TypeScript 版本的增量升级。本文说明两个版本的差异以及迁移方法。
 
+现行文件观察、工具调度和中断恢复行为见 [Harness 风格执行机制迁移](DSH_EXECUTION_MIGRATION.zh-CN.md)。
+
 ## 摘要
 
 | | 旧版（v1） | Reasonix 1.0+（v2） |
@@ -15,6 +17,17 @@ Reasonix 1.0 是一次从零开始的 **Go 重写**。它使用全新的代码�
 | 代码智能 | embedding 语义搜索 + tree-sitter 符号索引 | LSP 辅助代码读取，以及 grep/read_file/glob；语义索引尚未移植 |
 
 “v1”和“v2”表示代码库代际，而不是 semver 主版本：v1 从未发布 1.0，因此 Go 重写版使用 `1.x` 版本号。
+
+## Windows shell 与后台任务
+
+Windows 新会话向 provider 暴露 `pwsh`，不再暴露 `bash`。前台调用使用一次性
+PowerShell 进程；服务器和 watcher 使用 `run_in_background=true`，随后通过
+`job_output` 和 `job_kill` 管理。旧 `bash`、`PowerShell`、`bash_output`、`wait`
+和 `kill_shell` 名称仍作为隐藏兼容入口，供历史会话、权限规则和 hooks 使用；
+已有 JSONL 无需迁移。系统优先 PowerShell 7，找不到时回退 Windows PowerShell
+5.1；兼容命令使用 `;` 和 `if ($?) {}`，不使用 `&&` 或 `||`。升级后的第一次
+provider 请求会因为工具 schema 前缀变化产生一次预期内的提示缓存未命中；此后同一
+会话的 schema 保持固定。
 
 ## 安装 1.0
 
@@ -66,6 +79,15 @@ cd DeepSeek-Reasonix && make build                        # -> bin/reasonix(.exe
 
 完整路径和限制见[配置路径](./CONFIG_PATHS.zh-CN.md)。
 
+### Desktop Topic 元数据
+
+Desktop 会自动把四个旧 `desktop-topic-*.json` 索引迁移到 Reasonix 状态根目录下按
+scope 隔离的权威 SQLite 数据库。已存在旧文件的 scope 会继续同步 JSON，因此正常降级到
+前一版本 Desktop 时仍能读取标题和时间；全新 scope 只写 SQLite，旧版 Desktop 无法直接
+读取这部分状态：现有 session metadata 可能恢复标题，但不保证创建时间和自动标题阶段完整。
+迁移不会删除旧文件，也不会修改项目拥有的 `.reasonix` 资产。不支持新旧 Desktop 同时写
+同一个工作区。
+
 ## Context Engine v2 升级
 
 指令与记忆升级会自动完成，不需要 setup mode、re-index 命令或新配置：
@@ -109,16 +131,17 @@ agent 核心延续了原有能力：循环、读写编辑与 glob/grep/bash 等�
 ## 主要变化
 
 - **代码智能**：Go 重写版通过 LSP 辅助代码读取，并结合 `grep`、`read_file` 和 `glob` 理解本地代码。v1 的语义搜索与 tree-sitter 符号索引尚未移植，CodeGraph 也不再以内置 MCP server 形式提供。
-- **Plan 模式**：新增 `complete_step`，用于基于证据确认步骤完成。
+- **Plan 模式**保留执行前审批边界；`complete_step` 已退役，模型直接用
+  `todo_write` 更新任务状态。
 - **MCP 项目身份与 schema 缓存 URL 感知凭据**：userinfo 和 token/api_key/password 等查询值不会进入项目运行身份摘要或 schema 缓存键，因此轮换凭据不会改变项目运行时/缓存身份。用户安装的 server 不计算项目身份摘要；已配置 MCP 不再需要旧的启动或逐工具授权回执。
 - **MCP 添加后即可使用**：用户通过桌面端、CLI、全局配置、旧配置导入或主动安装插件包添加的 server 默认可信，全局安装统一写入 `config.toml`。仓库内 `reasonix.toml` / `.mcp.json` 声明保留在项目中，同样无需额外启动确认。同名时项目覆盖全局，项目内部 `reasonix.toml` 高于 `.mcp.json`。打开陌生仓库等同于接受其中可执行的项目配置；启动 Reasonix 前应检查 `.reasonix/settings.json`、`reasonix.toml` 和 `.mcp.json`。如果仓库引发异常的 MCP 或 Hooks 行为，可用安全模式重新启动，在恢复期间禁用这些外部集成。
 - **stdio MCP 连接持久化**：writer 调用不再创建新进程，浏览器或会话类 server 的状态可以保留。
-- **Plan 与权限策略相互独立**：普通内置工具和 Bash 仍遵循 Ask/Auto/YOLO 与 Sandbox；已安装或代理解析的 MCP 写入/破坏性工具，以及来自未授权 server 的读取工具，在整个规划阶段保持阻止。`complete_step` 等执行阶段工具也要等计划获批后才能使用。
+- **Plan 与权限策略相互独立**：普通内置工具和 Bash 使用当前“仅可查看／工作区内修改／完全权限”预设及其 OS 沙箱；已安装或代理解析的 MCP 写入/破坏性工具，以及来自未授权 server 的读取工具，在整个规划阶段保持阻止。
 - `plan_mode_read_only_commands` 仍可解析和保存，以兼容旧配置，但不再决定主 Plan 流程能否调用工具。安装或通过项目配置声明 MCP server 后，其非破坏性的 `readOnlyHint` 工具会自动进入 planner 与只读子智能体，不需要逐工具信任配置。
 - 使用 `read_only_task` / `read_only_skill` 创建技术上只读的子智能体；普通 `task` / `run_skill` 仍可写入，并受权限与 Sandbox 控制。未声明 `readOnlyHint` 的 MCP 工具仍按 writer 处理。
 - `default_tools_approval_mode`、`tools.<raw>.approval_mode` 和 `approvals_reviewer` 已停用，加载时忽略并在下次保存时移除；安装或通过项目配置声明 server 后，其所有工具直接可用。
 - **Web Dashboard 仍然可用，桌面端更推荐**：需要浏览器访问时，可运行
-  `reasonix serve` 启动本地 Web UI；日常可视化使用优先选择 Wails 桌面端，
+  `reasonix serve` 启动本地 Web UI；日常可视化使用优先选择 Electron 桌面端，
   终端工作流继续使用 CLI/TUI。
 - 一些细粒度 v1 工具被合并，例如文件管理操作改由 `bash` 完成；少数工具尚未移植，进度在 Discussions 中跟踪。
 

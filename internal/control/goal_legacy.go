@@ -8,7 +8,6 @@ import (
 
 type legacyGoalRestore struct {
 	taskID   string
-	todos    []evidence.TodoItem
 	epoch    uint64
 	explicit bool
 }
@@ -23,17 +22,6 @@ func normalizeBudgetClass(goal, class string, legacyMode GoalResearchMode) strin
 		}
 		return budgetClassForLegacyMode(goal, legacyMode)
 	}
-}
-
-func goalStateNeedsMigration(state goalState, normalizedBudgetClass string) bool {
-	expectedMode := GoalResearchOff
-	if strings.TrimSpace(state.AutoResearchTaskID) != "" {
-		expectedMode = GoalResearchOn
-	}
-	return state.ResearchMode != expectedMode ||
-		(state.BudgetClass != "" && state.BudgetClass != normalizedBudgetClass) ||
-		(strings.TrimSpace(state.Goal) != "" && state.TurnsLimit != unlimitedGoalTurns) ||
-		state.NoProgressLimit != 0 || state.BudgetExtensions != 0
 }
 
 // blockLegacyRestore fails closed only while the decoded sidecar still owns the
@@ -167,6 +155,7 @@ func (g *goalMachine) resumeLegacyArchive(expectedEpoch uint64, goal string) (ui
 	}
 	g.goal = goal
 	g.status = GoalStatusRunning
+	g.disarmed = false
 	g.stopCause, g.block = "", ""
 	g.budgetClass = budgetClassResearch
 	g.turnsLimit = unlimitedGoalTurns

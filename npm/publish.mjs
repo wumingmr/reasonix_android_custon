@@ -55,8 +55,20 @@ function compareSemver(a, b) {
   return 0;
 }
 
+// npm rejects a tag that parses as a semver range, so `v1` is unusable here.
+export const FROZEN_STABLE_DIST_TAG = "legacy-v1";
+const STABLE_DIST_TAGS = new Set(["latest", FROZEN_STABLE_DIST_TAG]);
+
+export function stableDistTagFromEnv(env = process.env) {
+  const value = env.NPM_STABLE_DIST_TAG || "latest";
+  if (!STABLE_DIST_TAGS.has(value)) {
+    throw new Error(`NPM_STABLE_DIST_TAG must be latest or ${FROZEN_STABLE_DIST_TAG}, got: ${value}`);
+  }
+  return value;
+}
+
 function requireVersionForDistTag(distTag, version) {
-  if (distTag === "latest" && STABLE_RE.test(version)) return;
+  if (STABLE_DIST_TAGS.has(distTag) && STABLE_RE.test(version)) return;
   if (distTag === "canary" && CANARY_RE.test(version)) return;
   if (
     distTag === "next" &&
@@ -69,10 +81,13 @@ function requireVersionForDistTag(distTag, version) {
   throw new Error(`version ${version} does not belong to npm dist-tag ${distTag}`);
 }
 
-export function distTagForVersion(version) {
+export function distTagForVersion(version, stableDistTag = "latest") {
   if (CANARY_RE.test(version)) return "canary";
   if (SEMVER_RE.test(version) && version.includes("-")) return "next";
-  if (STABLE_RE.test(version)) return "latest";
+  if (STABLE_RE.test(version)) {
+    if (!STABLE_DIST_TAGS.has(stableDistTag)) throw new Error(`invalid stable npm dist-tag: ${stableDistTag}`);
+    return stableDistTag;
+  }
   throw new Error(`invalid npm release version: ${version}`);
 }
 
@@ -116,7 +131,7 @@ function parseJSON(output, description) {
 }
 
 function readLocalPackage(entry, version, candidateSha) {
-  const pkg = JSON.parse(readFileSync(`${entry.dir}/package.json`, "utf8"));
+  const pkg = entry.manifest ?? JSON.parse(readFileSync(`${entry.dir}/package.json`, "utf8"));
   if (pkg.name !== entry.name || pkg.version !== version) {
     throw new Error(
       `local package identity mismatch: expected ${entry.name}@${version}, got ${pkg.name}@${pkg.version}`,
@@ -187,23 +202,29 @@ function readDistTag(runner, name, distTag) {
   return value;
 }
 
-function waitForPackage(
+function waitForPackages(
   runner,
-  entry,
+  packages,
   version,
   candidateSha,
   attempts,
   sleep,
+  log,
 ) {
+  const pending = new Map(packages.map((entry) => [entry.name, entry]));
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const metadata = registryPackage(runner, entry.name, version);
-    if (metadata) {
-      verifyRegistryPackage(metadata, entry.name, version, candidateSha);
-      return;
+    for (const [name] of pending) {
+      const metadata = registryPackage(runner, name, version);
+      if (metadata) {
+        verifyRegistryPackage(metadata, name, version, candidateSha);
+        pending.delete(name);
+      }
     }
+    if (pending.size === 0) return;
+    log(`waiting for npm registry visibility (${attempt}/${attempts}): ${[...pending.keys()].join(", ")}`);
     if (attempt < attempts) sleep(10_000);
   }
-  throw new Error(`${entry.name}@${version} did not become visible in the npm registry`);
+  throw new Error(`npm packages did not become visible at ${version}: ${[...pending.keys()].join(", ")}`);
 }
 
 function ensurePackage(
@@ -212,8 +233,6 @@ function ensurePackage(
   version,
   candidateSha,
   stagingTag,
-  attempts,
-  sleep,
   log,
 ) {
   readLocalPackage(entry, version, candidateSha);
@@ -226,8 +245,9 @@ function ensurePackage(
 
   log(`publish ${entry.name}@${version} (${stagingTag})`);
   try {
+    const publishTarget = entry.tarball ? [entry.tarball] : [];
     runner(
-      ["publish", "--access", "public", "--tag", stagingTag],
+      ["publish", ...publishTarget, "--access", "public", "--provenance", "--tag", stagingTag],
       { cwd: entry.dir, inherit: true },
     );
   } catch (error) {
@@ -237,14 +257,6 @@ function ensurePackage(
     if (!raced) throw error;
     verifyRegistryPackage(raced, entry.name, version, candidateSha);
   }
-  waitForPackage(
-    runner,
-    entry,
-    version,
-    candidateSha,
-    attempts,
-    sleep,
-  );
 }
 
 function advanceDistTag(runner, name, version, distTag, attempts, sleep, log) {
@@ -293,12 +305,14 @@ export function publishPackages({
   packages,
   version,
   candidateSha,
+  stableDistTag = stableDistTagFromEnv(),
   runner = defaultRunner,
   sleep = defaultSleep,
   // npm's public registry can lag a successful immutable publish by several
-  // minutes. Keep this bounded, but allow enough time for normal replication
-  // before recovery treats the package as missing.
-  attempts = 31,
+  // minutes (v1.38.6 exceeded the old five-minute window). Submit the whole
+  // set first, then poll pending packages together for up to twenty minutes
+  // of scheduled waits, plus registry request time. Never republish on E404.
+  attempts = 121,
   log = console.log,
 }) {
   if (!Array.isArray(packages) || packages.length === 0) {
@@ -307,46 +321,20 @@ export function publishPackages({
   if (!CANDIDATE_SHA_RE.test(candidateSha)) {
     throw new Error(`invalid release candidate SHA: ${candidateSha}`);
   }
-  const distTag = distTagForVersion(version);
+  const distTag = distTagForVersion(version, stableDistTag);
   const stagingTag = `${distTag}-staging`;
-  let failure;
-
-  try {
-    for (const entry of packages) {
-      ensurePackage(
-        runner,
-        entry,
-        version,
-        candidateSha,
-        stagingTag,
-        attempts,
-        sleep,
-        log,
-      );
-    }
-    for (const entry of packages) {
-      advanceDistTag(
-        runner,
-        entry.name,
-        version,
-        distTag,
-        attempts,
-        sleep,
-        log,
-      );
-    }
-  } catch (error) {
-    failure = error;
+  for (const entry of packages) {
+    ensurePackage(runner, entry, version, candidateSha, stagingTag, log);
   }
-
-  try {
-    for (const entry of packages) {
-      cleanupStagingTag(runner, entry.name, version, stagingTag, log);
-    }
-  } catch (error) {
-    if (!failure) failure = error;
+  // A delayed platform must not prevent the remaining immutable uploads.
+  // All packages must prove the candidate before any official alias moves.
+  waitForPackages(runner, packages, version, candidateSha, attempts, sleep, log);
+  for (const entry of packages) {
+    advanceDistTag(runner, entry.name, version, distTag, attempts, sleep, log);
   }
-
-  if (failure) throw failure;
+  // Keep staging evidence on failure so recovery can inspect and reuse it.
+  for (const entry of packages) {
+    cleanupStagingTag(runner, entry.name, version, stagingTag, log);
+  }
   return { distTag, version };
 }

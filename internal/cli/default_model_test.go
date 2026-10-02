@@ -107,7 +107,7 @@ func TestResolveModelForCLI(t *testing.T) {
 			defaultModel: "minimax/MiniMax-M3",
 			configured:   true,
 			keyless:      false,
-			wantErrSub:   "requires " + defaultModelTestKeylessEnv,
+			wantErrSub:   defaultModelTestKeylessEnv + "=<key>",
 		},
 		{
 			name:         "explicit configured ref is used verbatim",
@@ -252,6 +252,23 @@ func setCredential(t *testing.T, key string, configured bool) {
 		}
 		if err := os.WriteFile(config.UserCredentialsPath(), []byte{}, 0o600); err != nil {
 			t.Fatalf("write empty credentials: %v", err)
+		}
+	}
+}
+
+func TestResolveModelForCLIMissingKeyNamesCredentialFile(t *testing.T) {
+	isolateCLIConfigHome(t)
+	setCredential(t, defaultModelTestKeylessEnv, false)
+	t.Setenv(defaultModelTestKeylessEnv, "sk-from-shell")
+
+	_, _, err := resolveModelForCLI("deepseek-flash", newDefaultModelTestConfig())
+	if err == nil {
+		t.Fatal("expected an error for a model whose key is only in the shell environment")
+	}
+	msg := err.Error()
+	for _, want := range []string{`model "deepseek-flash"`, config.UserCredentialsPath(), "reasonix setup"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q does not mention %q", msg, want)
 		}
 	}
 }

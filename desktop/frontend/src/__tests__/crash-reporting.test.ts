@@ -1,9 +1,8 @@
 // Run: tsx src/__tests__/crash-reporting.test.ts
 
 import {
-  aggregateLongTaskProfile,
   buildCrashPayload,
-  buildPerformancePayload,
+  buildPerformancePayload, crashErrorFamily,
   formatLongTaskAttribution,
   formatPerformanceContext,
   globalCrashReportReason,
@@ -22,14 +21,14 @@ import {
   shouldReportGlobalCrashEvent,
   shouldRecordLongTaskSample,
   topFrameFromStack,
-  type PerformanceSnapshot,
-  type ProfilerTrace,
+  type PerformanceSnapshot
 } from "../lib/crash";
 import { writeClipboardText } from "../lib/clipboard";
 import { installObjectHasOwnPolyfill } from "../lib/compat";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { installDesktopHostStub } from "./desktopHostStub";
 
 let passed = 0;
 let failed = 0;
@@ -64,7 +63,7 @@ for (const file of ["../components/VirtualMenu.tsx", "../components/WorkspacePan
       source.includes("ref={virtualizer.containerRef}") &&
       !source.includes("transform: `translateY(${row.start}px)`"),
     true,
-    `${label} avoids measurement-triggered React update loops`,
+    `${label} avoids measurement-triggered React update loops`
   );
 }
 
@@ -78,18 +77,31 @@ eq(payload.kind, "exception", "unhandled rejection is a nonfatal exception kind"
 eq(payload.source, "frontend.global", "global handler payload identifies source");
 eq(payload.errorType, "TypeError", "captures error type");
 eq(payload.componentStack, "component stack", "captures component stack");
+eq(crashErrorFamily("Maximum update depth exceeded"), "react.maximum_update_depth", "classifies React nested update failures across bundles");
+eq(crashErrorFamily("network failed"), undefined, "does not merge unrelated failures into the React error family");
 eq(payload.message.includes("[unhandledrejection]"), true, "keeps human-readable message");
 eq(shouldReportGlobalCrashEvent({ defaultPrevented: false }), true, "reports unhandled global events by default");
 eq(shouldReportGlobalCrashEvent({ defaultPrevented: true }), false, "ignores global events already handled by a filter");
 eq(
-  shouldReportGlobalCrashEvent({ defaultPrevented: false, message: "ResizeObserver loop limit exceeded" }),
+  shouldReportGlobalCrashEvent({ defaultPrevented: false, message: "ResizeObserver loop limit exceeded", }),
   false,
   "ignores Chromium ResizeObserver loop limit notices",
 );
 eq(
-  shouldReportGlobalCrashEvent({ defaultPrevented: false, message: "Minified React error #520; recovered synchronously" }),
+  shouldReportGlobalCrashEvent({ defaultPrevented: false, message: "Minified React error #520; recovered synchronously", }),
   false,
   "suppresses React's recoverable concurrent-render diagnostic",
+);
+const supersededRemoteStatusError = new Error('remote tab "remote-1" status was superseded by newer runtime state');
+eq(
+  shouldReportGlobalCrashEvent({ defaultPrevented: false, reason: supersededRemoteStatusError, }),
+  false,
+  "suppresses superseded remote status errors delivered through PromiseRejectionEvent.reason",
+);
+eq(
+  shouldReportGlobalCrashEvent({ defaultPrevented: false, reason: new Error("remote status transport failed"), }),
+  true,
+  "reports unrelated PromiseRejectionEvent reasons",
 );
 eq(
   shouldReportGlobalCrashEvent({
@@ -99,21 +111,21 @@ eq(
   false,
   "ignores Chromium ResizeObserver undelivered notification notices",
 );
-eq(isOpaqueScriptErrorEvent({ defaultPrevented: false, message: "Script error." }), true, "identifies locationless opaque script errors");
+eq(isOpaqueScriptErrorEvent({ defaultPrevented: false, message: "Script error.", }), true, "identifies locationless opaque script errors",);
 eq(
-  isOpaqueScriptErrorEvent({ defaultPrevented: false, message: "Script error.", filename: "wails://wails/assets/index.js" }),
+  isOpaqueScriptErrorEvent({ defaultPrevented: false, message: "Script error.", filename: "wails://wails/assets/index.js", }),
   false,
   "keeps located script errors out of opaque grouping",
 );
 const opaqueHint = opaqueScriptFingerprintHint(
   "wails://wails.localhost/tabs/123456789?token=private#abcdef123456",
   [{ t: 1, cat: "tab hydration", msg: "private path /Users/alice/project" }],
-  "0123456789abcdefdeadbeef",
+  "0123456789abcdefdeadbeef"
 );
 eq(opaqueHint, "build:0123456789abcdef|view:wails://wails.localhost/tabs/_|cats:tab_hydration", "opaque grouping uses stable safe context");
 eq(opaqueHint.includes("alice"), false, "opaque grouping never includes breadcrumb messages");
 eq(
-  shouldReportGlobalCrashEvent({ defaultPrevented: false, error: new Error("ResizeObserver loop limit exceeded") }),
+  shouldReportGlobalCrashEvent({ defaultPrevented: false, error: new Error("ResizeObserver loop limit exceeded"), }),
   false,
   "ignores ResizeObserver notices delivered through ErrorEvent.error",
 );
@@ -174,9 +186,15 @@ const perf: PerformanceSnapshot = {
       { startMs: 41_000, durationMs: 500 },
     ],
   },
-  connection: { effectiveType: "4g", rttMs: 50, downlinkMbps: 20, saveData: false },
+  connection: { effectiveType: "4g", rttMs: 50, downlinkMbps: 20, saveData: false, },
 };
 const perfPayload = buildPerformancePayload(perf);
+const processReport = formatPerformanceContext({ ...perf, cpuProfile: { status: "unavailable" }, processes: {
+  scope: "electron", samples: [{ ageMs: 10, intervalMs: null, processes: [{ pid: 42, type: "Tab", cpuPercent: null, workingSetMb: 200, privateMb: null, },], },],
+}, });
+eq(processReport.includes("Go service excluded"), true, "report identifies incomplete process coverage");
+eq(processReport.includes("PID 42 Tab: CPU unavailable"), true, "missing CPU is not reported as zero");
+eq(processReport.includes("CPU profile after trigger: unavailable"), true, "missing profiler is explicit and does not claim to reconstruct the event");
 eq(perfPayload.kind, "performance", "performance pressure reports use performance kind");
 eq(perfPayload.source, "frontend.performance", "performance pressure reports identify source");
 eq(perfPayload.label, "performance.lag", "performance pressure reports partition by stable pressure label");
@@ -193,7 +211,7 @@ eq(performanceFingerprintHintForReason("long task 900ms"), undefined, "does not 
 eq(
   buildPerformancePayload({ ...perf, reason: "js heap 97% of limit" }).fingerprintHint,
   "frontend.performance.heap.critical",
-  "adds the heap tier to the report fingerprint",
+  "adds the heap tier to the report fingerprint"
 );
 eq(shouldRecordLongTaskSample(14_000, 900, 15_000), false, "ignores startup long tasks before grace ends");
 eq(shouldRecordLongTaskSample(16_000, 40, 15_000), false, "ignores short long-task observer entries");
@@ -206,7 +224,7 @@ eq(shouldPromptForLongTasks({ count: 1, totalMs: 850, maxMs: 850 }), true, "prom
 eq(
   shouldPromptForLongTasks({ count: 16, totalMs: 1_584, maxMs: 237 }),
   false,
-  "tolerates streaming-render bursts below the 3s cumulative budget",
+  "tolerates streaming-render bursts below the 3s cumulative budget"
 );
 eq(shouldPromptForLongTasks({ count: 16, totalMs: 3_100, maxMs: 237 }), true, "prompts past the 3s cumulative budget");
 eq(shouldPromptForLongTasks({ count: 2, totalMs: 3_100, maxMs: 790 }), false, "cumulative path needs at least 3 tasks");
@@ -215,12 +233,12 @@ eq(shouldPromptForEventLoopLag([1_350, 1_420]), true, "prompts on consecutive la
 eq(
   shouldPromptForEventLoopLag([1_350], { count: 1, totalMs: 900, maxMs: 900 }),
   true,
-  "prompts on a lag spike corroborated by a blocking long task",
+  "prompts on a lag spike corroborated by a blocking long task"
 );
 eq(
   shouldPromptForEventLoopLag([1_350], { count: 2, totalMs: 300, maxMs: 180 }),
   false,
-  "does not treat unrelated short long tasks as lag corroboration",
+  "does not treat unrelated short long tasks as lag corroboration"
 );
 
 eq(formatLongTaskAttribution("self", [{ containerType: "window" }]), "", "hides the no-signal self/window attribution");
@@ -228,41 +246,9 @@ eq(formatLongTaskAttribution("unknown", undefined), "", "hides unknown attributi
 eq(
   formatLongTaskAttribution("cross-origin-descendant", [{ containerType: "iframe", containerSrc: "https://embed.example" }]),
   "cross-origin-descendant iframe:https://embed.example",
-  "surfaces cross-context culprits with their container",
+  "surfaces cross-context culprits with their container"
 );
 
-const trace: ProfilerTrace = {
-  resources: ["wails://wails/assets/vendor-markdown.js"],
-  frames: [
-    { name: "post", resourceId: 0, line: 1, column: 130216 },
-    { name: "tick", resourceId: 0, line: 9 },
-    { name: "" },
-  ],
-  stacks: [{ frameId: 0 }, { frameId: 1, parentId: 0 }, { frameId: 2 }],
-  samples: [
-    { timestamp: 1_000, stackId: 0 },
-    { timestamp: 1_010, stackId: 0 },
-    { timestamp: 1_020, stackId: 1 },
-    { timestamp: 5_000, stackId: 0 }, // outside every long-task window
-    { timestamp: 1_030 }, // idle sample without a stack
-    { timestamp: 1_040, stackId: 2 },
-  ],
-};
-eq(
-  aggregateLongTaskProfile(trace, [{ startMs: 990, durationMs: 100 }]),
-  [
-    { label: "post (wails://wails/assets/vendor-markdown.js:1:130216)", samples: 2 },
-    { label: "tick (wails://wails/assets/vendor-markdown.js:9)", samples: 1 },
-    { label: "(anonymous)", samples: 1 },
-  ],
-  "counts leaf frames for samples inside long-task windows",
-);
-eq(aggregateLongTaskProfile(trace, []), [], "returns nothing without long-task windows");
-eq(
-  aggregateLongTaskProfile(trace, [{ startMs: 990, durationMs: 100 }], 1),
-  [{ label: "post (wails://wails/assets/vendor-markdown.js:1:130216)", samples: 2 }],
-  "caps the frame list at maxFrames",
-);
 
 const framesSnapshot: PerformanceSnapshot = {
   ...perf,
@@ -270,24 +256,24 @@ const framesSnapshot: PerformanceSnapshot = {
     count: 1,
     totalMs: 900,
     maxMs: 900,
-    recent: [{ startMs: 40_000, durationMs: 900, attribution: "cross-origin-descendant" }],
+    recent: [{ startMs: 40_000, durationMs: 900, attribution: "cross-origin-descendant", },],
   },
   longTaskFrames: [{ label: "post (vendor-markdown.js:1)", samples: 42 }],
 };
 eq(
   formatPerformanceContext(framesSnapshot).includes("900ms @ 40.0s (cross-origin-descendant)"),
   true,
-  "recent long tasks carry their attribution",
+  "recent long tasks carry their attribution"
 );
 eq(
   formatPerformanceContext(framesSnapshot).includes("long task top frames (sampled):\n  42x post (vendor-markdown.js:1)"),
   true,
-  "formats sampled top frames into the report context",
+  "formats sampled top frames into the report context"
 );
 eq(
   formatPerformanceContext(perf).includes("long task top frames"),
   false,
-  "omits the frames section when no profile was captured",
+  "omits the frames section when no profile was captured"
 );
 
 eq(shouldRecordEventLoopLagSample(true, 60_000), false, "ignores event-loop lag while the window is hidden");
@@ -297,7 +283,7 @@ eq(shouldRecordEventLoopLagSample(false, 60_000, false), false, "ignores event-l
 eq(
   shouldRecordEventLoopLagSample(false, 60_000, true, 3_000),
   false,
-  "ignores event-loop lag immediately after focus resumes",
+  "ignores event-loop lag immediately after focus resumes"
 );
 eq(shouldRecordEventLoopLagSample(false, 60_000, true, 6_000), true, "records event-loop lag once both resume grace windows pass");
 
@@ -322,7 +308,6 @@ eq(shouldPromptForPerformanceLabel(false, 11 * 60_000, false, false), false, "ne
   // runs before the visibilitychange/focus task is delivered (the race behind
   // the field reports #6419/#5909).
   (globalThis as any).window = {
-    runtime: {},
     location: { protocol: "app:", host: "test", pathname: "/", hash: "" },
     addEventListener: () => {},
     setInterval: (cb: () => void) => {
@@ -330,6 +315,8 @@ eq(shouldPromptForPerformanceLabel(false, 11 * 60_000, false, false), false, "ne
       return 1;
     },
   };
+  // The pressure monitor only runs under a desktop shell.
+  installDesktopHostStub({});
   (globalThis as any).document = {
     visibilityState: "visible",
     hasFocus: () => focused,
@@ -438,7 +425,10 @@ eq([...parseReportedPerf("{not json", "abc123")], [], "tolerates corrupt storage
   const previousWindow = (globalThis as any).window;
   const previousHTMLElement = (globalThis as any).HTMLElement;
   const setNavigator = (value: unknown) =>
-    Object.defineProperty(globalThis, "navigator", { value, configurable: true });
+    Object.defineProperty(globalThis, "navigator", {
+      value,
+      configurable: true,
+    });
 
   setNavigator({ clipboard: { writeText: async () => {} } });
   eq(await writeClipboardText("report"), true, "copy reports success through the async clipboard API");
@@ -451,17 +441,11 @@ eq([...parseReportedPerf("{not json", "abc123")], [], "tolerates corrupt storage
     },
   };
   setNavigator(rejectingClipboard);
-  let bridgeCalls = 0;
-  (globalThis as any).window = {
-    runtime: {
-      ClipboardSetText: async (value: string) => {
-        bridgeCalls += 1;
-        return value.length > 0;
-      },
-    },
-  };
-  eq(await writeClipboardText("report"), true, "copy falls back to the Wails native clipboard bridge when the clipboard API rejects");
-  eq(bridgeCalls, 1, "the rejected clipboard write goes through the native bridge exactly once");
+  const bridgeWrites: string[] = [];
+  (globalThis as any).window = {};
+  installDesktopHostStub({}, { clipboardWrites: bridgeWrites });
+  eq(await writeClipboardText("report"), true, "copy falls back to the desktop native clipboard bridge when the clipboard API rejects");
+  eq(bridgeWrites, ["report"], "the rejected clipboard write goes through the native bridge exactly once");
 
   setNavigator(rejectingClipboard);
   const execCommands: string[] = [];
@@ -470,7 +454,13 @@ eq([...parseReportedPerf("{not json", "abc123")], [], "tolerates corrupt storage
   (globalThis as any).document = {
     activeElement: undefined,
     getSelection: () => null,
-    createElement: () => ({ value: "", style: {}, setAttribute: () => {}, select: () => {}, remove: () => {} }),
+    createElement: () => ({
+      value: "",
+      style: {},
+      setAttribute: () => {},
+      select: () => {},
+      remove: () => {},
+    }),
     body: { appendChild: () => {} },
     execCommand: (command: string) => {
       execCommands.push(command);
@@ -487,7 +477,7 @@ eq([...parseReportedPerf("{not json", "abc123")], [], "tolerates corrupt storage
   (globalThis as any).document = {
     activeElement: undefined,
     getSelection: () => null,
-    createElement: () => ({ value: "", style: {}, setAttribute: () => {}, select: () => {}, remove: () => { removed = true; } }),
+    createElement: () => ({ value: "", style: {}, setAttribute: () => {}, select: () => {}, remove: () => { removed = true; }, }),
     body: { appendChild: () => {} },
     execCommand: () => {
       throw new DOMException("not allowed", "NotAllowedError");

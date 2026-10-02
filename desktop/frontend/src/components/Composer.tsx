@@ -1,21 +1,41 @@
+import { clipboardFiles, clipboardHasImageHint, isPasteShortcut, dataURLHash } from "../lib/composerClipboard";
+import { composerDraftFingerprint, emptyComposerDraft, persistentComposerDraft, persistentSnapshot } from "./composerDraftState";
+import { SessionInputRecovery } from "./SessionInputRecovery";
+import { recoveryStatusText, type RecoveryRetry } from "../lib/recoveryStatus";
+import { useRuntimeSession } from "../lib/useRuntimeState";
+import { isCompactCommand } from "../lib/sessionMaintenanceOperation";
+import { pendingFollowups, confirmFollowup, followupNotSubmitted, followupSessionKey, queuedFollowupOutcome, type PendingFollowup } from "../lib/pendingFollowup";
+import { useAppNavigationStore } from "../store/appNavigation";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { CSSProperties, ClipboardEvent, DragEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
-import { ArrowRight, ArrowUp, AtSign, Check, ChevronsUpDown, CornerDownRight, Equal, Eye, FilePlus2, FileText, Folder, Gauge, Hash, List, MessageSquare, PackageCheck, Plus, Search, Shield, ShieldAlert, ShieldCheck, Square, Target, Trash2, X } from "lucide-react";
+import { ArrowRight, ArrowUp, Brain, Check, CornerDownRight, Eye, FileText, Folder, Lightbulb, List, MessageSquare, Plus, Search, Square, Target, Trash2, X } from "lucide-react";
 import { asArray } from "../lib/array";
 import { filterAtMatches } from "../lib/atMatches";
 import { DedupIndex, sha256 } from "../lib/attachDedup";
 import { app, onFilesDropped } from "../lib/bridge";
-import { enqueueInboxGuidance } from "../lib/inboxSubmit";
+import { attachmentExt, attachmentName, baseName, formatAttachmentDisplayReference, hasImageAttachments, sortComposerAttachments, type Attachment } from "../lib/composerAttachments";
+import type { PastedBlock, PersistentComposerDraft, PersistentComposerTarget, WorkspaceReference } from "../lib/composerDraftTypes";
+import { sendPersistedComposer, useSessionComposerPersistence } from "../lib/sessionComposerPersistence";
+import { ComposerModelApplicationRecovery } from "./ModelApplicationRecovery";
+import { definitelyNotAccepted, modelApplicationError, type ModelApplicationDetails, type ModelApplicationChoice } from "../lib/modelApplication";
+import type { SessionRef } from "../lib/sessionRef";
+import type { SessionIdentity } from "../lib/sessionIdentity";
+import type { ComposerTarget } from "../generated/desktopContract.generated";
+import { desktopHost } from "../lib/desktopHost";
+import { steerInboxItemForActiveTurn } from "../lib/inboxSubmit";
 import { formatInboxError, isInboxItemMissing } from "../lib/inboxError";
+import { captureStableInboxTarget, createTransientGuidance } from "../lib/transientComposerGuidance";
 import { inboxScopeKey } from "../lib/composerInboxQueue";
 import { useComposerInboxRefresh } from "../lib/useComposerInboxRefresh";
 import { useComposerImeGuard } from "../lib/useComposerImeGuard";
+import { useComposerCommandCatalog } from "../lib/useComposerCommandCatalog";
 import { guidanceIsInFlight, guidanceNeedsRetry, guidanceTextMatches, kickIdleGuidance, markGuidanceQueued } from "../lib/composerGuidance";
+import { createGuidanceReceiptTracker, type GuidanceReceiptTracker } from "../lib/composerGuidanceReceipt";
 import { canUsePromptHistory, composerEnterAction, composerEscapeAction, composerMenuKeyAction, insertComposerNewline, isFnKeyEvent, isImeKeyEvent, promptHistoryDirectionFromEvent } from "../lib/composerKeyboard";
 import { cacheGeneration, loadOlder } from "../lib/composerHistory";
-import { sessionTurnsLabel } from "../lib/sessionCatalogPresentation";
-import { SPINNER_WORDS, useI18n, type Translator } from "../lib/i18n";
-import { detectShortcutPlatform, formatShortcutCombo, isReservedComposerHistoryShortcut, matchesShortcut, useShortcutComboLabel } from "../lib/keyboardShortcuts";
+import { sessionTurnsLabel } from "../lib/sessionTurnsPresentation";
+import { useI18n, type Translator } from "../lib/i18n";
+import { detectShortcutPlatform, formatShortcutCombo, matchesShortcut, useShortcutComboLabel } from "../lib/keyboardShortcuts";
 import { fallbackCopyText } from "../lib/clipboard";
 import {
   commandAvailableAtSlashPosition,
@@ -28,7 +48,9 @@ import {
   type ComposerInvocation,
   type StructuredInvocationSubmit,
 } from "../lib/invocationDisplay";
-import { formatTokens } from "../lib/format";
+import { formatTokens, formatTps } from "../lib/format";
+import { formatElapsedMs, turnMetrics } from "../lib/turnMetrics";
+import { useLiveTurnMetrics } from "../lib/useLiveTurnMetrics";
 import type { CancelOutcome } from "../lib/inboxCancel";
 import type { ControllerLiveStore } from "../lib/useController";
 import { clearLayoutSize, loadOptionalLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
@@ -36,7 +58,11 @@ import { createRafResizeUpdater } from "../lib/resizeDrag";
 import { observeComposerMenuViewport } from "../lib/composerMenuViewport";
 import { resolveComposerContentSizing } from "../lib/composerSizing";
 import { useToast } from "../lib/toast";
-import { type CollaborationMode, type CommandInfo, type ComposerInsertRequest, type ContextInfo, type DirEntry, type EffortInfo, type GoalRuntime, type HistoryMessage, type Mode, type PromptHistoryEntry, type QualityFloor, type SessionMeta, type SessionReference, type SlashArgItem, type SlashArgsResult, type ToolApprovalMode, type BalanceInfo } from "../lib/types";
+import { readStatusLabel, turnPhaseStatusLabel } from "../lib/readStatus";
+import { fullAccessProjectConfirmationKey } from "../lib/fullAccessConfirmation";
+import { normalizeToolApprovalMode, type CollaborationMode, type CommandInfo, type ComposerInsertRequest, type ContextInfo, type DirEntry, type EffortInfo, type GoalLifecycleView, type GoalRuntime, type HistoryMessage, type Mode, type PromptHistoryEntry, type SessionMeta, type SessionReference, type SlashArgItem, type SlashArgsResult, type TabMeta, type ToolApprovalMode, type BalanceInfo, type WireReadStatus } from "../lib/types";
+import { ComposerPinnedFilesShelf } from "./ComposerPinnedFilesShelf";
+import type { ComposerWorkspaceContext } from "./ComposerWorkspaceContextBar";
 import {
   formatWorkspaceReference,
   parseWorkspaceReference,
@@ -46,9 +72,13 @@ import {
 import { SlashMenu, sortSlashCommandsForMenu } from "./SlashMenu";
 import { ArgMenu } from "./ArgMenu";
 import { ANCHORED_POPOVER_CLOSE_MS, AnchoredPopover } from "./AnchoredPopover";
-import { EffortSwitcher } from "./EffortSwitcher";
-import { ModelSwitcher } from "./ModelSwitcher";
+import { ComposerChoice } from "./ComposerChoice";
+import { PermissionPresetChoice } from "./PermissionPresetChoice";
+const ModelSwitcher = lazy(() => import("./ModelSwitcher").then((module) => ({ default: module.ModelSwitcher })));
+const ComposerWorkspaceContextBar = lazy(() => import("./ComposerWorkspaceContextBar"));
 import { Tooltip } from "./Tooltip";
+const RecoveryWaitBanner = lazy(() => import("./RecoveryWaitBanner").then((module) => ({ default: module.RecoveryWaitBanner })));
+const AuthenticationRecoveryActions = lazy(() => import("./AuthenticationRecoveryActions").then((module) => ({ default: module.AuthenticationRecoveryActions })));
 import { ComposerContextCard } from "./ComposerContextCard";
 import { Markdown } from "./Markdown";
 import { CodeViewer } from "./CodeViewer";
@@ -77,27 +107,20 @@ import {
   type SelectedTextReference,
 } from "../lib/selectedTextContext";
 import { formatGoalWorkTime } from "../lib/goalRuntime";
+import { ComposerContentMenuActions } from "./ComposerContentMenuActions";
+import { GoalLifecycleActions } from "./GoalLifecycleActions";
 
-interface Attachment {
-  path: string;
-  previewUrl?: string;
-  displayName?: string;
-}
+export type { PersistentComposerDraft } from "../lib/composerDraftTypes";
 
 interface AttachmentDedupKey {
   hash: string;
   source: string;
 }
 
-export interface WorkspaceReference {
-  path: string;
-  isDir?: boolean;
-  displayPath?: string;
-}
-
 const LONG_PASTE_MIN_CHARS = 2000;
 const LONG_PASTE_MIN_LINES = 20;
 const COMPOSER_MIN_HEIGHT = 104;
+const COMPOSER_DEFAULT_HEIGHT = 140;
 const COMPOSER_MAX_HEIGHT = 360;
 // Height reserved for the in-card run strip while a turn runs; applied via a
 // CSS calc so --composer-height always stays in "logical height" space.
@@ -107,18 +130,37 @@ const COMPOSER_AUTO_RESERVED_HEIGHT = 58;
 const PROMPT_HISTORY_PREFETCH_REMAINING = 3;
 const FILE_REF_SEARCH_CACHE_TTL_MS = 5000;
 const ComposerGuidanceShelf = lazy(() => import("./ComposerGuidanceShelf").then((module) => ({ default: module.ComposerGuidanceShelf })));
-
-type PastedBlock = {
-  label: string;
-  text: string;
-};
+const ComposerInboxQueue = lazy(() => import("./ComposerInboxQueue").then(module => ({ default: module.ComposerInboxQueue })));
+const loadAttachmentSubmit = () => import("../lib/attachmentSubmit");
+// Resolve functional updates synchronously, outside React's deferred updater.
+// The store receives only the field changed by the event, never an old snapshot.
+function useComposerField<K extends keyof PersistentComposerDraft>(key: K, initial: PersistentComposerDraft[K], owner: { current: PersistentComposerTarget | undefined }, restoring: { current: boolean }) {
+  const [value, setValue] = useState(initial);
+  const latest = useRef(initial);
+  const set = (update: PersistentComposerDraft[K] | ((previous: PersistentComposerDraft[K]) => PersistentComposerDraft[K])) => {
+    const target = owner.current;
+    if (!restoring.current && target?.canEdit && !target.canEdit(target.draftId, target.generation)) return;
+    const next = typeof update === "function" ? update(latest.current) : update;
+    latest.current = next;
+    setValue(next);
+    if (!restoring.current && target) {
+      if (target.onPatch) target.onPatch(target.draftId, target.generation, { [key]: next });
+      else {
+        const content = { ...target.initial, [key]: next };
+        owner.current = { ...target, initial: content };
+        target.onChange(target.draftId, target.generation, content);
+      }
+    }
+  };
+  return [value, set] as const;
+}
 
 type FileRefSearchCacheEntry = {
   entries: DirEntry[];
   cachedAt: number;
 };
 
-type ComposerDraft = {
+export type ComposerDraft = {
   text: string;
   invocations: ComposerInvocation[];
   attachments: Attachment[];
@@ -135,7 +177,7 @@ type ComposerDraft = {
   guidanceExpanded: boolean;
   guidanceSendingId: string | null;
   pendingPaste: number;
-  submitting: boolean;
+  submitting: false | "message" | "compact";
 };
 
 type ComposerEditSnapshot = {
@@ -165,43 +207,8 @@ type WebkitFileEntry = {
   isDirectory?: boolean;
 };
 
-type GuidanceReceiptTracker = {
-  start(draftKey: string): void;
-  recordConsumed(draftKey: string, itemId: string): void;
-  takeConsumed(draftKey: string, itemId: string): boolean;
-  finish(draftKey: string): void;
-};
-
 const DEFAULT_COMPOSER_DRAFT_KEY = "__default_composer_draft__";
 const MAX_COMPOSER_EDIT_HISTORY = 50;
-
-function createGuidanceReceiptTracker(): GuidanceReceiptTracker {
-  const inFlight = new Map<string, number>();
-  const consumedBeforeReceipt = new Map<string, Set<string>>();
-  return {
-    start(draftKey) {
-      inFlight.set(draftKey, (inFlight.get(draftKey) ?? 0) + 1);
-    },
-    recordConsumed(draftKey, itemId) {
-      if ((inFlight.get(draftKey) ?? 0) === 0) return;
-      const consumed = consumedBeforeReceipt.get(draftKey) ?? new Set<string>();
-      consumed.add(itemId);
-      consumedBeforeReceipt.set(draftKey, consumed);
-    },
-    takeConsumed(draftKey, itemId) {
-      return consumedBeforeReceipt.get(draftKey)?.delete(itemId) ?? false;
-    },
-    finish(draftKey) {
-      const remaining = (inFlight.get(draftKey) ?? 1) - 1;
-      if (remaining > 0) {
-        inFlight.set(draftKey, remaining);
-        return;
-      }
-      inFlight.delete(draftKey);
-      consumedBeforeReceipt.delete(draftKey);
-    },
-  };
-}
 
 function lineCount(s: string): number {
   if (s === "") return 0;
@@ -214,40 +221,6 @@ function shouldFoldPaste(s: string): boolean {
 
 function renderPastedBlock(block: PastedBlock): string {
   return `${block.label}\n\n--- Begin ${block.label} ---\n${block.text}\n--- End ${block.label} ---`;
-}
-
-function baseName(path: string): string {
-  const clean = path.replace(/[\\/]+$/, "");
-  return clean.split(/[\\/]/).filter(Boolean).pop() ?? path;
-}
-
-function attachmentName(attachment: Attachment): string {
-  return (attachment.displayName || baseName(attachment.path) || "attachment").trim();
-}
-
-function attachmentExt(name: string): string {
-  const dot = name.lastIndexOf(".");
-  return dot >= 0 ? name.slice(dot + 1).toUpperCase() : "";
-}
-
-function hasImageAttachments(items: Attachment[]): boolean {
-  return items.some((attachment) => Boolean(attachment.previewUrl));
-}
-
-function displayRefName(name: string): string {
-  return name.replace(/[\[\]\(\)\r\n]+/g, " ").replace(/\s+/g, " ").trim() || "attachment";
-}
-
-function formatAttachmentDisplayReference(attachment: Attachment): string {
-  return `@[${displayRefName(attachmentName(attachment))}](${attachment.path})`;
-}
-
-function sortComposerAttachments(items: Attachment[]): Attachment[] {
-  return [...items].sort((a, b) => {
-    const ai = a.previewUrl ? 0 : 1;
-    const bi = b.previewUrl ? 0 : 1;
-    return ai - bi;
-  });
 }
 
 function workspaceReferenceKey(ref: WorkspaceReference): string {
@@ -281,28 +254,6 @@ export function composerPickFileEntry(
   }
   // Inline fallback: escape whitespace so the ref survives @-token parsing.
   return { text: prefix + "@" + escapeRefPath(refPath) + (entry.isDir ? "/" : " ") };
-}
-
-function emptyComposerDraft(): ComposerDraft {
-  return {
-    text: "",
-    invocations: [],
-    attachments: [],
-    workspaceRefs: [],
-    pastedBlocks: [],
-    openPastedLabels: [],
-    sessionRefs: [],
-    selectedTextRefs: [],
-    attachmentDedupKeys: {},
-    nextPasteId: 1,
-    historyIndex: -1,
-    savedText: "",
-    pendingGuidance: [],
-    guidanceExpanded: false,
-    guidanceSendingId: null,
-    pendingPaste: 0,
-    submitting: false,
-  };
 }
 
 function cloneComposerDraft(draft: ComposerDraft): ComposerDraft {
@@ -339,46 +290,6 @@ function draftHasAttachmentDedupKey(draft: ComposerDraft, key: AttachmentDedupKe
   return Object.values(draft.attachmentDedupKeys).some((existing) => existing.hash === key.hash && existing.source === key.source);
 }
 
-function fileKey(file: File): string {
-  return `${file.name}:${file.type}:${file.size}:${file.lastModified}`;
-}
-
-function clipboardFiles(data: DataTransfer): File[] {
-  const files = Array.from(data.files);
-  const seen = new Set(files.map(fileKey));
-  for (const item of Array.from(data.items)) {
-    if (item.kind !== "file") continue;
-    const file = item.getAsFile();
-    if (!file) continue;
-    const key = fileKey(file);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    files.push(file);
-  }
-  return files;
-}
-
-function clipboardHasImageHint(data: DataTransfer): boolean {
-  const imageType = (value: string) => {
-    const type = value.toLowerCase();
-    return type.startsWith("image/") || type.includes("png") || type.includes("jpeg") || type.includes("jpg") || type.includes("tiff");
-  };
-  return Array.from(data.items).some((item) => imageType(item.type)) || Array.from(data.types).some(imageType);
-}
-
-function isPasteShortcut(e: KeyboardEvent<HTMLElement>): boolean {
-  return e.key.toLowerCase() === "v" && (e.metaKey || e.ctrlKey) && !e.altKey;
-}
-
-async function dataURLHash(dataUrl: string): Promise<string> {
-  try {
-    const res = await fetch(dataUrl);
-    return sha256(await res.blob());
-  } catch {
-    return "";
-  }
-}
-
 function composerMaxHeight(): number {
   if (typeof window === "undefined") return COMPOSER_MAX_HEIGHT;
   return Math.max(COMPOSER_MIN_HEIGHT, Math.min(COMPOSER_MAX_HEIGHT, Math.floor(window.innerHeight * COMPOSER_MAX_VIEWPORT_RATIO)));
@@ -405,13 +316,7 @@ function clampComposerHeight(height: number): number {
 }
 
 function loadComposerHeight(): number | null {
-  return loadOptionalLayoutSize("composerHeight", clampComposerHeight);
-}
-
-function fmtElapsed(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  return `${Math.floor(s / 60)}m ${s % 60}s`;
+  return loadOptionalLayoutSize("composerHeight", clampComposerHeight) ?? clampComposerHeight(COMPOSER_DEFAULT_HEIGHT);
 }
 
 // --- past:chats hover preview helpers (PR-C2) ---
@@ -540,28 +445,31 @@ export function Composer({
   running,
   collaborationMode,
   toolApprovalMode,
-  qualityFloor,
-  floorInferred,
   turnPhase,
+  readStatuses,
   goal,
   goalStatus,
+  goalView,
   goalRuntime,
   cwd,
+  workspaceRoot,
   modelLabel,
+  commandCatalog,
   imageInputEnabled = true,
   imageUnderstandingEnabled = false,
-  tabId,
+  attachmentInputEnabled = true,
+  tabId, turnId,
   effort,
   onSend,
   onSteer,
+  localDurableGuidance = true,
   onCancel,
   onCycleMode,
   onSetMode,
-  onSetCollaborationMode,
+  onSetCollaborationMode: setCollaborationMode,
   onSetToolApprovalMode,
-  onSetQualityFloor,
-  onToggleYoloApprovalMode,
   onClearGoal,
+  onEditGoal,
   onPauseGoal,
   onResumeGoal,
   onSwitchModel,
@@ -570,10 +478,15 @@ export function Composer({
   selectedTextRequest,
   disabled,
   submitDisabled = false,
+  submitDisabledReason,
+  authentication,
   readOnly = false,
   decisionPending = false,
   ready,
   turnStartAt,
+  turnDoneAt,
+  lastTurnOutputTokens,
+  lastTurnWaitAccumMs,
   turnWaitAccumMs = 0,
   promptWaitStartedAt,
   turnTokens,
@@ -581,8 +494,11 @@ export function Composer({
   turnOutputCharsAtUsage,
   turnModelActiveAt,
   turnModelActiveMs = 0,
+  turnRateOutputQuarters,
   liveStore,
   turnArgChars = 0,
+  turnOutputEstimated,
+  lastTurnOutputEstimated,
   retry,
   suspendedByDecision = false,
   pendingApprovalLabel,
@@ -590,6 +506,8 @@ export function Composer({
   transientDismissSignal,
   sessionKey,
   inboxSessionPath,
+  inboxHostId,
+  inboxWorkspace,
   workspaceScopeKey,
   fileRefRefreshKey,
   guidanceConsumedKey,
@@ -605,28 +523,47 @@ export function Composer({
   cacheHitTokens,
   cacheMissTokens,
   balance,
+  pinnedFiles,
+  workspaceContext,
   onInvocationMetadataChange,
+  onCaptureSubmit,
+  onReleaseSubmit,
+  onPrepareSubmit,
+  persistentDraft: legacyPersistentDraft,
+  formalSessionRef,
+  sessionIdentity,
+  composerTarget,
 }: {
   running: boolean;
   collaborationMode: CollaborationMode;
   toolApprovalMode: ToolApprovalMode;
-  qualityFloor?: QualityFloor;
-  floorInferred?: boolean;
   /** Host turn phase: working | checking | verifying | reviewing */
   turnPhase?: string;
+  /** Live read progress keyed by read id; rendered as one status line. */
+  readStatuses?: Record<string, WireReadStatus>;
   goal?: string;
   goalStatus?: string;
+  goalView?: GoalLifecycleView;
   goalRuntime?: GoalRuntime;
   cwd?: string;
+  workspaceRoot?: string;
   modelLabel: string;
+  commandCatalog?: readonly CommandInfo[];
   imageInputEnabled?: boolean;
   /** True when text-only image turns are preprocessed by a configured vision model. */
   imageUnderstandingEnabled?: boolean;
-  tabId?: string;
+  /** False for remote sessions because local filesystem paths are not portable to Serve. */
+  attachmentInputEnabled?: boolean;
+  tabId?: string; turnId?: string;
   effort?: EffortInfo;
-  onSend: (displayText: string, submitText?: string, tabId?: string, structured?: StructuredInvocationSubmit) => void | Promise<void>;
+  onSend: (displayText: string, submitText?: string, tabId?: string, structured?: StructuredInvocationSubmit, capture?: unknown, submissionId?: string) => void | Promise<void>;
+  onCaptureSubmit?: (content: PersistentComposerDraft) => unknown;
+  onReleaseSubmit?: (capture: unknown) => void;
+  onPrepareSubmit?: (capture: unknown) => Promise<void>;
   onInvocationMetadataChange?: (metadata: Record<string, { kind: "skill" | "subagent"; color?: string }>) => void;
   onSteer?: (submitText: string, tabId?: string) => void | Promise<void>;
+  /** False when the owning surface provides its own durable remote inbox. */
+  localDurableGuidance?: boolean;
   // Returns the un-sent text plus the exact durable queue IDs the backend
   // confirmed were withdrawn and are therefore safe to restore.
   onCancel: (queuedItemIDs?: string[]) => Promise<CancelOutcome>;
@@ -634,9 +571,8 @@ export function Composer({
   onSetMode: (mode: Mode) => void;
   onSetCollaborationMode: (mode: CollaborationMode) => void;
   onSetToolApprovalMode: (mode: ToolApprovalMode) => void;
-  onSetQualityFloor?: (floor: QualityFloor) => void;
-  onToggleYoloApprovalMode: () => void;
   onClearGoal: () => void;
+  onEditGoal: (objective: string, maxGoalRounds: number | null) => void;
   onPauseGoal: () => void;
   onResumeGoal: () => void;
   onSwitchModel: (name: string) => boolean | Promise<boolean>;
@@ -645,6 +581,8 @@ export function Composer({
   selectedTextRequest?: SelectedTextInsertRequest | null;
   disabled?: boolean;
   submitDisabled?: boolean;
+  submitDisabledReason?: string;
+  authentication?: TabMeta["authentication"];
   readOnly?: boolean;
   decisionPending?: boolean;
   // ready/cwd/running/workspaceScopeKey re-trigger the command fetch: Commands() returns only
@@ -653,6 +591,9 @@ export function Composer({
   // and a completed turn may have installed skills or MCP prompts.
   ready?: boolean;
   turnStartAt?: number;
+  turnDoneAt?: number;
+  lastTurnOutputTokens?: number;
+  lastTurnWaitAccumMs?: number;
   // Tab-scoped user-wait from the controller (approval/ask). Counts while the
   // tab is in the background so Composer does not invent a wait start on focus.
   turnWaitAccumMs?: number;
@@ -666,17 +607,20 @@ export function Composer({
   // Active provider-output time for the current turn; excludes tool gaps.
   turnModelActiveAt?: number;
   turnModelActiveMs?: number;
-  // Live-stream subscription for the character-count TPS fallback (chars ÷ 4)
-  // when the provider does not emit per-chunk usage events with token counts
-  // during streaming. Subscribing here keeps text deltas off the main state
-  // tree — only the composer re-renders, matching the controller's live-store
-  // contract (pure stream deltas must not re-render the controller owner).
+  turnRateOutputQuarters?: number;
+  // Live-stream subscription for the character-density TPS fallback (see
+  // lib/turnMetrics) when the provider does not emit per-chunk usage events
+  // with token counts during streaming. Subscribing here keeps text deltas off
+  // the main state tree — only the composer re-renders, matching the
+  // controller's live-store contract (pure stream deltas must not re-render the
+  // controller owner).
   liveStore?: ControllerLiveStore;
-  // Streaming tool-call argument chars (no usage event yet) — folded into the
-  // pill as an estimated-token tail so a long write_file body reads as
-  // progress, not a stall.
+  // Streaming argument characters provide estimated progress before usage arrives.
   turnArgChars?: number;
-  retry?: { attempt: number; max: number };
+  // Whether the provider flagged this turn's usage as reconstructed.
+  turnOutputEstimated?: boolean;
+  lastTurnOutputEstimated?: boolean;
+  retry?: RecoveryRetry;
   // True while a footer decision surface (approval / ask / clear context) owns
   // the UI. Pauses the model-work ticker without rendering a "waiting approval"
   // run strip (the decision card already conveys that state).
@@ -688,6 +632,8 @@ export function Composer({
   transientDismissSignal?: number;
   sessionKey?: string;
   inboxSessionPath?: string;
+  inboxHostId?: string;
+  inboxWorkspace?: string;
   workspaceScopeKey?: string;
   fileRefRefreshKey?: number | string;
   guidanceConsumedKey?: string;
@@ -705,6 +651,12 @@ export function Composer({
   cacheHitTokens?: number;
   cacheMissTokens?: number;
   balance?: BalanceInfo;
+  pinnedFiles?: import("../lib/pinnedContextBridge").PinnedFileInfo[];
+  workspaceContext?: ComposerWorkspaceContext;
+  persistentDraft?: PersistentComposerTarget;
+  formalSessionRef?: SessionRef;
+  sessionIdentity?: SessionIdentity;
+  composerTarget?: ComposerTarget;
 }) {
   const { t, locale } = useI18n();
   const { showToast } = useToast();
@@ -712,12 +664,47 @@ export function Composer({
   const sendComboLabel = useShortcutComboLabel("composer.send");
   const undoComboLabel = useShortcutComboLabel("composer.undo");
   const redoComboLabel = useShortcutComboLabel("composer.redo");
-  const yoloComboLabel = useShortcutComboLabel("toolApproval.yolo");
+  const permissionPreset = normalizeToolApprovalMode(toolApprovalMode);
+  const fullAccessConfirmationKey = fullAccessProjectConfirmationKey({
+    workspacePath: workspaceRoot || inboxWorkspace || cwd,
+    remoteHostId: inboxHostId,
+  });
+  const savedInput = useSessionComposerPersistence(legacyPersistentDraft ? undefined : formalSessionRef, tabId);
+  const persistentDraft = legacyPersistentDraft ?? savedInput.target;
+  if (savedInput.blocked) disabled = true;
+  const onSetCollaborationMode = (mode: CollaborationMode) => {
+    savedInput.setGoalDraft(mode === "goal");
+    setCollaborationMode(mode);
+  };
+  useEffect(() => {
+    if (savedInput.goalDraft === true && !savedInput.blocked && !goal?.trim() && collaborationMode !== "goal") setCollaborationMode("goal");
+  }, [formalSessionRef?.sessionId, savedInput.goalDraft, savedInput.blocked]);
   const draftKey = sessionKey || tabId || DEFAULT_COMPOSER_DRAFT_KEY;
-  const inboxSessionKey = inboxScopeKey(inboxSessionPath, workspaceScopeKey);
+	const bridgeTarget = useMemo(() => composerTarget?.kind === "draft"
+		? { kind: "draft", draftId: composerTarget.draftId, tabId: "", generation: persistentDraft?.generation ?? composerTarget.generation ?? 0 }
+		: { kind: "session", draftId: "", tabId: composerTarget?.tabId ?? tabId ?? "", session: formalSessionRef },
+	[composerTarget?.kind, composerTarget?.kind === "draft" ? composerTarget.draftId : composerTarget?.tabId, persistentDraft?.generation, tabId, formalSessionRef?.hostId, formalSessionRef?.sessionId]);
+	const bridgeTargetKey = `${bridgeTarget.kind}:${bridgeTarget.draftId}:${bridgeTarget.tabId}:${bridgeTarget.generation ?? 0}`;
+  const runtimeState = useRuntimeSession(tabId, sessionIdentity ?? inboxSessionPath);
+  const finishing = runtimeState.finishing;
+  const maintenanceActive = Boolean(runtimeState.state?.maintenance);
+  const [queueEditingScope, setQueueEditingScope] = useState<string | null>(null);
+  if (runtimeState.known) running = runtimeState.running ?? running;
+  if (runtimeState.unknown) disabled = true;
+  const pendingKey = followupSessionKey(inboxSessionPath, inboxHostId, inboxWorkspace);
+  const pendingKeyRef = useRef(pendingKey);
+  pendingKeyRef.current = pendingKey;
+  const pendingFollowup = useSyncExternalStore(pendingFollowups.subscribe, () => pendingFollowups.get(pendingKey));
+  useEffect(() => {
+    if (pendingFollowup && savedInput.settledId === pendingFollowup.key) pendingFollowups.clear(pendingKey, pendingFollowup);
+  }, [pendingFollowup, pendingKey, savedInput.settledId]);
+  const inboxSessionKey = [pendingKey, inboxScopeKey(inboxSessionPath, workspaceScopeKey)].filter(Boolean).join("\u0000");
   const now = useTick(running);
-  const [text, setText] = useState("");
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const persistentOwner = useRef(persistentDraft);
+  persistentOwner.current = persistentDraft;
+  const restoringContent = useRef(false);
+  const [text, setText] = useComposerField("text", "", persistentOwner, restoringContent);
+  const [attachments, setAttachments] = useComposerField("attachments", [], persistentOwner, restoringContent);
   const [imageViewer, setImageViewer] = useState<{ open: boolean; url: string; name: string }>({ open: false, url: "", name: "" });
   const openComposerImageViewer = useCallback((url: string, name: string) => {
     setImageViewer({ open: true, url, name });
@@ -727,13 +714,13 @@ export function Composer({
     setImageViewer((prev) => (prev.open ? { ...prev, open: false } : prev));
   }, []);
 
-  const [workspaceRefs, setWorkspaceRefs] = useState<WorkspaceReference[]>([]);
-  const [invocations, setInvocations] = useState<ComposerInvocation[]>([]);
+  const [workspaceRefs, setWorkspaceRefs] = useComposerField("workspaceRefs", [], persistentOwner, restoringContent);
+  const [invocations, setInvocations] = useComposerField("invocations", [], persistentOwner, restoringContent);
   const [plainSelection, setPlainSelection] = useState<RichComposerSelection>({ start: 0, end: 0 });
   const [richSelection, setRichSelection] = useState<RichComposerSelection>({ start: 0, end: 0 });
   const [richSlashQuery, setRichSlashQuery] = useState<RichSlashQuery | null>(null);
-  const [pastedBlocks, setPastedBlocks] = useState<PastedBlock[]>([]);
-  const [openPastedLabels, setOpenPastedLabels] = useState<string[]>([]);
+  const [pastedBlocks, setPastedBlocks] = useComposerField("pastedBlocks", [], persistentOwner, restoringContent);
+  const [openPastedLabels, setOpenPastedLabels] = useComposerField("openPastedLabels", [], persistentOwner, restoringContent);
   const [pendingPaste, setPendingPaste] = useState(0);
   const pendingPasteRef = useRef(0);
   const pastedBlocksRef = useRef<PastedBlock[]>([]);
@@ -750,15 +737,13 @@ export function Composer({
   const [textareaAutoOverflow, setTextareaAutoOverflow] = useState(false);
   const [intentMenuOpen, setIntentMenuOpen] = useState(false);
   const [intentMenuClosing, setIntentMenuClosing] = useState(false);
-  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
-  const [moreMenuClosing, setMoreMenuClosing] = useState(false);
   const [contentMenuOpen, setContentMenuOpen] = useState(false);
   const [showPastChats, setShowPastChats] = useState(false);
   const [directPastChats, setDirectPastChats] = useState(false);
   const [pastChats, setPastChats] = useState<SessionMeta[]>([]);
   const [pastChatQuery, setPastChatQuery] = useState("");
-  const [sessionRefs, setSessionRefs] = useState<SessionReference[]>([]);
-  const [selectedTextRefs, setSelectedTextRefs] = useState<SelectedTextReference[]>([]);
+  const [sessionRefs, setSessionRefs] = useComposerField("sessionRefs", [], persistentOwner, restoringContent);
+  const [selectedTextRefs, setSelectedTextRefs] = useComposerField("selectedTextRefs", [], persistentOwner, restoringContent);
   const [pendingGuidance, setPendingGuidance] = useState<PendingGuidance[]>([]);
   const [guidanceExpanded, setGuidanceExpanded] = useState(false);
   const [guidanceSendingId, setGuidanceSendingId] = useState<string | null>(null);
@@ -768,7 +753,7 @@ export function Composer({
   const guidanceExpandedRef = useRef(false);
   const guidanceSendingIdRef = useRef<string | null>(null);
   const [loadingPastChats, setLoadingPastChats] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  const [submission, setSubmission] = useState<false | "message" | "compact">(false);
   const cancelSettlingDraftsRef = useRef(new Set<string>());
   const [, setCancelSettlingRevision] = useState(0);
   const [inputMenuPoint, setInputMenuPoint] = useState<ContextMenuPoint | null>(null);
@@ -785,6 +770,7 @@ export function Composer({
   const [, setHistoryIndex] = useState(-1);
   const savedTextRef = useRef("");
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const measureTaRef = useRef<HTMLTextAreaElement>(null);
   const richInputRef = useRef<RichComposerInputHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editHistoryByDraftRef = useRef<Record<string, ComposerEditHistory>>({});
@@ -793,9 +779,7 @@ export function Composer({
   const composerWrapRef = useRef<HTMLDivElement>(null);
   const contentMenuAnchorRef = useRef<HTMLButtonElement>(null);
   const intentMenuAnchorRef = useRef<HTMLButtonElement>(null);
-  const moreMenuAnchorRef = useRef<HTMLButtonElement>(null);
   const intentCloseTimerRef = useRef<number | null>(null);
-  const moreCloseTimerRef = useRef<number | null>(null);
   // Creation chrome: hover-open task menus (same pattern as ContextWindowRing).
   const intentHoverTimerRef = useRef<number | null>(null);
   const creationChrome = showContextWindowRing;
@@ -811,9 +795,13 @@ export function Composer({
   );
   const guidanceReceiptTrackerRef = useRef<GuidanceReceiptTracker | null>(null);
   guidanceReceiptTrackerRef.current ??= createGuidanceReceiptTracker();
+  // Messages held behind a transient target fence, keyed by follow-up key so a
+  // dismissal or a second send can cancel the pending retry loop.
+  const transientRetriesRef = useRef(new Map<string, { cancelled: boolean }>());
   const selfDispatchedGuidanceByDraftRef = useRef<Record<string, string[]>>({});
-  const submittingRef = useRef(false);
+  const submittingRef = useRef<false | "message" | "compact">(false);
   const nativeClipboardPasteTimerRef = useRef<number | null>(null);
+  const nativeClipboardPasteCompletionRef = useRef<(() => void) | null>(null);
   // Snapshot of the current cwd so async callbacks (openPastChats) can detect
   // workspace switches and discard stale responses (issue #3601).
   const cwdRef = useRef(cwd);
@@ -821,8 +809,15 @@ export function Composer({
   const attachmentDedupRef = useRef(new DedupIndex());
   const attachmentDedupKeysRef = useRef<Record<string, AttachmentDedupKey>>({});
   const guidanceQueuePreviewKey = (guidanceQueuePreviewItems ?? []).map((item) => item.trim()).filter(Boolean).join("\n");
-  const draftsBySessionRef = useRef<Record<string, ComposerDraft>>({});
+  const draftsBySessionRef = useRef<Record<string, ComposerDraft>>(
+    persistentDraft ? { [draftKey]: persistentComposerDraft(persistentDraft.initial) } : {},
+  );
+  const persistentTargetsByDraftRef = useRef<Record<string, PersistentComposerTarget | undefined>>({});
+  const bridgeTargetsByDraftRef = useRef<Record<string, typeof bridgeTarget>>({});
+  persistentTargetsByDraftRef.current[draftKey] = persistentDraft;
+  bridgeTargetsByDraftRef.current[draftKey] = bridgeTarget;
   const activeDraftKeyRef = useRef(draftKey);
+  const [remoteApplication, setRemoteApplication] = useState<{key:string; text:string; details:ModelApplicationDetails}|undefined>();
   const draftActivationEpochRef = useRef(0);
   const textRef = useRef(text);
   const invocationsRef = useRef(invocations);
@@ -855,7 +850,7 @@ export function Composer({
   guidanceExpandedRef.current = guidanceExpanded;
   guidanceSendingIdRef.current = guidanceSendingId;
   pendingPasteRef.current = pendingPaste;
-  submittingRef.current = submitting;
+  submittingRef.current = submission;
 
   const snapshotComposerDraft = (): ComposerDraft => ({
     text: textRef.current,
@@ -878,6 +873,7 @@ export function Composer({
   });
 
   const restoreComposerDraft = (draft: ComposerDraft) => {
+    restoringContent.current = true;
     const next = cloneComposerDraft(draft);
     textRef.current = next.text;
     invocationsRef.current = next.invocations;
@@ -895,6 +891,7 @@ export function Composer({
     setOpenPastedLabels(next.openPastedLabels);
     setSessionRefs(next.sessionRefs);
     setSelectedTextRefs(next.selectedTextRefs);
+    restoringContent.current = false;
     attachmentDedupKeysRef.current = next.attachmentDedupKeys;
     attachmentDedupRef.current = attachmentDedupFromKeys(next.attachmentDedupKeys);
     nextPasteId.current = next.nextPasteId;
@@ -909,7 +906,7 @@ export function Composer({
     setGuidanceExpanded(next.guidanceExpanded);
     setGuidanceSendingId(next.guidanceSendingId);
     setPendingPaste(next.pendingPaste);
-    setSubmitting(next.submitting);
+    setSubmission(next.submitting);
     setHistoryIndex(next.historyIndex);
     const restoredSelection = { start: next.text.length, end: next.text.length };
     lastSelectionRef.current = restoredSelection;
@@ -932,8 +929,6 @@ export function Composer({
     setImageViewer((current) => current.open ? { ...current, open: false } : current);
     setIntentMenuOpen(false);
     setIntentMenuClosing(false);
-    setMoreMenuOpen(false);
-    setMoreMenuClosing(false);
   };
 
   const composerEditSnapshot = (
@@ -1173,20 +1168,20 @@ export function Composer({
     draftsBySessionRef.current[targetDraftKey] = draft;
   };
 
-  const updateSubmittingForDraft = (targetDraftKey: string, next: boolean) => {
+  const updateSubmittingForDraft = (targetDraftKey: string, next: boolean, kind: "message" | "compact" = "message") => {
     if (targetDraftKey === activeDraftKeyRef.current) {
-      submittingRef.current = next;
-      setSubmitting(next);
+      submittingRef.current = next ? kind : false;
+      setSubmission(next ? kind : false);
       return;
     }
     const draft = cloneComposerDraft(draftsBySessionRef.current[targetDraftKey] ?? emptyComposerDraft());
-    draft.submitting = next;
+    draft.submitting = next ? kind : false;
     draftsBySessionRef.current[targetDraftKey] = draft;
   };
 
   const draftIsSubmitting = (targetDraftKey: string): boolean =>
     targetDraftKey === activeDraftKeyRef.current
-      ? submittingRef.current
+      ? Boolean(submittingRef.current)
       : Boolean(draftsBySessionRef.current[targetDraftKey]?.submitting);
 
   const draftHasPendingPaste = (targetDraftKey: string): boolean =>
@@ -1204,10 +1199,63 @@ export function Composer({
     restoreComposerDraft(draftsBySessionRef.current[draftKey] ?? emptyComposerDraft());
   }, [draftKey]);
 
+  const loadedPersistentDraftIdentityRef = useRef<string | null>(null);
+  const persistedSnapshotByDraftRef = useRef<Record<string, string>>({});
+  useLayoutEffect(() => {
+    if (!persistentDraft) return;
+    const identity = `${draftKey}:${persistentDraft.draftId}:${persistentDraft.generation}`;
+    if (loadedPersistentDraftIdentityRef.current === identity) {
+      // The external store may add a background attachment or regenerated
+      // preview. Project fields without resetting cursor/menu/IME state.
+      if (!persistentDraft.onPatch || JSON.stringify(persistentSnapshot(snapshotComposerDraft())) === JSON.stringify(persistentDraft.initial)) return;
+      const content = persistentDraft.initial;
+      restoringContent.current = true;
+      textRef.current = content.text; setText(content.text);
+      invocationsRef.current = content.invocations; setInvocations(content.invocations);
+      attachmentsRef.current = content.attachments; setAttachments(content.attachments);
+      workspaceRefsRef.current = content.workspaceRefs; setWorkspaceRefs(content.workspaceRefs);
+      pastedBlocksRef.current = content.pastedBlocks; setPastedBlocks(content.pastedBlocks);
+      openPastedLabelsRef.current = content.openPastedLabels; setOpenPastedLabels(content.openPastedLabels);
+      sessionRefsRef.current = content.sessionRefs; setSessionRefs(content.sessionRefs);
+      selectedTextRefsRef.current = content.selectedTextRefs; setSelectedTextRefs(content.selectedTextRefs);
+      restoringContent.current = false;
+      return;
+    }
+    loadedPersistentDraftIdentityRef.current = identity;
+    const next = persistentComposerDraft(persistentDraft.initial);
+    draftsBySessionRef.current[draftKey] = next;
+    persistedSnapshotByDraftRef.current[draftKey] = JSON.stringify(persistentSnapshot(next));
+    restoreComposerDraft(next);
+  }, [draftKey, persistentDraft?.draftId, persistentDraft?.generation, persistentDraft?.initial]);
+
+  const persistentSnapshotForDraft = (targetDraftKey: string): PersistentComposerDraft => (
+    targetDraftKey === activeDraftKeyRef.current
+      ? persistentSnapshot(snapshotComposerDraft())
+      : persistentSnapshot(draftsBySessionRef.current[targetDraftKey] ?? emptyComposerDraft())
+  );
+
+  const publishPersistentDraft = (targetDraftKey: string) => {
+    const target = persistentTargetsByDraftRef.current[targetDraftKey];
+    if (!target || target.onPatch) return;
+    const snapshot = persistentSnapshotForDraft(targetDraftKey);
+    const serialized = JSON.stringify(snapshot);
+    if (persistedSnapshotByDraftRef.current[targetDraftKey] === serialized) return;
+    persistedSnapshotByDraftRef.current[targetDraftKey] = serialized;
+    target.onChange(target.draftId, target.generation, snapshot);
+  };
+
+  const trackPersistentTask = <T,>(targetDraftKey: string, promise: Promise<T>): Promise<T> => {
+    const target = persistentTargetsByDraftRef.current[targetDraftKey];
+    return target?.trackTask ? target.trackTask(target.draftId, target.generation, promise) : promise;
+  };
+
   const applyInboxQueue = useCallback((items: PendingGuidance[]) => updatePendingGuidanceForDraft(draftKey, () => items), [draftKey]);
   const collapseInboxQueue = useCallback(() => setGuidanceExpanded(false), []);
   const refreshInboxQueue = useCallback(() => setGuidanceRetryNonce((value) => value + 1), []);
-  useComposerInboxRefresh(tabId, draftKey, guidanceDraftKey, inboxSessionKey, guidanceQueuePreviewKey, guidanceRetryNonce, running, applyInboxQueue, collapseInboxQueue, refreshInboxQueue);
+  const { snapshot: inboxSnapshot, acceptSnapshot: acceptInboxSnapshot } = useComposerInboxRefresh(tabId, draftKey, guidanceDraftKey, inboxSessionKey, guidanceQueuePreviewKey, guidanceRetryNonce, running, applyInboxQueue, collapseInboxQueue, refreshInboxQueue, runtimeState.state?.revision);
+  const queueScope = JSON.stringify([draftKey, pendingKey]);
+  const queueEditing = queueEditingScope === queueScope;
+  const onQueueEditingChange = useCallback((active: boolean) => setQueueEditingScope(active ? queueScope : null), [queueScope]);
 
   useEffect(() => {
     return () => {
@@ -1219,6 +1267,8 @@ export function Composer({
     if (nativeClipboardPasteTimerRef.current === null) return;
     window.clearTimeout(nativeClipboardPasteTimerRef.current);
     nativeClipboardPasteTimerRef.current = null;
+    nativeClipboardPasteCompletionRef.current?.();
+    nativeClipboardPasteCompletionRef.current = null;
   };
 
   useEffect(() => () => clearNativeClipboardPasteTimer(), []);
@@ -1252,18 +1302,7 @@ export function Composer({
   }, [guidanceExpanded, pendingGuidance.length]);
 
   // --- slash commands ---
-  const [commands, setCommands] = useState<CommandInfo[]>([]);
-  useEffect(() => {
-    let live = true;
-    app.Commands()
-      .then((next) => {
-        if (live) setCommands(asArray(next));
-      })
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [ready, cwd, running, workspaceScopeKey]);
+  const commands = useComposerCommandCatalog(commandCatalog, ready ?? false, cwd, running, workspaceScopeKey ?? "");
   useEffect(() => {
     onInvocationMetadataChange?.(Object.fromEntries(
       commands
@@ -1402,7 +1441,7 @@ export function Composer({
     }
     let live = true;
     app
-      .ListDirForTab(fileRefTabId, unescapeRefPath(atDir))
+      .ListDirForTarget(bridgeTarget, unescapeRefPath(atDir))
       .then((es) => {
         const list = asArray(es);
         if (!live) return;
@@ -1415,7 +1454,7 @@ export function Composer({
     };
     // Re-fetch when the menu opens, the directory level changes, or the
     // workspace tree refreshes; cached data is only a fast first paint.
-  }, [atRaw === null, atDir, fileRefRefreshKey, fileRefScopeKey, fileRefTabId]);
+  }, [atRaw === null, atDir, fileRefRefreshKey, fileRefScopeKey, bridgeTargetKey]);
   useEffect(() => {
     if (atRaw === null || atDir !== "" || atFrag === "") {
       setSearchEntries([]);
@@ -1430,7 +1469,7 @@ export function Composer({
     }
     let live = true;
     app
-      .SearchFileRefsForTab(fileRefTabId, atFrag)
+      .SearchFileRefsForTarget(bridgeTarget, atFrag)
       .then((es) => {
         const list = asArray(es);
         if (!live) return;
@@ -1441,7 +1480,7 @@ export function Composer({
     return () => {
       live = false;
     };
-  }, [atRaw === null, atDir, atFrag, fileRefRefreshKey, fileRefScopeKey, fileRefTabId]);
+  }, [atRaw === null, atDir, atFrag, fileRefRefreshKey, fileRefScopeKey, bridgeTargetKey]);
   const atMatches = useMemo(
     () => {
       if (atRaw === null) return [];
@@ -1779,6 +1818,7 @@ export function Composer({
     }
     const ref = parseWorkspaceReference(insertRequest.text);
     if (ref) {
+      if (!attachmentInputEnabled) return;
       addWorkspaceReference(ref);
       return;
     }
@@ -1856,13 +1896,20 @@ export function Composer({
     return draft ? draftHasAttachmentDedupKey(draft, key) : false;
   };
 
-  const addAttachmentToDraft = (targetDraftKey: string, attachment: Attachment, key: AttachmentDedupKey): boolean => {
+  const addAttachmentToDraft = (targetDraftKey: string, attachment: Attachment, key: AttachmentDedupKey, owner?: PersistentComposerTarget): boolean => {
+    if (owner?.isCurrent && !owner.isCurrent(owner.draftId, owner.generation)) return false;
+    if (owner?.onPatch) {
+      owner.onPatch(owner.draftId, owner.generation, content => ({ ...content, attachments: content.attachments.some(item => item.path === attachment.path) ? content.attachments : [...content.attachments, attachment] }));
+      if (targetDraftKey === activeDraftKeyRef.current) rememberAttachment(attachment.path, key);
+      return true;
+    }
     if (targetDraftKey === activeDraftKeyRef.current) {
       if (attachmentDedupRef.current.seen(key.hash, key.source)) return false;
       rememberAttachment(attachment.path, key);
       const next = [...attachmentsRef.current, attachment];
       attachmentsRef.current = next;
       setAttachments(next);
+      queueMicrotask(() => publishPersistentDraft(targetDraftKey));
       return true;
     }
     const draft = cloneComposerDraft(draftsBySessionRef.current[targetDraftKey] ?? emptyComposerDraft());
@@ -1870,12 +1917,19 @@ export function Composer({
     draft.attachmentDedupKeys[attachment.path] = key;
     draft.attachments = [...draft.attachments, attachment];
     draftsBySessionRef.current[targetDraftKey] = draft;
+    publishPersistentDraft(targetDraftKey);
     return true;
   };
 
-  const addWorkspaceReferenceToDraft = (targetDraftKey: string, ref: WorkspaceReference) => {
+  const addWorkspaceReferenceToDraft = (targetDraftKey: string, ref: WorkspaceReference, owner?: PersistentComposerTarget) => {
+    if (owner?.isCurrent && !owner.isCurrent(owner.draftId, owner.generation)) return;
+    if (owner?.onPatch) {
+      owner.onPatch(owner.draftId, owner.generation, content => ({ ...content, workspaceRefs: content.workspaceRefs.some(item => workspaceReferenceKey(item) === workspaceReferenceKey(ref)) ? content.workspaceRefs : [...content.workspaceRefs, ref] }));
+      return;
+    }
     if (targetDraftKey === activeDraftKeyRef.current) {
       addWorkspaceReference(ref);
+      queueMicrotask(() => publishPersistentDraft(targetDraftKey));
       return;
     }
     const draft = cloneComposerDraft(draftsBySessionRef.current[targetDraftKey] ?? emptyComposerDraft());
@@ -1883,6 +1937,7 @@ export function Composer({
     if (draft.workspaceRefs.some((item) => workspaceReferenceKey(item) === key)) return;
     draft.workspaceRefs = [...draft.workspaceRefs, ref];
     draftsBySessionRef.current[targetDraftKey] = draft;
+    publishPersistentDraft(targetDraftKey);
   };
 
   const clearSubmittedDraft = (targetDraftKey: string) => {
@@ -1937,16 +1992,6 @@ export function Composer({
     timerRef.current = null;
   };
 
-  const openIntentMenu = useCallback(() => {
-    clearIntentCloseTimer();
-    clearHoverTimer(intentHoverTimerRef);
-    setContentMenuOpen(false);
-    setDirectPastChats(false);
-    setDismissed(true);
-    setIntentMenuClosing(false);
-    setIntentMenuOpen(true);
-  }, [clearIntentCloseTimer]);
-
   const closeIntentMenu = useCallback((afterClose?: () => void) => {
     clearIntentCloseTimer();
     clearHoverTimer(intentHoverTimerRef);
@@ -1965,15 +2010,6 @@ export function Composer({
     clearHoverTimer(intentHoverTimerRef);
   }, [clearIntentCloseTimer]);
 
-  const onIntentHoverEnter = useCallback(() => {
-    if (!creationChrome || disabled || running) return;
-    clearHoverTimer(intentHoverTimerRef);
-    intentHoverTimerRef.current = window.setTimeout(() => {
-      intentHoverTimerRef.current = null;
-      openIntentMenu();
-    }, 120);
-  }, [creationChrome, disabled, openIntentMenu, running]);
-
   const onIntentHoverLeave = useCallback(() => {
     if (!creationChrome) return;
     clearHoverTimer(intentHoverTimerRef);
@@ -1989,35 +2025,6 @@ export function Composer({
     clearHoverTimer(intentHoverTimerRef);
   }, [creationChrome]);
 
-  const clearMoreCloseTimer = useCallback(() => {
-    if (moreCloseTimerRef.current === null) return;
-    window.clearTimeout(moreCloseTimerRef.current);
-    moreCloseTimerRef.current = null;
-  }, []);
-
-  const openMoreMenu = useCallback(() => {
-    clearMoreCloseTimer();
-    setContentMenuOpen(false);
-    setDirectPastChats(false);
-    setDismissed(true);
-    setMoreMenuClosing(false);
-    setMoreMenuOpen(true);
-  }, [clearMoreCloseTimer]);
-
-  const closeMoreMenu = useCallback((afterClose?: () => void) => {
-    clearMoreCloseTimer();
-    setMoreMenuClosing(true);
-    window.requestAnimationFrame(() => setMoreMenuOpen(false));
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    moreCloseTimerRef.current = window.setTimeout(() => {
-      moreCloseTimerRef.current = null;
-      setMoreMenuClosing(false);
-      afterClose?.();
-    }, reduceMotion ? 0 : ANCHORED_POPOVER_CLOSE_MS);
-  }, [clearMoreCloseTimer]);
-
-  useEffect(() => () => clearMoreCloseTimer(), [clearMoreCloseTimer]);
-
   const fileDedupKey = async (file: File): Promise<AttachmentDedupKey> => ({
     hash: await sha256(file),
     source: `file:${file.name}:${file.size}:${file.lastModified}`,
@@ -2031,11 +2038,36 @@ export function Composer({
     showToast(text, "warn");
   }, [showToast, t]);
 
-  const submit = async () => {
-    if (disabled || (!running && submitDisabled) || readOnly) return;
+  const followupDraftFingerprint = (key: string): string => composerDraftFingerprint(
+    key === activeDraftKeyRef.current ? snapshotComposerDraft() : draftsBySessionRef.current[key] ?? emptyComposerDraft(),
+  );
+
+  const submit = (guideCurrent = false) => trackPersistentTask(activeDraftKeyRef.current, performSubmit(guideCurrent));
+  const performSubmit = async (guideCurrent = false, modelChoice?:ModelApplicationChoice) => {
+    if (queueEditing) return;
+    const queueOnly = running && (!guideCurrent || finishing || maintenanceActive);
     const submitDraftKey = activeDraftKeyRef.current;
+    const submitPendingKey = pendingKey;
     const submitTabId = tabId;
+    const ownsDraft = () => activeDraftKeyRef.current !== submitDraftKey || pendingKeyRef.current === submitPendingKey;
     if (draftIsSubmitting(submitDraftKey)) return;
+    const unresolved = pendingFollowups.get(submitPendingKey);
+    if (unresolved) {
+      updateSubmittingForDraft(submitDraftKey, true);
+      try {
+        await confirmFollowup(app, unresolved);
+        if (savedInput.target) await savedInput.settleSubmission(unresolved.key);
+        if (ownsDraft() && pendingFollowups.get(submitPendingKey) === unresolved && followupDraftFingerprint(submitDraftKey) === unresolved.draft) clearSubmittedDraft(submitDraftKey);
+        pendingFollowups.clear(submitPendingKey, unresolved);
+        setGuidanceRetryNonce(value => value + 1);
+      } catch {
+        showToast(t("runtime.unconfirmed"), "warn");
+      } finally {
+        updateSubmittingForDraft(submitDraftKey, false);
+      }
+      return;
+    }
+    if (disabled || (!running && submitDisabled) || readOnly) return;
     const currentText = textRef.current;
     const rawDraft = trimInvocationDraft(currentText, invocationsRef.current);
     const typedGoalDraft = goalModeOn && !activeGoal && rawDraft.invocations.length === 0
@@ -2044,6 +2076,7 @@ export function Composer({
     const trimmedDraft = typedGoalDraft ?? rawDraft;
     const trimmedText = trimmedDraft.text;
     if (draftHasPendingPaste(submitDraftKey)) return;
+    if (!attachmentInputEnabled && (attachmentsRef.current.length > 0 || workspaceRefsRef.current.length > 0)) return;
     if (!imageInputEnabled && !imageUnderstandingEnabled && hasImageAttachments(attachmentsRef.current)) {
       warnImageInputFallback();
     }
@@ -2069,8 +2102,36 @@ export function Composer({
       return;
     }
     setComposerPrompt(null);
-    updateSubmittingForDraft(submitDraftKey, true);
+    const submittedDraft = followupDraftFingerprint(submitDraftKey);
+    const currentSessionRefs = sessionRefsRef.current;
+    const currentSelectedTextRefs = selectedTextRefsRef.current;
+		const currentPastedBlocks = [...pastedBlocksRef.current];
+    updateSubmittingForDraft(submitDraftKey, true,
+      !goalModeOn && trimmedDraft.invocations.length === 0 && currentSessionRefs.length === 0 && isCompactCommand(expandPastedBlocks(trimmedText, currentPastedBlocks)) ? "compact" : "message");
+		let submissionCapture: unknown;
+		let submissionAttachmentTarget: string | undefined;
+		let attachmentSubmissionId: string | undefined;
+		let attachmentSubmit: Awaited<ReturnType<typeof loadAttachmentSubmit>> | undefined;
+    // Captured for the outer catch: a transient submit failure still holds the
+    // exact message (display and submit text) the user typed.
+    let submittedDisplayText = "";
+    let submittedSubmitText = "";
+    let submittedStructured: StructuredInvocationSubmit | undefined;
+    const holdTransientGuidance = createTransientGuidance({
+      app, transientRetriesRef, pendingKeyRef, submitPendingKey, submitDraftKey, submitTabId,
+      inboxSessionPath, submittedDraft, queueOnly, followupDraftFingerprint, clearSubmittedDraft,
+      setGuidanceRetryNonce, showToast, t, locale,
+    });
     try {
+      submissionCapture = onCaptureSubmit?.(persistentSnapshot(snapshotComposerDraft()));
+      if (onCaptureSubmit && !submissionCapture) return;
+      await onPrepareSubmit?.(submissionCapture);
+      if (bridgeTarget.kind === "session" && currentWorkspaceRefs.some(ref => ref.isDir && ref.path.startsWith("__reasonix_external_folder/"))) {
+        const { restoreExternalFolderReferences } = await loadAttachmentSubmit();
+        await restoreExternalFolderReferences(app, bridgeTarget, currentWorkspaceRefs);
+      }
+      if (queueOnly && !submitPendingKey) throw new Error("reasonix_error:inbox_not_submitted");
+      const target = running ? await captureStableInboxTarget(app, submitTabId || "", inboxSessionPath || "") : undefined;
       const orderedAttachments = sortComposerAttachments(currentAttachments);
       const refs = [
         ...currentWorkspaceRefs.map((ref) => formatWorkspaceReference(ref.path, ref.isDir)),
@@ -2079,29 +2140,39 @@ export function Composer({
       const displayRefs = [
         ...currentWorkspaceRefs.map((ref) => formatWorkspaceReference(ref.displayPath || ref.path, ref.isDir)),
         ...orderedAttachments.map(formatAttachmentDisplayReference),
-        ...selectedTextRefsRef.current.map(formatSelectionLabel),
+        ...currentSelectedTextRefs.map(formatSelectionLabel),
       ].join(" ");
       const displayText = [trimmedText, displayRefs].filter(Boolean).join(trimmedText && displayRefs ? " " : "");
+      submittedDisplayText = displayText;
       // PR-B: when past:chats refs are attached, prepend their formatted transcript
       // to submitText only (displayText stays unchanged so the user still sees their
       // original prompt in the input preview). With no refs we keep the original
       // submitText verbatim — no header, no rewording, byte-identical to pre-PR-B.
-      const currentSessionRefs = sessionRefsRef.current;
-      const currentSelectedTextRefs = selectedTextRefsRef.current;
-      const currentPastedBlocks = [...pastedBlocksRef.current];
       const sessionContext = currentSessionRefs.length === 0 ? "" : await buildSessionContext(currentSessionRefs, t);
       const selectedTextContext = formatSelectedTextContext(currentSelectedTextRefs);
       const invocationText = serializeInvocationSubmit(trimmedText, trimmedDraft.invocations);
       const baseSubmitText = [expandPastedBlocks(invocationText, currentPastedBlocks), refs].filter(Boolean).join(" ");
       const submitBase = sessionContext ? `${sessionContext}${baseSubmitText}` : baseSubmitText;
       const submitText = [submitBase, selectedTextContext].filter(Boolean).join("\n\n");
+      submittedSubmitText = submitText;
       const structuredInput = [expandPastedBlocks(trimmedText, currentPastedBlocks), refs].filter(Boolean).join(" ");
-      const structured = trimmedDraft.invocations.length > 0 ? {
-        display: [invocationText, displayRefs].filter(Boolean).join(invocationText && displayRefs ? " " : ""),
-        input: [sessionContext ? `${sessionContext}${structuredInput}` : structuredInput, selectedTextContext].filter(Boolean).join("\n\n"),
-        invocations: invocationRequests(trimmedDraft.invocations),
-      } satisfies StructuredInvocationSubmit : undefined;
-      if (running) {
+				let structured: StructuredInvocationSubmit | undefined = trimmedDraft.invocations.length > 0 ? {
+				display: [invocationText, displayRefs].filter(Boolean).join(invocationText && displayRefs ? " " : ""),
+				input: [sessionContext ? `${sessionContext}${structuredInput}` : structuredInput, selectedTextContext].filter(Boolean).join("\n\n"),
+				invocations: invocationRequests(trimmedDraft.invocations),
+			} satisfies StructuredInvocationSubmit : undefined;
+			const stagedImages = orderedAttachments.filter((item) => item.draftId || item.recoveryPath);
+			if (stagedImages.length > 0 && bridgeTarget.kind === "session") {
+				attachmentSubmit = await loadAttachmentSubmit();
+				const prepared = await attachmentSubmit.prepareImageSubmission(app, bridgeTarget, submitDraftKey, submittedDraft, stagedImages, structured, displayText, submitText);
+				submissionAttachmentTarget = prepared.token;
+				attachmentSubmissionId = prepared.submissionId;
+				structured = prepared.structured;
+			}
+      submittedStructured = structured;
+      // Repeated compaction asks the owner for its current operation receipt;
+      // queueing it would unexpectedly start another compaction after this one.
+      if (running && !(maintenanceActive && !structured && isCompactCommand(submitText))) {
         // An entity-only submit has an empty displayText (entities live
         // outside the text model); fall back to the serialized slash form so
         // the queue shows the invocation instead of silently dropping it
@@ -2109,14 +2180,40 @@ export function Composer({
         const guidanceText = displayText.trim() || (structured?.display.trim() ?? "");
         const guidanceSubmitText = submitText.trim();
         if (guidanceText) {
+          if (!queueOnly && !localDurableGuidance && !target && onSteer) {
+            try {
+              await onSteer(guidanceSubmitText, submitTabId);
+              clearSubmittedDraft(submitDraftKey);
+            } catch (error) {
+              showToast(formatInboxError(error, locale), "warn");
+            }
+            return;
+          }
           // Durable follow-up: only clear the composer after a durable receipt.
           const receiptTracker = guidanceReceiptTrackerRef.current;
           receiptTracker?.start(submitDraftKey);
+          let unresolvedRequest: PendingFollowup | undefined;
+          let enqueueAttempted = false;
           try {
-            const receipt = await enqueueInboxGuidance(app, submitTabId || "", guidanceText, guidanceSubmitText, structured, { steer: true });
-            if (receipt?.error) throw new Error(receipt.error);
+            const { enqueueComposerGuidance } = await import("../lib/inboxGuidanceSubmit");
+            const request: PendingFollowup = { key: structured?.attachmentSubmissionId || `followup-${crypto.randomUUID()}`, target,
+              tabId: submitTabId || "", display: guidanceText, submit: guidanceSubmitText, structured, draft: submittedDraft };
+            if (queueOnly || target) {
+              unresolvedRequest = request;
+              pendingFollowups.set(submitPendingKey, request);
+            }
+            const enqueue = async () => {
+              enqueueAttempted = true;
+              const receipt = await enqueueComposerGuidance(app, request, queueOnly, turnId);
+              if (receipt?.error) throw new Error(receipt.error);
+              if (!receipt?.itemId) throw new Error("Follow-up receipt unconfirmed");
+              return receipt;
+            };
+            const receipt = savedInput.target && submitTabId
+              ? await sendPersistedComposer(submitTabId, guidanceText, guidanceSubmitText, request.key, enqueue, savedInput.target.revision, savedInput.target.draftId, "guidance")
+              : await enqueue();
             const consumedBeforeReceipt = receiptTracker?.takeConsumed(submitDraftKey, receipt.itemId) ?? false;
-            if (!consumedBeforeReceipt) {
+            if (!consumedBeforeReceipt && !queueOnly && (receipt.disposition === "steer_accepted" || receipt.disposition === "queued_followup")) {
               updatePendingGuidanceForDraft(submitDraftKey, (items) => {
                 const next = items.map((item) => receipt.paused ? { ...item, paused: true } : item);
                 if (next.some((item) => item.id === receipt.itemId)) return next;
@@ -2124,16 +2221,28 @@ export function Composer({
                   id: receipt.itemId,
                   text: guidanceText.slice(0, 120),
                   submitText: "",
-                  intent: "followup",
-                  state: "queued",
+                  intent: receipt.disposition === "steer_accepted" ? "steer" : "followup",
+                  state: receipt.disposition === "steer_accepted" ? "steer_accepted" : "queued",
                   source: "desktop",
                   paused: Boolean(receipt.paused),
                   structured,
                 }];
               });
             }
-            clearSubmittedDraft(submitDraftKey);
+            if (ownsDraft() && (!queueOnly || pendingFollowups.get(submitPendingKey) === request) && followupDraftFingerprint(submitDraftKey) === submittedDraft) clearSubmittedDraft(submitDraftKey);
+            if (queueOnly || target) {
+              pendingFollowups.clear(submitPendingKey, request);
+              setGuidanceRetryNonce(value => value + 1);
+            }
+            if (queueOnly || receipt.disposition === "queued_followup") showToast(t("runtime.queued"), "info");
           } catch (error) {
+            // A transient fence keeps the pending request and retries it
+            // briefly: the message stays visibly pending instead of surfacing
+            // an error the user cannot act on.
+            if (holdTransientGuidance(error, { display: guidanceText, submit: guidanceSubmitText, structured, turnId })) return;
+            if (followupNotSubmitted(error)) attachmentSubmit?.settleImageSubmission(submitDraftKey, attachmentSubmissionId);
+            // Registration still needs reconciliation, but no inbox receipt exists before enqueue starts.
+            if (unresolvedRequest && (!enqueueAttempted || followupNotSubmitted(error))) pendingFollowups.clear(submitPendingKey, unresolvedRequest);
             showToast(formatInboxError(error, locale), "warn");
             // Keep draft on durable failure.
           } finally {
@@ -2142,11 +2251,51 @@ export function Composer({
         }
         return;
       }
-      await onSend(displayText, submitText, submitTabId, structured);
-      clearSubmittedDraft(submitDraftKey);
+			if(modelChoice) structured={...(structured ?? {display:displayText,input:submitText,invocations:[]}),modelApplicationChoice:modelChoice};
+			if (savedInput.target && submitTabId) {
+        const submissionId = attachmentSubmissionId || `composer-${crypto.randomUUID()}`;
+        await sendPersistedComposer(submitTabId, displayText, submitText, submissionId,
+          () => onSend(displayText, submitText, submitTabId, structured, submissionCapture, submissionId), savedInput.target.revision, savedInput.target.draftId);
+      } else await onSend(displayText, submitText, submitTabId, structured, submissionCapture);
+			attachmentSubmit?.settleImageSubmission(submitDraftKey, attachmentSubmissionId);
+			if (!persistentDraft && followupDraftFingerprint(submitDraftKey) === submittedDraft) clearSubmittedDraft(submitDraftKey);
     } catch (error) {
-      showToast(formatInboxError(error, locale), "warn");
-    } finally {
+      // A submit that raced a session switch is refused by the serve's
+      // expected-session fence. Hold it visibly and retry once the route
+      // settles instead of reporting a failure the user cannot act on.
+      if (holdTransientGuidance(error, {
+        display: submittedDisplayText || trimmedText,
+        submit: submittedSubmitText || trimmedText,
+        structured: submittedStructured,
+      })) return;
+      // A busy-window submit was durably queued instead of starting a turn:
+      // show the queue entry immediately and confirm the message left the
+      // composer, rather than reporting a conflict.
+      const queued = queuedFollowupOutcome(error);
+      if (queued) {
+        updatePendingGuidanceForDraft(submitDraftKey, (items) => items.some((item) => item.id === queued.itemId) ? items : [...items, {
+          id: queued.itemId,
+          text: trimmedText.slice(0, 120),
+          submitText: "",
+          intent: "followup",
+          state: "queued",
+          source: "desktop",
+          paused: queued.paused,
+        }]);
+        if (ownsDraft() && followupDraftFingerprint(submitDraftKey) === submittedDraft) clearSubmittedDraft(submitDraftKey);
+        setGuidanceRetryNonce((value) => value + 1);
+        showToast(t("runtime.queued"), "info");
+        return;
+      }
+      if (definitelyNotAccepted(error) || followupNotSubmitted(error)) attachmentSubmit?.settleImageSubmission(submitDraftKey, attachmentSubmissionId);
+      if (savedInput.target && modelApplicationError(error)) savedInput.reportSubmissionError(error);
+      else if (savedInput.target) showToast(formatInboxError(error, locale), "warn");
+      else if (modelApplicationError(error)) setRemoteApplication({key:submitDraftKey,text:submittedDraft,details:modelApplicationError(error)!});
+      else if (persistentDraft?.onTaskError) persistentDraft.onTaskError(persistentDraft.draftId, persistentDraft.generation, formatInboxError(error, locale));
+      else showToast(formatInboxError(error, locale), "warn");
+		} finally {
+			if (submissionAttachmentTarget) await app.ReleaseAttachmentTarget?.(submissionAttachmentTarget);
+			onReleaseSubmit?.(submissionCapture);
       updateSubmittingForDraft(submitDraftKey, false);
     }
   };
@@ -2171,7 +2320,7 @@ export function Composer({
       }
       if (durable && !running) return await kickIdleGuidance(app.SetInboxPaused, targetTabId || "", () => setGuidanceRetryNonce((value) => value + 1));
       if (running && durable) {
-        const receipt = await app.SteerInboxItem(targetTabId || "", item.id);
+        const receipt = await steerInboxItemForActiveTurn(app, targetTabId || "", item.id, turnId);
         if (receipt?.error) throw new Error(receipt.error);
         if (receipt?.disposition === "steer_accepted") {
           updatePendingGuidanceForDraft(targetDraftKey, (items) => items.filter((queued) => queued.id !== item.id));
@@ -2264,117 +2413,181 @@ export function Composer({
     }
   };
 
-  const readFileAsDataURL = (file: File) =>
-    new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(file);
-    });
-
-  const attachImageFiles = async (files: File[], sourceDraftKey: string) => {
-    const images = files.filter((f) => f.type.startsWith("image/"));
-    if (images.length === 0) return;
-    for (const file of images) {
+	const attachImageFiles = async (files: File[], sourceDraftKey: string) => {
+		const owner = persistentTargetsByDraftRef.current[sourceDraftKey];
+		if (!attachmentInputEnabled) return;
+		const sourceBridgeTarget = bridgeTargetsByDraftRef.current[sourceDraftKey] ?? bridgeTarget;
+		const images = files.filter((f) => f.type.startsWith("image/"));
+		if (images.length === 0) return;
+		// Capability validation happens synchronously inside captureImageTarget,
+		// before hashing or FileReader starts work for this owner.
+		const attachmentSubmit = await loadAttachmentSubmit();
+			const target = await attachmentSubmit.captureImageTarget(app, sourceBridgeTarget);
+		try {
+		for (const file of images) {
       updatePendingPasteForDraft(sourceDraftKey, 1);
       try {
         const key = await fileDedupKey(file);
         if (attachmentSeenInDraft(sourceDraftKey, key)) continue;
-        const dataUrl = await readFileAsDataURL(file);
-        const path = await app.SavePastedImage(dataUrl);
-        const previewUrl = await app.AttachmentDataURL(path);
-        addAttachmentToDraft(sourceDraftKey, { path, previewUrl, displayName: file.name }, key);
+				const staged = await attachmentSubmit.stageImageFile(app, target, `${sourceDraftKey}:${key.hash}:${key.source}`, file, sourceBridgeTarget.kind === "session" && sourceBridgeTarget.session ? sourceBridgeTarget : undefined);
+				addAttachmentToDraft(sourceDraftKey, {
+					path: staged.path, previewUrl: staged.previewUrl, displayName: file.name,
+					draftId: staged.draftId, recoveryPath: staged.recoveryPath, clientAttachmentId: crypto.randomUUID(),
+				}, key, owner);
       } catch (error) {
         console.warn("[composer] failed to attach pasted image", error);
-        showToast(t("composer.attachImageFailed"), "warn");
+        if (owner?.onTaskError) owner.onTaskError(owner.draftId, owner.generation, t("composer.attachImageFailed"));
+        else if (sourceDraftKey === activeDraftKeyRef.current) showToast(t("composer.attachImageFailed"), "warn");
         // non-fatal: a failed image attach must not block normal text input
       } finally {
         updatePendingPasteForDraft(sourceDraftKey, -1);
-      }
-    }
-  };
+			}
+		}
+		} finally {
+			await app.ReleaseAttachmentTarget?.(target);
+		}
+	};
 
   // Non-image pastes (PDFs, docs): the clipboard hands us bytes, not a path, so
   // the kernel stores them and we reference the saved path — attached, not ignored.
   const attachOtherFiles = async (files: File[], sourceDraftKey: string) => {
-    const others = files.filter((f) => !f.type.startsWith("image/"));
-    if (others.length === 0) return;
-    for (const file of others) {
+    const owner = persistentTargetsByDraftRef.current[sourceDraftKey];
+    if (!attachmentInputEnabled) return;
+		const sourceBridgeTarget = bridgeTargetsByDraftRef.current[sourceDraftKey] ?? bridgeTarget;
+		const others = files.filter((f) => !f.type.startsWith("image/"));
+		if (others.length === 0) return;
+		const attachmentSubmit = await loadAttachmentSubmit();
+			const target = await attachmentSubmit.captureAttachmentTarget(app, sourceBridgeTarget, ["SavePastedFileForTarget"]);
+		try {
+		for (const file of others) {
       updatePendingPasteForDraft(sourceDraftKey, 1);
       try {
         const key = await fileDedupKey(file);
         if (attachmentSeenInDraft(sourceDraftKey, key)) continue;
-        const dataUrl = await readFileAsDataURL(file);
-        const path = await app.SavePastedFile(file.name, dataUrl);
-        addAttachmentToDraft(sourceDraftKey, { path, displayName: file.name }, key);
+        const dataUrl = await attachmentSubmit.readFileAsDataURL(file);
+				const path = await app.SavePastedFileForTarget!(target, file.name, dataUrl);
+        addAttachmentToDraft(sourceDraftKey, { path, displayName: file.name }, key, owner);
       } catch {
         console.warn("[composer] failed to attach pasted file");
-        showToast(t("composer.attachFileFailed"), "warn");
+        if (owner?.onTaskError) owner.onTaskError(owner.draftId, owner.generation, t("composer.attachFileFailed"));
+        else if (sourceDraftKey === activeDraftKeyRef.current) showToast(t("composer.attachFileFailed"), "warn");
         // non-fatal: a failed attach must not block normal text input
       } finally {
         updatePendingPasteForDraft(sourceDraftKey, -1);
-      }
-    }
-  };
+			}
+		}
+		} finally {
+			await app.ReleaseAttachmentTarget?.(target);
+		}
+	};
 
   const attachFiles = (files: File[]) => {
+    if (!attachmentInputEnabled) return;
     const sourceDraftKey = activeDraftKeyRef.current;
-    void attachImageFiles(files, sourceDraftKey);
-    void attachOtherFiles(files, sourceDraftKey);
+		const target = persistentTargetsByDraftRef.current[sourceDraftKey];
+		if (target?.canEdit && !target.canEdit(target.draftId, target.generation)) return;
+		void trackPersistentTask(sourceDraftKey, attachImageFiles(files, sourceDraftKey)).catch((error) => {
+			console.warn("[composer] attachment image capability unavailable", error);
+			if (target?.onTaskError) target.onTaskError(target.draftId, target.generation, t("composer.attachImageFailed"));
+			else showToast(t("composer.attachImageFailed"), "warn");
+		});
+		void trackPersistentTask(sourceDraftKey, attachOtherFiles(files, sourceDraftKey)).catch((error) => {
+			console.warn("[composer] attachment file capability unavailable", error);
+			if (target?.onTaskError) target.onTaskError(target.draftId, target.generation, t("composer.attachFileFailed"));
+			else showToast(t("composer.attachFileFailed"), "warn");
+		});
   };
 
-  const attachNativeClipboardImage = async (notifyOnError: boolean, sourceDraftKey: string) => {
-    updatePendingPasteForDraft(sourceDraftKey, 1);
-    try {
-      const path = await app.SaveClipboardImage();
-      const previewUrl = await app.AttachmentDataURL(path);
-      const key = { hash: await dataURLHash(previewUrl), source: `native-clipboard:${path}` };
-      if (attachmentSeenInDraft(sourceDraftKey, key)) return;
-      addAttachmentToDraft(sourceDraftKey, { path, previewUrl }, key);
-    } catch (error) {
-      console.warn("[composer] failed to read native clipboard image", error);
-      if (notifyOnError) showToast(t("composer.pasteImageFailed"), "warn");
-    } finally {
-      updatePendingPasteForDraft(sourceDraftKey, -1);
-    }
+  const attachNativeClipboardImage = (notifyOnError: boolean, sourceDraftKey: string, owner = persistentTargetsByDraftRef.current[sourceDraftKey]) => {
+		const sourceBridgeTarget = bridgeTargetsByDraftRef.current[sourceDraftKey] ?? bridgeTarget;
+		const task = (async () => {
+			if (!attachmentInputEnabled) return;
+			if (owner?.isCurrent && !owner.isCurrent(owner.draftId, owner.generation)) return;
+			const attachmentSubmit = await loadAttachmentSubmit();
+			const target = await attachmentSubmit.captureAttachmentTarget(app, sourceBridgeTarget, ["SaveClipboardImageForTarget", "AttachmentDataURLForTarget"]);
+			updatePendingPasteForDraft(sourceDraftKey, 1);
+			try {
+				const path = await app.SaveClipboardImageForTarget!(target);
+				const previewUrl = await app.AttachmentDataURLForTarget!(target, path);
+        const key = { hash: await dataURLHash(previewUrl), source: `native-clipboard:${path}` };
+        if (attachmentSeenInDraft(sourceDraftKey, key)) return;
+        addAttachmentToDraft(sourceDraftKey, { path, previewUrl }, key, owner);
+      } catch (error) {
+        console.warn("[composer] failed to read native clipboard image", error);
+        if (notifyOnError) {
+          if (owner?.onTaskError) owner.onTaskError(owner.draftId, owner.generation, t("composer.pasteImageFailed"));
+          else if (sourceDraftKey === activeDraftKeyRef.current) showToast(t("composer.pasteImageFailed"), "warn");
+        }
+			} finally {
+				await app.ReleaseAttachmentTarget?.(target);
+				updatePendingPasteForDraft(sourceDraftKey, -1);
+      }
+    })();
+		return trackPersistentTask(sourceDraftKey, task).catch((error) => {
+			console.warn("[composer] native clipboard attachment unavailable", error);
+			if (notifyOnError) {
+				if (owner?.onTaskError) owner.onTaskError(owner.draftId, owner.generation, t("composer.pasteImageFailed"));
+				else showToast(t("composer.pasteImageFailed"), "warn");
+			}
+		});
   };
 
   // OS file drops arrive as absolute paths through the native bridge (the webview
   // withholds them from the HTML drop event); the kernel resolves each into a
   // workspace @reference or a stored attachment.
-  const attachDroppedPaths = async (paths: string[], sourceDraftKey = activeDraftKeyRef.current) => {
-    setDragOver(false);
-    for (const path of paths) {
-      updatePendingPasteForDraft(sourceDraftKey, 1);
-      try {
-        const key = { hash: "", source: `path:${path}` };
-        if (attachmentSeenInDraft(sourceDraftKey, key)) continue;
-        const item = await app.AttachDropped(path);
-        if (item.kind === "workspace") {
-          addWorkspaceReferenceToDraft(sourceDraftKey, { path: item.path, isDir: item.isDir, displayPath: item.displayPath });
-        } else {
-          addAttachmentToDraft(sourceDraftKey, { path: item.path, previewUrl: item.previewUrl, displayName: baseName(path) }, key);
-        }
-      } catch {
-        console.warn("[composer] failed to attach dropped file");
-        showToast(t("composer.attachDropFailed"), "warn");
-        // non-fatal: a failed drop attach must not block normal text input
-      } finally {
-        updatePendingPasteForDraft(sourceDraftKey, -1);
-      }
-    }
+  const attachDroppedPaths = (paths: string[], sourceDraftKey = activeDraftKeyRef.current) => {
+    const owner = persistentTargetsByDraftRef.current[sourceDraftKey];
+    if (owner?.canEdit && !owner.canEdit(owner.draftId, owner.generation)) return Promise.resolve();
+		const sourceBridgeTarget = bridgeTargetsByDraftRef.current[sourceDraftKey] ?? bridgeTarget;
+		const task = (async () => {
+			setDragOver(false);
+			if (!attachmentInputEnabled) return;
+			const attachmentSubmit = await loadAttachmentSubmit();
+			const target = await attachmentSubmit.captureAttachmentTarget(app, sourceBridgeTarget, ["AttachDroppedForTarget"]);
+			try {
+			for (const path of paths) {
+        updatePendingPasteForDraft(sourceDraftKey, 1);
+        try {
+          const key = { hash: "", source: `path:${path}` };
+          if (attachmentSeenInDraft(sourceDraftKey, key)) continue;
+					const item = await app.AttachDroppedForTarget!(target, path);
+          if (item.kind === "workspace") {
+            addWorkspaceReferenceToDraft(sourceDraftKey, { path: item.path, isDir: item.isDir, displayPath: item.displayPath }, owner);
+          } else {
+            addAttachmentToDraft(sourceDraftKey, { path: item.path, previewUrl: item.previewUrl, displayName: baseName(path) }, key, owner);
+          }
+        } catch {
+          console.warn("[composer] failed to attach dropped file");
+          if (owner?.onTaskError) owner.onTaskError(owner.draftId, owner.generation, t("composer.attachDropFailed"));
+          else if (sourceDraftKey === activeDraftKeyRef.current) showToast(t("composer.attachDropFailed"), "warn");
+        } finally {
+          updatePendingPasteForDraft(sourceDraftKey, -1);
+				}
+			}
+			} finally {
+				await app.ReleaseAttachmentTarget?.(target);
+			}
+		})();
+		return trackPersistentTask(sourceDraftKey, task).catch((error) => {
+			console.warn("[composer] dropped attachment capability unavailable", error);
+			if (owner?.onTaskError) owner.onTaskError(owner.draftId, owner.generation, t("composer.attachDropFailed"));
+			else showToast(t("composer.attachDropFailed"), "warn");
+		});
   };
 
   useEffect(() => {
+    if (!attachmentInputEnabled) return;
     return onFilesDropped((paths) => void attachDroppedPaths(paths, activeDraftKeyRef.current));
-  }, []);
+  }, [attachmentInputEnabled, bridgeTargetKey]);
 
   const onPaste = (e: ClipboardEvent<HTMLTextAreaElement | HTMLDivElement>) => {
     clearNativeClipboardPasteTimer();
+    const owner = persistentTargetsByDraftRef.current[activeDraftKeyRef.current];
+    if (owner?.canEdit && !owner.canEdit(owner.draftId, owner.generation)) { e.preventDefault(); return; }
     const files = clipboardFiles(e.clipboardData);
     if (files.length > 0) {
       e.preventDefault();
-      attachFiles(files);
+      if (attachmentInputEnabled) attachFiles(files);
       return;
     }
 
@@ -2382,7 +2595,7 @@ export function Composer({
     const hasImageHint = clipboardHasImageHint(e.clipboardData);
     if (hasImageHint || pasted === "") {
       e.preventDefault();
-      void attachNativeClipboardImage(hasImageHint, activeDraftKeyRef.current);
+      if (attachmentInputEnabled) void attachNativeClipboardImage(hasImageHint, activeDraftKeyRef.current);
       return;
     }
 
@@ -2514,8 +2727,32 @@ export function Composer({
     end: number,
     targetDraftKey = activeDraftKeyRef.current,
     afterInvocationId?: string,
+    owner?: PersistentComposerTarget,
   ) => {
+    if (owner?.isCurrent && !owner.isCurrent(owner.draftId, owner.generation)) return;
     const normalizedPasted = pasted.replace(/\r\n/g, "\n");
+    if (owner?.onPatch) {
+      let caret = start;
+      owner.onPatch(owner.draftId, owner.generation, (current) => {
+        // Clipboard reads may finish after further typing or navigation. Merge
+        // into the owner's latest fields; never restore a cached Composer copy.
+        const unchanged = current.text === owner.initial.text;
+        const from = unchanged ? Math.min(start, current.text.length) : current.text.length;
+        const to = unchanged ? Math.min(end, current.text.length) : from;
+        let inserted = normalizedPasted;
+        let blocks = current.pastedBlocks;
+        if (shouldFoldPaste(pasted)) {
+          do { inserted = t("composer.pastedLabel", { id: nextPasteId.current++, lines: lineCount(pasted) }); }
+          while (blocks.some((block) => block.label === inserted));
+          blocks = [...blocks, { label: inserted, text: pasted }];
+        }
+        const next = replaceInvocationTextRange(current.text, current.invocations, from, to, inserted, unchanged ? afterInvocationId : undefined);
+        caret = from + inserted.length;
+        return { ...current, text: next.text, invocations: next.invocations, pastedBlocks: blocks };
+      });
+      if (targetDraftKey === activeDraftKeyRef.current) focusInputRange(caret);
+      return;
+    }
     const beforeEdit = composerEditSnapshot(targetDraftKey, { start, end, afterInvocationId });
     let caret: number;
     if (targetDraftKey !== activeDraftKeyRef.current) {
@@ -2544,7 +2781,9 @@ export function Composer({
       draft.text = next.text;
       draft.invocations = next.invocations;
       draftsBySessionRef.current[targetDraftKey] = draft;
+      owner?.onPatch?.(owner.draftId, owner.generation, { text: draft.text, invocations: draft.invocations, pastedBlocks: draft.pastedBlocks });
       recordComposerEdit(targetDraftKey, beforeEdit, composerEditSnapshot(targetDraftKey, { start: caret, end: caret }));
+      publishPersistentDraft(targetDraftKey);
       return;
     }
 
@@ -2587,6 +2826,7 @@ export function Composer({
       focusInputRange(caret);
     }
     recordComposerEdit(targetDraftKey, beforeEdit, composerEditSnapshot(targetDraftKey, { start: caret, end: caret }));
+    queueMicrotask(() => publishPersistentDraft(targetDraftKey));
   };
 
   const copyComposerSelection = async (cut = false) => {
@@ -2600,9 +2840,9 @@ export function Composer({
     try {
       await navigator.clipboard.writeText(selection.selected);
     } catch {
-      // Fall back to Wails desktop runtime, then execCommand
+      // Fall back to the desktop host clipboard, then execCommand
       try {
-        if (typeof window !== "undefined" && (await window.runtime?.ClipboardSetText?.(selection.selected))) {
+        if (await desktopHost().native.clipboardWriteText(selection.selected)) {
           /* ok */
         } else if (!fallbackCopyText(selection.selected)) {
           // Every clipboard path failed. Cutting now would delete text that
@@ -2633,15 +2873,19 @@ export function Composer({
     }
   };
 
-  const pasteIntoComposer = async () => {
+  const pasteIntoComposer = () => {
     const selection = getInputSelection();
     const sourceDraftKey = activeDraftKeyRef.current;
+    const owner = persistentTargetsByDraftRef.current[sourceDraftKey];
+    if (owner?.canEdit && !owner.canEdit(owner.draftId, owner.generation)) return Promise.resolve();
     setInputMenuPoint(null);
+    return trackPersistentTask(sourceDraftKey, (async () => {
 
     // Try reading clipboard items for image detection (no event in menu path)
     try {
       const items = await navigator.clipboard.read();
-      if (items.some((item) => item.types.some((t) => t.startsWith("image/")))) {
+      if (owner?.isCurrent && !owner.isCurrent(owner.draftId, owner.generation)) return;
+      if (attachmentInputEnabled && items.some((item) => item.types.some((t) => t.startsWith("image/")))) {
         void attachNativeClipboardImage(true, sourceDraftKey);
         return;
       }
@@ -2657,6 +2901,7 @@ export function Composer({
     }
     try {
       const pasted = await navigator.clipboard.readText();
+      if (owner?.isCurrent && !owner.isCurrent(owner.draftId, owner.generation)) return;
       if (pasted === "") {
         // Match the keyboard paste handler: an empty text read means "nothing
         // to insert" (empty clipboard, files, or unsupported types) — never
@@ -2665,7 +2910,7 @@ export function Composer({
         if (sourceDraftKey === activeDraftKeyRef.current) {
           focusInputRange(selection.from, selection.to, selection.afterInvocationId);
         }
-        void attachNativeClipboardImage(false, sourceDraftKey);
+        if (attachmentInputEnabled) void attachNativeClipboardImage(false, sourceDraftKey);
         return;
       }
       insertPastedText(
@@ -2674,12 +2919,14 @@ export function Composer({
         selection.to,
         sourceDraftKey,
         selection.afterInvocationId,
+        owner,
       );
     } catch {
       if (sourceDraftKey === activeDraftKeyRef.current) {
         focusInputRange(selection.from, selection.to, selection.afterInvocationId);
       }
     }
+    })());
   };
 
   const selectAllComposerText = () => {
@@ -2714,20 +2961,20 @@ export function Composer({
     return items.some((item) => getWebkitFileEntry(item) === null);
   };
 
-  const clearWailsDropTarget = () => {
-    document.querySelectorAll(".wails-drop-target-active").forEach((el) => el.classList.remove("wails-drop-target-active"));
-  };
-
   const stopNativeFileDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
     e.nativeEvent.stopImmediatePropagation();
-    clearWailsDropTarget();
   };
 
   const onFileDropCapture = (e: DragEvent<HTMLDivElement>) => {
     if (hasWorkspaceReferenceDrag(e.dataTransfer) || !hasFileDrag(e.dataTransfer)) return;
     e.preventDefault();
+    if (!attachmentInputEnabled) {
+      stopNativeFileDrop(e);
+      setDragOver(false);
+      return;
+    }
     if (!hasPathlessFileDrop(e.dataTransfer)) return;
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
@@ -2741,6 +2988,7 @@ export function Composer({
     if (droppedWorkspaceRef) {
       e.preventDefault();
       setDragOver(false);
+      if (!attachmentInputEnabled) return;
       addWorkspaceReference(droppedWorkspaceRef);
       return;
     }
@@ -2756,28 +3004,30 @@ export function Composer({
   const onDragOver = (e: DragEvent<HTMLDivElement>) => {
     if (!hasWorkspaceReferenceDrag(e.dataTransfer) && !hasFileDrag(e.dataTransfer)) return;
     e.preventDefault(); // required for the drop event to fire
-    e.dataTransfer.dropEffect = "copy";
-    setDragOver(true);
+    e.dataTransfer.dropEffect = attachmentInputEnabled ? "copy" : "none";
+    setDragOver(attachmentInputEnabled);
   };
 
   const onDragLeave = () => setDragOver(false);
-
   // handleCancel stops the in-flight turn; if it was cancelled before the server
   // replied, the just-sent text is handed back so we drop it back into the input.
   const handleCancel = async () => {
+    if (finishing || runtimeState.unknown || runtimeState.cancellable === false) return;
     const targetDraftKey = activeDraftKeyRef.current;
     if (cancelSettlingDraftsRef.current.has(targetDraftKey)) return;
     cancelSettlingDraftsRef.current.add(targetDraftKey);
     setCancelSettlingRevision((value) => value + 1);
-    const ownedGuidance = pendingGuidanceRef.current.filter((item) => item.id.startsWith("local-") || item.source === "desktop");
-    const durableItemIDs = ownedGuidance
+    // The durable queue has its own pause/delete controls. Stopping the current
+    // task must not discard pending messages or restore truncated previews.
+    const ownedGuidance = typeof app.InboxQueueForTarget === "function" ? [] : pendingGuidanceRef.current.filter((item) => item.id.startsWith("local-") || item.source === "desktop");
+    const durableItemIDs = maintenanceActive ? [] : ownedGuidance
       .map((item) => item.id)
       .filter((id) => !id.startsWith("local-"));
-    if (goalModeOn && activeGoal) onClearGoal();
+    if (!maintenanceActive && goalModeOn && activeGoal) onClearGoal();
     try {
       const outcome = (await onCancel(durableItemIDs)) ?? { discardedItemIds: [] };
       const discarded = new Set(outcome.discardedItemIds);
-      const restorable = ownedGuidance.filter((item) => item.id.startsWith("local-") || discarded.has(item.id));
+      const restorable = maintenanceActive ? [] : ownedGuidance.filter((item) => item.id.startsWith("local-") || discarded.has(item.id));
       const queued = restorable
         .map((item) => item.structured?.display ?? item.text)
         .filter((part) => part.trim() !== "");
@@ -2952,36 +3202,29 @@ export function Composer({
     // Creation empty hero starts single-line but must grow so multi-line drafts
     // stay readable before send (review: fixed 20px + overflow:hidden clipped).
     if (heroMode) {
-      const node = taRef.current;
-      if (!node) {
+      const measureNode = measureTaRef.current;
+      if (!measureNode) {
         setTextareaAutoHeight(20);
         setTextareaAutoOverflow(false);
         return;
       }
-      const previousHeight = node.style.height;
-      node.style.height = "auto";
-      const scrollHeight = node.scrollHeight || 20;
+      const scrollHeight = measureNode.scrollHeight || 20;
       const maxHeight = composerHeroInputMaxHeight();
       const nextHeight = Math.min(Math.max(scrollHeight, 20), maxHeight);
       const nextOverflow = scrollHeight > maxHeight + 1;
-      node.style.height = previousHeight;
       setTextareaAutoHeight((current) => (current === nextHeight ? current : nextHeight));
       setTextareaAutoOverflow((current) => (current === nextOverflow ? current : nextOverflow));
       return;
     }
     const richHeight = invocationsRef.current.length > 0 ? richInputRef.current?.scrollHeight() : 0;
-    const node = taRef.current;
-    if (!richHeight && !node) return;
-    const previousHeight = node?.style.height;
-    if (node) node.style.height = "auto";
-    const scrollHeight = richHeight || node?.scrollHeight || 0;
+    const scrollHeight = richHeight || measureTaRef.current?.scrollHeight || 0;
+    if (!scrollHeight) return;
     const sizing = resolveComposerContentSizing({
       contentHeight: scrollHeight,
       manualLogicalHeight: composerHeight,
       maxLogicalHeight: composerMaxHeight(),
       reservedHeight: COMPOSER_AUTO_RESERVED_HEIGHT,
     });
-    if (node && previousHeight !== undefined) node.style.height = previousHeight;
     setTextareaAutoHeight((current) => (current === sizing.inputHeight ? current : sizing.inputHeight));
     setTextareaAutoOverflow((current) => (current === sizing.overflow ? current : sizing.overflow));
   }, [composerHeight, heroMode, invocations.length]);
@@ -3017,7 +3260,7 @@ export function Composer({
   };
 
   const resetComposerHeight = () => {
-    setComposerHeight(null);
+    setComposerHeight(clampComposerHeight(COMPOSER_DEFAULT_HEIGHT));
     clearLayoutSize("composerHeight");
   };
 
@@ -3206,7 +3449,6 @@ export function Composer({
 
   const openContentMenu = () => {
     if (intentMenuOpen || intentMenuClosing) closeIntentMenu();
-    if (moreMenuOpen || moreMenuClosing) closeMoreMenu();
     setDirectPastChats(false);
     setShowPastChats(false);
     setDismissed(true);
@@ -3215,6 +3457,7 @@ export function Composer({
 
   const chooseAttachmentFiles = () => {
     setContentMenuOpen(false);
+    if (!attachmentInputEnabled) return;
     fileInputRef.current?.click();
   };
 
@@ -3256,7 +3499,6 @@ export function Composer({
     const maxIdx = Math.max(0, count - 1);
     setActive((prev) => (prev > maxIdx ? 0 : prev));
   }, [active, count, menuMode, slashSelectableIndices]);
-
 
   const removeAtToken = (value: string) => {
     return value.replace(/[\r\n]+$/u, "").replace(activeRefTokenRe, "").trimEnd();
@@ -3347,12 +3589,19 @@ export function Composer({
     if (e.key === "Enter" && composing) return;
     if (fnKey) return;
 
-    if (isPasteShortcut(e) && !composing) {
+    if (attachmentInputEnabled && isPasteShortcut(e) && !composing) {
       clearNativeClipboardPasteTimer();
       const sourceDraftKey = activeDraftKeyRef.current;
+      const owner = persistentTargetsByDraftRef.current[sourceDraftKey];
+      if (owner?.canEdit && !owner.canEdit(owner.draftId, owner.generation)) { e.preventDefault(); return; }
+      let settle!: () => void;
+      const task = new Promise<void>(resolve => { settle = resolve; });
+      nativeClipboardPasteCompletionRef.current = settle;
+      void trackPersistentTask(sourceDraftKey, task);
       nativeClipboardPasteTimerRef.current = window.setTimeout(() => {
         nativeClipboardPasteTimerRef.current = null;
-        void attachNativeClipboardImage(false, sourceDraftKey);
+        nativeClipboardPasteCompletionRef.current = null;
+        void attachNativeClipboardImage(false, sourceDraftKey, owner).finally(settle);
       }, 160);
     }
 
@@ -3361,16 +3610,6 @@ export function Composer({
     if (e.key === "Tab" && e.shiftKey && !composing) {
       e.preventDefault();
       onCycleMode();
-      return;
-    }
-
-    if (
-      !composing
-      && !isReservedComposerHistoryShortcut(e.nativeEvent, shortcutPlatform)
-      && matchesShortcut(e.nativeEvent, "toolApproval.yolo", shortcutPlatform)
-    ) {
-      e.preventDefault();
-      onToggleYoloApprovalMode();
       return;
     }
 
@@ -3622,7 +3861,20 @@ export function Composer({
   // --composer-height stays in logical card-height space. It may be the saved
   // manual floor or a larger content-derived height; the run-strip reservation
   // remains separate so the live resize writer uses the same coordinate space.
-  const showRunStrip = Boolean(retry || running);
+  const waitingPrompt = suspendedByDecision
+    ? null
+    : pendingApprovalLabel
+      ? "approval"
+      : pendingAsk
+        ? "ask"
+        : null;
+  // Ordinary work keeps the strip too: it carries the live token/throughput
+  // readout, so it is no longer reserved for states the glow ring cannot name.
+  // `!suspendedByDecision` mirrors the run-state chain, which yields no label
+  // while a decision surface owns the footer; without it the reservation would
+  // hold a strip's height open with nothing to draw in it.
+  const compactSubmitting = submission === "compact" && !running;
+  const showRunStrip = Boolean(compactSubmitting || (running && !suspendedByDecision) || retry || waitingPrompt || finishing || runtimeState.unknown || runtimeState.kind === "background_job" || runtimeState.kind === "cancelling");
   const effectiveComposerHeight = composerHeight === null
     ? null
     : resolveComposerContentSizing({
@@ -3652,18 +3904,16 @@ export function Composer({
     requestActiveDraftFrame(focusComposerInput);
   };
   const chooseTaskMode = (nextMode: CollaborationMode) => {
+    setContentMenuOpen(false);
     closeIntentMenu(() => {
       if (nextMode !== collaborationMode) onSetCollaborationMode(nextMode);
       requestActiveDraftFrame(focusComposerInput);
     });
   };
-  const floorOn = qualityFloor === "delivery";
-  const chooseQualityFloor = (floor: QualityFloor) => {
-    if (floor === qualityFloor) return;
-    onSetQualityFloor?.(floor);
-  };
   const stopGoalMode = () => {
+    setContentMenuOpen(false);
     closeIntentMenu(() => {
+      savedInput.setGoalDraft(false);
       onClearGoal();
       requestActiveDraftFrame(focusComposerInput);
     });
@@ -3673,40 +3923,20 @@ export function Composer({
     : collaborationMode === "goal"
       ? "composer.taskModeGoalShort"
       : "composer.taskModeDirectShort";
-  const taskModeTooltipSummaryKey = collaborationMode === "plan"
-    ? "composer.taskModePlanTooltipSummary"
-    : collaborationMode === "goal"
-      ? "composer.taskModeGoalTooltipSummary"
-      : "composer.taskModeDirectTooltipSummary";
-  const TaskModeIcon = collaborationMode === "plan" ? List : collaborationMode === "goal" ? Target : ArrowRight;
-  const taskModeTriggerLabel = t("composer.taskModeTrigger", { mode: t(taskModeShortKey) });
-  const taskModeTooltipLabel = t("composer.controlTooltip", {
-    category: t("composer.intentMenuTitle"),
-    mode: t(taskModeShortKey),
-    summary: t(taskModeTooltipSummaryKey),
-  });
-  const effortLevels = asArray(effort?.levels);
+  const TaskModeIcon = collaborationMode === "plan" ? Lightbulb : collaborationMode === "goal" ? Target : ArrowRight;
+  const taskModeTriggerLabel = `${t("common.close")} ${t(taskModeShortKey)}`;
+  const taskModeTooltipLabel = taskModeTriggerLabel;
+  const effortOptions = asArray(effort?.options);
+  const effortLabel = (id: string) => id === "auto" ? t("common.auto") : effortOptions.find((option) => option.id === id)?.name || id;
+  const effortLevels = effort?.options ? ["auto", ...effortOptions.map((option) => option.id)] : asArray(effort?.levels);
   const currentEffort = effort?.current || "auto";
-  const compactEffortTitle = currentEffort === "auto"
-    ? t("status.effortAutoTitle", { def: effort?.default || "auto" })
-    : `${t("status.effortTitle")}: ${currentEffort}`;
   const hasEffort = Boolean(effort?.supported && effortLevels.length > 0);
   const chooseEffortLevel = (level: string) => {
-    closeMoreMenu(() => {
-      if (level !== currentEffort) onSetEffort(level);
-      requestActiveDraftFrame(focusComposerInput);
-    });
+    if (level !== currentEffort) onSetEffort(level);
   };
   // Run-strip state machine: retry > waiting-approval > waiting-ask > streaming.
   // Decision surfaces own the "waiting on user" UI; while suspendedByDecision
   // is true we still pause the work clock but do not render a waiting strip.
-  const waitingPrompt = suspendedByDecision
-    ? null
-    : pendingApprovalLabel
-      ? "approval"
-      : pendingAsk
-        ? "ask"
-        : null;
   const pauseWorkClock = suspendedByDecision || Boolean(waitingPrompt);
   // Decision surfaces hide the whole composer, so mode controls stay disabled.
   // Legacy tests that pass pendingApprovalLabel without suspendedByDecision
@@ -3751,42 +3981,12 @@ export function Composer({
     setDirectPastChats(false);
     setShowPastChats(false);
     closeIntentMenu();
-    closeMoreMenu();
-  }, [suspendedByDecision, closeIntentMenu, closeMoreMenu]);
-  // Live text+reasoning character count for the run-strip TPS fallback. Reads
-  // through the live store's own subscription so stream deltas re-render only
-  // this component — the controller's bump path stays text-delta-free.
-  const subscribeLiveText = useCallback(
-    (cb: () => void) => liveStore?.subscribe(tabId, cb) ?? (() => {}),
-    [liveStore, tabId],
-  );
-  const liveTextChars = useSyncExternalStore(
-    subscribeLiveText,
-    () => {
-      const live = liveStore?.getSnapshot(tabId);
-      return live ? live.text.length + live.reasoning.length : 0;
-    },
-  );
-  const liveModelActiveAt = useSyncExternalStore(
-    subscribeLiveText,
-    () => liveStore?.getModelActiveAt?.(tabId),
-  );
-  const turnPhaseLabel = (() => {
-    switch ((turnPhase ?? "").trim()) {
-      case "checking":
-        return t("composer.turnPhaseChecking");
-      case "verifying":
-        return t("composer.turnPhaseVerifying");
-      case "reviewing":
-        return t("composer.turnPhaseReviewing");
-      case "working":
-        return t("composer.turnPhaseWorking");
-      default:
-        return t("composer.runAnnounceRunning");
-    }
-  })();
-  const runStateText = retry
-    ? t("status.retrying", { attempt: retry.attempt, max: retry.max })
+  }, [suspendedByDecision, closeIntentMenu]);
+  const { liveOutput, liveModelActiveAt, liveRateOutputQuarters } = useLiveTurnMetrics(liveStore, tabId);
+  const turnPhaseLabel = turnPhaseStatusLabel(turnPhase, t);
+  const readStatusText = readStatusLabel(readStatuses, t);
+  const runStateText = runtimeState.unknown ? t("runtime.unknown") : compactSubmitting ? t("compaction.preparing") : runtimeState.kind === "maintenance_finalizing" ? t("compaction.saving") : runtimeState.kind === "maintenance_cancelling" ? t("compaction.stopping") : runtimeState.kind === "maintenance_running" ? t("compaction.working") : finishing ? t("runtime.finishing") : runtimeState.kind === "cancelling" ? t("status.jobStopping") : runtimeState.kind === "background_job" ? t("runtime.background", { count: runtimeState.state?.backgroundJobs ?? 0 }) : retry
+    ? recoveryStatusText(t, retry, now)
     : waitingPrompt === "approval"
       ? t("composer.runWaitingApproval", { tool: pendingApprovalLabel ?? "" })
       : waitingPrompt === "ask"
@@ -3794,32 +3994,58 @@ export function Composer({
         : running && !suspendedByDecision
           ? turnPhaseLabel
           : null;
-  const runTicker = !retry && !pauseWorkClock && running && turnStartAt
-    ? (() => {
-        const elapsedMs = Math.max(0, now - turnStartAt - waitAccumMs);
-        const words = SPINNER_WORDS[locale];
-        const word = words[Math.floor(elapsedMs / 3000) % words.length];
-        const usageTokens = turnTokens ?? 0;
-        // Include streaming tool-call args in the estimate so TPS stays
-        // meaningful while the model streams a write_file / long tool body.
-        const inFlightChars = Math.max(0, liveTextChars - (turnOutputCharsAtUsage ?? 0)) + (turnArgChars ?? 0);
-        const estimatedChars = Math.round(inFlightChars / 4);
-        const liveTokens = usageTokens + estimatedChars;
-        const tok = liveTokens > 0 ? ` · ↓ ${formatTokens(liveTokens)} ${t("status.tokens")}` : "";
-        const outTok: number = (turnOutputTokens ?? 0) + estimatedChars;
-        const modelActiveAt = liveModelActiveAt ?? turnModelActiveAt;
-        const modelElapsedMs = Math.max(0, turnModelActiveMs + (modelActiveAt && modelActiveAt > 0 ? Math.max(0, now - modelActiveAt) : 0));
-        const tps = outTok > 0 && modelElapsedMs >= 500 ? Math.round(outTok / (modelElapsedMs / 1000)) : null;
-        const tpsStr = tps !== null ? ` · ${tps} tokens/s` : "";
-        const suffix = `${tpsStr}${tok}`;
-        const prefix = `${word}… ${fmtElapsed(elapsedMs)}`;
-        return { prefix, suffix: suffix || null };
-      })()
-    : null;
+  // Second-quantized: the run strip has no sub-second resolution, and `now` is
+  // a fresh Date.now() every render, so keying the memo on it would never hit.
+  const metricsTick = Math.floor(now / 1000);
+  const runMetrics = useMemo(() => {
+    const metrics = turnMetrics({
+      now, turnStartAt, turnDoneAt, running: running && !maintenanceActive, waitAccumMs, lastTurnWaitAccumMs,
+      turnTokens, turnOutputTokens, lastTurnOutputTokens, turnOutputCharsAtUsage,
+      turnArgChars, turnModelActiveMs, turnModelActiveAt, liveModelActiveAt,
+      turnRateOutputQuarters: liveRateOutputQuarters ?? turnRateOutputQuarters,
+      live: liveOutput, turnOutputEstimated, lastTurnOutputEstimated,
+    });
+    if (!metrics) return null;
+    // The parenthesised group reads as a subordinate clause, so the state word
+    // keeps its own sentence. Elapsed leads because the strip's real job is
+    // answering "is this stuck?". Only the token reading carries the estimate
+    // cue: the clock is exact, and throughput is derived from it. The popover
+    // keeps a per-value cue because it also shows settled, exact readings.
+    const estimate = metrics.estimated ? "≈" : "";
+    const live = metrics.tokens > 0 && !turnDoneAt;
+    // Punctuation is not what groups these: the readings are pinned right and
+    // dimmed, so a long state word ellipsises instead of cutting them. The
+    // throughput is returned apart because it is the one reading the strip may
+    // shed whole when the composer is narrow.
+    const stripParts = live
+      ? [formatElapsedMs(metrics.elapsedMs),
+        `${estimate}${formatTokens(metrics.tokens)} ${t("status.tokens")}`]
+      : [];
+    const stripSpeed = live && (liveModelActiveAt ?? turnModelActiveAt) && metrics.tps !== null
+      ? formatTps(metrics.tps)
+      : "";
+    return {
+      elapsed: formatElapsedMs(metrics.elapsedMs),
+      tokens: metrics.tokens > 0
+        ? `${metrics.estimated ? "≈" : ""}${formatTokens(metrics.tokens)} ${t("status.tokens")}`
+        : null,
+      tps: formatTps(metrics.tps, metrics.estimated || (liveRateOutputQuarters ?? turnRateOutputQuarters) !== undefined),
+      stripParts,
+      stripSpeed,
+    };
+  }, [metricsTick, running, maintenanceActive, turnStartAt, turnDoneAt, waitAccumMs, lastTurnWaitAccumMs,
+    turnTokens, turnOutputTokens, lastTurnOutputTokens, turnOutputCharsAtUsage, turnArgChars,
+    turnModelActiveMs, turnModelActiveAt, liveModelActiveAt, liveOutput, turnOutputEstimated,
+    turnRateOutputQuarters, liveRateOutputQuarters,
+    lastTurnOutputEstimated, t]);
+  // The strip's own sr-only sibling keeps announcing the stable state alone, so
+  // these churning numbers stay out of the live region.
+  const runStrip = runMetrics?.stripParts.length ? runMetrics : null;
   const submitEmpty = !text.trim() && attachments.length === 0 && workspaceRefs.length === 0 &&
     !invocations.some((invocation) => invocation.command.kind === "skill");
-  const submitBlocked = submitting || pendingPaste > 0 || (submitEmpty && !(goalModeOn && !activeGoal)) || disabled || (!running && submitDisabled) || readOnly;
-  const submitTooltip = running
+  const submitBlocked = queueEditing || Boolean(submission) || (!pendingFollowup && (pendingPaste > 0 || (submitEmpty && !(goalModeOn && !activeGoal)) || disabled || (!running && submitDisabled) || readOnly));
+  const submitUnavailableHint = !running && submitDisabled ? submitDisabledReason : undefined;
+  const submitTooltip = pendingFollowup ? t("runtime.checkReceipt") : running
     ? t("composer.queueGuidance", { combo: sendComboLabel })
     : t("composer.send", { combo: sendComboLabel });
   const composerPlaceholder = readOnly
@@ -3830,9 +4056,11 @@ export function Composer({
         ? t("composer.steerPlaceholder", { combo: sendComboLabel })
         : goalModeOn && !activeGoal
           ? t("composer.goalInputPlaceholder")
-          : t("composer.placeholder");
+          : planModeOn
+            ? t("composer.planInputPlaceholder")
+            : t("composer.placeholder");
   const composerMetaClass = [
-    "composer-meta",
+    "composer-meta composer-meta--unified",
     hasEffort ? "composer-meta--has-effort" : "composer-meta--no-effort",
   ].join(" ");
 
@@ -3903,19 +4131,23 @@ export function Composer({
   return (
     <div
       ref={composerWrapRef}
+      data-queue-editing={queueEditing ? "true" : undefined}
       className={[
         "composer-wrap",
         decisionPending ? "composer-wrap--decision-pending" : "",
         heroMode ? "composer-wrap--hero" : "",
       ].filter(Boolean).join(" ")}
-      style={{ "--wails-drop-target": "drop" } as CSSProperties}
+      data-native-drop-target={attachmentInputEnabled ? "" : undefined}
       onDropCapture={onFileDropCapture}
     >
+      <ComposerModelApplicationRecovery tabId={tabId} local={savedInput} remote={remoteApplication} setRemote={setRemoteApplication} draftKey={draftKey} text={followupDraftFingerprint(draftKey)} running={running} onUseApplied={choice=>trackPersistentTask(activeDraftKeyRef.current,performSubmit(false,choice))}/>
+      <SessionInputRecovery input={savedInput} />
       <input
         ref={fileInputRef}
         className="composer-content-file-input"
         type="file"
         multiple
+        disabled={!attachmentInputEnabled}
         tabIndex={-1}
         aria-hidden="true"
         onChange={(event) => {
@@ -3925,59 +4157,19 @@ export function Composer({
           requestActiveDraftFrame(() => taRef.current?.focus());
         }}
       />
-      <AnchoredPopover
-        open={contentMenuOpen && !disabled && !readOnly && !running}
-        anchorRef={contentMenuAnchorRef}
-        onClose={() => setContentMenuOpen(false)}
-        className="composer-access-menu composer-content-menu"
-        align="start"
-      >
-        <div className="composer-access-menu__section" role="menu" aria-label={t("composer.contentMenuTitle")}>
-          <button type="button" role="menuitem" className="composer-access-menu__item composer-content-menu__item" onClick={chooseAttachmentFiles}>
-            <FilePlus2 size={16} aria-hidden="true" />
-            <span className="composer-access-menu__copy">
-              <span className="composer-access-menu__title">{t("composer.contentAddAttachment")}</span>
-              <span className="composer-access-menu__desc">{t("composer.contentAddAttachmentDesc")}</span>
-            </span>
-          </button>
-          <button type="button" role="menuitem" className="composer-access-menu__item composer-content-menu__item" onClick={() => insertContentTrigger("@")}>
-            <AtSign size={16} aria-hidden="true" />
-            <span className="composer-access-menu__copy">
-              <span className="composer-access-menu__title">{t("composer.contentReferenceFiles")}</span>
-              <span className="composer-access-menu__desc">{t("composer.contentReferenceFilesDesc")}</span>
-            </span>
-          </button>
-          <button type="button" role="menuitem" className="composer-access-menu__item composer-content-menu__item" onClick={() => insertContentTrigger("#")}>
-            <Hash size={16} aria-hidden="true" />
-            <span className="composer-access-menu__copy">
-              <span className="composer-access-menu__title">{t("composer.contentReferenceSessions")}</span>
-              <span className="composer-access-menu__desc">{t("composer.contentReferenceSessionsDesc")}</span>
-            </span>
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            className="composer-access-menu__item composer-content-menu__item"
-            onClick={() => insertContentTrigger("/")}
-            disabled={text.trim().length > 0}
-            title={text.trim().length > 0 ? t("composer.contentUseCommandsEmptyOnly") : undefined}
-          >
-            <span className="composer-content-menu__trigger-icon" aria-hidden="true">/</span>
-            <span className="composer-access-menu__copy">
-              <span className="composer-access-menu__title">{t("composer.contentUseCommands")}</span>
-              <span className="composer-access-menu__desc">{text.trim().length > 0 ? t("composer.contentUseCommandsEmptyOnly") : t("composer.contentUseCommandsDesc")}</span>
-            </span>
-          </button>
-        </div>
-      </AnchoredPopover>
       {!heroMode && <AnchoredPopover
-        open={intentMenuOpen}
-        closing={intentMenuClosing}
-        anchorRef={intentMenuAnchorRef}
-        onClose={() => closeIntentMenu()}
-        className="composer-access-menu composer-intent-menu"
+        open={(contentMenuOpen || intentMenuOpen) && !disabled && !readOnly && (!running || (goalModeOn && Boolean(activeGoal)))}
+        anchorRef={contentMenuOpen ? contentMenuAnchorRef : intentMenuAnchorRef}
+        onClose={() => { setContentMenuOpen(false); closeIntentMenu(); }}
+        className="composer-access-menu composer-content-menu composer-intent-menu composer-menu-surface"
         align="start"
       >
+        <ComposerContentMenuActions
+          attachmentInputEnabled={attachmentInputEnabled}
+          textPresent={text.trim().length > 0}
+          onChooseAttachment={chooseAttachmentFiles}
+          onInsertTrigger={insertContentTrigger}
+        />
         <div
           className="composer-access-menu__section"
           role="menu"
@@ -3989,30 +4181,14 @@ export function Composer({
           <button
             type="button"
             role="menuitemradio"
-            aria-checked={collaborationMode === "normal"}
-            className={`composer-access-menu__item composer-intent-menu__item${collaborationMode === "normal" ? " composer-access-menu__item--active" : ""}`}
-            onClick={() => chooseTaskMode("normal")}
-            disabled={disabled || running}
-          >
-            <ArrowRight size={16} />
-            <span className="composer-access-menu__copy">
-              <span className="composer-access-menu__title">{t("composer.taskModeDirect")}</span>
-              <span className="composer-access-menu__desc">{t("composer.taskModeDirectDesc")}</span>
-            </span>
-            {collaborationMode === "normal" && <Check className="composer-intent-menu__check" size={16} aria-hidden="true" />}
-          </button>
-          <button
-            type="button"
-            role="menuitemradio"
             aria-checked={planModeOn}
             className={`composer-access-menu__item composer-intent-menu__item${planModeOn ? " composer-access-menu__item--active" : ""}`}
-            onClick={() => chooseTaskMode("plan")}
+            onClick={() => chooseTaskMode(planModeOn ? "normal" : "plan")}
             disabled={disabled || running}
           >
             <List size={16} />
             <span className="composer-access-menu__copy">
               <span className="composer-access-menu__title">{t("composer.taskModePlan")}</span>
-              <span className="composer-access-menu__desc">{t("composer.taskModePlanDesc")}</span>
             </span>
             {planModeOn && <Check className="composer-intent-menu__check" size={16} aria-hidden="true" />}
           </button>
@@ -4021,20 +4197,33 @@ export function Composer({
             role="menuitemradio"
             aria-checked={goalModeOn}
             className={`composer-access-menu__item composer-intent-menu__item${goalModeOn ? " composer-access-menu__item--active" : ""}`}
-            onClick={() => chooseTaskMode("goal")}
+            onClick={() => chooseTaskMode(goalModeOn && !activeGoal ? "normal" : "goal")}
             disabled={disabled || running}
             title={activeGoal || undefined}
           >
             <Target size={16} />
             <span className="composer-access-menu__copy">
               <span className="composer-access-menu__title">{t("composer.taskModeGoal")}</span>
-              <span className="composer-access-menu__desc">{activeGoal || t("composer.taskModeGoalDesc")}</span>
             </span>
             {goalModeOn && <Check className="composer-intent-menu__check" size={16} aria-hidden="true" />}
           </button>
             {goalModeOn && activeGoal && (
             <div className="composer-intent-menu__goal-actions">
               <div className="composer-intent-menu__goal-runtime">
+                {goalView && (
+                  <span className="composer-intent-menu__goal-runtime-line">
+                    {goalView.phase === "active" && goalView.activation === "armed"
+                      ? running ? t("composer.goalRunning") : t("composer.goalWaitingNext")
+                      : goalView.phase === "active"
+                        ? t("composer.goalWaitingResume")
+                        : goalView.phase === "paused"
+                          ? t("composer.goalPaused")
+                          : goalView.phase === "blocked"
+                            ? t("composer.goalBlocked")
+                            : t("composer.goalComplete")}
+                    {goalView.blockedReason?.message ? ` — ${goalView.blockedReason.message}` : ""}
+                  </span>
+                )}
                 {goalRuntime && (
                   <span className="composer-intent-menu__goal-runtime-line">
                     {t("composer.goalRuntimeLine", {
@@ -4045,80 +4234,26 @@ export function Composer({
                     })}
                   </span>
                 )}
-                {goalStatus === "blocked" && !goalRuntime?.stopCause && (
+                {!goalView && goalStatus === "blocked" && !goalRuntime?.stopCause && (
                   <span className="composer-intent-menu__goal-runtime-line composer-intent-menu__goal-runtime-line--blocked">
                     {t("composer.goalBlocked")}
                   </span>
                 )}
-                {goalStatus === "blocked" && goalRuntime?.stopCause && (
+                {!goalView && goalStatus === "blocked" && goalRuntime?.stopCause && (
                   <span className="composer-intent-menu__goal-runtime-line composer-intent-menu__goal-runtime-line--paused">
                     {t("composer.goalPaused")}
                     {goalRuntime.lastReason ? ` — ${goalRuntime.lastReason}` : ""}
                   </span>
                 )}
               </div>
-              {goalStatus === "blocked" ? (
-                <button
-                  type="button"
-                  className="composer-intent-menu__stop"
-                  onClick={onResumeGoal}
-                  disabled={disabled}
-                >
-                  {t("composer.taskModeResumeGoal")}
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="composer-intent-menu__stop"
-                  onClick={onPauseGoal}
-                  disabled={disabled || running}
-                >
-                  {t("composer.taskModePauseGoal")}
-                </button>
-              )}
-              <button
-                type="button"
-                className="composer-intent-menu__stop"
-                onClick={stopGoalMode}
-                disabled={disabled || running}
-              >
-                {t("composer.taskModeStopGoal")}
-              </button>
+              <GoalLifecycleActions
+                goalView={goalView} goalStatus={goalStatus} disabled={disabled} running={running}
+                onEditGoal={onEditGoal} onPauseGoal={onPauseGoal} onResumeGoal={onResumeGoal} onStopGoal={stopGoalMode}
+              />
             </div>
           )}
         </div>
       </AnchoredPopover>}
-      <AnchoredPopover
-        open={moreMenuOpen && !disabled && !running}
-        closing={moreMenuClosing}
-        anchorRef={moreMenuAnchorRef}
-        onClose={() => closeMoreMenu()}
-        className="composer-access-menu composer-more-menu"
-        align="end"
-      >
-        {hasEffort && (
-          <div className="composer-access-menu__section">
-            <div className="composer-access-menu__label">{t("status.effortTitle")}</div>
-            <div className="composer-more-menu__items" role="listbox" aria-label={t("status.effortTitle")}>
-              {effortLevels.map((level) => (
-                <button
-                  key={level}
-                  type="button"
-                  role="option"
-                  aria-selected={level === currentEffort}
-                  className={`composer-more-menu__item${level === currentEffort ? " composer-more-menu__item--active" : ""}`}
-                  onClick={() => chooseEffortLevel(level)}
-                  disabled={running}
-                >
-                  <Gauge size={14} />
-                  <span>{level}</span>
-                  {level === currentEffort && <Check size={13} />}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-      </AnchoredPopover>
       {menuMode === "slash" && (
         <SlashMenu
           items={slashMatches}
@@ -4284,7 +4419,15 @@ export function Composer({
           />
         ) : null
       )}
-      {pendingGuidance.length > 0 && (
+      {typeof app.InboxQueueForTarget === "function" ? <Suspense fallback={null}>
+        <ComposerInboxQueue key={queueScope} scope={queueScope} tabId={tabId || ""} sessionPath={inboxSessionPath || ""}
+          items={pendingGuidance} snapshot={inboxSnapshot} disabled={Boolean(disabled || readOnly)} running={running}
+          onSnapshot={acceptInboxSnapshot} onRefresh={refreshInboxQueue}
+          onEditingChange={onQueueEditingChange} turnId={turnId}
+          onRestoreDraft={value => setTextCaretEnd([textRef.current, value].filter(Boolean).join("\n\n"))}
+          onStop={!finishing && !runtimeState.unknown ? () => void handleCancel() : undefined}
+          stopDisabled={runtimeState.cancellable === false || cancelSettlingDraftsRef.current.has(draftKey)} />
+      </Suspense> : pendingGuidance.length > 0 && (
         <Suspense fallback={null}>
           <ComposerGuidanceShelf
             recovery={pendingGuidance[0]?.paused && !pendingGuidance.some((item) => guidanceIsInFlight(item.state)) ? {
@@ -4310,6 +4453,7 @@ export function Composer({
           />
         </Suspense>
       )}
+      <ComposerPinnedFilesShelf tabId={tabId || ""} pinnedFiles={pinnedFiles} />
       {(attachments.length > 0 || workspaceRefs.length > 0 || sessionRefs.length > 0 || selectedTextRefs.length > 0) && (
         <div className="composer-context" aria-label={t("composer.contextItems")}>
           {sortComposerAttachments(attachments).map((a) => {
@@ -4385,6 +4529,8 @@ export function Composer({
                 ? t("composer.selectedCode")
                 : reference.source === "terminal"
                   ? t("composer.selectedTerminal")
+                  : reference.source === "browser"
+                    ? (locale === "en" ? "Page element" : "页面元素")
                   : t("composer.selectedText")}
               icon={reference.path
                 ? <FileText size={20} />
@@ -4432,11 +4578,28 @@ export function Composer({
           })}
         </div>
       )}
+      {retry?.recovery?.waiting && <Suspense fallback={null}><RecoveryWaitBanner retry={retry} now={now} onStop={() => void handleCancel()} stopDisabled={cancelSettlingDraftsRef.current.has(draftKey)} /></Suspense>}
+      {pendingFollowup && <div className="composer-guidance-item" role="status">
+        <span className="composer-guidance-item__text" title={pendingFollowup.display}>{pendingFollowup.display}</span>
+        <span>{t("runtime.unconfirmed")}</span>
+      </div>}
+      <div className={`composer-workspace-frame${workspaceContext ? " composer-workspace-frame--context" : " composer-workspace-frame--plain"}`}>
+      {workspaceContext && running && !waitingPrompt && !retry?.recovery?.waiting && !finishing && !runtimeState.unknown ? (
+        <span className="composer-glowring" aria-hidden="true"><i /></span>
+      ) : null}
+      {workspaceContext ? (
+        <Suspense fallback={<div className="composer-workspace-bar-fallback" aria-hidden="true" />}>
+          <ComposerWorkspaceContextBar context={workspaceContext} />
+        </Suspense>
+      ) : null}
       <div
-        className={`composer-card${composerHeight !== null || composerResizing ? " composer-card--resized" : ""}${composerAutoExpanded ? " composer-card--autosized" : ""}${composerAutoOverflow ? " composer-card--auto-overflow" : ""}${composerResizing ? " composer-card--resizing" : ""}${running ? (waitingPrompt ? " composer-card--waiting" : " composer-card--running") : ""}`}
+        className={`composer-card${composerHeight !== null || composerResizing ? " composer-card--resized" : ""}${composerAutoExpanded ? " composer-card--autosized" : ""}${composerAutoOverflow ? " composer-card--auto-overflow" : ""}${composerResizing ? " composer-card--resizing" : ""}${running && !finishing && !runtimeState.unknown ? (waitingPrompt ? " composer-card--waiting" : " composer-card--running") : ""}`}
         ref={composerCardRef}
         style={composerCardStyle}
       >
+        {!workspaceContext && running && !waitingPrompt && !retry?.recovery?.waiting && (
+          <span className="composer-glowring" aria-hidden="true"><i /></span>
+        )}
         <button
           className="composer-resize-handle"
           type="button"
@@ -4451,26 +4614,25 @@ export function Composer({
           onKeyDown={onComposerResizeKeyDown}
           onDoubleClick={resetComposerHeight}
         />
-        {runStateText && (
+        {(readStatusText || (showRunStrip && runStateText)) && (
           <div className={`composer-run-strip${waitingPrompt ? " composer-run-strip--waiting" : ""}`}>
-            <span className="composer-run-strip__dot" aria-hidden="true" />
-            {runTicker ? (
-              <>
-                <span className="composer-run-strip__text" aria-hidden="true">{runTicker.prefix}</span>
-                {runTicker.suffix && (
-                  <Tooltip label={t("composer.runStripEstimateHint")}>
-                    <span className="composer-run-strip__text" aria-hidden="true">{runTicker.suffix}</span>
-                  </Tooltip>
-                )}
-              </>
-            ) : (
-              <span className="composer-run-strip__text">
-                {runStateText}
-              </span>
-            )}
-            <span className="sr-only" role="status">{runStateText}</span>
+            {!finishing && !runtimeState.unknown && <span className="composer-run-strip__dot" aria-hidden="true" />}
+            <span className="composer-run-strip__text">
+              <span className="composer-run-strip__state">{readStatusText || runStateText}</span>
+              {runStrip && !compactSubmitting && !maintenanceActive && (
+                <span className="composer-run-strip__metrics">
+                  {runStrip.stripParts.map((part) => (
+                    <span className="composer-run-strip__metric" key={part}>{` ${part}`}</span>
+                  ))}
+                  {runStrip.stripSpeed && (
+                    <span className="composer-run-strip__metric composer-run-strip__metric--optional">{` ${runStrip.stripSpeed}`}</span>
+                  )}
+                </span>
+              )}
+            </span>
           </div>
         )}
+        <span className="sr-only" role="status">{readStatusText || runStateText}</span>
         <div
           className={`composer${invocations.length > 0 ? " composer--has-invocation" : ""}${dragOver ? " composer--dragover" : ""}${disabled || readOnly ? " composer--disabled" : ""}${shellModeActive ? " composer--shell" : ""}`}
           onDrop={onDrop}
@@ -4540,45 +4702,51 @@ export function Composer({
                   }}
                 />
               ) : (
-                <textarea
-                  id="composer-input"
-                  ref={taRef}
-                  className="composer__input"
-                  aria-label={t("composer.placeholder")} spellCheck={false} autoCorrect="off" autoCapitalize="off"
-                  value={composingRef.current ? undefined : text}
-                  onInputCapture={(e) => {
-                    pendingNativeInputTypeRef.current = (e.nativeEvent as InputEvent).inputType;
-                  }}
-                  onChange={(e) => {
-                    const targetDraftKey = activeDraftKeyRef.current;
-                    const inputType = (e.nativeEvent as InputEvent).inputType
-                      || pendingNativeInputTypeRef.current;
-                    pendingNativeInputTypeRef.current = undefined;
-                    trackImeInputChange(e.nativeEvent as InputEvent, inputType, e.target.value);
-                    resetPromptHistoryNavigation();
-                    textRef.current = e.target.value;
-                    setText(e.target.value);
-                    const nextSelection = {
-                      start: e.target.selectionStart ?? e.target.value.length,
-                      end: e.target.selectionEnd ?? e.target.value.length,
-                    };
-                    lastSelectionRef.current = nextSelection;
-                    setPlainSelection(nextSelection);
-                    syncComposerNativeHistory(targetDraftKey, inputType);
-                    if (composerPrompt) setComposerPrompt(null);
-                  }}
-                  onSelect={rememberCaret}
-                  onClick={rememberCaret}
-                  onKeyUp={rememberCaret}
-                  onFocus={rememberCaret}
-                  onContextMenu={openInputMenu}
-                  onPaste={onPaste}
-                  onKeyDown={onKeyDown}
-                  style={textareaStyle}
-                  placeholder={composerPlaceholder}
-                  rows={1}
-                  disabled={disabled || readOnly}
-                />
+                <>
+                  <textarea
+                    id="composer-input"
+                    ref={taRef}
+                    className="composer__input"
+                    aria-label={t("composer.placeholder")} spellCheck={false} autoCorrect="off" autoCapitalize="off"
+                    value={composingRef.current ? undefined : text}
+                    onInputCapture={(e) => {
+                      pendingNativeInputTypeRef.current = (e.nativeEvent as InputEvent).inputType;
+                    }}
+                    onChange={(e) => {
+                      const targetDraftKey = activeDraftKeyRef.current;
+                      const inputType = (e.nativeEvent as InputEvent).inputType
+                        || pendingNativeInputTypeRef.current;
+                      pendingNativeInputTypeRef.current = undefined;
+                      trackImeInputChange(e.nativeEvent as InputEvent, inputType, e.target.value);
+                      resetPromptHistoryNavigation();
+                      textRef.current = e.target.value;
+                      setText(e.target.value);
+                      const nextSelection = {
+                        start: e.target.selectionStart ?? e.target.value.length,
+                        end: e.target.selectionEnd ?? e.target.value.length,
+                      };
+                      lastSelectionRef.current = nextSelection;
+                      setPlainSelection(nextSelection);
+                      syncComposerNativeHistory(targetDraftKey, inputType);
+                      if (composerPrompt) setComposerPrompt(null);
+                    }}
+                    onSelect={rememberCaret}
+                    onClick={rememberCaret}
+                    onKeyUp={rememberCaret}
+                    onFocus={rememberCaret}
+                    onContextMenu={openInputMenu}
+                    onPaste={onPaste}
+                    onKeyDown={onKeyDown}
+                    style={textareaStyle}
+                    placeholder={composerPlaceholder}
+                    rows={1}
+                    disabled={disabled || readOnly}
+                  />
+                  <textarea
+                    ref={measureTaRef} className="composer__input composer__input--measure"
+                    value={text} readOnly aria-hidden="true" tabIndex={-1}
+                  />
+                </>
               )}
             </div>
             {composerPrompt && (
@@ -4586,29 +4754,6 @@ export function Composer({
                 {composerPrompt}
               </span>
             )}
-            {running && (
-              <Tooltip label={t("composer.stop")}>
-                <button
-                  className="composer__btn composer__btn--stop"
-                  type="button"
-                  onClick={() => void handleCancel()}
-                  disabled={cancelSettlingDraftsRef.current.has(draftKey)}
-                  aria-label={t("composer.stop")}
-                >
-                  <Square size={12} fill="currentColor" />
-                </button>
-              </Tooltip>
-            )}
-            <Tooltip label={submitTooltip}>
-              <button
-                className={`composer__btn composer__btn--send${running ? " composer__btn--steer" : ""}`}
-                onClick={submit}
-                disabled={submitBlocked}
-                aria-label={submitTooltip}
-              >
-                {running ? <CornerDownRight size={16} /> : <ArrowUp size={16} />}
-              </button>
-            </Tooltip>
           </div>
         </div>
         <ContextMenu
@@ -4630,7 +4775,7 @@ export function Composer({
                     type="button"
                     className={`composer-content-trigger${contentMenuOpen ? " composer-content-trigger--open" : ""}`}
                     onClick={() => (contentMenuOpen ? setContentMenuOpen(false) : openContentMenu())}
-                    disabled={disabled || readOnly || running}
+                    disabled={disabled || readOnly || (running && !(goalModeOn && activeGoal))}
                     aria-haspopup="menu"
                     aria-expanded={contentMenuOpen}
                     aria-label={t("composer.contentMenuTitle")}
@@ -4640,126 +4785,39 @@ export function Composer({
                 </Tooltip>
               </div>
             )}
-            {!heroMode && (
+            {!heroMode && <div className="composer-meta__control composer-meta__control--approval">
+              <PermissionPresetChoice
+                key={`approval-${tabId}`}
+                value={permissionPreset}
+                disabled={approvalBarDisabled} dismissSignal={transientDismissSignal}
+                scopeKey={`${tabId ?? ""}:${sessionKey ?? ""}:${workspaceScopeKey ?? ""}`}
+                projectConfirmationKey={fullAccessConfirmationKey}
+                onPick={chooseApprovalMode}
+              />
+            </div>}
+            {!heroMode && collaborationMode !== "normal" && (
               <div className="composer-meta__control composer-meta__control--intent">
-                <Tooltip label={taskModeTooltipLabel} disabled={intentMenuOpen || intentMenuClosing || creationChrome}>
+                <Tooltip label={taskModeTooltipLabel} disabled={intentMenuOpen || intentMenuClosing}>
                   <button
                     ref={intentMenuAnchorRef}
                     type="button"
-                    className={`composer-task-mode-trigger${intentMenuOpen || intentMenuClosing ? " composer-task-mode-trigger--open" : ""}`}
-                    onClick={() => (intentMenuOpen || intentMenuClosing ? closeIntentMenu() : openIntentMenu())}
-                    onMouseEnter={creationChrome ? onIntentHoverEnter : undefined}
-                    onMouseLeave={creationChrome ? onIntentHoverLeave : undefined}
+                    className="composer-task-mode-trigger composer-task-mode-trigger--removable"
+                    onClick={() => { if (goalModeOn && activeGoal) stopGoalMode(); else chooseTaskMode("normal"); }}
                     disabled={disabled || running}
-                    aria-haspopup="menu"
-                    aria-expanded={intentMenuOpen && !intentMenuClosing}
                     aria-label={taskModeTriggerLabel}
                     title={intentMenuOpen || intentMenuClosing || creationChrome ? undefined : taskModeTriggerLabel}
                   >
-                    <TaskModeIcon size={14} aria-hidden="true" />
+                    <span className="composer-task-mode-trigger__icon"><TaskModeIcon size={16} aria-hidden="true" /><X className="composer-task-mode-trigger__remove" size={14} aria-hidden="true" /></span>
                     <span className="composer-task-mode-trigger__value">{t(taskModeShortKey)}</span>
-                    <ChevronsUpDown size={11} aria-hidden="true" />
                   </button>
                 </Tooltip>
               </div>
             )}
-            {!heroMode && (
-              <div className="composer-meta__control composer-meta__control--approval">
-                {/* A pending tool approval disables the composer, but the approval
-                    bar stays usable so mode changes remain possible mid-prompt;
-                    the approval card explains that the pending request still needs
-                    an explicit decision. */}
-                <div
-                  className="composer-modebar composer-modebar--approval"
-                  data-mode={toolApprovalMode}
-                  title={t("composer.accessMenuTitle", { shortcut: yoloComboLabel })}
-                >
-                  <span className="composer-modebar__thumb" aria-hidden="true" />
-                  <button
-                    type="button"
-                    className={`composer-modebar__item composer-modebar__item--ask${toolApprovalMode === "ask" ? " composer-modebar__item--active" : ""}`}
-                    onClick={() => chooseApprovalMode("ask")}
-                    disabled={approvalBarDisabled}
-                    aria-pressed={toolApprovalMode === "ask"}
-                    title={t("composer.accessAskTitle")}
-                  >
-                    <Shield size={14} />
-                    <span>{t("composer.modeAsk")}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className={`composer-modebar__item composer-modebar__item--auto${toolApprovalMode === "auto" ? " composer-modebar__item--active" : ""}`}
-                    onClick={() => chooseApprovalMode("auto")}
-                    disabled={approvalBarDisabled}
-                    aria-pressed={toolApprovalMode === "auto"}
-                    title={t("composer.accessAutoTitle")}
-                  >
-                    <ShieldCheck size={14} />
-                    <span>{t("composer.modeNormal")}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className={`composer-modebar__item composer-modebar__item--yolo${toolApprovalMode === "yolo" ? " composer-modebar__item--active" : ""}`}
-                    onClick={() => chooseApprovalMode("yolo")}
-                    disabled={approvalBarDisabled}
-                    aria-pressed={toolApprovalMode === "yolo"}
-                    title={t("composer.accessYoloTitle", { shortcut: yoloComboLabel })}
-                  >
-                    <ShieldAlert size={14} />
-                    <span>{t("composer.modeYolo")}</span>
-                  </button>
-                </div>
-              </div>
-            )}
-            {!heroMode && (
-              <div className="composer-meta__control composer-meta__control--floor">
-                {/* Orthogonal to the intent menu: the floor only raises the
-                    completion gates, so goal mode and delivery combine. */}
-                <div
-                  className="composer-modebar composer-modebar--floor"
-                  data-floor={floorOn ? "delivery" : "standard"}
-                  title={t("composer.qualityFloor")}
-                >
-                  <span className="composer-modebar__thumb" aria-hidden="true" />
-                  <button
-                    type="button"
-                    className={`composer-modebar__item${floorOn ? "" : " composer-modebar__item--active"}`}
-                    onClick={() => chooseQualityFloor("standard")}
-                    disabled={approvalBarDisabled || !onSetQualityFloor}
-                    aria-pressed={!floorOn}
-                    title={t("composer.qualityFloor")}
-                  >
-                    <Equal size={14} />
-                    <span>{t("composer.qualityFloorStandard")}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className={`composer-modebar__item${floorOn ? " composer-modebar__item--active" : ""}`}
-                    onClick={() => chooseQualityFloor("delivery")}
-                    disabled={approvalBarDisabled || !onSetQualityFloor}
-                    aria-pressed={floorOn}
-                    title={t("composer.qualityFloorDeliveryTitle")}
-                  >
-                    <PackageCheck size={14} />
-                    <span>{t("composer.qualityFloorDelivery")}</span>
-                    {floorOn && floorInferred ? <span className="composer-modebar__inferred" /> : null}
-                  </button>
-                </div>
-              </div>
-            )}
-            {!heroMode && <span className="composer-meta__divider" aria-hidden="true" />}
             <div className="composer-meta__control composer-meta__control--model">
-              {/*
-                Creation-only: showContextWindowRing is wired to sidebarCreation
-                (desktopLayoutStyle === "creation") in App.tsx. The ring popover
-                is portaled to <body> without an .app--creation prefix, so its
-                styles look global but only ever apply in creation layout. If you
-                ever surface this ring in another layout, its font sizes already
-                scale via --font-scale (see .context-ring-popover in styles.css).
-              */}
-              {!heroMode && showContextWindowRing && (
+              {!heroMode && (
                 <ContextWindowRing
-                  enabled={showContextWindowRing}
+                  enabled={!suspendedByDecision}
+                  turnMetrics={runMetrics ?? undefined}
                   context={context}
                   tabId={tabId}
                   turnCost={turnCost}
@@ -4767,39 +4825,58 @@ export function Composer({
                   currency={currency}
                   cacheHitTokens={cacheHitTokens}
                   cacheMissTokens={cacheMissTokens}
-                  balance={balance}
+                  balance={balance} dismissSignal={transientDismissSignal}
                 />
               )}
-              <ModelSwitcher label={modelLabel} tabId={tabId} onPick={onSwitchModel} />
+              <Suspense fallback={<span className="modelsw__label">{modelLabel}</span>}><ModelSwitcher composerMenu label={modelLabel} tabId={tabId} draftId={bridgeTarget.kind === "draft" ? bridgeTarget.draftId : undefined} ready={ready} sessionKey={sessionKey} disabled={disabled || suspendedByDecision} dismissSignal={transientDismissSignal} onPick={onSwitchModel} onManage={() => {
+                useAppNavigationStore.getState().setSettingsFocus({ target: "model-access" });
+                useAppNavigationStore.getState().setSettingsTarget("models");
+              }} /></Suspense>
+              {hasEffort && !heroMode && <div className="composer-effort-control">
+                <ComposerChoice key={`effort-${tabId}`} label={effortLabel(currentEffort)}
+                  ariaLabel={`${t("status.effortTitle")}: ${effortLabel(currentEffort)}`}
+                  icon={<Brain size={16} />} showChevron
+                  value={currentEffort} disabled={disabled || readOnly || running} dismissSignal={transientDismissSignal}
+                  onPick={chooseEffortLevel}
+                  options={effortLevels.map(level => ({ value: level, label: effortLabel(level) }))} />
+              </div>}
             </div>
-            {!heroMode && hasEffort && (
-              <div className="composer-meta__control composer-meta__control--effort">
-                <EffortSwitcher effort={effort} disabled={running} onPick={onSetEffort} />
-              </div>
-            )}
-            {!heroMode && hasEffort && (
-              <div className="composer-meta__control composer-meta__control--more">
-                <Tooltip label={compactEffortTitle} disabled={moreMenuOpen || moreMenuClosing}>
+            <div className={`composer-toolbar-send${submitUnavailableHint ? " composer-toolbar-send--unavailable" : ""}`}>
+              {running && !finishing && !runtimeState.unknown && (
+                <Tooltip label={t("composer.stop")}>
                   <button
-                    ref={moreMenuAnchorRef}
+                    className="composer__btn composer__btn--stop"
                     type="button"
-                    className={`composer-more-trigger composer-more-trigger--effort${currentEffort !== "auto" ? " composer-more-trigger--explicit" : ""}${moreMenuOpen || moreMenuClosing ? " composer-more-trigger--open" : ""}`}
-                    onClick={() => (moreMenuOpen || moreMenuClosing ? closeMoreMenu() : openMoreMenu())}
-                    disabled={disabled || running}
-                    aria-haspopup="menu"
-                    aria-expanded={moreMenuOpen && !moreMenuClosing}
-                    aria-label={compactEffortTitle}
-                    title={moreMenuOpen || moreMenuClosing ? undefined : compactEffortTitle}
+                    onClick={() => void handleCancel()}
+                    disabled={runtimeState.cancellable === false || cancelSettlingDraftsRef.current.has(draftKey)}
+                    aria-label={t("composer.stop")}
                   >
-                    <Gauge size={14} />
-                    <span>{currentEffort}</span>
-                    <ChevronsUpDown size={11} />
+                    <Square size={12} fill="currentColor" />
                   </button>
                 </Tooltip>
-              </div>
-            )}
+              )}
+              <Tooltip label={submitUnavailableHint || submitTooltip}>
+                <button
+                  className={`composer__btn composer__btn--send${running ? " composer__btn--steer" : ""}`}
+                  onClick={() => void submit()}
+                  disabled={submitBlocked}
+                  aria-label={submitTooltip}
+                >
+                  {pendingFollowup ? <Search size={16} /> : running ? <CornerDownRight size={16} /> : <ArrowUp size={16} />}
+                </button>
+              </Tooltip>
+              {running && !finishing && !maintenanceActive && <button type="button" className="btn btn--small composer__queue-steer" disabled={submitBlocked || Boolean(pendingFollowup)} onClick={() => void submit(true)}>{locale.startsWith("zh") ? "引导当前轮" : "Guide current turn"}</button>}
+              {submitUnavailableHint && <span className="composer-toolbar-send__hint">{submitUnavailableHint}</span>}
+              {authentication && authentication.status !== "ready" && <Suspense fallback={null}>
+                <AuthenticationRecoveryActions
+                  authentication={authentication}
+                  tabId={tabId}
+                />
+              </Suspense>}
+            </div>
           </div>
         </div>
+      </div>
       </div>
     </div>
   );

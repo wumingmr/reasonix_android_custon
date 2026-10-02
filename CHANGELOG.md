@@ -6,7 +6,75 @@ branch.
 
 ## Unreleased
 
+### Desktop conversation creation
+
+- Local **New Conversation** creates a distinct formal session immediately,
+  including when another empty conversation already exists. First send uses
+  that identity. Closing or archiving the last conversation leaves the welcome
+  page; it does not create a replacement.
+- Unsent local inputs are saved independently of chat history. Previous project
+  drafts remain available through **Previous drafts**. Unconfirmed submissions
+  are retained for inspection and are never automatically replayed.
+- Automatic historical empty-session cleanup is retired. Existing trash and
+  manual restore remain available. Session v5 and workspace registry v3 remain
+  unchanged. Downgrading to 1.38.9 is unsupported; 1.38.10 also cannot read
+  revision-3 sessions introduced by #10545. Returning from 1.38.11 preserves
+  new input files and requires review when session history has advanced. See
+  [compatibility and recovery](docs/manual-session-rollback.md).
+
+### Added
+
+- **Editable message queue (Desktop):** full-text editing in the original queue row,
+  pointer and keyboard reordering, move-to-top/bottom actions, and a pause
+  control. Saves preserve message identity, order and attachments; conflicting
+  or unconfirmed saves retain the user's draft. Remote editing requires the
+  additive `inbox-mutations-v1` capability. Editing temporarily hides the main
+  composer; saving or cancelling restores its draft, attachments and focus.
+  Switching sessions protects newer edits from delayed replies; loading the
+  latest version can recover after the active session selection changes.
+
+- **Live file observations:** structured file tools now protect mutations with
+  a host-owned current-version observation. Any successful text window is
+  sufficient, successful writes refresh the version, and external changes
+  produce `FS_STALE_VERSION` without blocking unrelated tools.
+
+- **MCP 2026-07-28 protocol:** multi-round-trip form/URL elicitation across
+  Desktop, CLI TUI, and serve; headless entries stay on the core surface and
+  cancel unanswered requests instead of guessing.
+- **MCP Apps 2026-01-26 (Desktop):** inline app surfaces in tool cards behind
+  a per-server double-iframe sandbox, app-tool visibility metadata, bounded
+  aggregate local presentations, tab-bound AppBridge routing and teardown,
+  immutable digest-bound resource snapshots, and confirmed external links;
+  local rich results, instance-gated app tool calls, and the four-layer
+  capability matrix in MCP status.
+- **Profile-scoped MCP schema caches:** capability-declaring hosts keep their
+  own `v3` cache files so catalogs negotiated under different client
+  capabilities never cross-read.
+
 ### Changed
+
+- Sending while a task is running now queues a follow-up by default. Use
+  **Guide current turn** for explicit mid-turn guidance. Stopping the current
+  task retains pending messages; the queue has separate pause/delete controls.
+
+- **Persistent bash PTY:** ordinary foreground `bash` calls in a session now
+  share one PTY, so `cd`, exported variables, and shell functions survive
+  across calls. Output stays byte-identical to one-shot execution, stdin stays
+  detached, and a timeout or cancel reports partial output and says the shell
+  was reset. Background jobs, commands that background a child, per-call
+  write-root escalations, host terminals, and PowerShell hosts stay one-shot.
+  The bash tool schema and description are unchanged.
+
+- **CLI YOLO shortcuts:** the CLI displays the unrestricted preset as YOLO;
+  `Ctrl+Y` toggles the canonical `danger-full-access` permission, while
+  `Shift+Tab` cycles Read only → Workspace write → YOLO → Plan.
+
+- **Harness-style scheduling and recovery:** calls take effect in execution
+  order, including same-batch read/edit sequences. Bounded reads create no
+  completion debt. Unknown external effects are durable advisory facts and no
+  longer block tools or trigger replay. Proof/settlement tools, Auto Guard,
+  recovery actions, and repeat-call rejection are retired; identical calls get
+  non-blocking reminders at counts 3, 5, and 8.
 
 - **Fact-driven execution:** Ordinary requests always enter the executor.
   There is no automatic simple / light / full task mode and no per-turn
@@ -18,7 +86,106 @@ branch.
   readable on old sessions and are stripped from new provider context.
   Old `--preset`/`--profile` compatibility no-ops are unchanged.
 
+- **Remote connect wizard host picker:** Step 1's host field now opens the
+  saved SSH connections through an explicit chevron dropdown on the input's
+  right edge instead of the old focus-triggered popup. The dropdown lists
+  every saved connection unfiltered, appends non-standard ports to each row,
+  leads with a "saved SSH connections" caption, and closes on pick, arrow
+  toggle, Escape (before the Escape that exits the wizard), or an outside
+  pointer press. The arrow is hidden while no hosts are saved and disabled
+  while a connection is busy.
+
 ### Fixed
+
+- **Setup menus in narrow terminals:** `reasonix setup` and the other
+  arrow-key menus clip every row to the terminal width. A row that soft-wrapped
+  used to throw off the redraw, stacking a fresh copy of the header and the
+  wrapped rows on screen with each keypress.
+
+- **Read evidence recovery:** partial reads no longer freeze independent work
+  or ordinary final answers. Explicit full reads retain bounded completion
+  checks. Rejected edits track operation/version requirements so successful
+  retries, fresh versions and confirmed deletion retire obsolete blocks.
+- **File and shell boundaries:** guard raced creates/overwrites and move-source
+  changes, recognize `git --no-pager` inspections, and retain structured recovery
+  diagnostics without changing provider tool schemas.
+
+- **Relay image input:** ID-only or invalid model metadata now stays unknown.
+  Both Desktop model editors expose per-model Auto / On / Off overrides, with
+  official protocol limits retained. A separate V2 discovery cache rejects stale
+  results; saved settings and runtime image serialization share one resolver and
+  apply at Controller rebuild boundaries. Legacy configuration remains readable.
+- **中转站图片输入：** 缺失或无效的模型能力显示“图片能力未识别”，两个编辑入口
+  均可逐模型选择“自动 / 开启 / 关闭”。独立 V2 缓存隔离旧错误声明并防止陈旧结果
+  覆盖；保存设置与实际图片请求统一解析，在 Controller 重建边界生效，兼容旧配置。
+
+- **Deterministic natural-turn completion:** removed the extra completion
+  validator model request. Clean model stops now finish from provider/tool state;
+  true zero-content responses retry the frozen request at the Agent step
+  boundary, while explicit host-owned readiness and safety gates remain active.
+  Legacy completion-validator configuration and `completion_uncertain` event
+  values remain readable for compatibility but are no longer produced by the
+  validator path.
+
+- **serve Host-header allowlist:** `reasonix serve` now rejects requests whose
+  `Host` is neither loopback nor the actual listen address (HTTP 421), closing
+  the DNS-rebinding bypass of the JSON content-type CSRF guard — a rebind page
+  becomes same-origin with the loopback listener and could previously drive
+  `/bypass`, `/submit`, and read `/history`. `behind_proxy` deployments and
+  wildcard/non-loopback binds are exempt. The non-loopback plaintext-HTTP
+  startup warning now also fires — loudest — for the unauthenticated `auth =
+  none` case that used to stay silent.
+
+- **Preview read confinement:** `write_file` / `edit_file` / `multi_edit`
+  previews now apply the same `confinePreview` boundary as `delete_range` /
+  `delete_symbol`. A model-supplied absolute path outside the workspace roots
+  previously read the file (rendering its contents into the approval card and
+  session log) even though Execute would refuse the write.
+
+- **Clean-filter hardening on internal diffs:** gitcmd diff invocations now
+  neutralize every `filter.<driver>` defined in the repository's local
+  `.git/config` (`clean=` emptied, `required` forced off), so viewing a changed
+  file's diff can no longer execute a repository-configured clean filter via
+  `.gitattributes`. Emptied filters are identity pass-throughs: the diff still
+  renders the real working-tree change.
+
+- **install_source proxy SSRF parity:** the install_source SSRF dial guard now
+  also validates the request destination (IP literals) at the RoundTripper
+  boundary, so a configured HTTP/HTTPS proxy can no longer forward a blocked
+  target (cloud metadata, RFC1918, link-local, CGNAT) that the dial-time check
+  never sees — matching web_fetch's proxy-path behavior.
+
+- **awk approval classification:** the bash indirect-execution classifier now
+  treats `awk`/`gawk`/`mawk`/`nawk` with an inline program (anything not read
+  via `-f`/`--file`) like `python -c`: it always requires human approval and
+  can never be covered by a remembered reusable prefix rule. `awk
+  'BEGIN{system("…")}'` previously fell through to the reusable class.
+
+- **cargo check/doc read-only correction:** the legacy read-only command table
+  no longer lists `cargo check` / `cargo doc` as permission readers — cargo
+  executes the crate's `build.rs` for both. The effect classifier already
+  billed them as code-executing writers; the stale table entry (and its test)
+  now agree. Only `cargo search` remains read-only.
+
+- **Compact MCP discovery:** `use_capability(action=list)` now returns one
+  compact summary per configured MCP server instead of expanding every cached
+  tool description, including tools from disabled servers. Inspecting one
+  enabled `mcp-server:<name>` still returns its live or cached directory
+  without starting it, while direct known-ID calls, routing, authorization,
+  and the fixed provider-visible tool schema remain unchanged.
+
+- **Project MCP session reliability:** The MCP client now uses the official Go
+  SDK for stdio, legacy SSE, and Streamable HTTP while retaining Reasonix's
+  existing configuration, OAuth, process isolation, and schema-cache contracts.
+  Streamable HTTP opens its long-lived GET/SSE listener immediately after
+  initialization, so JetBrains project-level `.mcp.json` servers no longer lose
+  their pending session before the first tool call. Lost sessions converge on
+  one bounded rebuild and one replay, read-only surfaces consume every cursor
+  page, prompts/resources share the tool session, and shutdown terminates HTTP
+  sessions and local processes. MCP calls also accept a single JSON-object
+  string in `use_capability.arguments`, while rejecting arrays, scalars, invalid
+  JSON, and nested encoded strings. `/mcp` and Desktop expose redacted protocol,
+  listening, reconnect, and error-category diagnostics without session IDs.
 
 - **v1.24.2 session snapshot & recovery root fix:** Keep PR #7982's WAL/CAS/lease
   safety foundation, but replace process-level "I hold a lease" ownership with a

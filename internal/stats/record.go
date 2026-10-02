@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"reasonix/internal/filelock"
+	filelock "reasonix/internal/identitylock"
 	"reasonix/internal/usagecatalog"
 )
 

@@ -28,6 +28,47 @@ const sessionTitleSystemPrompt = "You name chat sessions. The conversation excer
 // GenerateSessionTitle asks the session's configured provider to distill a
 // bounded user-authored transcript into a short title.
 func (c *Controller) GenerateSessionTitle(ctx context.Context, transcript string) (string, error) {
+	if c == nil {
+		return "", fmt.Errorf("session title: controller unavailable")
+	}
+	if err := c.authentication.admissionError(); err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	resolver := c.providerResolver
+	ref := strings.TrimSpace(c.selection.ref)
+	sink := c.sink
+	c.mu.Unlock()
+	title, err := generateSessionTitle(c.withAuthentication(ctx), resolver, ref, sink, transcript)
+	c.authentication.recordFailure(err, ref)
+	return title, err
+}
+
+// GenerateSessionTitleForModel uses this controller only as a provider host.
+// The transcript and model belong to this controller's explicitly targeted
+// durable session. Cold sessions use GenerateSessionTitleWithResolver instead.
+func (c *Controller) GenerateSessionTitleForModel(ctx context.Context, modelRef, transcript string) (string, error) {
+	if c == nil {
+		return "", fmt.Errorf("session title: controller unavailable")
+	}
+	c.mu.Lock()
+	resolver := c.providerResolver
+	fallbackRef := strings.TrimSpace(c.selection.ref)
+	sink := c.sink
+	c.mu.Unlock()
+	modelRef = strings.TrimSpace(modelRef)
+	if modelRef == "" {
+		modelRef = fallbackRef
+	}
+	if err := c.authentication.admissionErrorForModel(modelRef); err != nil {
+		return "", err
+	}
+	title, err := generateSessionTitle(c.withAuthentication(ctx), resolver, modelRef, sink, transcript)
+	c.authentication.recordFailure(err, modelRef)
+	return title, err
+}
+
+func generateSessionTitle(ctx context.Context, resolver provider.Resolver, ref string, sink event.Sink, transcript string) (string, error) {
 	transcript = strings.TrimSpace(transcript)
 	if transcript == "" {
 		return "", fmt.Errorf("session title: empty transcript")
@@ -35,18 +76,18 @@ func (c *Controller) GenerateSessionTitle(ctx context.Context, transcript string
 	if runes := []rune(transcript); len(runes) > sessionTitleMaxTranscriptRunes {
 		transcript = string(runes[:sessionTitleMaxTranscriptRunes])
 	}
-	prov, ref, err := c.sessionTitleProvider()
+	prov, ref, err := sessionTitleProvider(resolver, ref)
 	if err != nil {
 		return "", err
 	}
 	raw, err := boundedllm.Call(ctx, boundedllm.Config{
 		Provider:       prov,
 		ModelRef:       ref,
-		Sink:           c.sink,
+		Sink:           sink,
 		UsageSource:    event.UsageSourceTitle,
 		Timeout:        sessionTitleTimeout,
 		MaxTokens:      sessionTitleMaxTokens,
-		EffortOverride: "low",
+		EffortOverride: provider.PreferredReasoning(prov, "low"),
 		MaxOutputBytes: 1024,
 	}, sessionTitleSystemPrompt, transcript)
 	if err != nil {
@@ -59,14 +100,13 @@ func (c *Controller) GenerateSessionTitle(ctx context.Context, transcript string
 	return title, nil
 }
 
-func (c *Controller) sessionTitleProvider() (provider.Provider, string, error) {
-	if c == nil {
-		return nil, "", fmt.Errorf("session title: controller unavailable")
-	}
-	c.mu.Lock()
-	resolver := c.providerResolver
-	ref := strings.TrimSpace(c.modelRef)
-	c.mu.Unlock()
+// GenerateSessionTitleWithResolver supports durable-session operations without
+// constructing a conversation controller or attributing usage to another tab.
+func GenerateSessionTitleWithResolver(ctx context.Context, resolver provider.Resolver, modelRef, transcript string) (string, error) {
+	return generateSessionTitle(ctx, resolver, modelRef, nil, transcript)
+}
+
+func sessionTitleProvider(resolver provider.Resolver, ref string) (provider.Provider, string, error) {
 	if resolver == nil {
 		return nil, "", fmt.Errorf("session title: no provider resolver available")
 	}

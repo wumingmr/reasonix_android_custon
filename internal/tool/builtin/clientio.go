@@ -23,6 +23,13 @@ type FileOverlay interface {
 	WriteTextFile(ctx context.Context, path, content string) (ok bool, err error)
 }
 
+// FileOverlayIdentity is an optional strengthening implemented by transports
+// that can name the buffer/session serving a read. It prevents observations
+// from being reused after the host swaps to another unsaved-buffer source.
+type FileOverlayIdentity interface {
+	FileOverlayIdentity() string
+}
+
 // TerminalRunner lets a host transport run a foreground shell command in a
 // host-owned terminal (the ACP terminal/* methods, say) so the user watches it
 // live. ok=false means the host cannot run it and the caller should execute

@@ -1,4 +1,4 @@
-// Run: tsx src/__tests__/line-number-code.test.tsx
+// Run: node --import ./scripts/css-stub-register.mjs --import tsx src/__tests__/line-number-code.test.tsx
 
 import { JSDOM } from "jsdom";
 import React, { act } from "react";

@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -10,6 +11,20 @@ import (
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 )
+
+// approvalPlanTurn is planTurn with requires_approval set, gating execution
+// behind the host approval gate.
+func approvalPlanTurn(text string) []provider.Chunk {
+	args, _ := json.Marshal(map[string]any{
+		"objective":         text,
+		"requires_approval": true,
+		"steps":             []map[string]string{{"title": text}},
+	})
+	return []provider.Chunk{
+		{Type: provider.ChunkToolCall, ToolCall: &provider.ToolCall{ID: "plan-1", Name: "submit_plan", Arguments: string(args)}},
+		{Type: provider.ChunkDone},
+	}
+}
 
 // scriptedTurns is a provider that replays a distinct chunk set per Stream call,
 // so a controller turn that re-enters the agent (plan turn, then approved
@@ -37,7 +52,7 @@ func (s *scriptedTurns) Stream(_ context.Context, _ provider.Request) (<-chan pr
 
 func firstUserMessage(msgs []provider.Message) string {
 	for _, m := range msgs {
-		if m.Role == provider.RoleUser {
+		if agent.IsUserAuthoredTurnMessage(m) {
 			if m.ProviderContent != "" {
 				return m.ProviderContent
 			}
@@ -45,6 +60,19 @@ func firstUserMessage(msgs []provider.Message) string {
 		}
 	}
 	return ""
+}
+
+// planTurn delivers the plan text through submit_plan, the planner's only
+// delivery channel; prose plans fail the turn as a protocol error.
+func planTurn(text string) []provider.Chunk {
+	args, _ := json.Marshal(map[string]any{
+		"objective": text,
+		"steps":     []map[string]string{{"title": text}},
+	})
+	return []provider.Chunk{
+		{Type: provider.ChunkToolCall, ToolCall: &provider.ToolCall{ID: "plan-1", Name: "submit_plan", Arguments: string(args)}},
+		{Type: provider.ChunkDone},
+	}
 }
 
 func textTurn(text string) []provider.Chunk {
@@ -79,18 +107,13 @@ func TestPlanGateEndToEnd(t *testing.T) {
 	ag := newPlanTestAgent(prov)
 
 	approvalID := make(chan string, 1)
-	var seeded bool
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Runner:   ag,
 		Executor: ag,
 		Sink: event.FuncSink(func(e event.Event) {
 			switch e.Kind {
 			case event.ApprovalRequest:
 				approvalID <- e.Approval.ID
-			case event.ToolDispatch:
-				if e.Tool.ID == "plan-seed" {
-					seeded = true
-				}
 			}
 		}),
 	})
@@ -110,8 +133,8 @@ func TestPlanGateEndToEnd(t *testing.T) {
 	if c.PlanMode() {
 		t.Fatal("plan mode should be off after approval")
 	}
-	if !seeded {
-		t.Fatal("approved plan should seed the task list")
+	if got := c.Todos(); len(got) != 0 {
+		t.Fatalf("approved plan populated todo state: %+v", got)
 	}
 	if got := lastAssistantText(msgs); got != "Done — implemented the plan." {
 		t.Fatalf("last assistant text = %q, want the execution turn's answer", got)
@@ -121,7 +144,7 @@ func TestPlanGateEndToEnd(t *testing.T) {
 	}
 }
 
-func TestApprovedPlanSeedClearsAfterExecutionWithoutModelTodoWrite(t *testing.T) {
+func TestApprovedPlanDoesNotSeedTodosWithoutModelTodoWrite(t *testing.T) {
 	prov := &scriptedTurns{turns: planThenExecuteTurns(
 		"Plan:\n1. Add the config field\n2. Wire it into boot",
 		"Done.",
@@ -129,18 +152,13 @@ func TestApprovedPlanSeedClearsAfterExecutionWithoutModelTodoWrite(t *testing.T)
 	ag := newPlanTestAgent(prov)
 
 	approvalID := make(chan string, 1)
-	var planSeedResults []string
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Runner:   ag,
 		Executor: ag,
 		Sink: event.FuncSink(func(e event.Event) {
 			switch e.Kind {
 			case event.ApprovalRequest:
 				approvalID <- e.Approval.ID
-			case event.ToolResult:
-				if e.Tool.ID == "plan-seed" && e.Tool.Name == "todo_write" && e.Tool.Err == "" {
-					planSeedResults = append(planSeedResults, e.Tool.Args)
-				}
 			}
 		}),
 	})
@@ -153,15 +171,8 @@ func TestApprovedPlanSeedClearsAfterExecutionWithoutModelTodoWrite(t *testing.T)
 		t.Fatalf("runTurnWithRaw: %v", err)
 	}
 
-	if len(planSeedResults) != 2 {
-		t.Fatalf("plan-seed todo results = %d, want seed then completion: %#v", len(planSeedResults), planSeedResults)
-	}
-	last := planSeedResults[len(planSeedResults)-1]
-	if strings.Contains(last, `"in_progress"`) || strings.Contains(last, `"pending"`) {
-		t.Fatalf("final plan-seed todos should be completed so the panel hides: %s", last)
-	}
-	if !strings.Contains(last, `"completed"`) {
-		t.Fatalf("final plan-seed todos should contain completed items: %s", last)
+	if got := c.Todos(); len(got) != 0 {
+		t.Fatalf("plan approval seeded todo state: %+v", got)
 	}
 }
 
@@ -175,7 +186,7 @@ func TestPlanGateRejectionStaysInPlan(t *testing.T) {
 
 	approvalID := make(chan string, 1)
 	var seeded bool
-	c := New(Options{
+	c := newOwnedTestController(t, Options{
 		Runner:   ag,
 		Executor: ag,
 		Sink: event.FuncSink(func(e event.Event) {

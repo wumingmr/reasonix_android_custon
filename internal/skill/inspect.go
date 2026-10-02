@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"context"
 	"io"
 	"sort"
 	"strings"
@@ -54,7 +55,7 @@ func (s *Store) Inspect() Inspection {
 		if r.Status != StatusOK {
 			continue
 		}
-		for _, sk := range s.discoverRoot(r) {
+		for _, sk := range s.discoverRoot(context.Background(), r) {
 			candidates = append(candidates, classifyCandidate(sk, s.disabledName(sk.Name), winnerByName)...)
 			if !s.disabledName(sk.Name) {
 				if _, ok := winnerByName[sk.Name]; !ok {

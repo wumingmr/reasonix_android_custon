@@ -110,7 +110,7 @@ func TestServeSubmitRunsAndBroadcastsTurnDone(t *testing.T) {
 	bc := NewBroadcaster()
 	got := make(chan string, 1)
 	ctrl := control.New(control.Options{Runner: fakeRunner{got: got}, Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(operatorHandler(New(ctrl, bc, config.ServeConfig{})))
 	defer srv.Close()
 
 	sub, cancel := bc.Subscribe() // observe the broadcast deterministically
@@ -151,7 +151,7 @@ func TestServeSubmitRunsAndBroadcastsTurnDone(t *testing.T) {
 func TestServeEndpoints(t *testing.T) {
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc}) // no runner needed for these
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(operatorHandler(New(ctrl, bc, config.ServeConfig{})))
 	defer srv.Close()
 
 	if resp, err := http.Get(srv.URL + "/history"); err != nil || resp.StatusCode != http.StatusOK {
@@ -199,7 +199,7 @@ func TestServeSubmitRejectsShellShortcut(t *testing.T) {
 	bc := NewBroadcaster()
 	got := make(chan string, 1)
 	ctrl := control.New(control.Options{Runner: fakeRunner{got: got}, Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(operatorHandler(New(ctrl, bc, config.ServeConfig{})))
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/submit", "application/json", strings.NewReader(`{"input":"!echo nope"}`))
@@ -221,7 +221,7 @@ func TestServeSubmitValidatesFormat(t *testing.T) {
 	bc := NewBroadcaster()
 	got := make(chan string, 1)
 	ctrl := control.New(control.Options{Runner: fakeRunner{got: got}, Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(operatorHandler(New(ctrl, bc, config.ServeConfig{})))
 	defer srv.Close()
 
 	post := func(body string) int {
@@ -280,6 +280,22 @@ func TestHistoryMessagesPreserveToolDetails(t *testing.T) {
 	}
 }
 
+func TestHistoryMessagesStripTransientReasoningLanguageBlock(t *testing.T) {
+	got := historyMessages([]provider.Message{
+		{Role: provider.RoleUser, Content: "<reasoning-language>\nVisible reasoning/thinking text preference: use English.\n</reasoning-language>\n\nExplain this module"},
+		{Role: provider.RoleAssistant, Content: "ok"},
+	})
+	if len(got) != 2 {
+		t.Fatalf("history length = %d, want 2: %+v", len(got), got)
+	}
+	if got[0].Role != "user" || got[0].Content != "Explain this module" {
+		t.Fatalf("user history = %+v, want plain user text without reasoning-language", got[0])
+	}
+	if strings.Contains(got[0].Content, "<reasoning-language>") {
+		t.Fatalf("reasoning-language leaked into /history user content: %q", got[0].Content)
+	}
+}
+
 func TestSessionsListPreviewStripsTransientReasoningLanguageBlock(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
@@ -325,7 +341,7 @@ func TestSessionsListPreviewSeesEventLogTurns(t *testing.T) {
 func TestServeCancelEndpoint(t *testing.T) {
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(operatorHandler(New(ctrl, bc, config.ServeConfig{})))
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/cancel", "application/json", nil)
@@ -338,10 +354,30 @@ func TestServeCancelEndpoint(t *testing.T) {
 	}
 }
 
+func TestServeCancelSessionReturnsIdempotentReceipt(t *testing.T) {
+	bc := NewBroadcaster()
+	ctrl := control.New(control.Options{Sink: bc})
+	srv := httptest.NewServer(operatorHandler(New(ctrl, bc, config.ServeConfig{})))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/cancel-session", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var receipt control.CancelReceipt
+	if err := json.NewDecoder(resp.Body).Decode(&receipt); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusAccepted || !receipt.Accepted || !receipt.AlreadyIdle {
+		t.Fatalf("cancel receipt status=%d receipt=%+v", resp.StatusCode, receipt)
+	}
+}
+
 func TestServeApproveMissingID(t *testing.T) {
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(operatorHandler(New(ctrl, bc, config.ServeConfig{})))
 	defer srv.Close()
 
 	// Missing id should return 400.
@@ -360,28 +396,23 @@ func TestServeApproveMissingID(t *testing.T) {
 	if resp2.StatusCode != http.StatusBadRequest {
 		t.Errorf("approve bad json = %d, want 400", resp2.StatusCode)
 	}
-}
 
-func TestServeNewSessionEndpoint(t *testing.T) {
-	bc := NewBroadcaster()
-	ctrl := control.New(control.Options{Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
-	defer srv.Close()
-
-	resp, err := http.Post(srv.URL+"/new", "application/json", nil)
+	// Permanent approval was removed from the protocol. Reject it before trying
+	// to resolve an ID so legacy clients cannot accidentally persist a grant.
+	resp3, err := http.Post(srv.URL+"/approve", "application/json", strings.NewReader(`{"id":"legacy","allow":true,"persist":true}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
-		t.Errorf("new session = %d, want 204", resp.StatusCode)
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusBadRequest {
+		t.Errorf("approve persistent grant = %d, want 400", resp3.StatusCode)
 	}
 }
 
 func TestServeCompactEndpoint(t *testing.T) {
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(operatorHandler(New(ctrl, bc, config.ServeConfig{})))
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/compact", "application/json", nil)
@@ -426,7 +457,7 @@ func TestServeIndexReportsSessionDeleteFailures(t *testing.T) {
 func TestServeIndexHandlesRetryingEvents(t *testing.T) {
 	html := string(indexHTML)
 	for _, want := range []string{
-		"case 'retrying': setRetrying(e.retryAttempt,e.retryMax); break;",
+		"case 'retrying': setRetrying(e.retryAttempt,e.retryMax,e.recovery); break;",
 		"if(e.kind!=='retrying')clearRetrying();",
 		"'retrying_status': 'Retrying ({attempt}/{max})...'",
 		"'retrying_status': '正在重试 ({attempt}/{max})...'",
@@ -477,7 +508,7 @@ func TestServeIndexPagePassesLanguagePreferenceToClient(t *testing.T) {
 
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(operatorHandler(New(ctrl, bc, config.ServeConfig{})))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/")
@@ -531,7 +562,7 @@ func TestServeModelsMarksActiveByModelRef(t *testing.T) {
 		Label:    "shared-chat",
 		ModelRef: "alternate/shared-chat",
 	})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(operatorHandler(New(ctrl, bc, config.ServeConfig{})))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/models")
@@ -581,7 +612,7 @@ func TestServeModelsIncludesExtensionProviderCatalog(t *testing.T) {
 		}},
 		},
 	})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(operatorHandler(New(ctrl, bc, config.ServeConfig{})))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/models")
@@ -642,45 +673,6 @@ func TestServeExtensionReloadPublishesOnlySuccessfulReplacement(t *testing.T) {
 	}
 }
 
-func TestServeSwitchEffortUsesModelRefForDuplicateModelNames(t *testing.T) {
-	writeServeModelConfig(t)
-
-	bc := NewBroadcaster()
-	ctrl := control.New(control.Options{
-		Sink:       bc,
-		Label:      "shared-chat",
-		ModelRef:   "alternate/shared-chat",
-		SessionDir: t.TempDir(),
-	})
-	server := New(ctrl, bc, config.ServeConfig{})
-	var builtRef string
-	server.buildController = func(_ context.Context, ref string) (*control.Controller, error) {
-		builtRef = ref
-		return control.New(control.Options{
-			Sink:       bc,
-			Label:      "shared-chat",
-			ModelRef:   ref,
-			SessionDir: t.TempDir(),
-		}), nil
-	}
-
-	if err := server.switchEffort(context.Background(), "high"); err != nil {
-		t.Fatalf("switchEffort: %v", err)
-	}
-	if builtRef != "alternate/shared-chat" {
-		t.Fatalf("rebuilt model ref = %q, want alternate/shared-chat", builtRef)
-	}
-	edit := config.LoadForEdit(config.UserConfigPath())
-	def, _ := edit.Provider("default")
-	if def.Effort != "" {
-		t.Fatalf("default effort = %q, want unchanged", def.Effort)
-	}
-	alt, _ := edit.Provider("alternate")
-	if alt.Effort != "high" {
-		t.Fatalf("alternate effort = %q, want high", alt.Effort)
-	}
-}
-
 func writeServeModelConfig(t *testing.T) {
 	t.Helper()
 	home := t.TempDir()
@@ -729,7 +721,7 @@ func TestResumeRequiresSessionPathInsideSessionDir(t *testing.T) {
 
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc, SessionDir: dir, SessionPath: active})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(operatorHandler(newLifecycleTestServer(t, ctrl, bc, config.ServeConfig{})))
 	defer srv.Close()
 
 	post := func(path string) int {
@@ -774,7 +766,7 @@ func TestResumeRejectsCleanupPendingSession(t *testing.T) {
 
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc, SessionDir: dir, SessionPath: active})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(operatorHandler(newLifecycleTestServer(t, ctrl, bc, config.ServeConfig{})))
 	defer srv.Close()
 
 	body, err := json.Marshal(map[string]string{"path": pending})
@@ -809,7 +801,7 @@ func TestSessionsSkipsCleanupPending(t *testing.T) {
 
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc, SessionDir: dir, SessionPath: active})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(operatorHandler(newLifecycleTestServer(t, ctrl, bc, config.ServeConfig{})))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/sessions")
@@ -824,7 +816,7 @@ func TestSessionsSkipsCleanupPending(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Name != "active" || filepath.Clean(got[0].Path) != filepath.Clean(active) {
+	if len(got) != 1 || got[0].Name != "active" || got[0].Path != agent.CanonicalSessionPath(active) {
 		t.Fatalf("/sessions = %+v, want only active session", got)
 	}
 }
@@ -858,7 +850,7 @@ func TestDeleteSessionRequiresSessionNameInsideSessionDir(t *testing.T) {
 
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc, SessionDir: dir, SessionPath: active})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(operatorHandler(newLifecycleTestServer(t, ctrl, bc, config.ServeConfig{})))
 	defer srv.Close()
 
 	post := func(body string) int {
@@ -925,7 +917,7 @@ func writeServeSubagentArtifact(t *testing.T, dir, ref, parentSession string) {
 func TestServeSubmitMalformedJSON(t *testing.T) {
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(operatorHandler(New(ctrl, bc, config.ServeConfig{})))
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/submit", "application/json", strings.NewReader(`{not json`))
@@ -941,7 +933,7 @@ func TestServeSubmitMalformedJSON(t *testing.T) {
 func TestServePlanMalformedJSON(t *testing.T) {
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(operatorHandler(New(ctrl, bc, config.ServeConfig{})))
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/plan", "application/json", strings.NewReader(`{bad`))
@@ -957,7 +949,7 @@ func TestServePlanMalformedJSON(t *testing.T) {
 func TestServeContextEndpoint(t *testing.T) {
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc})
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(operatorHandler(New(ctrl, bc, config.ServeConfig{})))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/context")
@@ -985,7 +977,7 @@ func TestServeEventsReplaysPendingAskOnAttach(t *testing.T) {
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc})
 	ctrl.EnableInteractiveApproval()
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(operatorHandler(New(ctrl, bc, config.ServeConfig{})))
 	defer srv.Close()
 
 	firstSub, cancelFirst := bc.Subscribe()
@@ -1000,13 +992,8 @@ func TestServeEventsReplaysPendingAskOnAttach(t *testing.T) {
 		askDone <- err
 	}()
 
-	select {
-	case data := <-firstSub:
-		if !strings.Contains(string(data), `"kind":"ask_request"`) {
-			t.Fatalf("initial subscriber got %s, want ask_request", data)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for initial ask_request")
+	if frame := nextServeProtocolFrame(t, firstSub, nil); frame.Kind != "ask_request" {
+		t.Fatalf("initial subscriber got %+v, want ask_request", frame)
 	}
 
 	resp, err := http.Get(srv.URL + "/events")
@@ -1051,11 +1038,7 @@ func TestServeEventsReplaysPendingAskOnAttach(t *testing.T) {
 
 	// Reconnect recovery must be connection-local: the existing subscriber
 	// must not receive the same prompt a second time.
-	select {
-	case data := <-firstSub:
-		t.Fatalf("existing subscriber got duplicate replay: %s", data)
-	default:
-	}
+	assertNoServeProtocolFrames(t, firstSub)
 
 	cancelAsk()
 	select {
@@ -1090,19 +1073,10 @@ func TestServeEventsReplayHandoffSerializesPromptEmission(t *testing.T) {
 	})
 	defer cancelSub()
 
-	select {
-	case data := <-sub:
-		if !strings.Contains(string(data), `"kind":"ask_request"`) {
-			t.Fatalf("handoff subscriber got %s, want ask_request", data)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("handoff subscriber never received ask_request")
+	if frame := nextServeProtocolFrame(t, sub, nil); frame.Kind != "ask_request" {
+		t.Fatalf("handoff subscriber got %+v, want ask_request", frame)
 	}
-	select {
-	case data := <-sub:
-		t.Fatalf("handoff subscriber got duplicate ask_request: %s", data)
-	default:
-	}
+	assertNoServeProtocolFrames(t, sub)
 
 	cancelAsk()
 	select {
@@ -1127,7 +1101,7 @@ func TestServeEventsReplaysPendingApprovalOnAttach(t *testing.T) {
 		Policy:   permission.New("ask", nil, nil, nil),
 	})
 	ctrl.EnableInteractiveApproval()
-	srv := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	srv := httptest.NewServer(operatorHandler(New(ctrl, bc, config.ServeConfig{})))
 	defer srv.Close()
 
 	runDone := make(chan error, 1)

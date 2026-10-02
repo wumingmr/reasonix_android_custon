@@ -10,6 +10,8 @@ import { WorkspacePanel } from "../components/WorkspacePanel";
 import type { AppBindings } from "../lib/bridge";
 import { LocaleProvider } from "../lib/i18n";
 import { resetWorkspaceTreeMemoryForTests } from "../lib/workspaceTreeMemory";
+import { installDesktopHostStub } from "./desktopHostStub";
+import { workspaceViewMemoryKey, rememberWorkspaceTreeScroll, reloadWorkspaceViewMemoryForTests } from "../lib/workspaceViewMemory";
 
 let passed = 0;
 let failed = 0;
@@ -109,15 +111,16 @@ function installDom() {
 
 const MEMORY_KEY = "scroll-test\u0000/repo";
 
-function renderPanel(root: Root) {
+function renderPanel(root: Root, memoryKey = MEMORY_KEY) {
   return act(async () => {
     root.render(
       <LocaleProvider>
         <WorkspacePanel
+          key={memoryKey}
           open
           tabId="scroll-tab"
           cwd="/repo"
-          workspaceMemoryKey={MEMORY_KEY}
+          workspaceMemoryKey={memoryKey}
           maximized={false}
           initialViewMode="files"
           onClose={() => {}}
@@ -148,7 +151,7 @@ dom.window.localStorage.setItem("reasonix.workspaceState.v2", JSON.stringify({
   }],
 }));
 
-window.go = {
+installDesktopHostStub(({
   main: {
     App: {
       ListDirForTab: async (_tabId, dir) => {
@@ -167,7 +170,7 @@ window.go = {
       OpenWorkspacePathForTab: async () => {},
     } as Partial<AppBindings> as AppBindings,
   },
-};
+}).main.App);
 
 const rootElement = document.getElementById("root");
 if (!rootElement) throw new Error("missing root");
@@ -246,5 +249,21 @@ if (tabs.length >= 2) {
   ok(document.querySelectorAll(".workspace-tree__row").length > 0, "tree rows re-render after files<->changed view switch");
 }
 
+const firstView = workspaceViewMemoryKey(MEMORY_KEY, "view-a", true);
+const secondView = workspaceViewMemoryKey(MEMORY_KEY, "view-b");
+rememberWorkspaceTreeScroll(firstView, 160);
+rememberWorkspaceTreeScroll(secondView, 420);
+for (const [key, offset] of [[firstView, 160], [secondView, 420], [firstView, 160]] as const) {
+  await renderPanel(root, key);
+  await waitFor("independent view DOM offset", () => document.querySelector<HTMLElement>(".workspace-tree")?.scrollTop === offset);
+  ok(document.querySelector<HTMLElement>(".workspace-tree")?.scrollTop === offset, `view restores its own DOM offset ${offset}`);
+}
+await act(async () => { root.render(null); await flushTimers(); });
+reloadWorkspaceViewMemoryForTests();
+await renderPanel(root, secondView);
+await waitFor("view offset after storage reload", () => document.querySelector<HTMLElement>(".workspace-tree")?.scrollTop === 420);
+ok(document.querySelector<HTMLElement>(".workspace-tree")?.scrollTop === 420, "view offset survives storage reload");
+await act(async () => root.unmount());
+dom.window.close();
 console.log(`\nworkspace tree scroll restore: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

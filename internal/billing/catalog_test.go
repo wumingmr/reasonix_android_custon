@@ -38,6 +38,111 @@ func TestResolveDeepSeekScheduledRateBoundaries(t *testing.T) {
 	}
 }
 
+// The 2026-09-10 cutover both renamed the Flash SKU and cut its price; the
+// retired ids are served by V4.1 Flash and billed at the same rate.
+func TestDeepSeekSeptemberScheduleResolvesFlashPriceCut(t *testing.T) {
+	// Monday 2026-09-14, inside and outside the 06:00-10:00 UTC peak window.
+	peak := time.Date(2026, 9, 14, 6, 0, 0, 0, time.UTC)
+	offPeak := time.Date(2026, 9, 14, 22, 0, 0, 0, time.UTC)
+	cnyPeak := RateCard{CacheHit: 0.04, Input: 2, Output: 8, Currency: "CNY"}
+	cnyOffPeak := RateCard{CacheHit: 0.02, Input: 1, Output: 4, Currency: "CNY"}
+	for _, tc := range []struct {
+		at   time.Time
+		band string
+		want RateCard
+	}{{peak, RateBandPeak, cnyPeak}, {offPeak, RateBandOffPeak, cnyOffPeak}} {
+		got, ok := ResolveScheduledRate("deepseek", "deepseek-flash", "CNY", BillingModePAYG, ScheduleDeepSeekV4September2026, tc.at)
+		if !ok || got.RateBand != tc.band || got.Card != tc.want {
+			t.Fatalf("at %s resolved = %+v ok=%v, want band=%s card=%+v", tc.at, got, ok, tc.band, tc.want)
+		}
+	}
+	for _, model := range []string{"deepseek-v4-flash", "deepseek-v4-flash-vision-exp"} {
+		got, ok := ResolveScheduledRate("deepseek", model, "CNY", BillingModePAYG, ScheduleDeepSeekV4September2026, peak)
+		if !ok || got.Card != cnyPeak {
+			t.Fatalf("%s resolved = %+v ok=%v, want the Flash price", model, got, ok)
+		}
+	}
+	if got, ok := ResolveScheduledRate("deepseek", "deepseek-flash", "USD", BillingModePAYG, ScheduleDeepSeekV4September2026, offPeak); !ok ||
+		got.Card != (RateCard{CacheHit: 0.003, Input: 0.15, Output: 0.6, Currency: "USD"}) {
+		t.Fatalf("USD off-peak resolved = %+v ok=%v", got, ok)
+	}
+	// V4 Pro keeps its own price until the vendor routes it to V4.1 Flash.
+	if got, ok := ResolveScheduledRate("deepseek", "deepseek-v4-pro", "CNY", BillingModePAYG, ScheduleDeepSeekV4September2026, peak); !ok ||
+		got.Card != (RateCard{CacheHit: 0.30, Input: 9, Output: 27, Currency: "CNY"}) {
+		t.Fatalf("V4 Pro resolved = %+v ok=%v", got, ok)
+	}
+	// The superseded August schedule closes at the cutover.
+	if _, ok := ResolveScheduledRate("deepseek", "deepseek-v4-flash", "CNY", BillingModePAYG, ScheduleDeepSeekV4August2026, peak); ok {
+		t.Fatal("August schedule still resolved after the September cutover")
+	}
+}
+
+func TestDeepSeekRateBandWeekendIsAlwaysOffPeak(t *testing.T) {
+	tests := []struct {
+		name string
+		at   time.Time
+	}{
+		// Saturday and Sunday peak-window clock times must remain off-peak.
+		{"saturday_morning_window", time.Date(2026, 8, 22, 1, 30, 0, 0, time.UTC)},
+		{"sunday_afternoon_window", time.Date(2026, 8, 23, 7, 0, 0, 0, time.UTC)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := DeepSeekRateBand(tc.at); got != RateBandOffPeak {
+				t.Fatalf("DeepSeekRateBand(%s) = %q, want %q", tc.at, got, RateBandOffPeak)
+			}
+		})
+	}
+}
+
+func TestDeepSeekRateBandChinesePublicHolidaysAreOffPeak(t *testing.T) {
+	tests := []struct {
+		name string
+		at   time.Time
+	}{
+		// National Day Thursday 2026-10-01 inside the morning peak window
+		// (Beijing 10:00).
+		{"national_day_morning_window", time.Date(2026, 10, 1, 2, 0, 0, 0, time.UTC)},
+		// Mid-Autumn Friday 2026-09-25 inside the afternoon peak window
+		// (Beijing 15:00).
+		{"mid_autumn_afternoon_window", time.Date(2026, 9, 25, 7, 0, 0, 0, time.UTC)},
+		// Spring Festival Monday 2026-02-17 (正月初一) inside the morning peak
+		// window (Beijing 09:30).
+		{"spring_festival_first_day", time.Date(2026, 2, 17, 1, 30, 0, 0, time.UTC)},
+		// The Beijing evening before a holiday starts (09-24 20:00 local) is a
+		// plain Thursday night and stays off-peak through the window rule.
+		{"night_before_holiday", time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := DeepSeekRateBand(tc.at); got != RateBandOffPeak {
+				t.Fatalf("DeepSeekRateBand(%s) = %q, want %q", tc.at, got, RateBandOffPeak)
+			}
+		})
+	}
+}
+
+func TestDeepSeekRateBandMakeupWorkdayWeekendStaysOffPeak(t *testing.T) {
+	// 2026-10-10 is the National Day make-up workday (a Saturday): the pricing
+	// page keys off calendar weekends, so it still bills off-peak.
+	at := time.Date(2026, 10, 10, 2, 0, 0, 0, time.UTC)
+	if got := DeepSeekRateBand(at); got != RateBandOffPeak {
+		t.Fatalf("DeepSeekRateBand(%s) = %q, want %q", at, got, RateBandOffPeak)
+	}
+}
+
+func TestDeepSeekRateBandOrdinaryWeekdayStillPeaks(t *testing.T) {
+	// Control: a normal weekday inside both peak windows keeps billing peak.
+	for _, at := range []time.Time{
+		time.Date(2026, 9, 24, 1, 0, 0, 0, time.UTC),   // Beijing 09:00
+		time.Date(2026, 10, 13, 9, 59, 0, 0, time.UTC), // Beijing 17:59
+	} {
+		if got := DeepSeekRateBand(at); got != RateBandPeak {
+			t.Fatalf("DeepSeekRateBand(%s) = %q, want %q", at, got, RateBandPeak)
+		}
+	}
+}
+
 func TestBuildQuoteScheduledRateUsesMatchingPeerBand(t *testing.T) {
 	at := time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
 	q := BuildQuote(QuoteInput{
