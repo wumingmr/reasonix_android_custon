@@ -10,12 +10,28 @@ import (
 	"strings"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/i18n"
 	"reasonix/internal/session"
 )
 
+// resumeListCap is the built-in default for the resume surfaces. It is a
+// fallback only: ui.resume_list_limit overrides it per install.
 const resumeListCap = 10
+
+// resumeListCapFor resolves the effective cap from the user configuration.
+// Read-only and silent: a missing or unreadable config keeps the built-in
+// default rather than failing a resume. The credential-free loader is the right
+// one here — the cap is a display setting and must not pull provider keys into
+// the process while a picker is being drawn.
+func resumeListCapFor() int {
+	cfg, err := config.LoadForRootWithoutCredentialsReadOnly(".")
+	if err != nil || cfg == nil {
+		return resumeListCap
+	}
+	return cfg.UI.ResumeLimit(resumeListCap)
+}
 
 // resumeEntry is one picker row: a session plus, for cross-project rows, the
 // project it belongs to. The current directory's sessions keep project empty
@@ -35,7 +51,7 @@ const resumeOtherProjectsCap = 5
 // from any directory, not only the workspace root (#9477), and must see the
 // same conversations the desktop tree shows after a migration.
 func resumeEntries(dir string) []resumeEntry {
-	base := mergedResumeEntries(dir, resumeListCap)
+	base := mergedResumeEntries(dir, resumeListCapFor())
 	out := make([]resumeEntry, 0, len(base)+resumeOtherProjectsCap)
 	out = append(out, base...)
 	out = append(out, otherProjectResumeEntries(dir)...)

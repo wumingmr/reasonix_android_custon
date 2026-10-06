@@ -697,6 +697,27 @@ func transcriptContentWidth(termW int, nativeScrollback bool) int {
 	return max(termW, 1)
 }
 
+// termuxWidthReserve is the column deficit Termux leaves between the width it
+// reports through TIOCGWINSZ and the width it actually draws. A stale window
+// size is the common case there — a soft keyboard opening, a font-size change,
+// or a display rotation all leave the reported size behind. Any row laid out
+// to the reported size then overflows by this much and the terminal folds the
+// overflow onto the next row, which swallows the overflowing cells at the end
+// of the full row. One column is the minimum that keeps a wide-rune row from
+// straddling the boundary.
+const termuxWidthReserve = 1
+
+// layoutWidth converts a reported window width into the width layout may use.
+// Only Termux needs the reserve: every other terminal either draws exactly the
+// width it reports or is driven by a WindowSizeMsg that arrives per frame.
+func layoutWidth(termW int, nativeScrollback bool, reserve int) int {
+	w := termW
+	if nativeScrollback {
+		w -= max(reserve, 0)
+	}
+	return max(w, 1)
+}
+
 func configureChatTextarea(ti *textarea.Model) {
 	// Keep a stable two-cell input affordance, matching the prompt treatment in
 	// other coding TUIs. Continuation rows receive two spaces so text and the
@@ -753,6 +774,18 @@ func isTermuxTerminal() bool {
 }
 
 var detectTermuxTerminal = isTermuxTerminal
+
+// termuxWidthReserve reports how many columns layout must leave unused. A
+// configured offset wins, including an explicit 0 for a device whose reported
+// width it draws exactly; otherwise the built-in reserve applies. The pointer
+// type is what makes that distinction expressible — a plain int cannot tell an
+// absent setting from a deliberate zero.
+func (m *chatTUI) termuxWidthReserve() int {
+	if m.cfg != nil && m.cfg.UI.TermuxWidthOffset != nil {
+		return max(*m.cfg.UI.TermuxWidthOffset, 0)
+	}
+	return termuxWidthReserve
+}
 
 func (m *chatTUI) rememberSubmittedInput(input string) {
 	if strings.TrimSpace(input) == "" {
@@ -1073,7 +1106,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.followComposerCursor()
-		m.width = msg.Width
+		m.width = layoutWidth(msg.Width, m.nativeScrollback, m.termuxWidthReserve())
 		m.height = msg.Height
 		m.input.SetWidth(max(msg.Width-4, 1))
 		// Commit the banner — and a resumed session's transcript — once, now

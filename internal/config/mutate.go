@@ -290,16 +290,37 @@ func configEditLockRegistryDir() (string, error) {
 	}
 	digest := sha256.Sum256([]byte(identity))
 	if runtime.GOOS != "windows" {
-		// The OS-wide temporary root is invariant across process-specific TMPDIR
-		// overrides. The per-user directory is verified and forced to mode 0700
-		// before the advisory lock file is opened.
-		return filepath.Join(string(filepath.Separator), "tmp", fmt.Sprintf("reasonix-config-locks-%x", digest[:8])), nil
+		root := filepath.Join(string(filepath.Separator), "tmp")
+		if !dirWritable(root) {
+			// Lock registry must converge across TMPDIR/HOME overrides, so the
+			// fallback root is the platform temp root, not the process TMPDIR:
+			// Termux's /tmp is not writable, so use its $PREFIX/tmp instead.
+			if prefix := os.Getenv("PREFIX"); prefix != "" {
+				root = filepath.Join(prefix, "tmp")
+			} else if tmp := os.TempDir(); tmp != "" {
+				root = tmp
+			}
+		}
+		return filepath.Join(root, fmt.Sprintf("reasonix-config-locks-%x", digest[:8])), nil
 	}
 	home := strings.TrimSpace(current.HomeDir)
 	if home == "" {
 		return "", fmt.Errorf("lock config edits: OS user home unavailable")
 	}
 	return filepath.Join(filepath.Clean(home), ".reasonix", "locks", fmt.Sprintf("config-edits-%x", digest[:8])), nil
+}
+
+// dirWritable reports whether dir accepts new files. Used to pick a lock
+// registry root that works on hosts without a writable /tmp (Termux).
+func dirWritable(dir string) bool {
+	f, err := os.CreateTemp(dir, ".reasonix-wtest-*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	f.Close()
+	os.Remove(name)
+	return true
 }
 
 func configEditPathKey(path string) (string, error) {

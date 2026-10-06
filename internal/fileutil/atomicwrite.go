@@ -3,6 +3,7 @@ package fileutil
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -121,9 +122,41 @@ func AtomicCreateFile(path string, data []byte, perm os.FileMode) error {
 	}
 	defer os.Remove(tmpPath)
 	if err := os.Link(tmpPath, path); err != nil {
-		return fmt.Errorf("publish new file %s: %w", path, err)
+		// Android (Termux) denies hard links; fall back to an exclusive
+		// copy that keeps the no-replace guarantee. An existing target
+		// still fails (O_EXCL), matching the link's EEXIST contract.
+		if !errors.Is(err, syscall.EPERM) && !errors.Is(err, syscall.EACCES) {
+			return fmt.Errorf("publish new file %s: %w", path, err)
+		}
+		if err := publishCopyNoReplace(tmpPath, path); err != nil {
+			return fmt.Errorf("publish new file %s: %w", path, err)
+		}
 	}
 	return nil
+}
+
+// publishCopyNoReplace copies src to dst without overwriting an existing dst;
+// it is the hard-link fallback for filesystems that deny links (Android).
+func publishCopyNoReplace(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return err
+	}
+	return out.Close()
 }
 
 // AtomicOverwriteFile replaces an existing file's contents atomically while

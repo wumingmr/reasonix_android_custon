@@ -36,7 +36,7 @@ func (m *chatTUI) runRenameCommand(input string) {
 	idx, err := strconv.Atoi(args[1])
 	if err == nil && len(args) >= 3 {
 		// "/rename <n> <new title>"
-		sessions := mergedResumeEntries(m.ctrl.SessionDir(), resumeListCap)
+		sessions := mergedResumeEntries(m.ctrl.SessionDir(), resumeListCapFor())
 		if idx < 1 || idx > len(sessions) {
 			m.notice(fmt.Sprintf(i18n.M.ResumeBadIndexFmt, len(sessions)))
 			return

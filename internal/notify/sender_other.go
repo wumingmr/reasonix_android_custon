@@ -1,4 +1,4 @@
-//go:build !darwin && !linux && !windows
+//go:build !android && !darwin && !linux && !windows
 
 package notify
 

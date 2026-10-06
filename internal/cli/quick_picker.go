@@ -101,15 +101,12 @@ func (p *quickPicker) handleKey(msg tea.KeyPressMsg) quickPickerResult {
 			p.selected = 0
 		}
 	default:
-		text := msg.Text
-		if text == "" {
-			s := msg.String()
-			if len(s) == 1 && s[0] >= 32 && s[0] < 127 {
-				text = s
-			}
-		}
-		if text != "" {
-			p.query += text
+		// Mirror the textarea input contract: a key press with no Text is not
+		// user input. Termux IMEs emit those while composing, so falling back
+		// to String() here inserted composition leftovers and dropped the
+		// composed text's trailing space (KeySpace reports "space").
+		if msg.Text != "" {
+			p.query += msg.Text
 			p.selected = 0
 		}
 	}
