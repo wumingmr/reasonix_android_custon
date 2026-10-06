@@ -318,7 +318,7 @@ func TestCanonicalResumeEntriesRankNewestAcrossCatalogPages(t *testing.T) {
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	catalog := newFakeSessionCatalog(250, func(i int) time.Time { return base.Add(time.Duration(i) * time.Minute) })
 
-	entries := canonicalResumeEntriesFrom(context.Background(), catalog)
+	entries := canonicalResumeEntriesFrom(context.Background(), catalog, canonicalResumeScanCap)
 
 	if len(entries) != canonicalResumeScanCap {
 		t.Fatalf("listed %d rows, want the display cap of %d", len(entries), canonicalResumeScanCap)
@@ -346,7 +346,7 @@ func TestCanonicalResumeEntriesBoundTheCatalogWalk(t *testing.T) {
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	catalog := newFakeSessionCatalog(canonicalResumeWalkCap+canonicalResumeScanCap, func(int) time.Time { return base })
 
-	entries := canonicalResumeEntriesFrom(context.Background(), catalog)
+	entries := canonicalResumeEntriesFrom(context.Background(), catalog, canonicalResumeScanCap)
 
 	if want := canonicalResumeWalkCap / canonicalResumeScanCap; catalog.calls != want {
 		t.Fatalf("catalog pages walked = %d, want %d (walk cap %d)", catalog.calls, want, canonicalResumeWalkCap)
