@@ -1,8 +1,8 @@
 diff --git a/Makefile b/Makefile
-index cdfa6d1..ef9ac4d 100644
+index e25ef2df..bdc2db5d 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -6,16 +6,22 @@ LDFLAGS := -s -w \
+@@ -6,15 +6,21 @@ LDFLAGS := -s -w \
  	-X main.gitCommit=$(GIT_COMMIT) \
  	-X main.buildTimeUTC=$(BUILD_TIME_UTC)
  GOEXE := $(shell go env GOEXE)
@@ -10,10 +10,9 @@ index cdfa6d1..ef9ac4d 100644
 +
  # One pin for the Makefile and the CI lint job; see .github/workflows/ci.yml.
  GOLANGCI_VERSION := $(shell cat .golangci-version)
- WAILS_VERSION := $(shell tr -d '[:space:]' < .wails-version)
  
--.PHONY: build vet fmt lint lint-go lint-install lint-cross lint-update wails-install test desktop-test desktop-test-short desktop-test-times sdk-test sdk-test-race hooks cross clean
-+.PHONY: build android vet fmt lint lint-go lint-install lint-cross lint-update wails-install test desktop-test desktop-test-short desktop-test-times sdk-test sdk-test-race hooks cross clean
+-.PHONY: build vet fmt lint lint-go lint-install lint-cross lint-update test desktop-test desktop-test-short desktop-test-times sdk-test sdk-test-race hooks cross clean
++.PHONY: build android vet fmt lint lint-go lint-install lint-cross lint-update test desktop-test desktop-test-short desktop-test-times sdk-test sdk-test-race hooks cross clean
  
  build:
  	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/reasonix$(GOEXE) ./cmd/reasonix
@@ -27,7 +26,7 @@ index cdfa6d1..ef9ac4d 100644
  	go vet ./...
  
 diff --git a/cmd/e2ebench/segmentrun_test.go b/cmd/e2ebench/segmentrun_test.go
-index b653e8f..529cde8 100644
+index b653e8fa..529cde81 100644
 --- a/cmd/e2ebench/segmentrun_test.go
 +++ b/cmd/e2ebench/segmentrun_test.go
 @@ -17,6 +17,12 @@ func requireShellStub(t *testing.T) {
@@ -44,7 +43,7 @@ index b653e8f..529cde8 100644
  
  // fakeAgent stands in for the reasonix binary: it records every invocation's
 diff --git a/internal/agent/migrate.go b/internal/agent/migrate.go
-index 0dcb840..2762142 100644
+index 0dcb8408..27621429 100644
 --- a/internal/agent/migrate.go
 +++ b/internal/agent/migrate.go
 @@ -9,6 +9,7 @@ import (
@@ -94,11 +93,137 @@ index 0dcb840..2762142 100644
  		return err
  	}
  	return nil
+diff --git a/internal/cli/chat_tui.go b/internal/cli/chat_tui.go
+index a40d0977..a0cf481d 100644
+--- a/internal/cli/chat_tui.go
++++ b/internal/cli/chat_tui.go
+@@ -697,6 +697,27 @@ func transcriptContentWidth(termW int, nativeScrollback bool) int {
+ 	return max(termW, 1)
+ }
+ 
++// termuxWidthReserve is the column deficit Termux leaves between the width it
++// reports through TIOCGWINSZ and the width it actually draws. A stale window
++// size is the common case there — a soft keyboard opening, a font-size change,
++// or a display rotation all leave the reported size behind. Any row laid out
++// to the reported size then overflows by this much and the terminal folds the
++// overflow onto the next row, which swallows the overflowing cells at the end
++// of the full row. One column is the minimum that keeps a wide-rune row from
++// straddling the boundary.
++const termuxWidthReserve = 1
++
++// layoutWidth converts a reported window width into the width layout may use.
++// Only Termux needs the reserve: every other terminal either draws exactly the
++// width it reports or is driven by a WindowSizeMsg that arrives per frame.
++func layoutWidth(termW int, nativeScrollback bool, reserve int) int {
++	w := termW
++	if nativeScrollback {
++		w -= max(reserve, 0)
++	}
++	return max(w, 1)
++}
++
+ func configureChatTextarea(ti *textarea.Model) {
+ 	// Keep a stable two-cell input affordance, matching the prompt treatment in
+ 	// other coding TUIs. Continuation rows receive two spaces so text and the
+@@ -754,6 +775,18 @@ func isTermuxTerminal() bool {
+ 
+ var detectTermuxTerminal = isTermuxTerminal
+ 
++// termuxWidthReserve reports how many columns layout must leave unused. A
++// configured offset wins, including an explicit 0 for a device whose reported
++// width it draws exactly; otherwise the built-in reserve applies. The pointer
++// type is what makes that distinction expressible — a plain int cannot tell an
++// absent setting from a deliberate zero.
++func (m *chatTUI) termuxWidthReserve() int {
++	if m.cfg != nil && m.cfg.UI.TermuxWidthOffset != nil {
++		return max(*m.cfg.UI.TermuxWidthOffset, 0)
++	}
++	return termuxWidthReserve
++}
++
+ func (m *chatTUI) rememberSubmittedInput(input string) {
+ 	if strings.TrimSpace(input) == "" {
+ 		return
+@@ -1073,7 +1106,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+ 	switch msg := msg.(type) {
+ 	case tea.WindowSizeMsg:
+ 		m.followComposerCursor()
+-		m.width = msg.Width
++		m.width = layoutWidth(msg.Width, m.nativeScrollback, m.termuxWidthReserve())
+ 		m.height = msg.Height
+ 		m.input.SetWidth(max(msg.Width-4, 1))
+ 		// Commit the banner — and a resumed session's transcript — once, now
+diff --git a/internal/cli/chat_tui_test.go b/internal/cli/chat_tui_test.go
+index a9c5c604..3a42c168 100644
+--- a/internal/cli/chat_tui_test.go
++++ b/internal/cli/chat_tui_test.go
+@@ -951,6 +951,61 @@ func TestTranscriptContentWidthReservesScrollbarColumn(t *testing.T) {
+ 	}
+ }
+ 
++func TestLayoutWidthReservesOnlyUnderTermuxScrollback(t *testing.T) {
++	// Termux draws fewer columns than it reports; layout must leave the
++	// reserve unused so a full row cannot overflow and lose its last cell.
++	if got := layoutWidth(80, true, termuxWidthReserve); got != 80-termuxWidthReserve {
++		t.Fatalf("layoutWidth(80, true, %d) = %d, want %d",
++			termuxWidthReserve, got, 80-termuxWidthReserve)
++	}
++	// Every other terminal draws exactly the width it reports.
++	if got := layoutWidth(80, false, termuxWidthReserve); got != 80 {
++		t.Fatalf("layoutWidth(80, false, %d) = %d, want 80", termuxWidthReserve, got)
++	}
++	// A configured offset replaces the built-in reserve.
++	if got := layoutWidth(80, true, 3); got != 77 {
++		t.Fatalf("layoutWidth(80, true, 3) = %d, want 77", got)
++	}
++	// A negative reserve is ignored, and an oversized one cannot go below 1.
++	if got := layoutWidth(80, true, -5); got != 80 {
++		t.Fatalf("layoutWidth(80, true, -5) = %d, want 80", got)
++	}
++	if got := layoutWidth(0, true, 2); got != 1 {
++		t.Fatalf("layoutWidth(0, true, 2) = %d, want 1", got)
++	}
++	if got := layoutWidth(2, true, 8); got != 1 {
++		t.Fatalf("layoutWidth(2, true, 8) = %d, want 1", got)
++	}
++}
++
++func TestTermuxWidthReservePrefersConfiguredOffset(t *testing.T) {
++	// No config: the built-in reserve applies.
++	m := chatTUI{nativeScrollback: true}
++	if got := m.termuxWidthReserve(); got != termuxWidthReserve {
++		t.Fatalf("default reserve = %d, want %d", got, termuxWidthReserve)
++	}
++	// A configured offset wins, so a device whose reported size is exact can
++	// give back the columns.
++	three := 3
++	m = chatTUI{nativeScrollback: true, cfg: &config.Config{UI: config.UIConfig{TermuxWidthOffset: &three}}}
++	if got := m.termuxWidthReserve(); got != 3 {
++		t.Fatalf("configured reserve = %d, want 3", got)
++	}
++	// An explicit zero disables the reserve; only an absent setting keeps the
++	// default, which is why the config field is a pointer.
++	zero := 0
++	m = chatTUI{nativeScrollback: true, cfg: &config.Config{UI: config.UIConfig{TermuxWidthOffset: &zero}}}
++	if got := m.termuxWidthReserve(); got != 0 {
++		t.Fatalf("explicit-zero reserve = %d, want 0", got)
++	}
++	// A negative setting is nonsense; clamp it rather than widening the layout.
++	neg := -4
++	m = chatTUI{nativeScrollback: true, cfg: &config.Config{UI: config.UIConfig{TermuxWidthOffset: &neg}}}
++	if got := m.termuxWidthReserve(); got != 0 {
++		t.Fatalf("negative reserve = %d, want 0", got)
++	}
++}
++
+ func TestModalPanelsHideComposerBox(t *testing.T) {
+ 	ask := event.Ask{
+ 		ID: "ask-1",
 diff --git a/internal/cli/mcp_manager_actions.go b/internal/cli/mcp_manager_actions.go
-index 0846a1a..69ff924 100644
+index 3a366c32..a6ce7fc3 100644
 --- a/internal/cli/mcp_manager_actions.go
 +++ b/internal/cli/mcp_manager_actions.go
-@@ -399,6 +399,11 @@ func mcpOpenCommand(target string) (*exec.Cmd, error) {
+@@ -452,6 +452,11 @@ func mcpOpenCommand(target string) (*exec.Cmd, error) {
  		return exec.Command("open", target), nil
  	case "windows":
  		return exec.Command("rundll32", "url.dll,FileProtocolHandler", target), nil
@@ -111,10 +236,10 @@ index 0846a1a..69ff924 100644
  		return exec.Command("xdg-open", target), nil
  	}
 diff --git a/internal/cli/remote_connect.go b/internal/cli/remote_connect.go
-index 5e2a4eb..f9e7cba 100644
+index 0507ad04..cb65de2d 100644
 --- a/internal/cli/remote_connect.go
 +++ b/internal/cli/remote_connect.go
-@@ -730,6 +730,13 @@ func openInBrowser(url string) error {
+@@ -745,6 +745,13 @@ func openInBrowser(url string) error {
  		cmd, args = "open", []string{url}
  	case "windows":
  		cmd, args = "rundll32", []string{"url.dll,FileProtocolHandler", url}
@@ -129,7 +254,7 @@ index 5e2a4eb..f9e7cba 100644
  		cmd, args = "xdg-open", []string{url}
  	}
 diff --git a/internal/cli/theme_osc_other.go b/internal/cli/theme_osc_other.go
-index 713dc8e..e2c6069 100644
+index 713dc8ee..e2c60692 100644
 --- a/internal/cli/theme_osc_other.go
 +++ b/internal/cli/theme_osc_other.go
 @@ -1,4 +1,4 @@
@@ -139,7 +264,7 @@ index 713dc8e..e2c6069 100644
  package cli
  
 diff --git a/internal/cli/theme_osc_unix.go b/internal/cli/theme_osc_unix.go
-index e0c89e3..3c41ed4 100644
+index e0c89e34..3c41ed40 100644
 --- a/internal/cli/theme_osc_unix.go
 +++ b/internal/cli/theme_osc_unix.go
 @@ -1,4 +1,4 @@
@@ -148,8 +273,26 @@ index e0c89e3..3c41ed4 100644
  
  package cli
  
+diff --git a/internal/config/config.go b/internal/config/config.go
+index 60ed34dd..3ca9fab0 100644
+--- a/internal/config/config.go
++++ b/internal/config/config.go
+@@ -270,6 +270,13 @@ type UIConfig struct {
+ 	ShowReasoning  bool   `toml:"show_reasoning"`  // Ctrl+O / /verbose: show thinking text in CLI; false = collapsed
+ 	ShowTurnUsage  bool   `toml:"show_turn_usage"` // show per-request token/cost receipts in the CLI/TUI transcript
+ 	CursorShape    string `toml:"cursor_shape"`    // block|underline|bar; empty defaults to bar
++	// TermuxWidthOffset compensates a terminal that reports more columns than
++	// it draws — a stale TIOCGWINSZ after a keyboard or font-size change. Layout
++	// trusting the reported size overflows every full row by the difference, and
++	// the terminal folds the overflow away, swallowing the row's last cell.
++	// nil selects the CLI's default reserve on Termux; an explicit 0 disables
++	// the reserve for a device whose reported size it draws exactly.
++	TermuxWidthOffset *int `toml:"termux_width_offset"`
+ }
+ 
+ // CLIConfig controls user-global native CLI behavior. It is separate from
 diff --git a/internal/config/mutate.go b/internal/config/mutate.go
-index 5e9dd01..3419a75 100644
+index 7c33fea5..8202561c 100644
 --- a/internal/config/mutate.go
 +++ b/internal/config/mutate.go
 @@ -290,10 +290,18 @@ func configEditLockRegistryDir() (string, error) {
@@ -195,8 +338,34 @@ index 5e9dd01..3419a75 100644
  func configEditPathKey(path string) (string, error) {
  	path = strings.TrimSpace(path)
  	if path == "" {
+diff --git a/internal/config/render.go b/internal/config/render.go
+index 4e1c9cc1..c0240ace 100644
+--- a/internal/config/render.go
++++ b/internal/config/render.go
+@@ -80,6 +80,11 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
+ 		} else {
+ 			b.WriteString("# cursor_shape = \"bar\"   # block|underline|bar; text input cursor shape\n")
+ 		}
++		if off := c.UI.TermuxWidthOffset; off != nil {
++			fmt.Fprintf(&b, "termux_width_offset = %d   # columns Termux reports but does not draw; 0 trusts the reported width exactly\n", *off)
++		} else {
++			b.WriteString("# termux_width_offset = 1   # columns Termux reports but does not draw; raise it if the last cell of a full row is cut off\n")
++		}
+ 		if strings.TrimSpace(c.UI.CloseBehavior) != "" && scope == RenderScopeProject {
+ 			fmt.Fprintf(&b, "close_behavior = %q   # legacy desktop close behavior; prefer [desktop].close_behavior in user config\n", c.DesktopCloseBehavior())
+ 		}
+@@ -828,6 +833,9 @@ func RenderTOMLProjectDelta(c *Config) string {
+ 		if strings.TrimSpace(c.UI.CursorShape) != "" {
+ 			fmt.Fprintf(&b, "cursor_shape = %q\n", c.UICursorShape())
+ 		}
++		if c.UI.TermuxWidthOffset != nil && d.UI.TermuxWidthOffset == nil {
++			fmt.Fprintf(&b, "termux_width_offset = %d\n", *c.UI.TermuxWidthOffset)
++		}
+ 		if c.UI.CloseBehavior != d.UI.CloseBehavior {
+ 			fmt.Fprintf(&b, "close_behavior = %q\n", c.DesktopCloseBehavior())
+ 		}
 diff --git a/internal/fileutil/atomicwrite.go b/internal/fileutil/atomicwrite.go
-index c7a5ce7..7b299db 100644
+index 04355164..8dc3b334 100644
 --- a/internal/fileutil/atomicwrite.go
 +++ b/internal/fileutil/atomicwrite.go
 @@ -3,6 +3,7 @@ package fileutil
@@ -253,7 +422,7 @@ index c7a5ce7..7b299db 100644
  // keeping the two properties a bare rename drops: the file's current permission
  // bits (an executable script must not come back 0644) and the symlink target
 diff --git a/internal/mcplaunch/process_other.go b/internal/mcplaunch/process_other.go
-index fb59685..4973ace 100644
+index fb59685c..4973ace1 100644
 --- a/internal/mcplaunch/process_other.go
 +++ b/internal/mcplaunch/process_other.go
 @@ -1,4 +1,4 @@
@@ -263,7 +432,7 @@ index fb59685..4973ace 100644
  package mcplaunch
  
 diff --git a/internal/mcplaunch/process_unix.go b/internal/mcplaunch/process_unix.go
-index 9185928..46df723 100644
+index 91859281..46df723e 100644
 --- a/internal/mcplaunch/process_unix.go
 +++ b/internal/mcplaunch/process_unix.go
 @@ -1,4 +1,4 @@
@@ -273,7 +442,7 @@ index 9185928..46df723 100644
  package mcplaunch
  
 diff --git a/internal/memory/memory_test.go b/internal/memory/memory_test.go
-index 00aa978..4a18f9a 100644
+index 3a77c5ac..9d350059 100644
 --- a/internal/memory/memory_test.go
 +++ b/internal/memory/memory_test.go
 @@ -5,6 +5,7 @@ import (
@@ -297,7 +466,7 @@ index 00aa978..4a18f9a 100644
  		t.Fatal(err)
 diff --git a/internal/notify/sender_android.go b/internal/notify/sender_android.go
 new file mode 100644
-index 0000000..07c0d5d
+index 00000000..07c0d5d2
 --- /dev/null
 +++ b/internal/notify/sender_android.go
 @@ -0,0 +1,26 @@
@@ -328,7 +497,7 @@ index 0000000..07c0d5d
 +	return nil
 +}
 diff --git a/internal/notify/sender_linux.go b/internal/notify/sender_linux.go
-index bdbe695..fcb62d8 100644
+index bdbe6958..fcb62d82 100644
 --- a/internal/notify/sender_linux.go
 +++ b/internal/notify/sender_linux.go
 @@ -1,4 +1,4 @@
@@ -338,7 +507,7 @@ index bdbe695..fcb62d8 100644
  package notify
  
 diff --git a/internal/notify/sender_other.go b/internal/notify/sender_other.go
-index 11fa267..579ee2a 100644
+index 11fa267d..579ee2a5 100644
 --- a/internal/notify/sender_other.go
 +++ b/internal/notify/sender_other.go
 @@ -1,4 +1,4 @@
@@ -348,10 +517,10 @@ index 11fa267..579ee2a 100644
  package notify
  
 diff --git a/internal/plugin/transport_stdio.go b/internal/plugin/transport_stdio.go
-index 48df31a..d13170c 100644
+index ad7d6fef..37f7de47 100644
 --- a/internal/plugin/transport_stdio.go
 +++ b/internal/plugin/transport_stdio.go
-@@ -449,9 +449,9 @@ func stdioShell() string {
+@@ -431,9 +431,9 @@ func stdioShell() string {
  			return exe
  		}
  	}
@@ -365,7 +534,7 @@ index 48df31a..d13170c 100644
  	}
  	return ""
 diff --git a/internal/repair/process_other.go b/internal/repair/process_other.go
-index e99c554..9e74e4d 100644
+index e99c554f..9e74e4d0 100644
 --- a/internal/repair/process_other.go
 +++ b/internal/repair/process_other.go
 @@ -1,4 +1,4 @@
@@ -375,7 +544,7 @@ index e99c554..9e74e4d 100644
  package repair
  
 diff --git a/internal/repair/process_unix.go b/internal/repair/process_unix.go
-index 671d86f..38f8ee4 100644
+index 671d86f4..38f8ee40 100644
 --- a/internal/repair/process_unix.go
 +++ b/internal/repair/process_unix.go
 @@ -1,4 +1,4 @@
@@ -385,10 +554,10 @@ index 671d86f..38f8ee4 100644
  package repair
  
 diff --git a/internal/tool/builtin/bash.go b/internal/tool/builtin/bash.go
-index d766be1..d6d0bed 100644
+index 4897db6b..2ebe2039 100644
 --- a/internal/tool/builtin/bash.go
 +++ b/internal/tool/builtin/bash.go
-@@ -726,9 +726,9 @@ func loginShell() string {
+@@ -655,9 +655,9 @@ func loginShell() string {
  			return p
  		}
  	}
@@ -401,3 +570,273 @@ index d766be1..d6d0bed 100644
  		}
  	}
  	return ""
+diff --git a/release-termux.sh b/release-termux.sh
+new file mode 100755
+index 00000000..625f5b6c
+--- /dev/null
++++ b/release-termux.sh
+@@ -0,0 +1,90 @@
++#!/usr/bin/env bash
++# release-termux.sh — 在本仓库(Termux)直接编译、测试 Reasonix,并把编译好的
++# 二进制上传到 artifacts/(GitHub Action verify-and-release.yml 校验版本与
++# 上游最新 tag 一致后自动创建 release)。
++#
++# 前置:仓库 master 已是最新源码+补丁(运行 ./update-reasonix.sh 升级),
++#       本仓库可 push(SSH key)。
++#
++# 用法:
++#   ./release-termux.sh
++# 环境变量:
++#   RELEASE_TAG       指定版本号(默认从 release-notes/releases.json 提取)
++#   SKIP_TESTS=1      跳过测试
++#   FAIL_ON_TEST=1    测试失败时中止(默认仅报告,Termux 已知环境性失败不阻塞)
++set -euo pipefail
++
++SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++REPO="${RELEASE_REPO:-lengxiaohua123/reasonix_android_custon}"
++umask 022
++
++log() { printf '[release] %s\n' "$*"; }
++
++# Android 长任务防护:防止系统杀后台进程 / Doze 挂起网络。
++if command -v termux-wake-lock >/dev/null 2>&1; then
++  termux-wake-lock || true
++  trap 'termux-wake-unlock >/dev/null 2>&1 || true' EXIT
++fi
++# 8 核手机全核编译/测试会过热降频,反而更慢且易触发并发 flaky;
++# GOMAXPROCS 默认限 4 核,可用环境变量覆盖。
++export GOMAXPROCS="${GOMAXPROCS:-4}"
++
++# 1. 解析版本:仓库源码即该版本+补丁(releases.json 随上游源码同步)
++TAG="${RELEASE_TAG:-v$(python3 -c "import json;print(json.load(open('$SCRIPT_DIR/release-notes/releases.json'))['releases'][0]['version'])" 2>/dev/null || echo 0)}"
++REL_TAG="termux-$TAG"
++log "版本: $TAG → release: $REL_TAG"
++
++# 2. 编译(源码就在本仓库,已含 Termux 补丁)
++log "编译 android 二进制"
++cd "$SCRIPT_DIR"
++make android VERSION="$TAG"
++BIN="$SCRIPT_DIR/bin/reasonix-android-arm64"
++[ -f "$BIN" ] || { echo "[release] 编译产物缺失: $BIN" >&2; exit 1; }
++log "产物: $BIN ($(stat -c%s "$BIN") bytes)"
++
++# 4. 测试
++if [ "${SKIP_TESTS:-0}" != "1" ]; then
++  log "运行测试(日志: $SCRIPT_DIR/test-result.log)"
++  set +e
++  go test -count=1 ./... 2>&1 | tee "$SCRIPT_DIR/test-result.log"
++  TEST_EXIT=${PIPESTATUS[0]}
++  set -e
++  # 全量并行下 Termux 资源有限,已知测试会偶发超时/排序 flaky;
++  # 对失败包单独重跑一次,仍失败才算真失败。
++  if [ "$TEST_EXIT" -ne 0 ]; then
++    FAIL_PKGS="$(grep -E '^FAIL\s' "$SCRIPT_DIR/test-result.log" | awk '{print $2}' | sort -u)"
++    RETEST_OK=1
++    for p in $FAIL_PKGS; do
++      if go test -count=1 "$p" >/dev/null 2>&1; then
++        log "重跑通过(并发 flaky): $p"
++      else
++        log "重跑仍失败: $p"
++        RETEST_OK=0
++      fi
++    done
++    if [ "$RETEST_OK" = "1" ]; then
++      log "所有失败均为并发 flaky,单独重跑全部通过"
++      TEST_EXIT=0
++    fi
++  fi
++  PASS="$(grep -cE '^ok\s' "$SCRIPT_DIR/test-result.log" || true)"
++  FAIL="$(grep -cE '^--- FAIL' "$SCRIPT_DIR/test-result.log" || true)"
++  log "测试结果: $PASS 包通过, $FAIL 处失败(go test 退出码 $TEST_EXIT)"
++  if [ "${FAIL_ON_TEST:-0}" = "1" ] && [ "$TEST_EXIT" -ne 0 ]; then
++    echo "[release] 测试失败且 FAIL_ON_TEST=1,中止" >&2
++    exit 1
++  fi
++fi
++# 5. 上传二进制到仓库(发布由 GitHub Action 校验版本/hash 后完成)
++log "上传二进制到仓库 artifacts/"
++ART_DIR="$SCRIPT_DIR/artifacts"
++mkdir -p "$ART_DIR"
++cp "$BIN" "$ART_DIR/reasonix-android-arm64"
++cd "$SCRIPT_DIR"
++git add artifacts/reasonix-android-arm64
++if git commit -m "upload reasonix-android-arm64 $TAG" >/dev/null 2>&1; then
++  git push origin master
++  log "已上传 $TAG 二进制,等待 Action 校验并发布: https://github.com/$REPO/actions"
++else
++  log "二进制内容无变化,无需重新上传(最近提交: $(git log -1 --format=%s))"
++fi
+diff --git a/update-reasonix.sh b/update-reasonix.sh
+new file mode 100755
+index 00000000..f8304b0b
+--- /dev/null
++++ b/update-reasonix.sh
+@@ -0,0 +1,168 @@
++#!/usr/bin/env bash
++# update-reasonix.sh — 升级本仓库源码到上游最新 tag,并重新应用 Termux 适配
++# 补丁,最后编译验证。
++#
++# 不再使用独立源码目录(reasonix-src):源码直接更新到本仓库 master。
++#
++# 补丁来源是本仓库 master 上最后一个 termux 适配 commit(见 TERMUX_PATCH_REF),
++# 而不是 termux-patch 分支 —— 该分支基线早已停留在 v1.25.0,cherry-pick 到任何
++# 更新的 tag 都会冲突,而 Termux 适配是跟着 master 一起手工演进到当前版本的。
++#
++# 用法:
++#   ./update-reasonix.sh
++# 环境变量:
++#   REASONIX_REPO_URL   上游仓库(默认 https://github.com/esengine/DeepSeek-Reasonix.git)
++#   REASONIX_TAG        指定 tag(默认取最新正式版 tag)
++#   TERMUX_PATCH_REF    Termux 适配 commit(默认自动探测 master 上最后一个 termux
++#                       适配提交;显式给值可手动覆盖)
++#   KEEP_CHANGES=1      失败时不回滚,保留现场供手工处理
++set -euo pipefail
++
++SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++REPO_URL="${REASONIX_REPO_URL:-https://github.com/esengine/DeepSeek-Reasonix.git}"
++umask 022
++
++log() { printf '[update] %s\n' "$*"; }
++die() { printf '[update] 错误: %s\n' "$*" >&2; exit 1; }
++
++cd "$SCRIPT_DIR"
++[ -d .git ] || die "必须在仓库内运行"
++
++# 0. 探测 Termux 适配 commit。master 上的形态是
++#    <上游快照 commit> → <termux 适配 commit>,后者即补丁真身。
++resolve_patch_ref() {
++  if [ -n "${TERMUX_PATCH_REF:-}" ]; then
++    git rev-parse --verify -q "$TERMUX_PATCH_REF^{commit}" >/dev/null || \
++      die "TERMUX_PATCH_REF=$TERMUX_PATCH_REF 不是有效 commit"
++    printf '%s\n' "$TERMUX_PATCH_REF"
++    return
++  fi
++  git log --format='%H %s' master | grep -E '^[0-9a-f]+ termux:' | head -1 | cut -d' ' -f1
++}
++
++PATCH_REF="$(resolve_patch_ref)"
++[ -n "$PATCH_REF" ] || die "未找到 termux 适配 commit;可用 TERMUX_PATCH_REF=<sha> 指定"
++log "Termux 适配补丁: $(git log -1 --format='%h %s' "$PATCH_REF")"
++
++# 回滚锚点:升级前的 HEAD 与分支,任何失败都整体恢复。
++ORIG_HEAD_REF="$(git rev-parse HEAD)"
++log "回滚锚点: $ORIG_HEAD_REF"
++
++rollback() {
++  rc=$?
++  if [ "${KEEP_CHANGES:-0}" = "1" ]; then
++    printf '[update] 失败(rc=%s),KEEP_CHANGES=1 保留现场\n' "$rc" >&2
++  else
++    printf '[update] 失败(rc=%s),回滚到 %s\n' "$rc" "$ORIG_HEAD_REF" >&2
++    git cherry-pick --abort >/dev/null 2>&1 || true
++    git cherry-pick --quit  >/dev/null 2>&1 || true
++    git reset --hard "$ORIG_HEAD_REF" >/dev/null 2>&1 || true
++    git clean -fdq -e '*.bak' >/dev/null 2>&1 || true
++    # git clean 会连未跟踪的本地脚本一起删,而它们的备份在仓库外的
++    # LOCAL_BACKUP 里,必须在此恢复,否则一次失败的升级就丢了本地文件。
++    # LOCAL_BACKUP 到第 4 步才创建,此前任何失败也会走到这里,所以要容忍
++    # 它尚未定义 —— set -u 下未定义变量会直接终止脚本。
++    if [ -n "${LOCAL_BACKUP:-}" ] && [ -f "$LOCAL_BACKUP/untracked.tar" ]; then
++      (cd "$SCRIPT_DIR" && tar -xf "$LOCAL_BACKUP/untracked.tar") >/dev/null 2>&1 || true
++      log "已恢复 $(wc -l <"$LOCAL_BACKUP/untracked.txt" 2>/dev/null || echo 0) 个本地未跟踪文件"
++    fi
++    if [ -n "${LOCAL_BACKUP:-}" ]; then rm -rf "$LOCAL_BACKUP"; fi
++    log "已回滚;KEEP_CHANGES=1 可保留现场手工处理"
++  fi
++  exit "$rc"
++}
++trap rollback EXIT
++
++# 1. 解析上游最新 tag
++TAG="${REASONIX_TAG:-$(git ls-remote --tags --refs "$REPO_URL" \
++    | awk -F/ '{print $NF}' | grep -E '^v[0-9]+\.' | grep -v -- '-rc' | sort -V | tail -1)}"
++[ -n "$TAG" ] || { echo "[update] 无法解析上游 tag" >&2; exit 1; }
++log "上游最新 tag: $TAG"
++
++# 当前源码版本(releases.json 随上游源码同步)
++CUR="$(python3 -c "import json;print(json.load(open('$SCRIPT_DIR/release-notes/releases.json'))['releases'][0]['version'])" 2>/dev/null || echo unknown)"
++log "当前源码版本: $CUR"
++if [ "$CUR" = "${TAG#v}" ]; then
++  log "已是最新,无需更新"
++  trap - EXIT
++  exit 0
++fi
++
++# 2. fetch 上游 tag(对象用于 checkout 源码;浅获取即可)
++git fetch --depth=1 "$REPO_URL" tag "$TAG" || { echo "[update] fetch $TAG 失败" >&2; exit 1; }
++
++# 3. 备份专属文件(.gitignore/.gitattributes 含 LFS 配置)
++cp .gitignore "$SCRIPT_DIR/.gitignore.bak"
++cp .gitattributes "$SCRIPT_DIR/.gitattributes.bak"
++
++# 4. 清空旧源码。仓库自身文件、Termux 产物与脚本需要保留;bin/ 不在其中 ——
++#    旧二进制会被第 9 步的新构建覆盖,留着只会混淆"已安装的是哪一版"。
++#    scripts/ 里有上游自带的数百个文件,也有本地新增的工具脚本(如
++#    merge-makefile-conflict.py);整目录删掉再 checkout 恢复会连带丢掉未跟踪
++#    的本地脚本,所以先把未跟踪文件备份到仓库之外再删。备份必须放在仓库外:
++#    回滚路径会跑 git clean,放在仓库内的备份会被连坐删除。
++LOCAL_BACKUP="$(mktemp -d "${TMPDIR:-/tmp}/reasonix-update-XXXXXX")"
++UNTRACKED_LIST="$LOCAL_BACKUP/untracked.txt"
++git ls-files --others --exclude-standard -- scripts release-termux.sh >"$UNTRACKED_LIST" || true
++if [ -s "$UNTRACKED_LIST" ]; then
++  log "备份 $(wc -l <"$UNTRACKED_LIST") 个未跟踪本地文件"
++  tar -cf "$LOCAL_BACKUP/untracked.tar" -T "$UNTRACKED_LIST"
++fi
++
++find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github ! -name .reasonix \
++  ! -name artifacts ! -name reasonix-termux.patch \
++  ! -name update-reasonix.sh \
++  ! -name release-termux.sh ! -name action.log ! -name '*.bak' -exec rm -rf {} +
++
++# 5. 填入上游源码(排除 .github 与专属文件,稍后恢复)
++git checkout "$TAG" -- . ':(exclude).github' || true
++mv .gitignore.bak .gitignore
++mv .gitattributes.bak .gitattributes
++
++# 6. 提交上游源码快照
++git add -A
++if git diff --cached --quiet; then
++  log "上游源码无变化(异常,请检查)"
++else
++  git commit -m "sync upstream $TAG source" >/dev/null
++  log "已提交上游 $TAG 源码快照"
++fi
++
++rollback_hint() {
++  if [ "${KEEP_CHANGES:-0}" = "1" ]; then
++    printf '补丁与 %s 冲突;已保留现场,可 git cherry-pick --continue 继续' "$TAG"
++  else
++    printf '补丁与 %s 冲突;将自动回滚到升级前状态' "$TAG"
++  fi
++}
++
++# 7. 重新应用 Termux 适配补丁。
++#    补丁取自已解析出的 PATCH_REF(master 上最后一个 termux 适配 commit),
++#    而不是 termux-patch 分支 —— 后者基线停留在 v1.25.0,cherry-pick 到任何更新
++#    的 tag 都会大面积冲突。PATCH_REF 的适配是随 master 手工演进到当前版本的,
++#    对更新的上游 tag 重放才是正确路径。
++if git cherry-pick "$PATCH_REF" >/dev/null 2>&1; then
++  log "补丁干净应用 ✓"
++else
++  if git status --porcelain | grep -qE '^(UU|AA|DD|AU|UA|DU|UD)'; then
++    conflicted="$(git status --porcelain | grep -E '^(UU|AA|DD|AU|UA|DU|UD)' | awk '{print $NF}')"
++    log "以下文件与 $TAG 冲突:"
++    printf '  %s\n' $conflicted >&2
++    die "$(rollback_hint)"
++  fi
++  die "cherry-pick 失败(非冲突);$(rollback_hint)"
++fi
++
++# 8. 恢复未跟踪的本地脚本
++if [ -s "$LOCAL_BACKUP/untracked.tar" ]; then
++  log "恢复本地未跟踪文件"
++  tar -xf "$LOCAL_BACKUP/untracked.tar" || die "恢复本地脚本失败"
++fi
++rm -rf "$LOCAL_BACKUP"
++
++# 9. 编译验证
++log "编译验证..."
++make android VERSION="$TAG"
++
++log "完成: 源码=$TAG + 补丁($(git log -1 --format='%h' "$PATCH_REF")) → bin/reasonix-android-arm64"
++trap - EXIT

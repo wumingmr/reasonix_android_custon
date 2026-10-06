@@ -17,6 +17,12 @@ func requireShellStub(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the stub agent is a shell script")
 	}
+	// The stub's shebang is #!/usr/bin/env bash; Termux (Android) has no
+	// /usr/bin/env, so the exec would fail with ENOENT instead of testing
+	// segment accounting.
+	if _, err := os.Stat("/usr/bin/env"); err != nil {
+		t.Skip("stub shebang needs /usr/bin/env (absent on Termux)")
+	}
 }
 
 // fakeAgent stands in for the reasonix binary: it records every invocation's
