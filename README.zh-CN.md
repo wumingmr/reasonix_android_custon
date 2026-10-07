@@ -5,6 +5,8 @@
 > 本仓库是 Reasonix 的 Termux 定制版：Android 平台适配 + 中文/空格输入修复 +
 > `[ui] resume_list_limit`。编译好的二进制在 `artifacts/`，见
 > [TERMUX.md 的下载说明](TERMUX.md#下载)。
+>
+> Termux 定制部分由 AI 助手全程完成；上游代码与设计归 `esengine` 所有。
 
 </div>
 
