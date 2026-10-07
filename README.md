@@ -1,3 +1,15 @@
+<div align="center">
+
+> **📱 Termux / Android 用户看这里 → [TERMUX.md](TERMUX.md)**
+>
+> 本仓库是 Reasonix 的 Termux 定制版：Android 平台适配 + 中文/空格输入修复 +
+> `[ui] resume_list_limit`。编译好的二进制在 `artifacts/`，见
+> [TERMUX.md 的下载说明](TERMUX.md#下载)。
+
+</div>
+
+---
+
 <p align="center">
   <img src="docs/logo-ghost-wave-effect.svg" alt="Reasonix" width="360"/>
 </p>
