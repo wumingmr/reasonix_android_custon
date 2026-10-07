@@ -270,28 +270,6 @@ type UIConfig struct {
 	ShowReasoning  bool   `toml:"show_reasoning"`  // Ctrl+O / /verbose: show thinking text in CLI; false = collapsed
 	ShowTurnUsage  bool   `toml:"show_turn_usage"` // show per-request token/cost receipts in the CLI/TUI transcript
 	CursorShape    string `toml:"cursor_shape"`    // block|underline|bar; empty defaults to bar
-	// TermuxWidthOffset compensates a terminal that reports more columns than
-	// it draws — a stale TIOCGWINSZ after a keyboard or font-size change. Layout
-	// trusting the reported size overflows every full row by the difference, and
-	// the terminal folds the overflow away, swallowing the row's last cell.
-	// nil selects the CLI's default reserve on Termux; an explicit 0 disables
-	// the reserve for a device whose reported size it draws exactly.
-	TermuxWidthOffset *int `toml:"termux_width_offset"`
-	// ResumeListLimit caps how many conversations the resume surfaces offer:
-	// `reasonix --resume`'s picker, its `/` search over that picker, and the
-	// TUI /resume picker. That search filters this same capped list, so a
-	// conversation older than the limit is unreachable by typing keywords too.
-	// 0 (or absent) keeps the built-in default; a negative value drops the cap.
-	ResumeListLimit int `toml:"resume_list_limit"`
-}
-
-// ResumeLimit resolves ui.resume_list_limit against fallback. A negative value
-// is meaningful: it asks for the whole conversation history with no cap.
-func (c UIConfig) ResumeLimit(fallback int) int {
-	if c.ResumeListLimit == 0 {
-		return fallback
-	}
-	return c.ResumeListLimit
 }
 
 // CLIConfig controls user-global native CLI behavior. It is separate from

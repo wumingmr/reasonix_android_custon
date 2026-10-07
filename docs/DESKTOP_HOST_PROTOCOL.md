@@ -24,8 +24,9 @@ unchanged conversion follows its adopted target's lifecycle. A changed source
 is saved in full under an independent identity and committed directly archived.
 The original target's deletion tombstone is never reused or removed.
 
-`SessionMutationResult.outcome` is optional: `archived`, `archived_copy`, or
-`already_removed`. The last result means a proven residual source receipt was
+`SessionMutationResult.outcome` is optional: `archived`, `archived_copy`,
+`archived_partial` (the row is archived but `pendingSiblings` recovery snapshots of its
+lineage are not; repeating the action finishes them), or `already_removed`. The last result means a proven residual source receipt was
 registered for an already deleted target, not that content was restored. Missing
 or unknown outcomes use the existing generic committed-result behavior. Clients
 apply identity aliases and lifecycle fences only after `committed: true`.

@@ -158,13 +158,13 @@ func TestCatalogWatchSettledAndUnavailableRootsWaitForRotatingAudit(t *testing.T
 	good, missing = canonicalWorkspaceRoot(good), canonicalWorkspaceRoot(missing)
 	targets := []sessioncatalog.DirectoryTarget{{Path: good}, {Path: missing}}
 	watched, dirty := map[string]bool{good: true}, map[string]bool{}
-	current := refreshCatalogWatchTargets(nil, nil, targets, watched, dirty)
+	current := refreshCatalogWatchTargets(nil, nil, targets, watched, dirty, nil)
 	clear(dirty)
-	current = refreshCatalogWatchTargets(nil, current, targets, watched, dirty)
+	current = refreshCatalogWatchTargets(nil, current, targets, watched, dirty, nil)
 	if len(dirty) != 0 {
 		t.Fatalf("metadata refresh bypassed the rotating discovery audit: %v", dirty)
 	}
-	current = refreshCatalogWatchTargets(nil, current, targets[:1], watched, dirty)
+	current = refreshCatalogWatchTargets(nil, current, targets[:1], watched, dirty, nil)
 	if len(current) != 1 || dirty[missing] {
 		t.Fatal("removed target retained maintenance work")
 	}

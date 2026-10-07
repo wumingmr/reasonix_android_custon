@@ -178,7 +178,7 @@ function convertRecordBody(
         kind: "tool", id: view.toolCallDisplayIds.get(toolCallKey(rec.entryId, callIndex))
           ?? itemIdForToolCall(toolCall.id, `he:${rec.entryId}:tc${callIndex}`), name: toolCall.name,
         args: toolCall.arguments ?? "", readOnly: typeof toolCall.resolvedReadOnly === "boolean" ? toolCall.resolvedReadOnly : isReadOnlyTool(toolCall.name),
-        resolvedName: toolCall.resolvedName, capabilityId: toolCall.capabilityId,
+        resolvedName: toolCall.resolvedName, capabilityId: toolCall.capabilityId, parentId: toolCall.parentId,
         status: historyToolStatus(result, toolCall, error), contentState: !result || archived ? "unloaded" : "ready",
         resultMissing: !result && !toolCall.resultObservation?.messageId || undefined,
         resultEvidence: result ? "formal" : toolCall.resultObservation ? "observation" : "missing",

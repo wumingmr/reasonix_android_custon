@@ -55,6 +55,11 @@ type ResolvedModelCapability struct {
 	ImageInputBlockReason   string
 }
 
+// AcceptsImages is VisionCapability.AllowsImages for a resolved capability.
+func (r ResolvedModelCapability) AcceptsImages(fallbackConfigured bool) bool {
+	return r.State == CapabilitySupported || (r.State == CapabilityUnknown && !fallbackConfigured)
+}
+
 type ModelCapabilityCacheFile struct {
 	Version int                         `json:"version"`
 	Entries []ModelCapabilityCacheEntry `json:"entries"`
@@ -213,6 +218,11 @@ func (r *ModelCapabilityResolver) resolveAutomatic(entry *ProviderEntry, credent
 		if ok && time.Now().Before(cached.ExpiresAt) {
 			return capabilityFromModalities(model, cached.InputModalities, cached.Source)
 		}
+	}
+	if entry.VisionModels != nil {
+		resolved := capabilityFromBool(model, false, CapabilitySourceLegacy)
+		resolved.ModelInfo = facts
+		return resolved
 	}
 	return capabilityFromModalities(model, nil, CapabilitySourceUnknown)
 }

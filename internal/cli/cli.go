@@ -1584,7 +1584,7 @@ func interactiveSetup(configPath, envPath string) int {
 func pickSessionToResume() (cliResumeTarget, int) {
 	sessionDir := resolveCLISessionDir()
 	reclaimCLIRecoveryBranches(sessionDir)
-	entries := mergedResumeEntries(sessionDir, resumeListCapFor())
+	entries := mergedResumeEntries(sessionDir, resumeListCap)
 	if len(entries) == 0 {
 		fmt.Fprintln(os.Stderr, i18n.M.NoSessionToResume)
 		return cliResumeTarget{}, 1

@@ -66,6 +66,14 @@ func noteUnavailableImages(m *provider.Message, positions []int) {
 	m.Content += fmt.Sprintf("\n[Historical image inputs %v are unavailable. Their contents have not been supplied in this request. Continue with available text and images; if those missing images are needed, ask the user to attach them again. Do not infer their contents.]", positions)
 }
 
+func noteUnreadableImages(m *provider.Message, count int) {
+	positions := make([]int, count)
+	for i := range positions {
+		positions[i] = i + 1
+	}
+	m.Content += fmt.Sprintf("\n[Image inputs %v were not supplied: the selected model cannot read images and no image understanding model is configured. Do not infer their contents; tell the user to pick a model that reads images or set an image understanding model.]", positions)
+}
+
 func imageRequestFailure(ctx context.Context, err error) error {
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err

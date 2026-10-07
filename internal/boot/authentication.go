@@ -50,7 +50,7 @@ func authenticationReader(cfg *config.Config, external provider.Resolver) func(s
 }
 
 func runtimeImageEnabled(p provider.Provider, fallback bool) bool {
-	if info, ok := p.(provider.ModelInfoProvider); ok {
+	if info, ok := p.(provider.ModelInfoProvider); ok && info.ModelInfo().InputModalities != nil {
 		return info.ModelInfo().SupportsInput(provider.ModalityImage)
 	}
 	return fallback

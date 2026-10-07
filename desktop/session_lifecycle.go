@@ -206,7 +206,7 @@ func (a *App) detachArchivedRuntimeBindings(removed []removedSessionRuntime) {
 }
 
 func (a *App) archiveCompatibleTopic(topicID string) error {
-	release, ok := a.tryLockRuntimeMutation("archive topic")
+	release, ok := a.tryLockRuntimeMutationBounded("archive topic")
 	if !ok {
 		return errTopicArchiveBusy
 	}

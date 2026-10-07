@@ -80,6 +80,13 @@ func CanConfigureVision(e *ProviderEntry) bool {
 	return e != nil
 }
 
+// AllowsImages reports whether image input may be sent to the model itself:
+// declared supported, or undeclared with no fallback model to route through.
+// Only a declared text-only model is blocked.
+func (v VisionCapability) AllowsImages(fallbackConfigured bool) bool {
+	return v == VisionCapabilitySupported || (v == VisionCapabilityUnknown && !fallbackConfigured)
+}
+
 // EffectiveVision resolves whether the selected model accepts image input.
 // Official DeepSeek Settings can mark any enabled model for image input, but
 // only the pinned vision SKU actually receives image parts. An unconfigured

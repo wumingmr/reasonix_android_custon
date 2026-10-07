@@ -49,7 +49,7 @@ func TestCatalogWatchLargeRootUsesBoundedDescriptors(t *testing.T) {
 	}
 	watched, dirty := map[string]bool{}, map[string]bool{}
 	targets := []sessioncatalog.DirectoryTarget{{Path: root, Scope: "global"}}
-	current := refreshCatalogWatchTargets(watcher, nil, targets, watched, dirty)
+	current := refreshCatalogWatchTargets(watcher, nil, targets, watched, dirty, nil)
 	key := canonicalWorkspaceRoot(root)
 	if !watched[key] || !dirty[key] {
 		t.Fatalf("initial watch/discovery missing: watched=%v dirty=%v", watched, dirty)
@@ -58,7 +58,7 @@ func TestCatalogWatchLargeRootUsesBoundedDescriptors(t *testing.T) {
 		t.Fatalf("catalog watch opened %d descriptors for 512 sessions", count)
 	}
 	clear(dirty)
-	refreshCatalogWatchTargets(watcher, current, targets, watched, dirty)
+	refreshCatalogWatchTargets(watcher, current, targets, watched, dirty, nil)
 	if len(dirty) != 0 {
 		t.Fatalf("idle root scheduled another scan: %v", dirty)
 	}

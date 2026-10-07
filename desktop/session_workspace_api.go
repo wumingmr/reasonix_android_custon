@@ -384,7 +384,7 @@ func (a *App) archiveCanonicalSessionWithOperation(ref session.SessionRef, opera
 	if operationID == "" {
 		operationID = "archive-" + strings.TrimPrefix(newTabID(), "tab_")
 	}
-	release, ok := a.tryLockRuntimeMutation("archive session")
+	release, ok := a.tryLockRuntimeMutationBounded("archive session")
 	if !ok {
 		return SessionTarget{}, errTopicArchiveBusy
 	}

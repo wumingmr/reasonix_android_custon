@@ -26,12 +26,12 @@ model = "x"
 		t.Fatal(err)
 	}
 	defer old.Close()
-	if old.ImageInputEnabled() || old.ImageCapabilityChanged() {
-		t.Fatal("fresh unknown snapshot should be disabled and current")
+	if !old.ImageInputEnabled() || old.ImageCapabilityChanged() {
+		t.Fatal("an undeclared model must pass images to its provider and the snapshot must be current")
 	}
-	writeFile(t, dir, "reasonix.toml", base+"[providers.model_overrides.x]\nvision = true\n")
+	writeFile(t, dir, "reasonix.toml", base+"[providers.model_overrides.x]\nvision = false\n")
 	approveWorkspace(t, dir)
-	if old.ImageInputEnabled() || !old.ImageCapabilityChanged() {
+	if !old.ImageInputEnabled() || !old.ImageCapabilityChanged() {
 		t.Fatal("saved setting must invalidate, not mutate old runtime")
 	}
 	next, err := Build(context.Background(), Options{Sink: event.Discard})
@@ -39,12 +39,12 @@ model = "x"
 		t.Fatal(err)
 	}
 	defer next.Close()
-	if !next.ImageInputEnabled() || next.ImageCapabilityChanged() {
-		t.Fatal("rebuilt snapshot should be enabled and current")
+	if next.ImageInputEnabled() || next.ImageCapabilityChanged() {
+		t.Fatal("a model declared text-only must be blocked after rebuild")
 	}
-	writeFile(t, dir, "reasonix.toml", base+"[providers.model_overrides.x]\nvision = false\n")
+	writeFile(t, dir, "reasonix.toml", base+"[providers.model_overrides.x]\nvision = true\n")
 	approveWorkspace(t, dir)
-	if !next.ImageInputEnabled() || !next.ImageCapabilityChanged() {
+	if next.ImageInputEnabled() || !next.ImageCapabilityChanged() {
 		t.Fatal("running snapshot switched before rebuild")
 	}
 }

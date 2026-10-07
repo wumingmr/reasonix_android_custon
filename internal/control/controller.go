@@ -4881,9 +4881,9 @@ func (c *Controller) imageInputEnabled() bool {
 		return false
 	}
 	if c.modelCapabilityResolver != nil {
-		return c.modelCapabilityResolver(entry).State == config.CapabilitySupported
+		return c.modelCapabilityResolver(entry).AcceptsImages(c.visionModel != "")
 	}
-	return config.EffectiveVision(entry)
+	return config.VisionCapabilityForModel(entry).AllowsImages(c.visionModel != "")
 }
 
 // ImageInputEnabled reports whether the current model accepts direct image

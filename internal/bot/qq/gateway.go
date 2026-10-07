@@ -568,14 +568,17 @@ func (a *adapter) sendMessage(ctx context.Context, msg bot.OutboundMessage) (bot
 		seq := a.nextMessageSeq(msg.ReplyToMsgID)
 		var result bot.SendResult
 		var err error
-		if msg.Keyboard == nil && a.markdownDeliveryDisabled() {
+		plain := msg.Keyboard == nil && a.markdownDeliveryDisabled()
+		if plain {
 			result, err = a.sendPlainMessageChunk(ctx, msg, chunk, seq)
 		} else {
 			result, err = a.sendMessageChunk(ctx, msg, chunk, seq)
 		}
-		if err != nil && msg.Keyboard == nil {
-			a.disableMarkdownDelivery()
-			a.logger.Warn("qq markdown delivery failed, retrying plain text", "chat_type", msg.ChatType, "err", err)
+		if err != nil && !plain && ctx.Err() == nil {
+			if msg.Keyboard == nil {
+				a.disableMarkdownDelivery()
+			}
+			a.logger.Warn("qq rich message delivery failed, retrying plain text", "chat_type", msg.ChatType, "keyboard", msg.Keyboard != nil, "err", err)
 			result, err = a.sendPlainMessageChunk(ctx, msg, chunk, a.nextMessageSeq(msg.ReplyToMsgID))
 		}
 		if err != nil {
@@ -596,38 +599,14 @@ func (a *adapter) sendPlainMessageChunk(ctx context.Context, msg bot.OutboundMes
 }
 
 func (a *adapter) sendMessageChunk(ctx context.Context, msg bot.OutboundMessage, text string, seq int) (bot.SendResult, error) {
-	if msg.Keyboard != nil {
-		payload := map[string]any{
-			"content":  text,
-			"msg_type": 2,
-		}
-		rows := make([]map[string]any, 0, len(msg.Keyboard.Rows))
-		for _, row := range msg.Keyboard.Rows {
-			buttons := make([]map[string]any, 0, len(row.Buttons))
-			for _, btn := range row.Buttons {
-				buttons = append(buttons, map[string]any{
-					"id": strings.TrimSpace(btn.ID),
-					"render_data": map[string]any{
-						"label": btn.Label,
-						"style": btn.Style,
-					},
-					"action": map[string]any{
-						"type": 2,
-						"data": btn.CallbackID,
-					},
-				})
-			}
-			rows = append(rows, map[string]any{"buttons": buttons})
-		}
-		payload["keyboard"] = map[string]any{
-			"content": rows,
-		}
-		return a.sendMessagePayload(ctx, msg, payload, seq)
-	}
-	return a.sendMessagePayload(ctx, msg, map[string]any{
+	payload := map[string]any{
 		"markdown": map[string]string{"content": text},
 		"msg_type": 2,
-	}, seq)
+	}
+	if msg.Keyboard != nil {
+		payload["keyboard"] = qqKeyboardContent(msg.Keyboard, msg.ChatType)
+	}
+	return a.sendMessagePayload(ctx, msg, payload, seq)
 }
 
 func (a *adapter) sendMessagePayload(ctx context.Context, msg bot.OutboundMessage, payload map[string]any, seq int) (bot.SendResult, error) {

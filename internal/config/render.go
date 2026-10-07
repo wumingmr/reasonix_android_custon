@@ -80,11 +80,6 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		} else {
 			b.WriteString("# cursor_shape = \"bar\"   # block|underline|bar; text input cursor shape\n")
 		}
-		if off := c.UI.TermuxWidthOffset; off != nil {
-			fmt.Fprintf(&b, "termux_width_offset = %d   # columns Termux reports but does not draw; 0 trusts the reported width exactly\n", *off)
-		} else {
-			b.WriteString("# termux_width_offset = 1   # columns Termux reports but does not draw; raise it if the last cell of a full row is cut off\n")
-		}
 		if strings.TrimSpace(c.UI.CloseBehavior) != "" && scope == RenderScopeProject {
 			fmt.Fprintf(&b, "close_behavior = %q   # legacy desktop close behavior; prefer [desktop].close_behavior in user config\n", c.DesktopCloseBehavior())
 		}
@@ -832,9 +827,6 @@ func RenderTOMLProjectDelta(c *Config) string {
 		}
 		if strings.TrimSpace(c.UI.CursorShape) != "" {
 			fmt.Fprintf(&b, "cursor_shape = %q\n", c.UICursorShape())
-		}
-		if c.UI.TermuxWidthOffset != nil && d.UI.TermuxWidthOffset == nil {
-			fmt.Fprintf(&b, "termux_width_offset = %d\n", *c.UI.TermuxWidthOffset)
 		}
 		if c.UI.CloseBehavior != d.UI.CloseBehavior {
 			fmt.Fprintf(&b, "close_behavior = %q\n", c.DesktopCloseBehavior())

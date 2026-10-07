@@ -44,7 +44,7 @@ func TestCatalogWatchPathOverflowCoalescesAtEventOwner(t *testing.T) {
 	watching, dirty := map[string]bool{root: true}, map[string]bool{}
 	queue := &saturatedCatalogPathQueue{}
 	for i := range 4096 {
-		admitCatalogWatchEvent(queue, fsnotify.Event{Name: filepath.Join(root, fmt.Sprintf("%d.jsonl", i)), Op: fsnotify.Write}, targets, watching, dirty, nil, false)
+		admitCatalogWatchEvent(queue, fsnotify.Event{Name: filepath.Join(root, fmt.Sprintf("%d.jsonl", i)), Op: fsnotify.Write}, targets, watching, dirty, nil, false, nil)
 	}
 	if queue.attempts != 4096 || len(dirty) != 1 || !dirty[root] {
 		t.Fatalf("overflow lost its coalesced root: attempts=%d dirty=%v", queue.attempts, dirty)
@@ -79,7 +79,7 @@ func TestCatalogWatchInitialBacklogCoalescesBeforeDiscovery(t *testing.T) {
 	// Force more notices than the exact-path queue can retain. Before the
 	// first iterator, all of them belong to the same root invalidation.
 	for range 4096 {
-		admitCatalogWatchEvent(catalog, fsnotify.Event{Name: filepath.Join(key, "old.jsonl"), Op: fsnotify.Create}, targets, watched, dirty, nil, true)
+		admitCatalogWatchEvent(catalog, fsnotify.Event{Name: filepath.Join(key, "old.jsonl"), Op: fsnotify.Create}, targets, watched, dirty, nil, true, nil)
 	}
 	events, failures := make(chan fsnotify.Event, 2), make(chan error, 1)
 	barrierReached := false
@@ -112,7 +112,7 @@ func TestCatalogWatchInitialBacklogCoalescesBeforeDiscovery(t *testing.T) {
 		t.Fatalf("first scan omitted historical source: found=%v err=%v", found, err)
 	}
 	clear(dirty)
-	admitCatalogWatchEvent(catalog, fsnotify.Event{Name: key, Op: fsnotify.Write}, targets, watched, dirty, nil, false)
+	admitCatalogWatchEvent(catalog, fsnotify.Event{Name: key, Op: fsnotify.Write}, targets, watched, dirty, nil, false, nil)
 	if !dirty[key] {
 		t.Fatal("post-discovery directory invalidation was swallowed")
 	}
@@ -136,22 +136,22 @@ func TestCatalogWatchRecoveryReconcilesOnlyTheUnobservedInterval(t *testing.T) {
 	targets := []sessioncatalog.DirectoryTarget{{Path: root, Scope: "global"}}
 	watched, dirty := map[string]bool{}, map[string]bool{}
 	watcher := &recoveringCatalogWatch{fail: true}
-	current := refreshCatalogWatchTargets(watcher, nil, targets, watched, dirty)
+	current := refreshCatalogWatchTargets(watcher, nil, targets, watched, dirty, nil)
 	if !dirty[root] || watched[root] {
 		t.Fatal("failed initial watch omitted initial discovery")
 	}
 	clear(dirty)
-	current = refreshCatalogWatchTargets(watcher, current, targets, watched, dirty)
+	current = refreshCatalogWatchTargets(watcher, current, targets, watched, dirty, nil)
 	if len(dirty) != 0 || watcher.adds != 2 {
 		t.Fatal("watch retry must not schedule full discovery on every metadata tick")
 	}
 	watcher.fail = false
-	current = refreshCatalogWatchTargets(watcher, current, targets, watched, dirty)
+	current = refreshCatalogWatchTargets(watcher, current, targets, watched, dirty, nil)
 	if !dirty[root] || !watched[root] {
 		t.Fatal("recovered watch failed to reconcile its observation gap")
 	}
 	clear(dirty)
-	refreshCatalogWatchTargets(watcher, current, targets, watched, dirty)
+	refreshCatalogWatchTargets(watcher, current, targets, watched, dirty, nil)
 	if len(dirty) != 0 || watcher.adds != 3 {
 		t.Fatal("settled watch restarted registration or discovery")
 	}
@@ -177,10 +177,10 @@ func TestCatalogWatchCanonicalEventKeepsRegisteredAccessPath(t *testing.T) {
 	}
 	defer catalog.Close(context.Background())
 	watched, dirty := map[string]bool{}, map[string]bool{}
-	targets := refreshCatalogWatchTargets(nil, nil, []sessioncatalog.DirectoryTarget{{Path: dir, Scope: "global"}}, watched, dirty)
+	targets := refreshCatalogWatchTargets(nil, nil, []sessioncatalog.DirectoryTarget{{Path: dir, Scope: "global"}}, watched, dirty, nil)
 	clear(dirty)
 	key := canonicalWorkspaceRoot(dir)
-	admitCatalogWatchEvent(catalog, fsnotify.Event{Name: filepath.Join(key, "session.jsonl.meta"), Op: fsnotify.Write}, targets, watched, dirty, nil, false)
+	admitCatalogWatchEvent(catalog, fsnotify.Event{Name: filepath.Join(key, "session.jsonl.meta"), Op: fsnotify.Write}, targets, watched, dirty, nil, false, nil)
 	if len(dirty) != 0 {
 		t.Fatalf("exact metadata event scheduled a root scan: %v", dirty)
 	}
@@ -197,7 +197,7 @@ func TestCatalogWatchCanonicalEventKeepsRegisteredAccessPath(t *testing.T) {
 	// when there is no current filesystem object to canonicalize.
 	watched[key] = true
 	watcher := &recoveringCatalogWatch{}
-	admitCatalogWatchEvent(catalog, fsnotify.Event{Name: key, Op: fsnotify.Remove}, targets, watched, dirty, watcher, false)
+	admitCatalogWatchEvent(catalog, fsnotify.Event{Name: key, Op: fsnotify.Remove}, targets, watched, dirty, watcher, false, nil)
 	if watched[key] || !dirty[key] {
 		t.Fatalf("root removal lost invalidation: watched=%v dirty=%v", watched, dirty)
 	}
@@ -205,7 +205,7 @@ func TestCatalogWatchCanonicalEventKeepsRegisteredAccessPath(t *testing.T) {
 		t.Fatalf("root removal retained the native subscription: %v", watcher.removes)
 	}
 	clear(dirty)
-	refreshCatalogWatchTargets(watcher, targets, []sessioncatalog.DirectoryTarget{{Path: dir, Scope: "global"}}, watched, dirty)
+	refreshCatalogWatchTargets(watcher, targets, []sessioncatalog.DirectoryTarget{{Path: dir, Scope: "global"}}, watched, dirty, nil)
 	if watcher.adds != 1 || !watched[key] || !dirty[key] {
 		t.Fatal("replacement directory did not re-register and reconcile")
 	}

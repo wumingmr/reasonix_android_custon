@@ -40630,6 +40630,13 @@
             },
             "kind": "array"
           }
+        },
+        {
+          "name": "pendingSiblings",
+          "optional": true,
+          "type": {
+            "kind": "integer"
+          }
         }
       ]
     },

@@ -162,3 +162,40 @@ func containsAny(value string, needles ...string) bool {
 	}
 	return false
 }
+
+func TestAcceptsImagesBlocksOnlyDeclaredTextOnlyModels(t *testing.T) {
+	unknown := ResolvedModelCapability{State: CapabilityUnknown}
+	unsupported := ResolvedModelCapability{State: CapabilityUnsupported}
+	supported := ResolvedModelCapability{State: CapabilitySupported}
+	for _, tc := range []struct {
+		name     string
+		got      ResolvedModelCapability
+		fallback bool
+		want     bool
+	}{
+		{"unknown without fallback", unknown, false, true},
+		{"unknown with fallback", unknown, true, false},
+		{"unsupported without fallback", unsupported, false, false},
+		{"supported with fallback", supported, true, true},
+	} {
+		if got := tc.got.AcceptsImages(tc.fallback); got != tc.want {
+			t.Errorf("%s: AcceptsImages = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestVisionModelsListDeclaresOtherModelsTextOnly(t *testing.T) {
+	r := NewTransientModelCapabilityResolver()
+	entry := &ProviderEntry{Name: "custom", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "text-only", Models: []string{"text-only", "vision-pro"}, VisionModels: []string{"vision-pro"}}
+	if got := r.Resolve(entry).State; got != CapabilityUnsupported {
+		t.Fatalf("model outside vision_models = %v, want unsupported", got)
+	}
+	entry.VisionModels = []string{}
+	if got := r.Resolve(entry).State; got != CapabilityUnsupported {
+		t.Fatalf("explicitly empty vision_models = %v, want unsupported", got)
+	}
+	entry.VisionModels = nil
+	if got := r.Resolve(entry).State; got != CapabilityUnknown {
+		t.Fatalf("undeclared model = %v, want unknown", got)
+	}
+}

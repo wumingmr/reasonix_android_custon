@@ -192,6 +192,11 @@ func (c *Controller) ResolveRequestImagesForModel(ctx context.Context, msgs []pr
 					svc = c.executor.ImageInput()
 				}
 				target, err := svc.SelectModel(model, nil)
+				if errors.Is(err, imageinput.ErrNoModel) && (out[i].Role != provider.RoleUser || i < currentTurn) {
+					noteUnreadableImages(&out[i], len(out[i].ImageInputs))
+					out[i].ImageInputs = nil
+					continue
+				}
 				if err != nil {
 					return nil, imageRequestFailure(ctx, err)
 				}

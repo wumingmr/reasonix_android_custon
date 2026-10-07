@@ -1815,7 +1815,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		runner = agent.NewCoordinatorWithPlannerPolicy(plannerProv, plannerSess, pe.Price, plannerTools, plannerOpts, executor, cfg.Agent.Temperature, sink, control.NewPlannerPolicy())
 		label = entry.Model + " + planner " + pe.Model
 	}
-	imageEnabled := runtimeImageEnabled(execProv, modelCapabilities.Resolve(entry).State == config.CapabilitySupported)
+	imageEnabled := runtimeImageEnabled(execProv, modelCapabilities.Resolve(entry).AcceptsImages(cfg.Agent.VisionModel != ""))
 	imageSnapshot := config.ModelCapabilitySnapshot(cfg, modelCapabilities)
 	ctrlOpts := control.Options{
 		Authentication:                 authentication,

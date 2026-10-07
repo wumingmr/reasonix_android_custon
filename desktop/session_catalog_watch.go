@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -31,20 +32,15 @@ func (a *App) watchSessionCatalog(ctx context.Context, catalog *sessioncatalog.C
 	targets := map[string]sessioncatalog.DirectoryTarget{}
 	watched := map[string]bool{}
 	dirty := map[string]bool{}
-	var batch *time.Timer
-	var batchReady <-chan time.Time
 	discoveryPending := false
-	armBatch := func() {
-		if (len(dirty) > 0 || discoveryPending) && batchReady == nil {
-			batch = time.NewTimer(250 * time.Millisecond)
-			batchReady = batch.C
+	pacer, batch := &catalogRootPacer{}, &catalogWatchBatchTimer{}
+	defer batch.stop()
+	armBatchAfter := func(wait time.Duration) {
+		if len(dirty) > 0 || discoveryPending {
+			batch.arm(wait)
 		}
 	}
-	defer func() {
-		if batch != nil {
-			batch.Stop()
-		}
-	}()
+	armBatch := func() { armBatchAfter(catalogWatchBatchDelay) }
 	// A slow registry projection must not stop receiving filesystem events.
 	// One worker coalesces refreshes and is joined before this owner returns.
 	refreshMetadata, metadataDone := startCatalogMetadataRefresh(ctx, func(ctx context.Context) {
@@ -54,7 +50,7 @@ func (a *App) watchSessionCatalog(ctx context.Context, catalog *sessioncatalog.C
 	})
 	defer func() { cancel(); <-metadataDone }()
 	refreshTargets := func() {
-		targets = refreshCatalogWatchTargets(watcher, targets, a.sessionCatalogTargets(), watched, dirty)
+		targets = refreshCatalogWatchTargets(watcher, targets, a.sessionCatalogTargets(), watched, dirty, pacer)
 	}
 	refreshTargets()
 	restored := a.tabsRestoredSignal()
@@ -99,7 +95,7 @@ func (a *App) watchSessionCatalog(ctx context.Context, catalog *sessioncatalog.C
 				clear(watched)
 				continue
 			}
-			admitCatalogWatchEvent(catalog, event, targets, watched, dirty, watcher, !admitted || discoveryPending)
+			admitCatalogWatchEvent(catalog, event, targets, watched, dirty, watcher, !admitted || discoveryPending, pacer)
 			armBatch()
 		case _, ok := <-failures:
 			if !ok {
@@ -127,12 +123,12 @@ func (a *App) watchSessionCatalog(ctx context.Context, catalog *sessioncatalog.C
 				maintenance++
 			}
 			armBatch()
-		case <-batchReady:
-			batchReady = nil
-			admitCatalogWatchBatch(ctx, catalog, targets, dirty, discoveryPending)
+		case <-batch.ready:
+			batch.ready = nil
+			next := admitCatalogWatchBatch(ctx, catalog, targets, dirty, discoveryPending, pacer, time.Now())
 			discoveryPending = false
-			// Failed journal writes must retain the invalidation for retry.
-			armBatch()
+			// Deferred roots and failed journal writes keep their invalidation.
+			armBatchAfter(max(catalogWatchBatchDelay, time.Until(next)))
 		}
 	}
 }
@@ -146,7 +142,7 @@ func catchUpCatalogWatch(watcher workspaceWatcher, events <-chan fsnotify.Event,
 	// cannot hold discovery hostage by keeping this drain alive indefinitely.
 	for count := len(events); count > 0; count-- {
 		if event, ok := <-events; ok {
-			admitCatalogWatchEvent(nil, event, targets, watched, dirty, watcher, true)
+			admitCatalogWatchEvent(nil, event, targets, watched, dirty, watcher, true, nil)
 		}
 	}
 	for count := len(failures); count > 0; count-- {
@@ -162,11 +158,12 @@ type catalogWatchPathQueue interface {
 	TryRequestIndexSession(sessioncatalog.DirectoryTarget, string) bool
 }
 
-func admitCatalogWatchEvent(catalog catalogWatchPathQueue, event fsnotify.Event, targets map[string]sessioncatalog.DirectoryTarget, watched, dirty map[string]bool, watcher workspaceWatcher, initialDiscovery bool) {
+func admitCatalogWatchEvent(catalog catalogWatchPathQueue, event fsnotify.Event, targets map[string]sessioncatalog.DirectoryTarget, watched, dirty map[string]bool, watcher workspaceWatcher, initialDiscovery bool, pacer *catalogRootPacer) {
 	key := filepath.Clean(filepath.Dir(event.Name))
 	// A transcript/sidecar write invalidates one session, not its root.
 	if target, exists := targets[key]; exists {
-		if path := catalogSessionPathForEvent(event.Name); path != "" && event.Op&(fsnotify.Remove|fsnotify.Rename) == 0 {
+		path := catalogSessionPathForEvent(event.Name)
+		if path != "" && event.Op&(fsnotify.Remove|fsnotify.Rename) == 0 {
 			if initialDiscovery {
 				dirty[key] = true
 				return
@@ -179,6 +176,13 @@ func admitCatalogWatchEvent(catalog catalogWatchPathQueue, event fsnotify.Event,
 				// it if admission fails, rather than blocking on every notice.
 				dirty[key] = true
 			}
+			return
+		}
+		if path != "" {
+			pacer.expedite(key)
+		} else if _, nested := targets[filepath.Clean(event.Name)]; !nested {
+			// A metadata scan reads nothing else in the root: locks, temp files,
+			// other sidecars and subdirectories cannot change its projection.
 			return
 		}
 	}
@@ -199,6 +203,8 @@ func admitCatalogWatchEvent(catalog catalogWatchPathQueue, event fsnotify.Event,
 	}
 }
 
+// catalogSessionPathForEvent names the transcript whose catalog row an event
+// can change: the transcript, its branch sidecar, or its event log.
 func catalogSessionPathForEvent(path string) string {
 	if store.IsSessionTranscriptName(filepath.Base(path)) {
 		return path
@@ -209,10 +215,16 @@ func catalogSessionPathForEvent(path string) string {
 			return candidate
 		}
 	}
+	if stem, ok := strings.CutSuffix(path, ".events.jsonl"); ok {
+		candidate := stem + ".jsonl"
+		if store.IsSessionTranscriptName(filepath.Base(candidate)) && store.SessionEventLog(candidate) == path {
+			return candidate
+		}
+	}
 	return ""
 }
 
-func refreshCatalogWatchTargets(watcher workspaceWatcher, current map[string]sessioncatalog.DirectoryTarget, targets []sessioncatalog.DirectoryTarget, watched, dirty map[string]bool) map[string]sessioncatalog.DirectoryTarget {
+func refreshCatalogWatchTargets(watcher workspaceWatcher, current map[string]sessioncatalog.DirectoryTarget, targets []sessioncatalog.DirectoryTarget, watched, dirty map[string]bool, pacer *catalogRootPacer) map[string]sessioncatalog.DirectoryTarget {
 	next := map[string]sessioncatalog.DirectoryTarget{}
 	for _, target := range targets {
 		key := canonicalWorkspaceRoot(target.Path)
@@ -238,24 +250,41 @@ func refreshCatalogWatchTargets(watcher workspaceWatcher, current map[string]ses
 			}
 			delete(watched, key)
 			delete(dirty, key)
+			pacer.forget(key)
 		}
 	}
 	return next
 }
 
-func admitCatalogWatchBatch(ctx context.Context, catalog *sessioncatalog.Catalog, targets map[string]sessioncatalog.DirectoryTarget, dirty map[string]bool, discoveryPending bool) {
+// admitCatalogWatchBatch returns when the earliest root it deferred falls due,
+// or the zero time when nothing was deferred. Failed admissions count as
+// attempts, so a journal that keeps failing is retried with backoff too.
+func admitCatalogWatchBatch(ctx context.Context, catalog *sessioncatalog.Catalog, targets map[string]sessioncatalog.DirectoryTarget, dirty map[string]bool, discoveryPending bool, pacer *catalogRootPacer, now time.Time) (next time.Time) {
 	initial := []sessioncatalog.DirectoryTarget{}
 	for key := range dirty {
-		delete(dirty, key)
 		target, exists := targets[key]
 		if !exists || ctx.Err() != nil {
+			delete(dirty, key)
 			continue
 		}
 		if discoveryPending {
+			delete(dirty, key)
 			initial = append(initial, target)
-		} else {
-			if !catalog.RequestReconcile(target) {
-				dirty[key] = true
+			pacer.admitted(key, now)
+			continue
+		}
+		if due := pacer.due(key); now.Before(due) {
+			if next.IsZero() || due.Before(next) {
+				next = due
+			}
+			continue
+		}
+		delete(dirty, key)
+		pacer.admitted(key, now)
+		if !catalog.RequestReconcile(target) {
+			dirty[key] = true
+			if due := pacer.due(key); next.IsZero() || due.Before(next) {
+				next = due
 			}
 		}
 	}
@@ -264,4 +293,5 @@ func admitCatalogWatchBatch(ctx context.Context, catalog *sessioncatalog.Catalog
 			dirty[canonicalWorkspaceRoot(target.Path)] = true
 		}
 	}
+	return next
 }

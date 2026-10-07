@@ -5,14 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 
 	"reasonix/desktop/internal/workspacestate"
 	"reasonix/internal/agent"
 	"reasonix/internal/session"
-	"reasonix/internal/store"
 )
 
 // Explicit source archives stage content as archived from the beginning. They
@@ -21,11 +19,6 @@ func (a *App) archiveHistoricalSource(selector SessionSelector) (SessionMutation
 	if selector.Source != nil && selector.Source.HostID != "" && selector.Source.HostID != localDesktopHostID {
 		return SessionMutationResult{}, newSessionOperationError("unsupported", "This source belongs to another host.")
 	}
-	runtimeRelease, ok := a.tryLockRuntimeMutation("archive historical source")
-	if !ok {
-		return SessionMutationResult{}, sessionOperationErrorForTarget(errTopicArchiveBusy, "", "")
-	}
-	defer runtimeRelease()
 	ctx, done, err := a.beginHistoricalRecovery()
 	if err != nil {
 		return SessionMutationResult{}, err
@@ -36,14 +29,24 @@ func (a *App) archiveHistoricalSource(selector SessionSelector) (SessionMutation
 		return SessionMutationResult{}, err
 	}
 	operationID := "archive-source-" + strings.TrimPrefix(newTabID(), "tab_")
-	result, err := a.archiveHistoricalSourceWithOperation(ctx, id, source, operationID)
+	result, err := a.archiveHistoricalSourceLocked(ctx, id, source, operationID, "archive historical source")
 	if err != nil {
-		slog.Warn("desktop: historical archive failed", "source_key", id, "operation", operationID, "err", err)
+		if !errors.Is(err, errTopicArchiveBusy) {
+			slog.Warn("desktop: historical archive failed", "source_key", id, "operation", operationID, "err", err)
+		}
 		return SessionMutationResult{}, sessionOperationErrorForTarget(err, id, operationID)
 	}
 	archivedPaths := []string{source.path}
 	siblings := legacyHeadVersions(source)
-	for _, path := range recoveredLegacySiblings(source) {
+	recovered, listErr := recoveredLegacySiblings(source)
+	pending := 0
+	if listErr != nil {
+		slog.Warn("desktop: recovery lineage unreadable", "source_key", id, "cause", "lineage_unreadable", "err", listErr)
+		pending++
+	}
+	isRecovered := map[string]bool{}
+	for _, path := range recovered {
+		isRecovered[path] = true
 		siblings = append(siblings, SessionSourceRef{HostID: localDesktopHostID, Path: path})
 	}
 	state, err := a.workspaceRegistry().Load(ctx)
@@ -51,18 +54,25 @@ func (a *App) archiveHistoricalSource(selector SessionSelector) (SessionMutation
 		slog.Warn("desktop: sibling lifecycle unavailable", "source_key", id, "err", err)
 	}
 	for _, sibling := range siblings {
+		counted := isRecovered[sibling.Path] && sibling.HeadID == ""
 		siblingID, siblingSource, err := a.historicalSourceForSelector(SessionSelector{Source: &sibling})
 		if err != nil {
 			slog.Warn("desktop: sibling archive skipped", "source_key", id, "err", err)
+			if counted {
+				pending++
+			}
 			continue
 		}
 		if historicalSourceMapped(state, siblingID) {
 			continue
 		}
-		siblingResult, err := a.archiveHistoricalSourceWithOperation(ctx, siblingID, siblingSource,
-			"archive-source-"+strings.TrimPrefix(newTabID(), "tab_"))
+		siblingResult, err := a.archiveHistoricalSourceLocked(ctx, siblingID, siblingSource,
+			"archive-source-"+strings.TrimPrefix(newTabID(), "tab_"), "archive historical sibling")
 		if err != nil {
-			slog.Warn("desktop: sibling archive failed", "source_key", siblingID, "err", err)
+			slog.Warn("desktop: sibling archive failed", "source_key", siblingID, "cause", "sibling_archive_failed", "err", err)
+			if counted {
+				pending++
+			}
 			continue
 		}
 		result.IdentityAliases = append(result.IdentityAliases, siblingResult.IdentityAliases...)
@@ -79,42 +89,22 @@ func (a *App) archiveHistoricalSource(selector SessionSelector) (SessionMutation
 	}
 	c.mu.Unlock()
 	a.emitProjectTreeChanged()
+	if pending != 0 {
+		result.Outcome = sessionOutcomeArchivedPartial
+		result.PendingSiblings = pending
+	}
 	return result, nil
 }
 
-// recoveredLegacySiblings lists the other recovery copies of the conversation a
-// recovered legacy source was copied from: same directory, recovered, and the
-// same parent in the metadata their writer recorded. The sidebar lists each
-// copy as its own row of the same conversation, so archiving one row alone
-// only brings the next copy up in its place.
-func recoveredLegacySiblings(source historicalSource) []string {
-	if source.format != "legacy" {
-		return nil
+// Each source is archived under its own runtime-mutation hold so a long
+// lineage never keeps other tabs from sending between snapshots.
+func (a *App) archiveHistoricalSourceLocked(ctx context.Context, id string, source historicalSource, operationID, operation string) (SessionMutationResult, error) {
+	release, ok := a.tryLockRuntimeMutationBounded(operation)
+	if !ok {
+		return SessionMutationResult{}, errTopicArchiveBusy
 	}
-	meta, ok, err := agent.LoadBranchMeta(source.path)
-	if err != nil || !ok || !meta.Recovered || strings.TrimSpace(meta.ParentID) == "" {
-		return nil
-	}
-	dir := filepath.Dir(source.path)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	var siblings []string
-	for _, entry := range entries {
-		if entry.IsDir() || !store.IsSessionTranscriptName(entry.Name()) {
-			continue
-		}
-		path := filepath.Join(dir, entry.Name())
-		if sameDesktopPath(path, source.path) {
-			continue
-		}
-		other, ok, err := agent.LoadBranchMeta(path)
-		if err == nil && ok && other.Recovered && other.ParentID == meta.ParentID {
-			siblings = append(siblings, path)
-		}
-	}
-	return siblings
+	defer release()
+	return a.archiveHistoricalSourceWithOperation(ctx, id, source, operationID)
 }
 
 // A sibling with a durable mapping already has its own lifecycle. Archiving a

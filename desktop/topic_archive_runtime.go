@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"log/slog"
+	"time"
 
 	"reasonix/internal/agent"
 )
@@ -161,4 +162,31 @@ func (a *App) tryLockRuntimeMutation(operation string) (func(), bool) {
 		a.runtimeAdmissionMu.Unlock()
 		a.runtimeRebuildMu.Unlock()
 	}, true
+}
+
+const runtimeMutationUserWait = 1500 * time.Millisecond
+
+// tryLockRuntimeMutationBounded serves user-initiated archives. Background
+// owners hold these locks briefly but often, so one TryLock can lose every
+// time; polling without blocking keeps the lock order free of new waits.
+func (a *App) tryLockRuntimeMutationBounded(operation string) (func(), bool) {
+	if hook := a.runtimeMutationBeforeLockHook; hook != nil {
+		hook(operation)
+	}
+	deadline := time.Now().Add(runtimeMutationUserWait)
+	for wait := 5 * time.Millisecond; ; wait = min(2*wait, 200*time.Millisecond) {
+		if a.runtimeRebuildMu.TryLock() {
+			if a.runtimeAdmissionMu.TryLock() {
+				return func() {
+					a.runtimeAdmissionMu.Unlock()
+					a.runtimeRebuildMu.Unlock()
+				}, true
+			}
+			a.runtimeRebuildMu.Unlock()
+		}
+		if !time.Now().Add(wait).Before(deadline) {
+			return nil, false
+		}
+		time.Sleep(wait)
+	}
 }

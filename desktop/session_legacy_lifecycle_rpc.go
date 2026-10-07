@@ -33,7 +33,7 @@ func (a *App) archiveSessionPathWithOperation(path, operationID string) (Session
 	if adopted {
 		return a.archiveCanonicalSessionWithOperation(ref, operationID)
 	}
-	release, ok := a.tryLockRuntimeMutation("archive historical session")
+	release, ok := a.tryLockRuntimeMutationBounded("archive historical session")
 	if !ok {
 		return SessionTarget{}, errTopicArchiveBusy
 	}

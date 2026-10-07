@@ -256,7 +256,7 @@ func (a *App) RemoveTopic(req TopicRemovalRequest) (TopicRemovalResult, error) {
 	if req.OperationID == "" || len(req.OperationID) > 200 || req.ExpectedToken == "" || req.Target.WorkspaceID == "" {
 		return out, errors.New("invalid topic removal request")
 	}
-	release, ok := a.tryLockRuntimeMutation("remove topic")
+	release, ok := a.tryLockRuntimeMutationBounded("remove topic")
 	if !ok {
 		out.ErrorCode, out.Retryable = "busy", true
 		return out, nil

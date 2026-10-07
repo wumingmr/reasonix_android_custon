@@ -64,10 +64,9 @@ var (
 // githubManifestFallback is the stable channel's last-resort manifest source.
 // dl.reasonix.io and crash.reasonix.io share one Cloudflare zone, so bot
 // protection that 403s a user's egress IP takes out both first-party endpoints
-// at once (#6005); GitHub is separate infrastructure. Stable desktop releases
-// own the repo-wide latest badge and publish latest.json directly, while
-// The unified official Release carries the desktop manifest as a final fallback
-// when both first-party endpoints are unavailable.
+// at once (#6005); GitHub is separate infrastructure. The repo-wide latest
+// shortcut resolves to whichever release line holds that badge, so a manifest
+// from another line must be rejected by validation, not assumed absent.
 const githubManifestFallback = "https://github.com/esengine/DeepSeek-Reasonix/releases/latest/download/latest.json"
 
 func normalizeUpdateChannel(ch string) string {

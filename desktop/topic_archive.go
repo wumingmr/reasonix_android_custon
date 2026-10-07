@@ -104,7 +104,7 @@ func (a *App) trashTopic(topicID string) (retErr error) {
 
 func (a *App) commitTopicArchive(topicID string, trace *topicArchiveTrace) (fallbackRuntimeTarget, []string, error) {
 	trace.phase = "runtime_lock"
-	releaseRuntime, ok := a.tryLockRuntimeMutation("trash-topic")
+	releaseRuntime, ok := a.tryLockRuntimeMutationBounded("trash-topic")
 	if !ok {
 		return fallbackRuntimeTarget{}, nil, errTopicArchiveBusy
 	}

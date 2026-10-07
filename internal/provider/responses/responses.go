@@ -10,7 +10,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -260,6 +259,12 @@ func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 		body, _, wireMessages = c.buildRequestBody(req)
 		resp, err = c.send(requestCtx, body)
 	}
+	if err != nil && isCommandCodeTransientResponsesError(c.requestURL, err) {
+		// Retry once only for Command Code's narrow anonymous-400 signature; the
+		// byte-identical body is safe to resend and named schema failures remain
+		// terminal.
+		resp, err = c.send(requestCtx, body)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -288,17 +293,6 @@ func (c *client) send(ctx context.Context, body map[string]any) (*http.Response,
 		return req, nil
 	}
 	return provider.SendWithRetry(ctx, c.http, c.sendOpts(), newRequest)
-}
-
-func isStalePreviousResponseError(err error) bool {
-	var apiErr *provider.APIError
-	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusBadRequest {
-		return false
-	}
-	body := strings.ToLower(apiErr.Body)
-	mentionsID := strings.Contains(body, "previous_response_id") || strings.Contains(body, "previous response") || strings.Contains(body, "response id")
-	return mentionsID &&
-		(strings.Contains(body, "not found") || strings.Contains(body, "invalid") || strings.Contains(body, "expired"))
 }
 
 func (c *client) buildRequestBody(req provider.Request) (map[string]any, bool, []provider.Message) {
@@ -399,10 +393,8 @@ func decodeReplayableWebSearchItem(raw json.RawMessage) (map[string]any, bool) {
 
 func (c *client) conversationDigest(messages []provider.Message) string {
 	instructions, rest := splitInstructions(messages)
-	// Digest must mirror the wire exactly: the stateful fast path compares
-	// this against the previous request's input, so a mismatch would skip
-	// previous_response_id and force a full replay (cache-hit loss). Use the
-	// same vision/summary knobs as buildRequestBody.
+	// Digest must mirror buildRequestBody's wire shape and vision/summary knobs;
+	// a mismatch skips previous_response_id and forces a full replay (cache-hit loss).
 	payload, _ := json.Marshal(struct {
 		Instructions string           `json:"instructions,omitempty"`
 		Input        []map[string]any `json:"input"`
@@ -587,10 +579,8 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 						return
 					}
 				case "reasoning":
-					// The done event carries the final item status
-					// ("completed" after the thinking stream finishes);
-					// round-trip it with the reasoning item so the input
-					// matches the wire schema.
+					// Preserve the done event's final status when round-tripping
+					// the reasoning item so the input matches the wire schema.
 					if event.Item.Status != "" {
 						reasoningStatus = event.Item.Status
 					}

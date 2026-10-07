@@ -66,7 +66,7 @@ if ! gh api "$release_endpoint" >"$release_json" 2>"$release_error"; then
 	elif [ "$prerelease" = "true" ]; then
 		args+=(--prerelease --latest=false)
 	else
-		args+=(--latest)
+		args+=(--latest=false)
 	fi
 	gh release create "$tag" -R "$repository" "${args[@]}"
 	gh api "$release_endpoint" >"$release_json"
