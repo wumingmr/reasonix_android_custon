@@ -10,38 +10,35 @@
 
 ## 下载
 
-编译好的 Android arm64 二进制在 `artifacts/reasonix-android-arm64`。
+编译好的 Android arm64 二进制在 `artifacts/reasonix-android-arm64`，同时提供
+预编译的 [release 附件](https://github.com/wumingmr/reasonix_android_custon/releases/tag/termux-v1.39.8)。
 
-**推荐（匿名可下载，不需要登录）**：
+**推荐（release 附件，匿名可下载，不需要登录）**：
 
 ```sh
 curl -L -o reasonix-android-arm64 \
-  https://media.githubusercontent.com/media/wumingmr/reasonix_android_custon/master/artifacts/reasonix-android-arm64
+  https://github.com/wumingmr/reasonix_android_custon/releases/download/termux-v1.39.8/reasonix-android-arm64-v1.39.8
 ```
 
 安装：
 
 ```sh
+sha256sum reasonix-android-arm64
+# a5ef9d45b36e7a3c1e06234a258f82ed92dca8a7c88a305b4fe7567a7d6b6c80
 chmod +x reasonix-android-arm64
 mv reasonix-android-arm64 $PREFIX/bin/reasonix
 reasonix --version
 ```
 
-> ⚠️ **文件名必须是 `reasonix`**。构建产物名带 `-arm64` 后缀，但放进 `$PREFIX/bin`
+> ⚠️ **文件名必须是 `reasonix`**。构建产物名带 `-v1.39.8` 后缀，但放进 `$PREFIX/bin`
 > 后必须叫 `reasonix`，否则 `reasonix` 命令调不到。
 
-校验：
-
-```sh
-sha256sum reasonix-android-arm64
-# a5ef9d45b36e7a3c1e06234a258f82ed92dca8a7c88a305b4fe7567a7d6b6c80
-```
-
-其他两种方式也能拿到同一个文件，但有坑：
+其他方式也能拿到同一个文件，但有坑：
 
 | 方式 | 结果 |
 |---|---|
-| `media.githubusercontent.com/media/...` | ✅ 返回真实二进制（**推荐**） |
+| release 附件（`releases/download/...`） | ✅ 真实二进制（**推荐**） |
+| `media.githubusercontent.com/media/...` | ✅ 真实二进制 |
 | `github.com/<repo>/raw/master/artifacts/...` | ✅ 真实二进制（LFS 自动重定向） |
 | `raw.githubusercontent.com/...` | ❌ 只返回 133 字节的 **LFS 指针文本**，不是可执行文件 |
 
@@ -56,9 +53,9 @@ cd reasonix_android_custon
 git lfs install && git lfs pull
 ```
 
-没有正式 release 附件 —— `.github/workflows/verify-and-release.yml` 要求二进制
-版本号与上游 tag 完全相等才发布，而本仓库的版本号带 `-termux.<sha>` 后缀，
-该 Action 会跳过。上面的 curl 命令是当前可用的下载方式。
+> release 由手动创建。仓库的 `.github/workflows/verify-and-release.yml` 要求
+> 二进制版本号与上游 tag 完全相等才发布，而本仓库版本号带 `-termux.<sha>`
+> 后缀，该 Action 会跳过。
 
 ---
 
