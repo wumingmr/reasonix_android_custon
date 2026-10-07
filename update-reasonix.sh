@@ -12,7 +12,9 @@
 #   ./update-reasonix.sh
 # 环境变量:
 #   REASONIX_REPO_URL   上游仓库(默认 https://github.com/esengine/DeepSeek-Reasonix.git)
-#   REASONIX_TAG        指定 tag(默认取最新正式版 tag)
+#   REASONIX_TAG        指定 tag(默认取**最新 1.x** tag;1.x 之外的版本需配
+#                       ALLOW_MAJOR=1 二次确认,见下)
+#   ALLOW_MAJOR=1       允许同步到 1.x 之外的版本(2.x 目前无法套用 Termux 补丁)
 #   TERMUX_PATCH_REF    Termux 适配 commit(默认自动探测 master 上最后一个 termux
 #                       适配提交;显式给值可手动覆盖)
 #   KEEP_CHANGES=1      失败时不回滚,保留现场供手工处理
@@ -74,10 +76,48 @@ rollback() {
 trap rollback EXIT
 
 # 1. 解析上游最新 tag
-TAG="${REASONIX_TAG:-$(git ls-remote --tags --refs "$REPO_URL" \
-    | awk -F/ '{print $NF}' | grep -E '^v[0-9]+\.' | grep -v -- '-rc' | sort -V | tail -1)}"
+#    注意 sort -V 会把 v2.x 排在 v1.x 之后,所以"上游最新 tag"默认就是 2.x。
+#    但本仓库的 Termux 适配停在 1.x:2.x 重构了 internal/ 目录结构
+#    (internal/cli -> internal/frontend/cli、module 改为 reasonix、Go 1.26),
+#    Termux 补丁在其中 38 个文件全部无法应用,且 2.x 不含任何 Android 支持。
+#    所以默认只认 1.x 线;越界必须由调用方显式指定并二次确认。
+LATEST_1X="$(git ls-remote --tags --refs "$REPO_URL" \
+    | awk -F/ '{print $NF}' | grep -E '^v1\.[0-9]+\.' | grep -v -- '-rc' | sort -V | tail -1)"
+LATEST_ANY="$(git ls-remote --tags --refs "$REPO_URL" \
+    | awk -F/ '{print $NF}' | grep -E '^v[0-9]+\.' | grep -v -- '-rc' | sort -V | tail -1)"
+
+if [ -n "${REASONIX_TAG:-}" ]; then
+  TAG="$REASONIX_TAG"
+  # 显式指定也算一次选择,但目标在 1.x 线之外时仍要确认 —— REASONIX_TAG 可能
+  # 来自 cron、CI 或 shell 历史,不能当作"人正在看着屏幕"。
+  case "$TAG" in
+    v1.*) ;;
+    *)
+      cat >&2 <<EOF
+[update] 警告:目标 $TAG 在 1.x 线之外。
+
+  2.x 起重构了 internal/ 目录结构,Termux 适配补丁无法直接应用,Android
+  支持也不存在。预期这会失败并自动回滚。
+
+  若确实要试,再次运行并设置 ALLOW_MAJOR=1:
+      REASONIX_TAG=$TAG ALLOW_MAJOR=1 $0
+EOF
+      [ "${ALLOW_MAJOR:-0}" = "1" ] || { echo "[update] 已中止(未设 ALLOW_MAJOR=1)" >&2; exit 2; }
+      log "ALLOW_MAJOR=1:继续,但预期补丁冲突或构建失败"
+      ;;
+  esac
+else
+  TAG="${LATEST_1X:-$LATEST_ANY}"
+  if [ -z "$TAG" ]; then
+    echo "[update] 无法解析上游 tag" >&2; exit 1
+  fi
+  if [ -n "$LATEST_ANY" ] && [ "$LATEST_ANY" != "$TAG" ]; then
+    log "提示:上游还有更新的 $LATEST_ANY(2.x 线)。本仓库 Termux 适配停在 1.x,已自动选 $TAG。"
+    log "      如需 1.x 之外的版本,见上方 ALLOW_MAJOR 说明。"
+  fi
+fi
 [ -n "$TAG" ] || { echo "[update] 无法解析上游 tag" >&2; exit 1; }
-log "上游最新 tag: $TAG"
+log "上游目标 tag: $TAG"
 
 # 当前源码版本(releases.json 随上游源码同步)
 CUR="$(python3 -c "import json;print(json.load(open('$SCRIPT_DIR/release-notes/releases.json'))['releases'][0]['version'])" 2>/dev/null || echo unknown)"
