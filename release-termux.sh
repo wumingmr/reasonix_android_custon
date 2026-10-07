@@ -37,7 +37,7 @@ log "版本: $TAG → release: $REL_TAG"
 # 2. 编译(源码就在本仓库,已含 Termux 补丁)
 log "编译 android 二进制"
 cd "$SCRIPT_DIR"
-make android VERSION="$TAG"
+make android
 BIN="$SCRIPT_DIR/bin/reasonix-android-arm64"
 [ -f "$BIN" ] || { echo "[release] 编译产物缺失: $BIN" >&2; exit 1; }
 log "产物: $BIN ($(stat -c%s "$BIN") bytes)"

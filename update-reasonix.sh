@@ -161,8 +161,12 @@ fi
 rm -rf "$LOCAL_BACKUP"
 
 # 9. 编译验证
-log "编译验证..."
-make android VERSION="$TAG"
+#    不传 VERSION:Makefile 会用 release-notes/releases.json 里的真实上游版本
+#    拼出 <upstream>-termux.<sha>。早先这里传的是裸 $TAG,装上去后
+#    `reasonix --version` 显示 v1.39.8,与官方版无法区分;而且 Makefile 曾用
+#    `git describe --tags`,在上游 tag 不可达的本仓库里算出 termux-v1.25.0-*。
+log "编译验证...(版本号由 Makefile 推导)"
+make android
 
 log "完成: 源码=$TAG + 补丁($(git log -1 --format='%h' "$PATCH_REF")) → bin/reasonix-android-arm64"
 trap - EXIT
