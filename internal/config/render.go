@@ -85,6 +85,14 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		} else {
 			b.WriteString("# termux_width_offset = 1   # columns Termux reports but does not draw; raise it if the last cell of a full row is cut off\n")
 		}
+		// ResumeListLimit 必须在此输出。RenderTOMLForScope 是全量重写 [ui] 段,
+		// 不认识就等于删除 —— 任何触发配置回写的操作(改设置、跑 doctor)都会把
+		// 用户手写的 resume_list_limit 静默抹掉。
+		if n := c.UI.ResumeListLimit; n != 0 {
+			fmt.Fprintf(&b, "resume_list_limit = %d   # resume picker offers this many conversations; negative means no cap; 0/absent keeps the built-in default\n", n)
+		} else {
+			b.WriteString("# resume_list_limit = 200   # resume picker offers this many conversations; negative means no cap; 0/absent keeps the built-in default\n")
+		}
 		if strings.TrimSpace(c.UI.CloseBehavior) != "" && scope == RenderScopeProject {
 			fmt.Fprintf(&b, "close_behavior = %q   # legacy desktop close behavior; prefer [desktop].close_behavior in user config\n", c.DesktopCloseBehavior())
 		}
@@ -835,6 +843,9 @@ func RenderTOMLProjectDelta(c *Config) string {
 		}
 		if c.UI.TermuxWidthOffset != nil && d.UI.TermuxWidthOffset == nil {
 			fmt.Fprintf(&b, "termux_width_offset = %d\n", *c.UI.TermuxWidthOffset)
+		}
+		if c.UI.ResumeListLimit != 0 && d.UI.ResumeListLimit == 0 {
+			fmt.Fprintf(&b, "resume_list_limit = %d\n", c.UI.ResumeListLimit)
 		}
 		if c.UI.CloseBehavior != d.UI.CloseBehavior {
 			fmt.Fprintf(&b, "close_behavior = %q\n", c.DesktopCloseBehavior())
