@@ -283,6 +283,20 @@ type UIConfig struct {
 	// conversation older than the limit is unreachable by typing keywords too.
 	// 0 (or absent) keeps the built-in default; a negative value drops the cap.
 	ResumeListLimit int `toml:"resume_list_limit"`
+	// Spinner is the working-status animation: animated (default) or static.
+	// "static" freezes the spinner on its first frame so a turn makes no
+	// animation-driven redraws. That matters on Termux, whose native
+	// scrollback (kept so taps still raise the soft keyboard) must be rewritten
+	// every frame while a turn runs, and scrolling back through the transcript
+	// never settles. The status text still reports the phase and elapsed time,
+	// so no information is lost.
+	Spinner string `toml:"spinner"`
+}
+
+// UISpinnerStatic reports whether the working-status animation is frozen.
+// Absent or unrecognized values keep the animation.
+func (c UIConfig) UISpinnerStatic() bool {
+	return strings.EqualFold(strings.TrimSpace(c.Spinner), "static")
 }
 
 // ResumeLimit resolves ui.resume_list_limit against fallback. A negative value

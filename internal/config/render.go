@@ -96,6 +96,11 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		if strings.TrimSpace(c.UI.CloseBehavior) != "" && scope == RenderScopeProject {
 			fmt.Fprintf(&b, "close_behavior = %q   # legacy desktop close behavior; prefer [desktop].close_behavior in user config\n", c.DesktopCloseBehavior())
 		}
+		if s := strings.TrimSpace(c.UI.Spinner); s != "" {
+			fmt.Fprintf(&b, "spinner = %q   # animated (default) | static; static 冻结工作动画,便于滚动查看历史\n", s)
+		} else {
+			b.WriteString("# spinner = \"static\"   # animated (default) | static; static 冻结工作动画,便于滚动查看历史\n")
+		}
 		if c.UI.ShowReasoning {
 			b.WriteString("show_reasoning = true   # CLI: show thinking text by default; false = collapsed (toggle with Ctrl+O)\n")
 		} else {
@@ -846,6 +851,9 @@ func RenderTOMLProjectDelta(c *Config) string {
 		}
 		if c.UI.ResumeListLimit != 0 && d.UI.ResumeListLimit == 0 {
 			fmt.Fprintf(&b, "resume_list_limit = %d\n", c.UI.ResumeListLimit)
+		}
+		if c.UI.Spinner != "" && d.UI.Spinner == "" {
+			fmt.Fprintf(&b, "spinner = %q\n", c.UI.Spinner)
 		}
 		if c.UI.CloseBehavior != d.UI.CloseBehavior {
 			fmt.Fprintf(&b, "close_behavior = %q\n", c.DesktopCloseBehavior())
