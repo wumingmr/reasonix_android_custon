@@ -7,7 +7,6 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/i18n"
-	"strconv"
 	"strings"
 )
 
@@ -58,7 +57,7 @@ func (m chatTUI) runningWorkingLine(cancelRequested, styled bool) string {
 			phaseLabel = turnPhaseStatusLabel(m.turnPhase)
 		}
 		if phaseLabel != "" {
-			working = fmt.Sprintf("  %s %s · %s", m.spinner.View(), phaseLabel, m.elapsedUnitLabel())
+			working = fmt.Sprintf("  %s %s · %ds", m.spinner.View(), phaseLabel, m.elapsed)
 		} else {
 			working = fmt.Sprintf("  "+i18n.M.ChatStatusThinkingFmt, m.spinner.View(), m.elapsed)
 		}
@@ -123,19 +122,4 @@ func (m *chatTUI) stopMaintenance() {
 	updated.Status = "cancelling"
 	m.maintenance = &updated
 	m.renderSessionOperation(&updated)
-}
-
-// elapsedUnitLabel renders the turn timer with its unit. With a frozen spinner
-// (ui.spinner = "static") the phase line's seconds are the only thing still
-// changing once a second, and on Termux every change costs a redraw that
-// fights the reader scrolling back through the transcript. Reporting minutes
-// keeps the line still for most of a turn; other terminals keep seconds, where
-// a 1 Hz update hides behind the animation.
-//
-// m.elapsed itself stays in seconds — only the rendered unit changes.
-func (m *chatTUI) elapsedUnitLabel() string {
-	if m.coarseElapsedActive() {
-		return strconv.Itoa(m.elapsed/60) + "m"
-	}
-	return strconv.Itoa(m.elapsed) + "s"
 }

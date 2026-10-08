@@ -73,11 +73,6 @@ type chatTUI struct {
 	// rewritten every frame while a turn runs, which fights any attempt to
 	// scroll back through the transcript.
 	spinnerStatic bool
-	// coarseElapsed renders the phase line's turn timer in minutes instead of
-	// seconds. It is implied by a frozen spinner: with the animation gone, the
-	// per-second number is the only thing left redrawing that line, and on
-	// Termux each redraw disturbs the reader's scroll position.
-	coarseElapsed bool
 	// mouseCaptureOff releases mouse ownership back to the terminal (View() sets
 	// tea.MouseModeNone instead of MouseModeCellMotion) so its native
 	// click-drag selection and right-click context menu work again. Toggled by
@@ -822,13 +817,6 @@ func (m *chatTUI) spinnerIsStatic() bool {
 		return true
 	}
 	return m.cfg != nil && m.cfg.UI.UISpinnerStatic()
-}
-
-// coarseElapsedActive reports whether the phase line should show minutes.
-// Following the frozen spinner, that is the only per-second change left on the
-// line, and it is what keeps the reader from scrolling back on Termux.
-func (m *chatTUI) coarseElapsedActive() bool {
-	return m.coarseElapsed || m.spinnerIsStatic()
 }
 
 func (m *chatTUI) termuxWidthReserve() int {
