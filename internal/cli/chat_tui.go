@@ -638,23 +638,12 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
 	ti := textarea.New()
 	configureChatTextarea(&ti)
 
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = themeStyle(activeCLITheme.accent)
+
 	commitBuf := []string{}
 	nativeScrollback := detectTermuxTerminal()
-
-	sp := spinner.New()
-	sp.Spinner = spinner.Spinner{Frames: spinner.Dot.Frames, FPS: spinnerDefaultFPS}
-	sp.Style = themeStyle(activeCLITheme.accent)
-	// Termux stays out of alt-screen (nativeScrollback) so taps still raise the
-	// soft keyboard. There the spinner is the dominant redraw source: at the
-	// default rate View() rewrites the whole pinned bottom block 10× a second,
-	// and each rewrite races the streaming output still being appended to the
-	// terminal's scrollback — so scrolling back through the transcript never
-	// settles. Other terminals own an alt-screen grid with no such race and
-	// keep the default rate.
-	if nativeScrollback {
-		sp.Spinner = spinner.Spinner{Frames: spinner.Dot.Frames, FPS: termuxSpinnerFPS}
-	}
-
 	history := chatUIDisplayHistory(ctrl)
 	nextPasteID, usedPasteIDs := pasteIDStateForHistory(history)
 	return chatTUI{
@@ -717,17 +706,6 @@ func transcriptContentWidth(termW int, nativeScrollback bool) int {
 // of the full row. One column is the minimum that keeps a wide-rune row from
 // straddling the boundary.
 const termuxWidthReserve = 1
-
-// spinnerDefaultFPS is the working-spinner frame rate every terminal but Termux
-// uses. Named so the Termux override can be asserted against it in tests.
-const spinnerDefaultFPS = time.Second / 10
-
-// termuxSpinnerFPS is the working-spinner frame rate used when Termux keeps the
-// native scrollback instead of an alt-screen. At the default 10 FPS the pinned
-// bottom block is rewritten 10 times a second, which on a phone screen is fast
-// enough that scrolling back through the transcript never settles. 3 FPS still
-// reads as "busy" and cuts the redraw churn to roughly a third.
-const termuxSpinnerFPS = time.Second / 3
 
 // layoutWidth converts a reported window width into the width layout may use.
 // Only Termux needs the reserve: every other terminal either draws exactly the
