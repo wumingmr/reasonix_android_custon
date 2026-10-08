@@ -66,13 +66,6 @@ type chatTUI struct {
 	// nativeScrollback keeps Termux out of alt-screen mode so taps still focus
 	// the textarea and raise the soft keyboard.
 	nativeScrollback bool
-	// spinnerStatic freezes the working animation (ui.spinner = "static").
-	// It stops the spinner from re-scheduling ticks, so a running turn makes
-	// no animation-driven redraws — the status text still reports phase and
-	// elapsed time. Termux needs this because its native scrollback must be
-	// rewritten every frame while a turn runs, which fights any attempt to
-	// scroll back through the transcript.
-	spinnerStatic bool
 	// mouseCaptureOff releases mouse ownership back to the terminal (View() sets
 	// tea.MouseModeNone instead of MouseModeCellMotion) so its native
 	// click-drag selection and right-click context menu work again. Toggled by
@@ -809,16 +802,6 @@ var detectTermuxTerminal = isTermuxTerminal
 // width it draws exactly; otherwise the built-in reserve applies. The pointer
 // type is what makes that distinction expressible — a plain int cannot tell an
 // absent setting from a deliberate zero.
-// spinnerIsStatic reports whether the working animation is frozen by
-// ui.spinner = "static". Read from config on demand so the value tracks the
-// loaded config rather than a snapshot taken at construction.
-func (m *chatTUI) spinnerIsStatic() bool {
-	if m.spinnerStatic {
-		return true
-	}
-	return m.cfg != nil && m.cfg.UI.UISpinnerStatic()
-}
-
 func (m *chatTUI) termuxWidthReserve() int {
 	if m.cfg != nil && m.cfg.UI.TermuxWidthOffset != nil {
 		return max(*m.cfg.UI.TermuxWidthOffset, 0)
@@ -2120,11 +2103,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case spinner.TickMsg:
-		// A static spinner must not advance its frame nor re-arm the next
-		// tick: spinner.Update returns a fresh tick command, so consuming it
-		// here is what actually stops the redraw loop. The elapsed-time line
-		// keeps its own 1 Hz tick, so the status still updates.
-		if m.state == tuiRunning && !m.spinnerIsStatic() {
+		if m.state == tuiRunning {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			cmds = append(cmds, cmd)
