@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -107,9 +108,41 @@ func setupWSLClipboardProcessTest(t *testing.T) string {
 	return dir
 }
 
+// wslClipboardFixtureShell returns an interpreter able to run the clipboard
+// fixtures. It deliberately does not consult PATH: these tests set PATH to an
+// empty directory so that only the fixtures are found, so a PATH lookup here
+// would fail and silently skip every case — a skip the parent test still reports
+// as PASS.
+//
+// /bin/sh is not portable for this. On Android it is toybox, whose printf is not
+// a builtin, so every `printf` in the fixtures fails with "printf: inaccessible
+// or not found" and each backend assertion then reads an empty file. Termux's
+// own shell — and any ordinary POSIX host's — runs them correctly.
+func wslClipboardFixtureShell(t *testing.T) string {
+	t.Helper()
+	var candidates []string
+	if prefix := os.Getenv("PREFIX"); prefix != "" {
+		candidates = append(candidates, filepath.Join(prefix, "bin", "sh"))
+	}
+	candidates = append(candidates, "/usr/bin/sh", "/bin/dash")
+	for _, sh := range candidates {
+		if info, err := os.Stat(sh); err == nil && !info.IsDir() {
+			return sh
+		}
+	}
+	if sh, err := exec.LookPath("bash"); err == nil {
+		return sh
+	}
+	// Fail loudly: silently skipping would turn a real regression into a green
+	// test run.
+	t.Fatal("no POSIX shell available to run the clipboard fixtures")
+	return ""
+}
+
 func installWSLClipboardFixture(t *testing.T, dir, name, script string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+script), 0700); err != nil {
+	shell := wslClipboardFixtureShell(t)
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("#!"+shell+"\n"+script), 0700); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -46,6 +46,10 @@ cd "$SCRIPT_DIR"
 #    判据:一个 commit 只有同时改到下面全部适配文件才算补丁真身。
 #    这份哨兵列表与"平台适配 + 本地改动必须合并为单一 commit"的约定对应:
 #    只改脚本的 termux: 提交不是适配源。
+#
+#    给后续维护者:termux: 前缀本身已不再是选源依据,哨兵校验才是,所以给
+#    纯脚本/Makefile 改动用这个前缀不会再破坏升级 —— 它只会被跳过并打印
+#    提示。但若希望它被当作补丁源,就必须连同这些文件一起改。
 PATCH_SENTINELS="internal/notify/sender_android.go internal/cli/select.go internal/config/config.go"
 
 # is_patch_source 报告 commit c 是否改到了全部哨兵文件。

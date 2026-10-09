@@ -88,6 +88,11 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		// ResumeListLimit 必须在此输出。RenderTOMLForScope 是全量重写 [ui] 段,
 		// 不认识就等于删除 —— 任何触发配置回写的操作(改设置、跑 doctor)都会把
 		// 用户手写的 resume_list_limit 静默抹掉。
+		//
+		// 这里用 != 0 而不是像 termux_width_offset 那样判断"是否已设置"是有意的:
+		// 0 与未设置解析出同一个生效值(见 UIConfig.ResumeLimit,都回落到内置 10),
+		// 所以把显式的 0 规整成一行注释不改变任何行为,只是省掉冗余配置。
+		// 非零值(含负数)必须原样写出,否则用户设的上限会消失。
 		if n := c.UI.ResumeListLimit; n != 0 {
 			fmt.Fprintf(&b, "resume_list_limit = %d   # resume picker offers this many conversations; negative means no cap; 0/absent keeps the built-in default\n", n)
 		} else {
