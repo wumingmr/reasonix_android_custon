@@ -76,15 +76,12 @@ jobs:
           TAG="${{ steps.check.outputs.tag }}"
           REL_TAG="termux-$TAG"
           HASH="${{ steps.info.outputs.hash }}"
-          # Releases published before this workflow learned the versioned asset
-          # name carry reasonix-android-arm64-v1.39.8; newer ones would be
-          # uploaded as the bare reasonix-android-arm64. Match whichever exists
-          # so an update replaces the real asset instead of adding a second one
-          # under a different name.
+          # Always the versioned name. An earlier version probed the existing
+          # assets and fell back to the bare name, which made the asset name
+          # depend on the release's history: a rebuilt release silently switched
+          # to the bare name, and SHA256SUMS generated for one name then no
+          # longer matched the uploaded file. One name, derived from $TAG only.
           ASSET="reasonix-android-arm64-${TAG}"
-          if ! gh release view "$REL_TAG" --json assets --jq '.assets[].name' --repo "$REPO" 2>/dev/null | grep -qx "$ASSET"; then
-            ASSET="reasonix-android-arm64"
-          fi
           echo "release asset name: $ASSET"
           VERSION="${{ steps.info.outputs.version }}"
           # The notes live in a tracked template so the published text, the asset
