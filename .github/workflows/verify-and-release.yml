@@ -76,30 +76,46 @@ jobs:
           TAG="${{ steps.check.outputs.tag }}"
           REL_TAG="termux-$TAG"
           HASH="${{ steps.info.outputs.hash }}"
+          # Releases published before this workflow learned the versioned asset
+          # name carry reasonix-android-arm64-v1.39.8; newer ones would be
+          # uploaded as the bare reasonix-android-arm64. Match whichever exists
+          # so an update replaces the real asset instead of adding a second one
+          # under a different name.
+          ASSET="reasonix-android-arm64-${TAG}"
+          if ! gh release view "$REL_TAG" --json assets --jq '.assets[].name' --repo "$REPO" 2>/dev/null | grep -qx "$ASSET"; then
+            ASSET="reasonix-android-arm64"
+          fi
+          echo "release asset name: $ASSET"
           if gh release view "$REL_TAG" --repo "$REPO" >/dev/null 2>&1; then
-            gh release download "$REL_TAG" -p reasonix-android-arm64 --repo "$REPO" -D /tmp/relasset --clobber >/dev/null 2>&1
-            OLD_HASH="$(sha256sum /tmp/relasset/reasonix-android-arm64 2>/dev/null | awk '{print $1}' || true)"
-            if [ "$OLD_HASH" = "$HASH" ]; then
+            # A missing or unreadable previous asset just means we cannot compare
+            # hashes; that must not abort the run under `bash -e`.
+            OLD_HASH=""
+            if gh release download "$REL_TAG" -p "$ASSET" --repo "$REPO" -D /tmp/relasset --clobber >/dev/null 2>&1; then
+              OLD_HASH="$(sha256sum "/tmp/relasset/$ASSET" 2>/dev/null | awk '{print $1}' || true)"
+            else
+              echo "no existing $ASSET on $REL_TAG to compare against; uploading"
+            fi
+            if [ -n "$OLD_HASH" ] && [ "$OLD_HASH" = "$HASH" ]; then
               echo "release $REL_TAG already carries this exact binary (sha256 $HASH); nothing to do"
               exit 0
             fi
-            gh release upload "$REL_TAG" artifacts/reasonix-android-arm64 --repo "$REPO" --clobber
-            echo "updated $REL_TAG asset (sha256 $HASH)"
+            gh release upload "$REL_TAG" "artifacts/reasonix-android-arm64" "$REPO/$ASSET" --repo "$REPO" --clobber
+            echo "updated $REL_TAG asset $ASSET (sha256 $HASH)"
           else
             printf '%s\n' \
               "Termux build of upstream [$TAG](https://github.com/esengine/DeepSeek-Reasonix/releases/tag/$TAG) with the adaptation patch." \
               "" \
-              "- **reasonix-android-arm64**: built locally on Termux (version $TAG, sha256 $HASH)" \
+              "- **$ASSET**: built locally on Termux (version $TAG, sha256 $HASH)" \
               "- **reasonix-termux.patch**: adaptation patch" \
               "- **update-reasonix.sh**: rebuild/update script" \
               "" \
               "Install:" \
               '```' \
-              "cp reasonix-android-arm64 \$PREFIX/bin/reasonix" \
+              "cp $ASSET \$PREFIX/bin/reasonix" \
               "reasonix -v" \
               '```' > notes.md
             gh release create "$REL_TAG" \
-              artifacts/reasonix-android-arm64 \
+              "artifacts/reasonix-android-arm64#$ASSET" \
               reasonix-termux.patch \
               update-reasonix.sh \
               --repo "$REPO" \
