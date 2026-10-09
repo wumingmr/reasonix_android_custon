@@ -378,10 +378,15 @@ func selectOne(label string, items []menuItem) (int, error) {
 			case escArrow(k) < 0: // up — move the selection, stay in search
 				if sel > 0 {
 					sel--
+					// Redraw here: this branch has no trailing redraw of its own,
+					// so without it the selection moves but the screen does not
+					// follow — the cursor stays put and the row looks unselectable.
+					redraw()
 				}
 			case escArrow(k) > 0: // down — move the selection, stay in search
 				if sel < len(filtered)-1 {
 					sel++
+					redraw()
 				}
 			case k[0] == 27: // bare Esc — exit search
 				searching = false

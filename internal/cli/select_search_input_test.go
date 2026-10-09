@@ -269,6 +269,25 @@ func TestSearchBranchChecksArrowsBeforeBareEsc(t *testing.T) {
 			t.Fatalf("the Esc branch (searching = false) sits between the arrow cases for %q", sel)
 		}
 	}
+
+	// selectOne's search branch has no trailing redraw, so each arrow case must
+	// redraw itself. Without it the selection index moves while the screen keeps
+	// showing the old row, which reads as "the row cannot be selected" — the same
+	// symptom as the bug this branch was added to fix. selectMany is exempt: its
+	// search branch ends in an unconditional redraw().
+	one := body[strings.Index(body, "func selectOne"):strings.Index(body, "func selectMany")]
+	search := one[strings.Index(one, "if searching {"):]
+	search = search[:strings.Index(search, "\n\t\tswitch {")]
+	for _, dir := range []string{"up — move the selection", "down — move the selection"} {
+		i := strings.Index(search, dir)
+		if i < 0 {
+			t.Fatalf("selectOne lost the %q case", dir)
+		}
+		caseBody := search[i : strings.Index(search[i:], "\n\t\t\tcase ")+i]
+		if !strings.Contains(caseBody, "redraw()") {
+			t.Fatalf("selectOne's %q case does not redraw — the selection would move without the screen following", dir)
+		}
+	}
 }
 
 // A bare Esc must still cancel the search, and an arrow must not. escArrow is the
