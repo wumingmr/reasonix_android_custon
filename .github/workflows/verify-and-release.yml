@@ -99,7 +99,10 @@ jobs:
               echo "release $REL_TAG already carries this exact binary (sha256 $HASH); nothing to do"
               exit 0
             fi
-            gh release upload "$REL_TAG" "artifacts/reasonix-android-arm64" "$REPO/$ASSET" --repo "$REPO" --clobber
+            # gh's "file#label" syntax sets a display label, not the asset's
+            # name, so the file has to carry the target name itself.
+            cp "artifacts/reasonix-android-arm64" "/tmp/$ASSET"
+            gh release upload "$REL_TAG" "/tmp/$ASSET" --repo "$REPO" --clobber
             echo "updated $REL_TAG asset $ASSET (sha256 $HASH)"
           else
             printf '%s\n' \
@@ -114,8 +117,9 @@ jobs:
               "cp $ASSET \$PREFIX/bin/reasonix" \
               "reasonix -v" \
               '```' > notes.md
+            cp "artifacts/reasonix-android-arm64" "/tmp/$ASSET"
             gh release create "$REL_TAG" \
-              "artifacts/reasonix-android-arm64#$ASSET" \
+              "/tmp/$ASSET" \
               reasonix-termux.patch \
               update-reasonix.sh \
               --repo "$REPO" \
