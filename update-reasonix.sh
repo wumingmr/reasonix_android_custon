@@ -15,8 +15,9 @@
 #   REASONIX_TAG        指定 tag(默认取**最新 1.x** tag;1.x 之外的版本需配
 #                       ALLOW_MAJOR=1 二次确认,见下)
 #   ALLOW_MAJOR=1       允许同步到 1.x 之外的版本(2.x 目前无法套用 Termux 补丁)
-#   TERMUX_PATCH_REF    Termux 适配 commit(默认自动探测 master 上最后一个 termux
-#                       适配提交;显式给值可手动覆盖)
+#   TERMUX_PATCH_REF    Termux 适配 commit(默认自动探测 master 上最后一个改到全部
+#                       适配文件(哨兵)的 termux: 提交;显式给值可手动覆盖,但
+#                       非适配 commit 会被拒绝)
 #   KEEP_CHANGES=1      失败时不回滚,保留现场供手工处理
 set -euo pipefail
 
@@ -32,18 +33,56 @@ cd "$SCRIPT_DIR"
 
 # 0. 探测 Termux 适配 commit。master 上的形态是
 #    <上游快照 commit> → <termux 适配 commit>,后者即补丁真身。
+#
+#    ⚠️ 不能只用 "最后一个 termux: 开头的 commit" 来定位补丁源。
+#    e233da5(termux: 修正版本号推导)只改了 Makefile 和两个脚本,却是适配
+#    commit cfeb819 之后最新的 termux: 提交,于是被 head -1 选中。实测后果:
+#    cherry-pick 它会与上游 release-termux.sh 冲突;强行解冲突后,Android 通知、
+#    选择器中文输入修复、resume_list_limit 全部消失(回到"能编译但中文打不
+#    进去"),而第 9 步 make android 仍会通过 —— 因为 GOOS=android 满足 linux
+#    build tag,sender_linux.go 会接手编译。所以编译验证挡不住这种静默降级,
+#    只能在选源这一层挡。
+#
+#    判据:一个 commit 只有同时改到下面全部适配文件才算补丁真身。
+#    这份哨兵列表与"平台适配 + 本地改动必须合并为单一 commit"的约定对应:
+#    只改脚本的 termux: 提交不是适配源。
+PATCH_SENTINELS="internal/notify/sender_android.go internal/cli/select.go internal/config/config.go"
+
+# is_patch_source 报告 commit c 是否改到了全部哨兵文件。
+is_patch_source() {
+  local c="$1" f
+  for f in $PATCH_SENTINELS; do
+    [ -n "$(git show --format= --name-only --diff-filter=ADMRT "$c" -- "$f" 2>/dev/null)" ] || return 1
+  done
+  return 0
+}
+
 resolve_patch_ref() {
   if [ -n "${TERMUX_PATCH_REF:-}" ]; then
     git rev-parse --verify -q "$TERMUX_PATCH_REF^{commit}" >/dev/null || \
       die "TERMUX_PATCH_REF=$TERMUX_PATCH_REF 不是有效 commit"
+    is_patch_source "$TERMUX_PATCH_REF" || \
+      die "TERMUX_PATCH_REF=$TERMUX_PATCH_REF 不是 Termux 适配 commit:未同时改到($PATCH_SENTINELS)。
+       用它当补丁源会在升级后丢掉 Android 支持。请改用真正的适配 commit。"
     printf '%s\n' "$TERMUX_PATCH_REF"
     return
   fi
-  git log --format='%H %s' master | grep -E '^[0-9a-f]+ termux:' | head -1 | cut -d' ' -f1
+  # 从新到旧逐个筛查,取第一个改到全部哨兵文件的 termux: commit。
+  # 提示信息走 stderr:本函数的 stdout 会被下面的命令替换捕获成 PATCH_REF。
+  local c
+  while read -r c; do
+    if is_patch_source "$c"; then
+      printf '%s\n' "$c"
+      return 0
+    fi
+    printf '[update] 跳过 %s %s\n' "$(git rev-parse --short "$c")" "$(git log -1 --format='%s' "$c")" >&2
+    printf '        (未改到全部适配文件,不是补丁真身)\n' >&2
+  done < <(git log --format='%H %s' master | grep -E '^[0-9a-f]+ termux:' | cut -d' ' -f1 || true)
+  return 1
 }
 
-PATCH_REF="$(resolve_patch_ref)"
-[ -n "$PATCH_REF" ] || die "未找到 termux 适配 commit;可用 TERMUX_PATCH_REF=<sha> 指定"
+PATCH_REF="$(resolve_patch_ref)" || PATCH_REF=""
+[ -n "$PATCH_REF" ] || die "未找到 Termux 适配 commit(需同时改到:$PATCH_SENTINELS);可用 TERMUX_PATCH_REF=<sha> 指定"
 log "Termux 适配补丁: $(git log -1 --format='%h %s' "$PATCH_REF")"
 
 # 回滚锚点:升级前的 HEAD 与分支,任何失败都整体恢复。
