@@ -11,26 +11,6 @@ Termux 定制版构建，基线为上游 [Reasonix](https://github.com/esengine/
 
 内嵌版本：`$VERSION`
 
-## 下载与安装
-
-```sh
-BASE=https://github.com/wumingmr/reasonix_android_custon/releases/download/$REL_TAG
-
-curl -L -o $ASSET  "$BASE/$ASSET"
-curl -L -o SHA256SUMS "$BASE/SHA256SUMS"   # 校验要用它，必须一起下
-
-sha256sum -c SHA256SUMS   # 期望输出: $ASSET: OK
-chmod +x $ASSET
-mv $ASSET $PREFIX/bin/reasonix
-reasonix --version
-```
-
-**安装后文件名必须是 `reasonix`** —— 二进制本身叫什么都无所谓（实测以任意名字都能
-运行），但 `$PREFIX/bin` 在 `PATH` 里，`reasonix` 这个命令要能调得到，文件就得叫
-`reasonix`，所以上面 `mv` 时顺手改了名。
-
-SHA256：`$HASH`
-
 ## 相对上游改了什么
 
 ### 平台适配
@@ -95,14 +75,12 @@ resume_list_limit = -1     # 负数 = 不限制；0/缺省 = 内置默认 10
 ## 已知限制
 
 - 上游 2.x 暂不适用：重构了 `internal/` 目录结构且不含任何 Android 支持，
-  本补丁无法套用。详见仓库 `TERMUX.md`。
+  本补丁无法套用。
 - 本 release 由仓库的 `verify-and-release.yml` 自动发布。该 workflow 已适配
   Termux 版本号：比较时剥离 `-termux.<sha>` 后缀，且只认上游 1.x 线。
 
 ## 源码
 
 https://github.com/wumingmr/reasonix_android_custon
-
-改动说明见 `TERMUX.md`：https://github.com/wumingmr/reasonix_android_custon/blob/master/TERMUX.md
 
 上游 MIT 许可，本改动同样以 MIT 发布。
