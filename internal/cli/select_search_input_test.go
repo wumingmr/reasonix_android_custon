@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"bytes"
+	"os"
+	"strings"
 	"testing"
 	"unicode/utf8"
 )
@@ -200,5 +203,112 @@ func TestEscSeqLen(t *testing.T) {
 		if got := escSeqLen(tc.in); got != tc.want {
 			t.Fatalf("%s: escSeqLen(%v) = %d, want %d", tc.name, tc.in, got, tc.want)
 		}
+	}
+}
+
+// An arrow key's escape sequence starts with ESC (0x1b), the same byte as the
+// cancel key. When the menus decided "is this Esc?" with `k[0] == 27` alone,
+// every arrow press cleared the query and left search mode, so a filtered list
+// could be searched but never navigated — pressing up or down looked like the
+// search had been cancelled. escArrow must claim the arrows before that branch.
+func TestEscArrowClaimsArrowsBeforeBareEsc(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []byte
+		want int
+	}{
+		{"CSI 上", []byte{0x1b, '[', 'A'}, -1},
+		{"CSI 下", []byte{0x1b, '[', 'B'}, 1},
+		{"带参数的下 1;2B", []byte{0x1b, '[', '1', ';', '2', 'B'}, 1},
+		{"SS3 上", []byte{0x1b, 'O', 'A'}, -1},
+		{"SS3 下", []byte{0x1b, 'O', 'B'}, 1},
+		{"裸 Esc 仍是取消键", []byte{0x1b}, 0},
+		{"不完整序列 ESC[", []byte{0x1b, '['}, 0},
+		{"Delete 不是方向键", []byte{0x1b, '[', '3', '~'}, 0},
+		{"Home 不是方向键", []byte{0x1b, '[', 'H'}, 0},
+		{"普通字符", []byte{'a'}, 0},
+	}
+	for _, tc := range cases {
+		if got := escArrow(tc.in); got != tc.want {
+			t.Fatalf("%s: escArrow(%v) = %d, want %d", tc.name, tc.in, got, tc.want)
+		}
+	}
+}
+
+// The regression that matters is the *order* of the cases in each menu's search
+// branch: the arrow cases must precede the bare-Esc case, because an arrow's
+// lead byte is ESC too. Asserting that on the source keeps the test honest —
+// unlike a copy of the dispatch logic, which keeps passing after the production
+// order is broken.
+func TestSearchBranchChecksArrowsBeforeBareEsc(t *testing.T) {
+	src, err := os.ReadFile("select.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"// up — move the selection", "// down — move the selection", "// up — move the cursor", "// down — move the cursor"} {
+		if !bytes.Contains(src, []byte(marker)) {
+			t.Fatalf("select.go lost the search-branch case %q — the arrows would fall into the Esc branch again", marker)
+		}
+	}
+
+	// In both menus the Esc case must be written as `k[0] == 27` and sit after
+	// every arrow case inside the same search branch.
+	body := string(src)
+	for _, sel := range []string{"sel", "cur"} {
+		arrow := strings.Index(body, "// up — move the "+map[string]string{"sel": "selection", "cur": "cursor"}[sel])
+		if arrow < 0 {
+			t.Fatalf("no arrow case for %q", sel)
+		}
+		esc := strings.Index(body[arrow:], "case k[0] == 27:")
+		if esc < 0 {
+			t.Fatalf("the Esc case for %q is missing after the arrow cases", sel)
+		}
+		// Nothing but the down case may sit between the up case and the Esc case.
+		between := body[arrow : arrow+esc]
+		if strings.Contains(between, "searching = false") {
+			t.Fatalf("the Esc branch (searching = false) sits between the arrow cases for %q", sel)
+		}
+	}
+}
+
+// A bare Esc must still cancel the search, and an arrow must not. escArrow is the
+// predicate the menus branch on, so its verdict is what decides.
+func TestBareEscCancelsButArrowsDoNot(t *testing.T) {
+	items := []menuItem{{name: "鹈鹕骑自行车"}, {name: "鹈鹕降落"}, {name: "hello world"}}
+	searching := true
+	searchQuery := "鹈鹕"
+	sel := 0
+	filtered := filterMenuItems(items, searchQuery)
+
+	// The menu's search branch, reading escArrow exactly as select.go does.
+	apply := func(k []byte) {
+		switch {
+		case escArrow(k) < 0:
+			if sel > 0 {
+				sel--
+			}
+		case escArrow(k) > 0:
+			if sel < len(filtered)-1 {
+				sel++
+			}
+		case k[0] == 27:
+			searching = false
+			searchQuery = ""
+			filtered = items
+			sel = 0
+		}
+	}
+
+	apply([]byte{0x1b, '[', 'B'})
+	if !searching || searchQuery != "鹈鹕" || sel != 1 {
+		t.Fatalf("down arrow: searching=%v query=%q sel=%d, want true/鹈鹕/1", searching, searchQuery, sel)
+	}
+	apply([]byte{0x1b, '[', 'A'})
+	if !searching || searchQuery != "鹈鹕" || sel != 0 {
+		t.Fatalf("up arrow: searching=%v query=%q sel=%d, want true/鹈鹕/0", searching, searchQuery, sel)
+	}
+	apply([]byte{0x1b})
+	if searching || searchQuery != "" || sel != 0 || len(filtered) != len(items) {
+		t.Fatalf("bare Esc did not cancel: searching=%v query=%q sel=%d rows=%d", searching, searchQuery, sel, len(filtered))
 	}
 }

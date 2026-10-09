@@ -215,6 +215,42 @@ func escSeqLen(b []byte) int {
 	return 0
 }
 
+// escArrow reports whether the chunk is an arrow-key escape sequence and, if so,
+// which way it points: -1 for up, +1 for down, 0 when it is not an arrow.
+//
+// This has to be decided before the menus' bare-Esc branch, because an arrow
+// sequence starts with ESC (0x1b) too. Testing `k[0] == 27` alone sent every
+// arrow key press down the Esc path, which cleared the query and left search
+// mode — so on a filtered list the selection could not be moved at all.
+func escArrow(k []byte) int {
+	// Only claim a complete sequence; a bare ESC is the cancel key.
+	if escSeqLen(k) == 0 {
+		return 0
+	}
+	// The final byte carries the key; parameters may precede it, so match on the
+	// last byte rather than a fixed length. ESC[1;2B (a modified down) is a real
+	// sequence some terminals emit for Shift+Down.
+	final := k[len(k)-1]
+	if final < 0x40 || final >= 0x80 {
+		return 0
+	}
+	if k[1] == 'O' {
+		// SS3 has no parameters: ESC O A / ESC O B
+		if len(k) != 3 {
+			return 0
+		}
+	} else if k[1] != '[' {
+		return 0
+	}
+	switch final {
+	case 'A':
+		return -1
+	case 'B':
+		return 1
+	}
+	return 0
+}
+
 // trimSearchRune removes the last character from the query by rune, not by
 // byte: deleting one byte from a multi-byte character leaves invalid UTF-8 that
 // can never match any label again.
@@ -339,7 +375,15 @@ func selectOne(label string, items []menuItem) (int, error) {
 
 		if searching {
 			switch {
-			case k[0] == 27: // Esc — exit search
+			case escArrow(k) < 0: // up — move the selection, stay in search
+				if sel > 0 {
+					sel--
+				}
+			case escArrow(k) > 0: // down — move the selection, stay in search
+				if sel < len(filtered)-1 {
+					sel++
+				}
+			case k[0] == 27: // bare Esc — exit search
 				searching = false
 				searchQuery = ""
 				search = searchState{}
@@ -529,7 +573,15 @@ func selectMany(label string, items []menuItem) ([]int, error) {
 
 		if searching {
 			switch {
-			case k[0] == 27: // Esc — exit search
+			case escArrow(k) < 0: // up — move the cursor, stay in search
+				if cur > 0 {
+					cur--
+				}
+			case escArrow(k) > 0: // down — move the cursor, stay in search
+				if cur < len(filtered)-1 {
+					cur++
+				}
+			case k[0] == 27: // bare Esc — exit search
 				searching = false
 				searchQuery = ""
 				search = searchState{}
