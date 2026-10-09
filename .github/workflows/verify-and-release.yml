@@ -86,44 +86,48 @@ jobs:
             ASSET="reasonix-android-arm64"
           fi
           echo "release asset name: $ASSET"
+          VERSION="${{ steps.info.outputs.version }}"
+          # The notes live in a tracked template so the published text, the asset
+          # name and the checksum cannot drift apart. A hand-edited release page
+          # once kept naming an older binary after the asset had already been
+          # replaced; rendering from the template on every run removes that gap.
+          export TAG REL_TAG ASSET VERSION HASH REPO
+          RENDER="$RUNNER_TEMP/rendered-notes.md"
+          CHECKSUMS="$RUNNER_TEMP/SHA256SUMS"
+          sed -e "s|\$TAG|$TAG|g" -e "s|\$REL_TAG|$REL_TAG|g" \
+              -e "s|\$ASSET|$ASSET|g" -e "s|\$VERSION|$VERSION|g" \
+              -e "s|\$HASH|$HASH|g" -e "s|\$REPO|$REPO|g" \
+              release-notes-termux.md > "$RENDER"
+          # Keep SHA256SUMS in step with the binary, otherwise the documented
+          # `sha256sum -c SHA256SUMS` fails against a freshly uploaded asset.
+          printf '%s  %s\n' "$HASH" "$ASSET" > "$CHECKSUMS"
           if gh release view "$REL_TAG" --repo "$REPO" >/dev/null 2>&1; then
             # A missing or unreadable previous asset just means we cannot compare
             # hashes; that must not abort the run under `bash -e`.
             OLD_HASH=""
-            if gh release download "$REL_TAG" -p "$ASSET" --repo "$REPO" -D /tmp/relasset --clobber >/dev/null 2>&1; then
-              OLD_HASH="$(sha256sum "/tmp/relasset/$ASSET" 2>/dev/null | awk '{print $1}' || true)"
+            if gh release download "$REL_TAG" -p "$ASSET" --repo "$REPO" -D "$RUNNER_TEMP/relasset" --clobber >/dev/null 2>&1; then
+              OLD_HASH="$(sha256sum "$RUNNER_TEMP/relasset/$ASSET" 2>/dev/null | awk '{print $1}' || true)"
             else
               echo "no existing $ASSET on $REL_TAG to compare against; uploading"
             fi
-            if [ -n "$OLD_HASH" ] && [ "$OLD_HASH" = "$HASH" ]; then
-              echo "release $REL_TAG already carries this exact binary (sha256 $HASH); nothing to do"
-              exit 0
-            fi
             # gh's "file#label" syntax sets a display label, not the asset's
             # name, so the file has to carry the target name itself.
-            cp "artifacts/reasonix-android-arm64" "/tmp/$ASSET"
-            gh release upload "$REL_TAG" "/tmp/$ASSET" --repo "$REPO" --clobber
-            echo "updated $REL_TAG asset $ASSET (sha256 $HASH)"
+            cp "artifacts/reasonix-android-arm64" "$RUNNER_TEMP/$ASSET"
+            if [ -n "$OLD_HASH" ] && [ "$OLD_HASH" = "$HASH" ]; then
+              echo "release $REL_TAG already carries this exact binary (sha256 $HASH); refreshing notes only"
+            else
+              gh release upload "$REL_TAG" "$RUNNER_TEMP/$ASSET" --repo "$REPO" --clobber
+              echo "updated $REL_TAG asset $ASSET (sha256 $HASH)"
+            fi
+            gh release upload "$REL_TAG" "$CHECKSUMS" --repo "$REPO" --clobber
+            gh release edit "$REL_TAG" --repo "$REPO" --notes-file "$RENDER"
           else
-            printf '%s\n' \
-              "Termux build of upstream [$TAG](https://github.com/esengine/DeepSeek-Reasonix/releases/tag/$TAG) with the adaptation patch." \
-              "" \
-              "- **$ASSET**: built locally on Termux (version $TAG, sha256 $HASH)" \
-              "- **reasonix-termux.patch**: adaptation patch" \
-              "- **update-reasonix.sh**: rebuild/update script" \
-              "" \
-              "Install:" \
-              '```' \
-              "cp $ASSET \$PREFIX/bin/reasonix" \
-              "reasonix -v" \
-              '```' > notes.md
-            cp "artifacts/reasonix-android-arm64" "/tmp/$ASSET"
+            cp "artifacts/reasonix-android-arm64" "$RUNNER_TEMP/$ASSET"
             gh release create "$REL_TAG" \
-              "/tmp/$ASSET" \
-              reasonix-termux.patch \
-              update-reasonix.sh \
+              "$RUNNER_TEMP/$ASSET" \
+              "$CHECKSUMS" \
               --repo "$REPO" \
               --title "Reasonix $TAG — Termux build" \
-              --notes-file notes.md
+              --notes-file "$RENDER"
             echo "created $REL_TAG (sha256 $HASH)"
           fi
