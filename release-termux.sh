@@ -92,9 +92,9 @@ log "产物: $BIN ($BIN_SIZE bytes)"
 log "sha256: $BIN_HASH"
 log "内嵌版本: ${BIN_VERSION:-未知}"
 if [ "${BIN_VERSION:-}" != "$TAG" ]; then
-  log "提示:内嵌版本带 -termux.<sha> 后缀,与上游 tag $TAG 不相等。"
-  log "      verify-and-release.yml 要求完全相等才发布,因此该 Action 会 skip。"
-  log "      如需自动发布,需调整 Action 的比较逻辑或改用裸版本号构建。"
+  # 不必报警:verify-and-release.yml 已改为剥掉 -termux.* 后缀再比较,并只认
+  # 1.x 线(见该 workflow 的 check 步骤),带后缀的定制版本会被正常发布。
+  log "内嵌版本 $BIN_VERSION 已剥离 -termux.* 后缀与 $TAG 比较,Action 会正常发布。"
 fi
 
 # 3. 测试
