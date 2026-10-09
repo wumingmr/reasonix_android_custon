@@ -119,6 +119,34 @@ func filterMenuItems(items []menuItem, query string) []menuItem {
 // partial UTF-8 sequence that no longer matched anything.
 const searchInputBuf = 256
 
+// searchState is the search box of a menu: the query text plus the bytes of a
+// multi-byte character the last read left incomplete.
+type searchState struct {
+	query   string
+	pending []byte
+}
+
+// applySearchChunk folds one raw read into the search box and reports whether
+// the query text changed, i.e. whether the caller must redraw and re-filter.
+//
+// Both results of searchText are stored unconditionally, and that is the whole
+// point of this function existing. searchText holds back a character this read
+// cut in half, so such a chunk leaves the query untouched (query == the old
+// one) while pending grows. A caller that assigned only when the query changed
+// dropped the fragment, and the character could never be completed — the exact
+// failure searchState.pending exists to prevent. Keeping this in one function
+// also keeps selectOne and selectMany from drifting apart.
+//
+// Keeping the wiring here rather than inline in the two menus is what makes it
+// testable at all: both menus read os.Stdin directly, so the loop body cannot be
+// exercised by a test without a real terminal.
+func (s *searchState) applySearchChunk(k []byte) bool {
+	next, rest := searchText(s.query, s.pending, k)
+	changed := next != s.query
+	s.query, s.pending = next, rest
+	return changed
+}
+
 // searchText folds one raw stdin chunk into the search query. k may hold several
 // characters at once (a paste, or one read catching a fast typist), so the whole
 // chunk is decoded rather than only its first byte.
@@ -134,6 +162,17 @@ func searchText(query string, pending, k []byte) (string, []byte) {
 		buf = append(append(make([]byte, 0, len(pending)+len(k)), pending...), k...)
 	}
 	for i := 0; i < len(buf); {
+		// An escape sequence that did not land at the chunk start — a read
+		// catching a typed character together with the arrow key pressed right
+		// after it. Skipping it keeps "[A" out of the query; before the whole
+		// chunk was decoded only its first byte was ever considered, so such a
+		// pair contributed just the character.
+		if buf[i] == 0x1b {
+			if n := escSeqLen(buf[i:]); n > 0 {
+				i += n
+				continue
+			}
+		}
 		r, size := utf8.DecodeRune(buf[i:])
 		if r == utf8.RuneError && size <= 1 {
 			// A trailing partial sequence is held back for the next read instead
@@ -146,6 +185,34 @@ func searchText(query string, pending, k []byte) (string, []byte) {
 		i += size
 	}
 	return query, nil
+}
+
+// escSeqLen returns the byte length of the escape sequence at the start of b, or
+// 0 when b holds no complete one. It covers the CSI forms the search menus react
+// to (ESC [ letter) plus SS3, and refuses to claim a bare ESC followed by
+// ordinary text: the caller's own Esc branch already handles that, and here such
+// an ESC is just a control byte to drop.
+func escSeqLen(b []byte) int {
+	if len(b) < 2 || b[0] != 0x1b {
+		return 0
+	}
+	switch b[1] {
+	case '[': // CSI: ESC [ params final-byte, e.g. ESC [ A (up), ESC [ 3 ~ (delete)
+		i := 2
+		for i < len(b) && b[i] >= 0x20 && b[i] < 0x40 { // parameter/intermediate bytes
+			i++
+		}
+		if i < len(b) && b[i] >= 0x40 && b[i] < 0x80 { // final byte
+			return i + 1
+		}
+		return 0 // no final byte yet: incomplete, treat ESC as a plain control byte
+	case 'O': // SS3: ESC O letter, e.g. ESC O A
+		if len(b) >= 3 {
+			return 3
+		}
+		return 0
+	}
+	return 0
 }
 
 // trimSearchRune removes the last character from the query by rune, not by
@@ -180,9 +247,11 @@ func selectOne(label string, items []menuItem) (int, error) {
 	// search state
 	searching := false
 	searchQuery := ""
-	// searchPending holds the bytes of a multi-byte character that a read cut in
-	// half, so the next read can complete it instead of losing it.
-	var searchPending []byte
+	// search holds the bytes of a multi-byte character that a read cut in half,
+	// so the next read can complete it instead of losing it. applySearchChunk
+	// owns the query/pending bookkeeping; see its doc comment for why the
+	// assignment cannot be conditional.
+	var search searchState
 	filtered := items
 	filterIdx := make([]int, len(items))
 	for i := range items {
@@ -273,7 +342,7 @@ func selectOne(label string, items []menuItem) (int, error) {
 			case k[0] == 27: // Esc — exit search
 				searching = false
 				searchQuery = ""
-				searchPending = nil
+				search = searchState{}
 				filtered = items
 				filterIdx = make([]int, len(items))
 				for i := range items {
@@ -302,8 +371,9 @@ func selectOne(label string, items []menuItem) (int, error) {
 			default:
 				// Printable text, including multi-byte characters typed by a
 				// terminal IME and any spaces the chunk carries.
-				if next, rest := searchText(searchQuery, searchPending, k); next != searchQuery {
-					searchQuery, searchPending = next, rest
+				search.query = searchQuery
+				if search.applySearchChunk(k) {
+					searchQuery = search.query
 					filtered = filterMenuItems(items, searchQuery)
 					filterIdx = filterIndices(items, searchQuery)
 					sel = 0
@@ -324,6 +394,7 @@ func selectOne(label string, items []menuItem) (int, error) {
 		case k[0] == '/': // enter search mode
 			searching = true
 			searchQuery = ""
+			search = searchState{}
 			redraw()
 		case len(k) >= 3 && k[0] == 27 && k[1] == '[' && k[2] == 'A': // up
 			if sel > 0 {
@@ -368,9 +439,11 @@ func selectMany(label string, items []menuItem) ([]int, error) {
 	// search state
 	searching := false
 	searchQuery := ""
-	// searchPending holds the bytes of a multi-byte character that a read cut in
-	// half, so the next read can complete it instead of losing it.
-	var searchPending []byte
+	// search holds the bytes of a multi-byte character that a read cut in half,
+	// so the next read can complete it instead of losing it. applySearchChunk
+	// owns the query/pending bookkeeping; see its doc comment for why the
+	// assignment cannot be conditional.
+	var search searchState
 	filtered := items
 	filterIdx := make([]int, len(items))
 	for i := range items {
@@ -459,7 +532,7 @@ func selectMany(label string, items []menuItem) ([]int, error) {
 			case k[0] == 27: // Esc — exit search
 				searching = false
 				searchQuery = ""
-				searchPending = nil
+				search = searchState{}
 				filtered = items
 				filterIdx = make([]int, len(items))
 				for i := range items {
@@ -500,13 +573,13 @@ func selectMany(label string, items []menuItem) ([]int, error) {
 			default:
 				// Printable text, including multi-byte characters typed by a
 				// terminal IME and any spaces the chunk carries.
-				if next, rest := searchText(searchQuery, searchPending, k); next != searchQuery {
-					searchQuery, searchPending = next, rest
+				search.query = searchQuery
+				if search.applySearchChunk(k) {
+					searchQuery = search.query
 					filtered = filterMenuItems(items, searchQuery)
 					filterIdx = filterIndices(items, searchQuery)
 					cur = 0
 					scroll = 0
-					redraw()
 				}
 			}
 			redraw()
@@ -532,6 +605,7 @@ func selectMany(label string, items []menuItem) ([]int, error) {
 		case k[0] == '/': // enter search mode
 			searching = true
 			searchQuery = ""
+			search = searchState{}
 			redraw()
 		case k[0] == ' ':
 			if len(filtered) > 0 {
