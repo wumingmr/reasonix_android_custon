@@ -27,8 +27,13 @@ jobs:
       - name: Resolve upstream tag, binary version, and hash
         id: info
         run: |
+          # This repo's Termux adaptation is pinned to the 1.x line: 2.x
+          # restructured internal/ so the patch no longer applies, and no
+          # Android support exists there. Resolve the newest 1.x tag rather
+          # than the newest tag overall, so a 2.x release does not make every
+          # 1.x build look stale here. Same rule as update-reasonix.sh.
           UPSTREAM="$(git ls-remote --tags --refs https://github.com/esengine/DeepSeek-Reasonix.git \
-            | awk -F/ '{print $NF}' | grep -E '^v[0-9]+\.' | grep -v -- '-rc' | sort -V | tail -1)"
+            | awk -F/ '{print $NF}' | grep -E '^v1\.[0-9]+\.' | grep -v -- '-rc' | sort -V | tail -1)"
           VERSION="$(go version -m artifacts/reasonix-android-arm64 | grep -oE 'main\.version=[^ ]+' | cut -d= -f2)"
           HASH="$(sha256sum artifacts/reasonix-android-arm64 | awk '{print $1}')"
           echo "upstream=$UPSTREAM"
@@ -38,19 +43,29 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "hash=$HASH" >> "$GITHUB_OUTPUT"
 
-      - name: Skip unless binary is the latest upstream version
+      - name: Skip unless binary tracks the pinned upstream line
         id: check
         run: |
           VER="${{ steps.info.outputs.version }}"
           TAG="${{ steps.info.outputs.upstream }}"
-          if [ "$VER" != "$TAG" ]; then
-            echo "binary version $VER != upstream $TAG; skipping"
+          # The Makefile stamps <upstream>-termux.<sha> on purpose so an
+          # installed build is distinguishable from the official one. Compare the
+          # upstream part only; demanding an exact match would skip every
+          # Termux build forever.
+          BASE="${VER%%-termux*}"
+          if [ -z "$TAG" ]; then
+            echo "could not resolve an upstream 1.x tag; skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${TAG#v}" != "$BASE" ]; then
+            echo "binary tracks upstream $BASE but the pinned tag is $TAG; skipping"
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Release will use tag termux-$TAG (binary version matches)"
+          echo "Release will use tag termux-$TAG (binary tracks $BASE)"
 
       - name: Create or update release
         if: steps.check.outputs.skip == 'false'
