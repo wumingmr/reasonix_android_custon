@@ -14,17 +14,20 @@ Termux 定制版构建，基线为上游 [Reasonix](https://github.com/esengine/
 ## 下载与安装
 
 ```sh
-curl -L -o $ASSET \
-  https://github.com/wumingmr/reasonix_android_custon/releases/download/$REL_TAG/$ASSET
+BASE=https://github.com/wumingmr/reasonix_android_custon/releases/download/$REL_TAG
 
-sha256sum -c SHA256SUMS   # 可选校验
+curl -L -o $ASSET  "$BASE/$ASSET"
+curl -L -o SHA256SUMS "$BASE/SHA256SUMS"   # 校验要用它，必须一起下
+
+sha256sum -c SHA256SUMS   # 期望输出: $ASSET: OK
 chmod +x $ASSET
 mv $ASSET $PREFIX/bin/reasonix
 reasonix --version
 ```
 
-**文件名必须是 `reasonix`** —— 构建产物带 `-v1.39.8` 后缀，但放进 `$PREFIX/bin`
-后必须改名，否则 `reasonix` 命令调不到。
+**安装后文件名必须是 `reasonix`** —— 二进制本身叫什么都无所谓（实测以任意名字都能
+运行），但 `$PREFIX/bin` 在 `PATH` 里，`reasonix` 这个命令要能调得到，文件就得叫
+`reasonix`，所以上面 `mv` 时顺手改了名。
 
 SHA256：`$HASH`
 
