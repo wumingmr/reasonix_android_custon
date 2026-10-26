@@ -186,7 +186,8 @@ cp .gitattributes "$SCRIPT_DIR/.gitattributes.bak"
 #    回滚路径会跑 git clean,放在仓库内的备份会被连坐删除。
 LOCAL_BACKUP="$(mktemp -d "${TMPDIR:-/tmp}/reasonix-update-XXXXXX")"
 UNTRACKED_LIST="$LOCAL_BACKUP/untracked.txt"
-git ls-files --others --exclude-standard -- scripts release-termux.sh >"$UNTRACKED_LIST" || true
+git ls-files --others --exclude-standard -- scripts release-termux.sh \
+  release-notes-termux.md >"$UNTRACKED_LIST" || true
 if [ -s "$UNTRACKED_LIST" ]; then
   log "备份 $(wc -l <"$UNTRACKED_LIST") 个未跟踪本地文件"
   tar -cf "$LOCAL_BACKUP/untracked.tar" -T "$UNTRACKED_LIST"
@@ -194,7 +195,7 @@ fi
 
 find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github ! -name .reasonix \
   ! -name artifacts ! -name reasonix-termux.patch \
-  ! -name update-reasonix.sh \
+  ! -name update-reasonix.sh ! -name release-notes-termux.md \
   ! -name release-termux.sh ! -name action.log ! -name '*.bak' -exec rm -rf {} +
 
 # 5. 填入上游源码(排除 .github 与专属文件,稍后恢复)
