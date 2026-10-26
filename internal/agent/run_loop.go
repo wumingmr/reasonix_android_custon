@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -291,17 +290,19 @@ func (a *Agent) emitProtocolRetry(attempt int, hasFallback bool) {
 	})
 }
 
-func (a *Agent) emitStreamAttempt(id string, action event.StreamAttemptAction, attempt int, reason string, err error) {
+func (a *Agent) emitStreamAttempt(id string, action event.StreamAttemptAction, attempt int, reason string, err error, summary ...*event.ResponseSummary) {
 	if reason == "" && err != nil {
 		reason = provider.StreamInterruptReason(err)
 	}
+	info := event.StreamAttemptInfo{ID: id, Action: action, Attempt: attempt, Max: maxSamplingAttempts, Reason: reason}
+	if len(summary) > 0 {
+		info.Response = summary[0]
+	}
 	a.svc.sink.Emit(event.Event{
-		Kind:      event.StreamAttempt,
-		MessageID: id,
-		AttemptID: id,
-		StreamAttempt: event.StreamAttemptInfo{
-			ID: id, Action: action, Attempt: attempt, Max: maxSamplingAttempts, Reason: reason,
-		},
+		Kind:          event.StreamAttempt,
+		MessageID:     id,
+		AttemptID:     id,
+		StreamAttempt: info,
 	})
 }
 
@@ -316,6 +317,11 @@ func newStreamAttemptID(_ int) string {
 // and final compaction. cont=true continues the tool loop; cont=false returns
 // err from Run (err may be nil for a clean final answer).
 func (a *Agent) handleFinalResponse(ctx context.Context, state *turnRuntime, text, reasoning string, usage *provider.Usage) (cont bool, err error) {
+	// Cancellation wins until Run returns, even after a committed answer; the
+	// answer stays in history for display (DeepSeek Harness turn semantics).
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if state.graceRound {
 		// Explicit max_steps and spend budgets are user-selected boundaries.
 		// Preserve the summary, then return a resumable pause so Goal does not
@@ -324,21 +330,26 @@ func (a *Agent) handleFinalResponse(ctx context.Context, state *turnRuntime, tex
 		return false, a.gracePause(state)
 	}
 	if !hasVisibleFinalAnswer(text) {
-		// A reasoning-only clean stop ends the turn, except where it would leave
-		// tool results with no visible synthesis: that case, and callers that
-		// require visible output, get the bounded synthetic retry. A truly empty
-		// response is classified before this function and retried unchanged.
-		if a.requireVisibleFinal {
-			state.terminal.emptyFinalBlocks++
-			if state.terminal.emptyFinalBlocks >= maxEmptyFinalBlocks {
-				return false, fmt.Errorf("model finished without a visible final answer %d times", state.terminal.emptyFinalBlocks)
+		// Transport completion is not delivery; structured finalizers end in
+		// handleToolRound. A spent budget is a resumable boundary, so it wins
+		// over both another recovery round and the exhaustion failure.
+		if axis, detail := a.task.budget.exceeded(a.taskBudgetLimit(ctx)); axis != "" {
+			return false, &taskBudgetPause{axis: axis, detail: detail}
+		}
+		state.terminal.emptyFinalBlocks++
+		if state.terminal.emptyFinalBlocks >= maxEmptyFinalBlocks {
+			// Clean streams skip the interrupted-stream recorder. This local-only
+			// marker drives reopened history and the controller's failed-turn
+			// cleanup, which owns any recovery facts replayed to the model.
+			failure := provider.ErrNoDeliverableOutput
+			record := interruptedDisplayRecord("", "", "", nil, true, failure)
+			if err := a.appendCommittedMessages(ctx, "no-deliverable-output", record); err != nil {
+				return false, err
 			}
-			return a.retryEmptyFinal(ctx, reasoning, usage)
+			return false, failure
 		}
-		if state.usedAnyTool && state.terminal.emptyFinalBlocks == 0 && silentSinceLastToolRound(a.sess.conversation.Messages) {
-			state.terminal.emptyFinalBlocks++
-			return a.retryEmptyFinal(ctx, reasoning, usage)
-		}
+		state.terminal.answeringRecovery = true
+		return a.retryEmptyFinal(ctx, reasoning, usage)
 	}
 	a.emitTurnShadows(a.turn.turnInput)
 	if !a.closeSteerIntakeIfIdle() {
@@ -361,33 +372,11 @@ func (a *Agent) retryEmptyFinal(ctx context.Context, reasoning string, usage *pr
 	return true, nil
 }
 
-// silentSinceLastToolRound reports whether the transcript holds a tool result
-// with no visible assistant text after it.
-func silentSinceLastToolRound(messages []provider.Message) bool {
-	for _, message := range slices.Backward(messages) {
-		if message.LocalOnly {
-			continue
-		}
-		switch message.Role {
-		case provider.RoleTool:
-			return true
-		case provider.RoleAssistant:
-			if hasVisibleFinalAnswer(message.Content) {
-				return false
-			}
-		}
-	}
-	return false
-}
-
 // handleToolRound executes a tool batch, persists tool messages, handles
 // cancellation, todo stall tracking, recovery finalization pause, and the
 // max-steps grace round. cont=true continues the tool loop; cont=false returns
 // err from Run.
 func (a *Agent) handleToolRound(ctx context.Context, state *turnRuntime, step int, text, reasoning string, calls []provider.ToolCall, usage *provider.Usage) (cont bool, err error) {
-	state.terminal.emptyFinalBlocks = 0
-	state.usedAnyTool = true
-
 	boundaryFinalizer := a.allowsBoundaryTurnFinalizer(ctx, state, calls)
 	if boundaryErr, stop := a.stopUnexecutedBoundaryCalls(ctx, state, calls, usage); stop {
 		return false, boundaryErr
@@ -455,6 +444,7 @@ func (a *Agent) publishCommittedSample(streamed streamedTurn) {
 			Text: DisplayAssistantText(streamed.text), Reasoning: streamed.displayReasoning})
 	}
 	if streamed.settledAttemptID != "" {
-		a.emitStreamAttempt(streamed.settledAttemptID, event.StreamAttemptCommit, streamed.settledAttempt, "", nil)
+		a.emitStreamAttempt(streamed.settledAttemptID, event.StreamAttemptCommit, streamed.settledAttempt, "", nil, a.responseSummary(streamed))
 	}
+	a.turn.terminal.answeringRecovery = false
 }

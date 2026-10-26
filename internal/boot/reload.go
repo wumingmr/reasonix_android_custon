@@ -130,7 +130,7 @@ func rebuildWithPrevious(ctx context.Context, old *control.Controller, previous 
 
 	// Prefer subgraph-classified rebuild when previous assembly is available.
 	if previous != nil && !opts.ForceFullRebuild {
-		if res, handled, err := tryRebuildSubgraph(ctx, old, previous, opts, m); handled {
+		if res, handled, err := tryRebuildSubgraph(ctx, old, previous, opts); handled {
 			return res, err
 		}
 	}

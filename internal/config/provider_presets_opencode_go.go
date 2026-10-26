@@ -175,7 +175,7 @@ var opencodeGoRecommendedPreset = ProviderPreset{
 		{
 			Name:            "opencode-go",
 			Kind:            "openai",
-			BaseURL:         "https://opencode.ai/zen/go/v1",
+			BaseURL:         provider.OpenCodeGoChatBaseURL,
 			Models:          opencodeGoModels,
 			VisionModels:    opencodeGoVisionModels,
 			Default:         "glm-5.3",
@@ -188,7 +188,7 @@ var opencodeGoRecommendedPreset = ProviderPreset{
 		{
 			Name:            "opencode-go-anthropic",
 			Kind:            "anthropic",
-			BaseURL:         "https://opencode.ai/zen/go",
+			BaseURL:         provider.OpenCodeGoAnthropicBaseURL,
 			Models:          opencodeGoAnthropicModels,
 			VisionModels:    opencodeGoAnthropicVisionModels,
 			Default:         "qwen3.7-plus",
@@ -202,7 +202,7 @@ var opencodeGoRecommendedPreset = ProviderPreset{
 		{
 			Name:             "opencode-go-responses",
 			Kind:             "responses",
-			BaseURL:          "https://opencode.ai/zen/go/v1",
+			BaseURL:          provider.OpenCodeGoChatBaseURL,
 			Models:           opencodeGoResponsesModels,
 			VisionModels:     opencodeGoResponsesVisionModels,
 			Default:          "grok-4.5",
@@ -232,7 +232,7 @@ var opencodeGoAnthropicPreset = ProviderPreset{
 	Entries: []ProviderEntry{{
 		Name:            "opencode-go-anthropic",
 		Kind:            "anthropic",
-		BaseURL:         "https://opencode.ai/zen/go",
+		BaseURL:         provider.OpenCodeGoAnthropicBaseURL,
 		Models:          opencodeGoAnthropicModels,
 		VisionModels:    opencodeGoAnthropicVisionModels,
 		Default:         "qwen3.7-plus",
@@ -259,7 +259,7 @@ var opencodeGoResponsesPreset = ProviderPreset{
 	Entries: []ProviderEntry{{
 		Name:             "opencode-go-responses",
 		Kind:             "responses",
-		BaseURL:          "https://opencode.ai/zen/go/v1",
+		BaseURL:          provider.OpenCodeGoChatBaseURL,
 		Models:           opencodeGoResponsesModels,
 		VisionModels:     opencodeGoResponsesVisionModels,
 		Default:          "grok-4.5",

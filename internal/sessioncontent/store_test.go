@@ -205,3 +205,50 @@ func TestStoreConcurrentPutSameContent(t *testing.T) {
 		t.Fatalf("published object invalid: err=%v bytes=%d", err, len(got))
 	}
 }
+
+func TestMissingIntegrityIndexIsRebuiltFromTheObject(t *testing.T) {
+	t.Parallel()
+	for _, size := range []int{4096, IntegrityBlockBytes + 17} {
+		store := New(t.TempDir())
+		body := bytes.Repeat([]byte("x"), size)
+		ref, err := store.Put(context.Background(), bytes.NewReader(body), Metadata{MediaType: "text/plain"})
+		if err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		original, err := os.ReadFile(store.indexPath(ref.Digest))
+		if err != nil {
+			t.Fatalf("read index: %v", err)
+		}
+		if err := os.RemoveAll(filepath.Join(store.root, "indexes")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.ReadRange(context.Background(), ref, 0, 16); err != nil {
+			t.Fatalf("size %d: read after index loss: %v", size, err)
+		}
+		rebuilt, err := os.ReadFile(store.indexPath(ref.Digest))
+		if err != nil || !bytes.Equal(rebuilt, original) {
+			t.Fatalf("size %d: rebuilt index differs from the published one (err=%v)", size, err)
+		}
+	}
+}
+
+func TestMissingIntegrityIndexIsNotRebuiltForACorruptObject(t *testing.T) {
+	t.Parallel()
+	store := New(t.TempDir())
+	ref, err := store.Put(context.Background(), bytes.NewReader(bytes.Repeat([]byte("y"), 2048)), Metadata{MediaType: "text/plain"})
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(store.root, "indexes")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.objectPath(ref.Digest), bytes.Repeat([]byte("z"), 2048), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReadRange(context.Background(), ref, 0, 16); err == nil {
+		t.Fatal("a corrupted object must not be vouched for by a rebuilt index")
+	}
+	if _, err := os.Stat(store.indexPath(ref.Digest)); err == nil {
+		t.Fatal("no index may be published for a corrupted object")
+	}
+}

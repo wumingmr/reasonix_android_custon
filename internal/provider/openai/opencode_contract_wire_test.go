@@ -27,11 +27,27 @@ func (t localOpenCodeGoTransport) RoundTrip(req *http.Request) (*http.Response, 
 }
 
 func TestOpenCodeGoChatToolReplayOmitsToolName(t *testing.T) {
+	for _, base := range []string{"https://opencode.ai/zen/go/v1", "https://opencode.ai/inference/go/openai/v1"} {
+		t.Run(base, func(t *testing.T) { testOpenCodeGoChatToolReplay(t, base) })
+	}
+}
+
+func testOpenCodeGoChatToolReplay(t *testing.T, base string) {
 	var requests atomic.Int32
+	var session string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestNumber := requests.Add(1)
-		if r.URL.Path != "/zen/go/v1/chat/completions" {
+		endpoint, _ := url.Parse(base + "/chat/completions")
+		if r.URL.Path != endpoint.Path {
 			t.Errorf("request path = %q", r.URL.Path)
+		}
+		if id := r.Header.Get("x-opencode-session"); id == "" || (session != "" && id != session) {
+			t.Errorf("missing/unstable session header: %q", id)
+		} else {
+			session = id
+		}
+		if r.Header.Get("User-Agent") != "Reasonix" {
+			t.Error("missing Reasonix client identity")
 		}
 		var body struct {
 			Messages []map[string]json.RawMessage `json:"messages"`
@@ -43,11 +59,17 @@ func TestOpenCodeGoChatToolReplayOmitsToolName(t *testing.T) {
 		}
 		if requestNumber == 1 {
 			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"provider reasoning\"}}]}\n\n")
 			_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"bash\",\"arguments\":\"{}\"}}]}}]}\n\n")
 			_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n")
 			return
 		}
 		for i, message := range body.Messages {
+			if string(message["role"]) == `"assistant"` && string(message["reasoning_content"]) != `"provider reasoning"` {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, `{"error":{"message":"Missing reasoning_content on assistant tool call"}}`)
+				return
+			}
 			if string(message["role"]) != `"tool"` {
 				continue
 			}
@@ -72,7 +94,7 @@ func TestOpenCodeGoChatToolReplayOmitsToolName(t *testing.T) {
 		t.Fatal(err)
 	}
 	p, err := New(provider.Config{
-		Name: "opencode-go", BaseURL: "https://opencode.ai/zen/go/v1", Model: "deepseek-v4-flash", APIKey: "test",
+		Name: "opencode-go", BaseURL: base, Model: "deepseek-v4.1-flash", APIKey: "test",
 		HTTPClient: &http.Client{Transport: localOpenCodeGoTransport{target: target}},
 	})
 	if err != nil {
@@ -84,6 +106,7 @@ func TestOpenCodeGoChatToolReplayOmitsToolName(t *testing.T) {
 		t.Fatal(err)
 	}
 	var call *provider.ToolCall
+	var reasoning strings.Builder
 	for chunk := range first {
 		if chunk.Type == provider.ChunkError {
 			t.Fatal(chunk.Err)
@@ -91,12 +114,15 @@ func TestOpenCodeGoChatToolReplayOmitsToolName(t *testing.T) {
 		if chunk.Type == provider.ChunkToolCall {
 			call = chunk.ToolCall
 		}
+		if chunk.Type == provider.ChunkReasoning {
+			reasoning.WriteString(chunk.Text)
+		}
 	}
 	if call == nil || call.ID != "call_1" || call.Name != "bash" {
 		t.Fatalf("first turn tool call = %+v", call)
 	}
 	messages = append(messages,
-		provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{*call}},
+		provider.Message{Role: provider.RoleAssistant, ReasoningContent: reasoning.String(), ToolCalls: []provider.ToolCall{*call}},
 		provider.Message{Role: provider.RoleTool, ToolCallID: call.ID, Name: call.Name, Content: "ok"},
 	)
 	second, err := p.Stream(t.Context(), provider.Request{Messages: messages})
@@ -170,6 +196,56 @@ func TestOpenCodeGoDeepSeekWireKeepsReasoningAndStableHistory(t *testing.T) {
 		second, _ := json.Marshal(c.buildRequest(req))
 		if !bytes.Equal(first, second) || !bytes.Contains(first, []byte(`"reasoning_effort":"max"`)) || !bytes.Contains(first, []byte(`"reasoning_content":"provider-reasoning"`)) {
 			t.Fatalf("%s lost effort/replay/cache stability: %s", model, first)
+		}
+	}
+}
+
+func TestOpenCodeGoV41UsesDeepSeekWireContractWithoutManualOverrides(t *testing.T) {
+	for _, base := range []string{"https://opencode.ai/zen/go/v1", "https://opencode.ai/inference/go/openai/v1"} {
+		p, err := New(provider.Config{BaseURL: base, Model: "deepseek-v4.1-flash"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := p.(*client)
+		if !c.RequiresToolCallReasoning() {
+			t.Fatal("V4.1 must preserve provider-issued thinking")
+		}
+		req := provider.Request{Messages: []provider.Message{
+			{Role: provider.RoleUser, Content: "fixture"},
+			{Role: provider.RoleAssistant, Content: "previous answer", ReasoningContent: "previous reasoning"},
+			{Role: provider.RoleUser, Content: "run a tool"},
+			{Role: provider.RoleAssistant, ReasoningContent: "tool reasoning", ToolCalls: []provider.ToolCall{{ID: "call-1", Name: "read_file", Arguments: "{}"}}},
+			{Role: provider.RoleTool, ToolCallID: "call-1", Name: "read_file", Content: "tool-result"},
+		}, MaxTokens: 128}
+		for _, effort := range []string{"", "low", "high", "max", "disabled"} {
+			req.EffortOverride = effort
+			body := c.buildRequest(req)
+			first, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, _ := json.Marshal(c.buildRequest(req))
+			if !bytes.Equal(first, second) || body.Model != "deepseek-v4.1-flash" {
+				t.Fatalf("unstable/rewritten request: %s", first)
+			}
+			wantThinking, wantEffort := "enabled", effort
+			if effort == "" {
+				wantEffort = "high"
+			}
+			if effort == "disabled" {
+				wantThinking, wantEffort = "disabled", ""
+			}
+			if body.Thinking == nil || body.Thinking.Type != wantThinking || body.ReasoningEffort != wantEffort {
+				t.Fatalf("effort %q: %s", effort, first)
+			}
+			for _, expected := range []string{`"reasoning_content":"previous reasoning"`, `"reasoning_content":"tool reasoning"`, `"tool_call_id":"call-1"`} {
+				if !bytes.Contains(first, []byte(expected)) {
+					t.Fatalf("missing %s: %s", expected, first)
+				}
+			}
+			if body.Messages[4].Name != nil {
+				t.Fatalf("tool result included rejected name: %s", first)
+			}
 		}
 	}
 }

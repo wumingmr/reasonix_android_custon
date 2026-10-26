@@ -435,15 +435,6 @@ func (a *approvalManager) revokeSessionAuthorization(scope, target string) bool 
 	}
 }
 
-// SessionAuthorizations is the same-session tool-grant and Plan-mode
-// read-only command trust state a controller rebuild must carry forward; see
-// Controller.SessionAuthorizations / RestoreSessionAuthorizations.
-type SessionAuthorizations struct {
-	Grants                   []string
-	PlanModeReadOnlyCommands []string
-	WriteRoots               []string
-}
-
 func (a *approvalManager) snapshotSessionAuthorizations() SessionAuthorizations {
 	a.mu.Lock()
 	defer a.mu.Unlock()

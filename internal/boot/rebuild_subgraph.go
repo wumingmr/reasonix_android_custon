@@ -17,9 +17,13 @@ import (
 
 // tryRebuildSubgraph patches narrow plans without BuildRuntime (fail-atomic).
 // Callers must skip Close when BuildResult.ReusedController is set.
-func tryRebuildSubgraph(ctx context.Context, old *control.Controller, previous *BuildResult, opts Options, m runtimeMigration) (res *BuildResult, handled bool, err error) {
+func tryRebuildSubgraph(ctx context.Context, old *control.Controller, previous *BuildResult, opts Options) (res *BuildResult, handled bool, err error) {
 	if previous == nil || previous.Snapshot == nil || old == nil {
 		return nil, false, nil
+	}
+	cfg, reusable, configErr := reusableRuntimeConfiguration(previous, opts)
+	if configErr != nil || !reusable {
+		return nil, configErr != nil, configErr
 	}
 	start := time.Now()
 	from := opts.Graph
@@ -73,6 +77,9 @@ func tryRebuildSubgraph(ctx context.Context, old *control.Controller, previous *
 		SkillWatchService:    previous.SkillWatchService,
 		Plan:                 plan,
 		ReusedController:     true,
+		configFingerprint:    previous.configFingerprint,
+		liveSettings:         previous.liveSettings,
+		selection:            previous.selection,
 	}
 	session := protocol.SessionContext{
 		SessionID:     controllerSessionID(previous.Controller),
@@ -125,18 +132,10 @@ func tryRebuildSubgraph(ctx context.Context, old *control.Controller, previous *
 		return fail(err)
 	}
 
-	_ = m
 	attachPlanAndStatus(res, from, to, opts.Generation, previous.Snapshot)
 
-	if prevGen := previous.Snapshot.Generation(); prevGen != 0 && prevGen != gen {
-		registerControllerDrainCancel(res.Owner, prevGen, old)
-		if !res.ReusedController {
-			if host := old.Host(); host != nil {
-				h := host
-				res.Owner.Gate.RegisterDrainCancel(prevGen, func() { h.CancelInFlightMCP() })
-			}
-		}
-	}
+	registerPreviousRuntimeDrain(previous, old, res, gen)
+	res.liveSettings.apply(cfg.Agent.CompactRatio)
 	finishRebuildPublish(res, nil, start)
 	if oldMgr != nil && res.Extensions != oldMgr && res.Plan != nil {
 		drainStart := time.Now()
@@ -271,6 +270,9 @@ func commitControllerExtPatch(res *BuildResult, session protocol.SessionContext,
 }
 
 func awaitSidecarsReady(ctx context.Context, mgr *sidecar.Manager) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if mgr == nil {
 		return extension.AwaitReady(ctx, nil)
 	}
@@ -324,4 +326,16 @@ func finishRebuildPublish(res *BuildResult, drainMgr *sidecar.Manager, start tim
 		})
 	}
 	extension.DefaultLifecycleMetrics.ObserveActivate(time.Since(start))
+}
+
+func registerPreviousRuntimeDrain(previous *BuildResult, old *control.Controller, res *BuildResult, gen uint64) {
+	if prevGen := previous.Snapshot.Generation(); prevGen != 0 && prevGen != gen {
+		registerControllerDrainCancel(res.Owner, prevGen, old)
+		if !res.ReusedController {
+			if host := old.Host(); host != nil {
+				h := host
+				res.Owner.Gate.RegisterDrainCancel(prevGen, func() { h.CancelInFlightMCP() })
+			}
+		}
+	}
 }

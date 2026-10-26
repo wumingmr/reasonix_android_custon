@@ -407,6 +407,7 @@ type streamedCall struct {
 	id, name, arguments string
 	argChars            int
 	completed           bool
+	announced           bool
 }
 
 func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<- provider.Chunk, requestMessages []provider.Message) {
@@ -483,6 +484,9 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
+			if !checkTerminalCalls(ctx, out, nil, calls) {
+				return
+			}
 			terminal = true
 			break
 		}
@@ -524,6 +528,7 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 				switch event.Item.Type {
 				case "function_call":
 					call := callForItem(event.Item.ID)
+					call.announced = true
 					call.id = event.Item.CallID
 					call.name = event.Item.Name
 					if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkToolCallStart, ToolCall: &provider.ToolCall{ID: call.id, Name: call.name}}) {
@@ -588,35 +593,11 @@ func (c *client) readStream(ctx context.Context, resp *http.Response, out chan<-
 			}
 		case "response.completed", "response.incomplete", "response.failed":
 			terminal = true
-			if event.Type != "response.failed" {
-				for _, item := range unclosedOutputCalls(event.Response, calls) {
-					if !finishFunctionCall(ctx, out, callForItem(item.ID), item) {
-						return
-					}
-				}
-			}
-			if event.Type == "response.incomplete" {
-				if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkReasoning, ReasoningState: provider.ReasoningIncomplete}) {
-					return
-				}
-			}
 			completedResponseID = terminalResponseID(event)
-			if !emitTerminalResponseUsage(ctx, out, event) {
+			var ok bool
+			failed, ok = c.finishResponse(ctx, out, event, calls, callForItem)
+			if !ok {
 				return
-			}
-			if event.Type == "response.failed" {
-				failed = true
-				err := fmt.Errorf("responses: response failed")
-				if event.Response != nil && event.Response.Error != nil {
-					if authErr := authErrorFromResponse(c, event.Response.Error); authErr != nil {
-						err = authErr
-					} else {
-						err = fmt.Errorf("responses: %s", event.Response.Error.Message)
-					}
-				}
-				if !sendChunk(ctx, out, provider.Chunk{Type: provider.ChunkError, Err: err}) {
-					return
-				}
 			}
 		}
 		if terminal {

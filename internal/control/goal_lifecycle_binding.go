@@ -13,10 +13,11 @@ import (
 )
 
 type legacyGoalProjection struct {
-	Goal      string `json:"goal"`
-	Status    string `json:"status"`
-	TurnsUsed int    `json:"turnsUsed"`
-	Block     string `json:"block"`
+	Goal           string `json:"goal"`
+	Status         string `json:"status"`
+	TurnsUsed      int    `json:"turnsUsed"`
+	WorkDurationMs int64  `json:"workDurationMs,omitempty"`
+	Block          string `json:"block"`
 }
 
 // goalLifecycleFromProjection is the only compatibility boundary between
@@ -84,7 +85,7 @@ func importLegacyGoalProjection(machine *goaldomain.Machine, raw json.RawMessage
 		"version": goaldomain.StateVersion,
 		"current": goaldomain.Snapshot{
 			ID: id, Revision: 1, Objective: legacy.Goal, Phase: phase,
-			MaxGoalRounds: nil, RoundsStarted: uint64(legacy.TurnsUsed),
+			MaxGoalRounds: nil, RoundsStarted: uint64(legacy.TurnsUsed), WorkDurationMs: legacy.WorkDurationMs,
 			BlockedReason: blockedReason, CreatedAt: createdAt, UpdatedAt: createdAt,
 		},
 		"legacyState": json.RawMessage(append([]byte(nil), raw...)),

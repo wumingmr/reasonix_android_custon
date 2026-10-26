@@ -277,6 +277,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	liveSettings := newLiveRuntimeSettings(cfg.Agent.CompactRatio)
 	deepSeekProtocolMigErr = deepSeekProtocolMigrationNoticeError(handleConfigLoadWarnings(opts, cfg), deepSeekProtocolMigErr)
 	if err := preflightRoleReasoning(cfg, opts, opts.ProviderResolver, false); err != nil {
 		return nil, err
@@ -1142,6 +1143,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			SoftCompactRatio:    cfg.Agent.SoftCompactRatio,
 			ToolResultSnipRatio: cfg.Agent.ToolResultSnipRatio,
 			CompactRatio:        cfg.Agent.CompactRatio,
+			CompactRatioSource:  liveSettings.compactRatio,
 			CompactForceRatio:   cfg.Agent.CompactForceRatio,
 			ContextEditing:      cfg.Agent.ContextEditing,
 			Temperature:         cfg.Agent.Temperature,
@@ -1266,7 +1268,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// read_only_task, so they cannot write, install, mutate memory, resume/fork
 	// transcripts, or delegate further.
 	//
-	subagentSkillOptions := newSubagentSkillOptionsFactory(cfg.Agent, quoteCtx, headlessGate, keepPolicy, maxSubagentDepth, opts.Ablation, workspaceLease, writeRootSet, hookRunner, childImageRouting{ctrlRef.Load, imageConfig})
+	subagentSkillOptions := liveSettings.skillOptions(newSubagentSkillOptionsFactory(cfg.Agent, quoteCtx, headlessGate, keepPolicy, maxSubagentDepth, opts.Ablation, workspaceLease, writeRootSet, hookRunner, childImageRouting{ctrlRef.Load, imageConfig}))
 	readOnlySkillRunner := func(sctx context.Context, sk skill.Skill, task string, runOpts skill.SubagentRunOptions) (string, error) {
 		if strings.TrimSpace(runOpts.ContinueFrom) != "" || strings.TrimSpace(runOpts.ForkFrom) != "" {
 			return "", fmt.Errorf("read_only_skill does not support continue_from/fork_from")
@@ -1718,6 +1720,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		SoftCompactRatio:             cfg.Agent.SoftCompactRatio,
 		ToolResultSnipRatio:          cfg.Agent.ToolResultSnipRatio,
 		CompactRatio:                 cfg.Agent.CompactRatio,
+		CompactRatioSource:           liveSettings.compactRatio,
 		CompactForceRatio:            cfg.Agent.CompactForceRatio,
 		ContextEditing:               cfg.Agent.ContextEditing,
 		RecentKeep:                   cfg.Agent.RecentKeep,
@@ -1798,6 +1801,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			SoftCompactRatio:             cfg.Agent.SoftCompactRatio,
 			ToolResultSnipRatio:          cfg.Agent.ToolResultSnipRatio,
 			CompactRatio:                 cfg.Agent.CompactRatio,
+			CompactRatioSource:           liveSettings.compactRatio,
 			CompactForceRatio:            cfg.Agent.CompactForceRatio,
 			ContextEditing:               cfg.Agent.ContextEditing,
 			RecentKeep:                   cfg.Agent.RecentKeep,
@@ -2082,7 +2086,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	}
 	skillsOwned = true
 	backgroundOwned = true
-	return finalizeBuildResult(&BuildResult{Controller: ctrl, Snapshot: snap, Runtime: runtimeSet, Owner: owner, Extensions: extensionMgr, Dispatcher: extensionDispatcher, ExtensionUI: extUIHub, ProviderResolver: providerResolver, BaseProviderResolver: baseResolver, Assembly: assembly, SkillWatchService: skillWatchService}, !opts.deferPublish), nil
+	return finalizeBuildResult(withRuntimeConfiguration(&BuildResult{Controller: ctrl, Snapshot: snap, Runtime: runtimeSet, Owner: owner, Extensions: extensionMgr, Dispatcher: extensionDispatcher, ExtensionUI: extUIHub, ProviderResolver: providerResolver, BaseProviderResolver: baseResolver, Assembly: assembly, SkillWatchService: skillWatchService}, cfg, liveSettings, opts), !opts.deferPublish), nil
 }
 
 // effectivePlannerModel centralizes planner precedence. Every role setting

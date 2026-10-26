@@ -32,11 +32,11 @@ func OpenCodeGoRequestRoute(kind, baseURL, requestURL, chatURL string) (string, 
 			return "", false
 		}
 		switch {
-		case (kind == "openai" || kind == "chat") && path == "/zen/go/v1/chat/completions":
+		case (kind == "openai" || kind == "chat") && (path == "/zen/go/v1/chat/completions" || path == "/inference/go/openai/v1/chat/completions"):
 			return OpenCodeGoRouteChat, true
-		case kind == "anthropic" && path == "/zen/go/v1/messages":
+		case kind == "anthropic" && (path == "/zen/go/v1/messages" || path == "/inference/go/anthropic/v1/messages"):
 			return OpenCodeGoRouteAnthropic, true
-		case kind == "responses" && path == "/zen/go/v1/responses":
+		case kind == "responses" && (path == "/zen/go/v1/responses" || path == "/inference/go/openai/v1/responses"):
 			return OpenCodeGoRouteResponses, true
 		default:
 			return "", false
@@ -73,7 +73,7 @@ func OpenCodeGoRecommendedRoute(model string) (string, bool) {
 
 func OpenCodeGoDeepSeekModel(model string) bool {
 	switch strings.TrimSpace(model) {
-	case "deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp":
+	case "deepseek-flash", "deepseek-v4.1-flash", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp":
 		return true
 	}
 	return false

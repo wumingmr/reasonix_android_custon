@@ -8,6 +8,10 @@ import "errors"
 // assistant message that can be committed to conversation history.
 var ErrEmptyResponse = errors.New("empty provider response")
 
+// ErrNoDeliverableOutput marks a terminal response without an answer after
+// the agent's bounded recovery. Transport retries must not restart this turn.
+var ErrNoDeliverableOutput = errors.New("no_deliverable_output: model finished without a visible final answer after recovery; this turn did not complete")
+
 // ErrNonStreamingResponse marks a stream request answered with a complete
 // non-SSE body (a gateway landing page, an HTML or JSON error page). It is an
 // endpoint configuration problem, not a dropped connection, so it never wraps

@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/provider"
@@ -92,5 +93,7 @@ func (c *Controller) runModelTurn(ctx context.Context, input string) error {
 			return err
 		}
 	}
+	work := c.beginGoalWork()
+	defer func() { c.recordGoalWork(work, time.Now()) }()
 	return c.runner.Run(ctx, input)
 }

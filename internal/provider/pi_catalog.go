@@ -44,7 +44,11 @@ func PiCatalogModelInfoForProvider(providerID, kind, baseURL, model string) (Mod
 		}
 		catalogURL := strings.TrimRight(strings.TrimSpace(candidate.BaseURL), "/")
 		if configuredURL != catalogURL {
-			continue
+			configuredRoute, configuredOfficial := OfficialOpenCodeGoRoute(kind, configuredURL)
+			catalogRoute, catalogOfficial := OfficialOpenCodeGoRoute(kind, catalogURL)
+			if !configuredOfficial || !catalogOfficial || configuredRoute != catalogRoute {
+				continue
+			}
 		}
 		return modelInfoFromPi(candidate), true
 	}
@@ -161,20 +165,24 @@ func piRouteCorrectedAway(route, id string) bool {
 }
 
 func piCatalogOpenCodeGoModels(route string) []*piAI.Model {
-	var wantAPI, wantBaseURL string
+	var wantAPI string
 	switch route {
 	case OpenCodeGoRouteChat:
-		wantAPI, wantBaseURL = "openai-completions", "https://opencode.ai/zen/go/v1"
+		wantAPI = "openai-completions"
 	case OpenCodeGoRouteAnthropic:
-		wantAPI, wantBaseURL = "anthropic-messages", "https://opencode.ai/zen/go"
+		wantAPI = "anthropic-messages"
 	case OpenCodeGoRouteResponses:
-		wantAPI, wantBaseURL = "openai-responses", "https://opencode.ai/zen/go/v1"
+		wantAPI = "openai-responses"
 	default:
 		return nil
 	}
 	models := make([]*piAI.Model, 0)
 	for _, model := range piAI.GetModels("opencode-go") {
-		if model != nil && strings.EqualFold(string(model.Api), wantAPI) && strings.TrimRight(model.BaseURL, "/") == wantBaseURL && !piRouteCorrectedAway(route, model.ID) {
+		if model == nil {
+			continue
+		}
+		modelRoute, official := OfficialOpenCodeGoRoute(routeKind(route), model.BaseURL)
+		if strings.EqualFold(string(model.Api), wantAPI) && official && modelRoute == route && !piRouteCorrectedAway(route, model.ID) {
 			models = append(models, model)
 		}
 	}

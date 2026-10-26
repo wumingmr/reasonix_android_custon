@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/term"
@@ -113,155 +112,6 @@ func filterMenuItems(items []menuItem, query string) []menuItem {
 	return out
 }
 
-// searchInputBuf sizes a stdin read so a burst of typed text — several
-// multi-byte characters plus spaces from an IME — arrives whole. The previous
-// 8-byte buffer truncated longer input mid-character, leaving the query with a
-// partial UTF-8 sequence that no longer matched anything.
-const searchInputBuf = 256
-
-// searchState is the search box of a menu: the query text plus the bytes of a
-// multi-byte character the last read left incomplete.
-type searchState struct {
-	query   string
-	pending []byte
-}
-
-// applySearchChunk folds one raw read into the search box and reports whether
-// the query text changed, i.e. whether the caller must redraw and re-filter.
-//
-// Both results of searchText are stored unconditionally, and that is the whole
-// point of this function existing. searchText holds back a character this read
-// cut in half, so such a chunk leaves the query untouched (query == the old
-// one) while pending grows. A caller that assigned only when the query changed
-// dropped the fragment, and the character could never be completed — the exact
-// failure searchState.pending exists to prevent. Keeping this in one function
-// also keeps selectOne and selectMany from drifting apart.
-//
-// Keeping the wiring here rather than inline in the two menus is what makes it
-// testable at all: both menus read os.Stdin directly, so the loop body cannot be
-// exercised by a test without a real terminal.
-func (s *searchState) applySearchChunk(k []byte) bool {
-	next, rest := searchText(s.query, s.pending, k)
-	changed := next != s.query
-	s.query, s.pending = next, rest
-	return changed
-}
-
-// searchText folds one raw stdin chunk into the search query. k may hold several
-// characters at once (a paste, or one read catching a fast typist), so the whole
-// chunk is decoded rather than only its first byte.
-//
-// pending carries the bytes of a multi-byte character that the previous read cut
-// in half. Such a character is not lost: the fragment is prepended to the next
-// chunk and decoded then, which is why the caller keeps pending across reads.
-// Control bytes are dropped so a chunk never injects an Enter or an arrow
-// sequence into the query text.
-func searchText(query string, pending, k []byte) (string, []byte) {
-	buf := k
-	if len(pending) > 0 {
-		buf = append(append(make([]byte, 0, len(pending)+len(k)), pending...), k...)
-	}
-	for i := 0; i < len(buf); {
-		// An escape sequence that did not land at the chunk start — a read
-		// catching a typed character together with the arrow key pressed right
-		// after it. Skipping it keeps "[A" out of the query; before the whole
-		// chunk was decoded only its first byte was ever considered, so such a
-		// pair contributed just the character.
-		if buf[i] == 0x1b {
-			if n := escSeqLen(buf[i:]); n > 0 {
-				i += n
-				continue
-			}
-		}
-		r, size := utf8.DecodeRune(buf[i:])
-		if r == utf8.RuneError && size <= 1 {
-			// A trailing partial sequence is held back for the next read instead
-			// of being committed as invalid UTF-8, which could never match again.
-			return query, append([]byte(nil), buf[i:]...)
-		}
-		if r >= 32 && r != 127 {
-			query += string(r)
-		}
-		i += size
-	}
-	return query, nil
-}
-
-// escSeqLen returns the byte length of the escape sequence at the start of b, or
-// 0 when b holds no complete one. It covers the CSI forms the search menus react
-// to (ESC [ letter) plus SS3, and refuses to claim a bare ESC followed by
-// ordinary text: the caller's own Esc branch already handles that, and here such
-// an ESC is just a control byte to drop.
-func escSeqLen(b []byte) int {
-	if len(b) < 2 || b[0] != 0x1b {
-		return 0
-	}
-	switch b[1] {
-	case '[': // CSI: ESC [ params final-byte, e.g. ESC [ A (up), ESC [ 3 ~ (delete)
-		i := 2
-		for i < len(b) && b[i] >= 0x20 && b[i] < 0x40 { // parameter/intermediate bytes
-			i++
-		}
-		if i < len(b) && b[i] >= 0x40 && b[i] < 0x80 { // final byte
-			return i + 1
-		}
-		return 0 // no final byte yet: incomplete, treat ESC as a plain control byte
-	case 'O': // SS3: ESC O letter, e.g. ESC O A
-		if len(b) >= 3 {
-			return 3
-		}
-		return 0
-	}
-	return 0
-}
-
-// escArrow reports whether the chunk is an arrow-key escape sequence and, if so,
-// which way it points: -1 for up, +1 for down, 0 when it is not an arrow.
-//
-// This has to be decided before the menus' bare-Esc branch, because an arrow
-// sequence starts with ESC (0x1b) too. Testing `k[0] == 27` alone sent every
-// arrow key press down the Esc path, which cleared the query and left search
-// mode — so on a filtered list the selection could not be moved at all.
-func escArrow(k []byte) int {
-	// Only claim a complete sequence; a bare ESC is the cancel key.
-	if escSeqLen(k) == 0 {
-		return 0
-	}
-	// The final byte carries the key; parameters may precede it, so match on the
-	// last byte rather than a fixed length. ESC[1;2B (a modified down) is a real
-	// sequence some terminals emit for Shift+Down.
-	final := k[len(k)-1]
-	if final < 0x40 || final >= 0x80 {
-		return 0
-	}
-	if k[1] == 'O' {
-		// SS3 has no parameters: ESC O A / ESC O B
-		if len(k) != 3 {
-			return 0
-		}
-	} else if k[1] != '[' {
-		return 0
-	}
-	switch final {
-	case 'A':
-		return -1
-	case 'B':
-		return 1
-	}
-	return 0
-}
-
-// trimSearchRune removes the last character from the query by rune, not by
-// byte: deleting one byte from a multi-byte character leaves invalid UTF-8 that
-// can never match any label again.
-func trimSearchRune(query string) string {
-	if query == "" {
-		return query
-	}
-	_, size := utf8.DecodeLastRuneInString(query)
-	return query[:len(query)-size]
-}
-
 // selectOne renders an interactive single-choice menu navigated with the arrow
 // keys (or j/k), confirmed with Enter, aborted with q or Ctrl-C. It puts the
 // terminal in raw mode, so it requires a TTY (callers gate on isInteractive).
@@ -283,11 +133,6 @@ func selectOne(label string, items []menuItem) (int, error) {
 	// search state
 	searching := false
 	searchQuery := ""
-	// search holds the bytes of a multi-byte character that a read cut in half,
-	// so the next read can complete it instead of losing it. applySearchChunk
-	// owns the query/pending bookkeeping; see its doc comment for why the
-	// assignment cannot be conditional.
-	var search searchState
 	filtered := items
 	filterIdx := make([]int, len(items))
 	for i := range items {
@@ -362,36 +207,19 @@ func selectOne(label string, items []menuItem) (int, error) {
 
 	redraw() // initial draw
 
-	buf := make([]byte, searchInputBuf)
+	buf := make([]byte, 8)
 	for {
 		n, err := os.Stdin.Read(buf)
 		if err != nil {
 			return 0, err
 		}
 		k := buf[:n]
-		if len(k) == 0 {
-			continue
-		}
 
 		if searching {
 			switch {
-			case escArrow(k) < 0: // up — move the selection, stay in search
-				if sel > 0 {
-					sel--
-					// Redraw here: this branch has no trailing redraw of its own,
-					// so without it the selection moves but the screen does not
-					// follow — the cursor stays put and the row looks unselectable.
-					redraw()
-				}
-			case escArrow(k) > 0: // down — move the selection, stay in search
-				if sel < len(filtered)-1 {
-					sel++
-					redraw()
-				}
-			case k[0] == 27: // bare Esc — exit search
+			case k[0] == 27: // Esc — exit search
 				searching = false
 				searchQuery = ""
-				search = searchState{}
 				filtered = items
 				filterIdx = make([]int, len(items))
 				for i := range items {
@@ -407,7 +235,7 @@ func selectOne(label string, items []menuItem) (int, error) {
 				}
 			case k[0] == 127 || k[0] == 8: // backspace
 				if len(searchQuery) > 0 {
-					searchQuery = trimSearchRune(searchQuery)
+					searchQuery = searchQuery[:len(searchQuery)-1]
 					filtered = filterMenuItems(items, searchQuery)
 					filterIdx = filterIndices(items, searchQuery)
 					sel = 0
@@ -417,18 +245,15 @@ func selectOne(label string, items []menuItem) (int, error) {
 			case k[0] == 3: // Ctrl-C
 				fmt.Fprint(w, "\r\n")
 				return 0, errCancelled
+			case k[0] >= 32 && k[0] < 127: // printable
+				searchQuery += string(k[0])
+				filtered = filterMenuItems(items, searchQuery)
+				filterIdx = filterIndices(items, searchQuery)
+				sel = 0
+				scroll = 0
+				redraw()
 			default:
-				// Printable text, including multi-byte characters typed by a
-				// terminal IME and any spaces the chunk carries.
-				search.query = searchQuery
-				if search.applySearchChunk(k) {
-					searchQuery = search.query
-					filtered = filterMenuItems(items, searchQuery)
-					filterIdx = filterIndices(items, searchQuery)
-					sel = 0
-					scroll = 0
-					redraw()
-				}
+				continue
 			}
 			continue
 		}
@@ -443,7 +268,6 @@ func selectOne(label string, items []menuItem) (int, error) {
 		case k[0] == '/': // enter search mode
 			searching = true
 			searchQuery = ""
-			search = searchState{}
 			redraw()
 		case len(k) >= 3 && k[0] == 27 && k[1] == '[' && k[2] == 'A': // up
 			if sel > 0 {
@@ -488,11 +312,6 @@ func selectMany(label string, items []menuItem) ([]int, error) {
 	// search state
 	searching := false
 	searchQuery := ""
-	// search holds the bytes of a multi-byte character that a read cut in half,
-	// so the next read can complete it instead of losing it. applySearchChunk
-	// owns the query/pending bookkeeping; see its doc comment for why the
-	// assignment cannot be conditional.
-	var search searchState
 	filtered := items
 	filterIdx := make([]int, len(items))
 	for i := range items {
@@ -565,31 +384,19 @@ func selectMany(label string, items []menuItem) ([]int, error) {
 
 	redraw()
 
-	buf := make([]byte, searchInputBuf)
+	buf := make([]byte, 8)
 	for {
 		n, err := os.Stdin.Read(buf)
 		if err != nil {
 			return nil, err
 		}
 		k := buf[:n]
-		if len(k) == 0 {
-			continue
-		}
 
 		if searching {
 			switch {
-			case escArrow(k) < 0: // up — move the cursor, stay in search
-				if cur > 0 {
-					cur--
-				}
-			case escArrow(k) > 0: // down — move the cursor, stay in search
-				if cur < len(filtered)-1 {
-					cur++
-				}
-			case k[0] == 27: // bare Esc — exit search
+			case k[0] == 27: // Esc — exit search
 				searching = false
 				searchQuery = ""
-				search = searchState{}
 				filtered = items
 				filterIdx = make([]int, len(items))
 				for i := range items {
@@ -617,7 +424,7 @@ func selectMany(label string, items []menuItem) ([]int, error) {
 				}
 			case k[0] == 127 || k[0] == 8: // backspace
 				if len(searchQuery) > 0 {
-					searchQuery = trimSearchRune(searchQuery)
+					searchQuery = searchQuery[:len(searchQuery)-1]
 					filtered = filterMenuItems(items, searchQuery)
 					filterIdx = filterIndices(items, searchQuery)
 					cur = 0
@@ -627,17 +434,31 @@ func selectMany(label string, items []menuItem) ([]int, error) {
 			case k[0] == 3: // Ctrl-C
 				fmt.Fprint(w, "\r\n")
 				return nil, errCancelled
-			default:
-				// Printable text, including multi-byte characters typed by a
-				// terminal IME and any spaces the chunk carries.
-				search.query = searchQuery
-				if search.applySearchChunk(k) {
-					searchQuery = search.query
-					filtered = filterMenuItems(items, searchQuery)
-					filterIdx = filterIndices(items, searchQuery)
-					cur = 0
-					scroll = 0
+			case k[0] >= 32 && k[0] < 127:
+				searchQuery += string(k[0])
+				filtered = filterMenuItems(items, searchQuery)
+				filterIdx = filterIndices(items, searchQuery)
+				cur = 0
+				scroll = 0
+				redraw()
+			case len(k) >= 3 && k[0] == 27 && k[1] == '[' && k[2] == 'A':
+				if cur > 0 {
+					cur--
 				}
+			case len(k) >= 3 && k[0] == 27 && k[1] == '[' && k[2] == 'B':
+				if cur < len(filtered)-1 {
+					cur++
+				}
+			case k[0] == 'k':
+				if cur > 0 {
+					cur--
+				}
+			case k[0] == 'j':
+				if cur < len(filtered)-1 {
+					cur++
+				}
+			default:
+				continue
 			}
 			redraw()
 			continue
@@ -662,7 +483,6 @@ func selectMany(label string, items []menuItem) ([]int, error) {
 		case k[0] == '/': // enter search mode
 			searching = true
 			searchQuery = ""
-			search = searchState{}
 			redraw()
 		case k[0] == ' ':
 			if len(filtered) > 0 {

@@ -51,7 +51,7 @@ func TestAssistantSettlementPublicationFollowsBusinessAcceptance(t *testing.T) {
 		turns []testutil.Turn
 	}{
 		{name: "answer", turns: []testutil.Turn{{Text: "final answer", Reasoning: "final reasoning"}}},
-		{name: "reasoning-only", turns: []testutil.Turn{{Reasoning: "reasoning-only result"}}},
+		{name: "reasoning-only", turns: []testutil.Turn{{Reasoning: "reasoning-only result"}, {Text: "recovered answer"}}},
 		{name: "tool-bearing", turns: []testutil.Turn{
 			{Text: "checking", Reasoning: "tool reasoning", ToolCalls: []provider.ToolCall{{ID: "echo-1", Name: "echo", Arguments: `{"text":"one"}`}}},
 			{Text: "done"},

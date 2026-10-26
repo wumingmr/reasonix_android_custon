@@ -256,7 +256,7 @@ type TaskTool struct {
 	parentReg                     *tool.Registry
 	maxSteps                      int
 	contextWindow                 int
-	compactRatio                  float64
+	compaction                    compactionThreshold
 	recentKeep                    int
 	temperature                   float64
 	archiveDir                    string

@@ -456,7 +456,6 @@ func normalizeLegacyOpenCodeGoContextWindows(c *Config) bool {
 		canonical := preset.Entries[0]
 		if !strings.EqualFold(strings.TrimSpace(p.Kind), strings.TrimSpace(canonical.Kind)) ||
 			!officialOpenCodeGoKindURL(canonical.Kind, p.BaseURL) ||
-			normalizedBaseURLForMigration(p.BaseURL) != normalizedBaseURLForMigration(canonical.BaseURL) ||
 			!openCodeGoCatalogMatches(presetID, *p, canonical) {
 			continue
 		}

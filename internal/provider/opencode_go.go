@@ -10,9 +10,12 @@ import (
 // Official OpenCode Go routes verified against the public endpoint list.
 // Similar hostnames, custom proxies, and extra query/userinfo never match.
 const (
-	openCodeGoHost          = "opencode.ai"
-	openCodeGoChatPath      = "/zen/go/v1"
-	openCodeGoAnthropicPath = "/zen/go"
+	openCodeGoHost             = "opencode.ai"
+	openCodeGoChatPath         = "/zen/go/v1"
+	openCodeGoAnthropicPath    = "/zen/go"
+	OpenCodeGoChatBaseURL      = "https://opencode.ai/inference/go/openai/v1"
+	OpenCodeGoAnthropicBaseURL = "https://opencode.ai/inference/go/anthropic"
+	OpenCodeGoModelsURL        = "https://opencode.ai/inference/go/v1/models"
 )
 
 // OpenCodeGoModelLimits is the static models.dev snapshot used by both config
@@ -31,7 +34,8 @@ const (
 // OpenCodeGoChatModels is the official Chat Completions catalog.
 func OpenCodeGoChatModels() map[string]OpenCodeGoModelLimits {
 	return mergeOpenCodeGoLimits(OpenCodeGoRouteChat, map[string]OpenCodeGoModelLimits{
-		"glm-5.3": {Context: 1_000_000, MaxOutput: 131_072}, "glm-5.2": {Context: 1_000_000, MaxOutput: 131_072},
+		"deepseek-v4.1-flash": {Context: 1_000_000, MaxOutput: 384_000},
+		"glm-5.3":             {Context: 1_000_000, MaxOutput: 131_072}, "glm-5.2": {Context: 1_000_000, MaxOutput: 131_072},
 		"glm-5.1": {Context: 202_752, MaxOutput: 32_768}, "kimi-k3": {Context: 1_048_576, MaxOutput: 131_072},
 		"kimi-k2.7-code": {Context: 262_144, MaxOutput: 262_144}, "kimi-k2.6": {Context: 262_144, MaxOutput: 65_536},
 		"deepseek-flash": {Context: 1_000_000, MaxOutput: 384_000}, "deepseek-v4-pro": {Context: 1_000_000, MaxOutput: 384_000}, "deepseek-v4-flash": {Context: 1_000_000, MaxOutput: 384_000},
@@ -113,9 +117,9 @@ func routeKind(route string) string {
 
 func routeURL(route string) string {
 	if route == OpenCodeGoRouteAnthropic {
-		return "https://opencode.ai/zen/go"
+		return OpenCodeGoAnthropicBaseURL
 	}
-	return "https://opencode.ai/zen/go/v1"
+	return OpenCodeGoChatBaseURL
 }
 
 func officialOpenCodeGoPath(baseURL string) (string, bool) {
@@ -136,17 +140,31 @@ func OfficialOpenCodeGoRoute(kind, baseURL string) (string, bool) {
 	}
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "openai", "chat", "":
-		if path == openCodeGoChatPath {
+		if path == openCodeGoChatPath || path == "/inference/go/openai/v1" {
 			return OpenCodeGoRouteChat, true
 		}
 	case "responses":
-		if path == openCodeGoChatPath {
+		if path == openCodeGoChatPath || path == "/inference/go/openai/v1" {
 			return OpenCodeGoRouteResponses, true
 		}
 	case "anthropic":
-		if path == openCodeGoAnthropicPath {
+		if path == openCodeGoAnthropicPath || path == "/inference/go/anthropic" {
 			return OpenCodeGoRouteAnthropic, true
 		}
+	}
+	return "", false
+}
+
+// CanonicalOpenCodeGoModelsURL keeps discovery on the shared catalog rather
+// than appending /models under a protocol-specific inference namespace.
+func CanonicalOpenCodeGoModelsURL(raw string) (string, bool) {
+	path, ok := officialOpenCodeGoPath(raw)
+	if !ok {
+		return "", false
+	}
+	switch path {
+	case "/zen/go", "/zen/go/v1", "/zen/go/v1/models", "/inference/go/openai/v1", "/inference/go/anthropic", "/inference/go/anthropic/v1", "/inference/go/v1/models":
+		return OpenCodeGoModelsURL, true
 	}
 	return "", false
 }

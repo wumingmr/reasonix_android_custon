@@ -151,6 +151,30 @@ HTTP/2 传输错误使用 `kind: transport_protocol` 和可选的 `transportCode
 
 ## Verification / 验证
 
+Committed sampling rounds also record optional `diagnostic/response` events,
+linked by message/attempt identity. They contain provider/model identity, finish
+reason (explicitly `unknown` when absent), text/reasoning byte counts, tool/search
+counts, stream completion, delivery recovery count (non-zero only on the response
+that answers a recovery prompt), and usage when available.
+Usage covers the sampling round, including protocol repairs, and preserves
+estimated/unknown flags. No prompt or response body is added to this record.
+These events survive successful recovery as well as failure and never enter
+model context. Failed delivery uses `failureDiagnostic.kind:
+no_deliverable_output` and retains the ordinary `failed` terminal status.
+
+已提交的采样轮次还会保存可选的 `diagnostic/response` 事件，以消息和尝试 ID
+关联，记录供应商/模型、结束原因（缺失时为 `unknown`）、正文/思考字节数、
+工具/搜索数量、流结束状态、交付恢复次数（仅回应恢复提示的那次响应非零）
+及可用的用量。用量覆盖本轮采样及
+协议修复，并保留估算/未知标记，不在该记录中附加请求或响应正文。
+恢复成功和失败都会保留这些事件，且不会进入模型上下文。恢复后仍无答复
+使用 `failureDiagnostic.kind: no_deliverable_output`，结束状态仍为已有的 `failed`。
+
+| Addition / 新增项 | Old data / 旧数据 | Current reader / 新读取器 | Previous reader / 旧读取器 |
+| --- | --- | --- | --- |
+| Optional `diagnostic/response` | Missing means unknown / 缺失即未知 | Export original events / 导出原始事件 | Skip optional event / 跳过可选事件 |
+| `no_deliverable_output` failure kind | Existing kinds unchanged / 原分类不变 | Show no-answer failure / 展示未生成答复 | Retain `failed`; generic failure notice / 保留失败状态，展示通用失败提示 |
+
 Relevant commands:
 
 ```sh

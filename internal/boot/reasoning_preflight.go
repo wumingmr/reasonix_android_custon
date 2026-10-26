@@ -51,6 +51,9 @@ func resolveBuildSelection(root string, opts Options) (*config.Config, Options, 
 	if err := opts.ModelSettings.Apply(cfg, root); err != nil {
 		return nil, opts, err
 	}
+	if err := validateLiveCompactRatio(cfg.Agent.CompactRatio); err != nil {
+		return nil, opts, err
+	}
 	return cfg, rebindReasoningSelection(cfg, opts), nil
 }
 

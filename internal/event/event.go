@@ -180,25 +180,6 @@ type CompletionSummaryInfo struct {
 	Attention          bool   // authoritative when Floor is non-empty
 }
 
-// StreamAttemptAction is the lifecycle phase of a local sampling attempt.
-type StreamAttemptAction string
-
-const (
-	StreamAttemptBegin   StreamAttemptAction = "begin"
-	StreamAttemptDiscard StreamAttemptAction = "discard"
-	StreamAttemptCommit  StreamAttemptAction = "commit"
-)
-
-// StreamAttemptInfo carries host-local bookkeeping for one sampling attempt.
-// Reason is a fixed enum (connection_reset | premature_eof | idle_timeout).
-type StreamAttemptInfo struct {
-	ID      string
-	Action  StreamAttemptAction
-	Attempt int // 1-based attempt number
-	Max     int // total attempts including the first (typically 6)
-	Reason  string
-}
-
 // Level classifies a Notice so sinks can style or filter it.
 type Level int
 

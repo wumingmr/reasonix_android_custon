@@ -47,7 +47,16 @@ func (admission *tabTurnAdmission) finish(ctrl control.SessionAPI) bool {
 		defer admission.app.runtimeAdmissionMu.RUnlock()
 		defer tab.turnStartMu.Unlock()
 	}
-	started := ctrl != nil && ctrl.RuntimeStatus().Running
+	started := false
+	if runtime, ok := ctrl.(control.RuntimeStateReader); ok {
+		// Maintenance is foreground work, but ends with SessionOperation rather
+		// than TurnDone. Read both fields from one snapshot so completion cannot
+		// leave a stale turn reservation between separate status reads.
+		state := runtime.RuntimeStateSnapshot()
+		started = state.Running && state.Maintenance == nil
+	} else if ctrl != nil {
+		started = ctrl.RuntimeStatus().Running
+	}
 	if !started && tab != nil && tab.sink != nil {
 		tab.sink.cancelTurnStart()
 	}

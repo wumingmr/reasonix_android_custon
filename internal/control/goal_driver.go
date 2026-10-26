@@ -393,6 +393,10 @@ func (c *Controller) disarmGoalLifecycle(reason string) {
 // state writes use the current session write lease; they never create a fake
 // control activity.
 func (c *Controller) applyHostGoalMutation(ctx context.Context, reason string, mutate func(*goaldomain.Machine) (*goaldomain.View, error)) (*goaldomain.View, error) {
+	return c.applyHostGoalMutationForRuntime(ctx, reason, nil, mutate)
+}
+
+func (c *Controller) applyHostGoalMutationForRuntime(ctx context.Context, reason string, expected *session.Runtime, mutate func(*goaldomain.Machine) (*goaldomain.View, error)) (*goaldomain.View, error) {
 	if c == nil || mutate == nil {
 		return nil, session.ErrSessionNotRunning
 	}
@@ -419,6 +423,9 @@ func (c *Controller) applyHostGoalMutation(ctx context.Context, reason string, m
 	_, runtime, exclusive := c.v3Binding()
 	if !exclusive || runtime == nil {
 		return nil, session.ErrSessionNotRunning
+	}
+	if expected != nil && runtime != expected {
+		return nil, errStaleGoalWork
 	}
 	snapshot := runtime.StateSnapshot()
 	switch snapshot.Phase {

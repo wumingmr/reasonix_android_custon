@@ -9,7 +9,6 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/event"
 	"reasonix/internal/extension"
-	"reasonix/internal/provider"
 	"reasonix/internal/session"
 )
 
@@ -565,8 +564,6 @@ func (c *Controller) emitTurnDoneEvent(err error, cancelRequested bool, completi
 	if errors.As(err, &readErr) {
 		done.ReadPause = readErr.Pause
 	}
-	done.Diagnostic = provider.DiagnoseFailure(err)
-	done.Detail = provider.FailureDiagnosticDetail(done.Diagnostic)
 	if !cancelRequested {
 		done.ProtocolRecovery = c.executor.PendingProtocolRecovery()
 	}

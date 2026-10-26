@@ -2,6 +2,391 @@
   "schemaVersion": 1,
   "releases": [
     {
+      "version": "1.39.10",
+      "date": "2026-10-21",
+      "channel": "stable",
+      "targetingVersion": 1,
+      "title": {
+        "en": "Reasonix 1.39.10",
+        "zh": "Reasonix 1.39.10"
+      },
+      "summary": {
+        "en": "Rebuilt with Go 1.26.10 for a certificate-verification fix, and OpenCode Go connections now use the documented endpoints and support DeepSeek V4.1 Flash.",
+        "zh": "用 Go 1.26.10 重新构建以修复证书验证的问题，并且 OpenCode Go 连接改用官方文档里的接口地址、支持 DeepSeek V4.1 Flash。"
+      },
+      "surfaces": [
+        "desktop",
+        "cli"
+      ],
+      "guides": [],
+      "highlights": [
+        {
+          "kind": "security",
+          "targets": [
+            "desktop",
+            "cli"
+          ],
+          "title": {
+            "en": "Go toolchain updated to 1.26.10 for a certificate-verification fix",
+            "zh": "Go 工具链升级到 1.26.10，修复证书验证对不再受信任的中间证书的处理"
+          },
+          "body": {
+            "en": "Go 1.26.10 fixes crypto/x509 certificate verification so that it returns an error when it meets known intermediate certificates that are no longer trusted (GO-2026-6809). Reasonix is rebuilt with it; the vulnerability scan reports nothing reachable from Reasonix afterwards.",
+            "zh": "Go 1.26.10 修复了标准库 crypto/x509 的证书验证：遇到已知的、不再受信任的中间证书时会报错（GO-2026-6809）。Reasonix 已用它重新构建；升级之后，漏洞扫描没有再报出 Reasonix 可达的漏洞。"
+          },
+          "refs": [
+            14051
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop",
+            "cli"
+          ],
+          "title": {
+            "en": "OpenCode Go connections use the documented endpoints, and DeepSeek V4.1 Flash works through them",
+            "zh": "OpenCode Go 连接改用官方文档里的接口地址，DeepSeek V4.1 Flash 也能正常使用"
+          },
+          "body": {
+            "en": "OpenCode Go's documented inference URLs and deepseek-v4.1-flash were missing from Reasonix, so a V4.1 Flash connection could lose DeepSeek thinking and tool-history replay, and the new URLs lacked Go's client headers and model discovery. Both are in now; the older routes keep working. Saved standard OpenCode Go connections are updated once, keeping your selected models, credential references, prices and custom fields, and V4.1 Flash is added once to eligible connections (a model you delete stays deleted). Connections with a custom request address or body are left for you to review.",
+            "zh": "OpenCode Go 文档里新的推理接口地址和 deepseek-v4.1-flash 之前没有收录，所以 V4.1 Flash 连接可能丢失 DeepSeek 的思考和工具历史回放，新地址也缺少 Go 的客户端请求头和模型发现。现在都已支持，旧的路径继续可用。已保存的标准 OpenCode Go 连接会一次性更新，保留你选的模型、凭据引用、价格和自定义字段，并给符合条件的连接添加一次 V4.1 Flash（你删掉的模型不会被加回来）；带自定义请求地址或请求体的连接留给你自己检查。"
+          },
+          "refs": [
+            14029
+          ]
+        }
+      ],
+      "changes": {
+        "new": [],
+        "improved": [],
+        "fixed": []
+      },
+      "upgrade": [],
+      "risks": [
+        {
+          "targets": [
+            "desktop",
+            "cli"
+          ],
+          "title": {
+            "en": "The configuration file's version moves to 13",
+            "zh": "配置文件的版本号升到 13"
+          },
+          "body": {
+            "en": "The first start after upgrading rewrites saved standard OpenCode Go connections and records configuration version 13. The rewrite keeps the file's encoding, line endings and unknown fields, and a downgrade followed by an upgrade keeps a model you deleted deleted.",
+            "zh": "升级后第一次启动会改写已保存的标准 OpenCode Go 连接，并把配置版本记为 13。改写会保留文件的编码、换行和未知字段；降级再升级之后，你删掉的模型仍然保持删除。"
+          },
+          "refs": [
+            14029
+          ]
+        }
+      ],
+      "contributors": [
+        "SivanCola"
+      ],
+      "links": {
+        "github": "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/desktop-v1.39.10",
+        "compare": "https://github.com/esengine/DeepSeek-Reasonix/compare/desktop-v1.39.9...desktop-v1.39.10",
+        "download": "https://reasonix.io/?download=desktop&channel=stable#start"
+      },
+      "releaseId": "1.39.10",
+      "baseVersion": "1.39.10",
+      "status": "reviewed",
+      "previousRelease": "1.39.9",
+      "builds": {
+        "cli": "v1.39.10",
+        "desktop": "v1.39.10",
+        "npm": "1.39.10"
+      }
+    },
+    {
+      "version": "1.39.9",
+      "date": "2026-10-20",
+      "channel": "stable",
+      "targetingVersion": 1,
+      "title": {
+        "en": "Reasonix 1.39.9",
+        "zh": "Reasonix 1.39.9"
+      },
+      "summary": {
+        "en": "Fixes for replies that ended with only thinking, large file attachments ending the desktop service, sending being blocked after a manual compaction, tool calls cut off mid-stream treated as finished, Studio's imported sessions listed as extras in 1.x, duplicate recovered conversations, stale recovery status, goal work time stuck at zero, ! commands missing login-shell programs, remote session badges, and settings that disagreed with model capabilities.",
+        "zh": "修复只有思考内容的回复被当作完成、附加大文件让桌面服务退出、手动压缩后无法发送、流中途被截断的工具调用被当作完成、Studio 导入的会话在 1.x 里显示成多余会话、恢复出来的对话重复出现、恢复状态残留、目标模式工作时长一直为 0、! 命令找不到登录 shell 的程序、远程会话徽标，以及设置与模型实际能力不一致的问题。"
+      },
+      "surfaces": [
+        "desktop",
+        "cli"
+      ],
+      "guides": [],
+      "highlights": [
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop",
+            "cli"
+          ],
+          "title": {
+            "en": "A reply that contained only thinking now gets one retry, then a clear error",
+            "zh": "只有思考内容的回复现在会重试一次，仍无答案时给出明确提示"
+          },
+          "body": {
+            "en": "Some models ended a turn with only reasoning and no answer or tool call, and the turn was shown as completed, so you were left with a row of thinking and nothing else. The host now asks the model once more to give its answer, keeping any tool results already collected. If that also produces no answer, the turn fails with an error in English, Simplified Chinese or Traditional Chinese that says no answer was produced, instead of looking finished, and the error is still there when you reopen the session. Cancelling and the usual limits behave as before. Exported diagnostics also gain short, content-free response summaries (finish reason, sizes, tool counts) to help report such cases; they never enter the model's context.",
+            "zh": "有些模型只输出思考过程、没有答案也没有工具调用，这一轮却显示为已完成，你只会看到一行思考。现在会再请模型给出一次答案，已经取得的工具结果保留；如果仍然没有答案，这一轮会以明确的错误结束（支持英文、简体中文、繁体中文），说明没有产生答案，不再看起来像是完成了，重新打开会话时这条错误依然在。取消和各项上限的行为不变。导出的诊断信息还会增加不含内容的简短回复摘要（结束原因、大小、工具数量），方便反馈这类问题；它们不会进入模型上下文。"
+          },
+          "refs": [
+            13966
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Attaching a very large file no longer shuts down the desktop service",
+            "zh": "附加超大文件不再让桌面服务退出"
+          },
+          "body": {
+            "en": "Attaching a large file (an APK, an archive) could end the desktop service, because the whole file was read into memory and encoded before any size check. The file picker, paste and drop now attach the file by its path when it has one, without copying it. A file that only exists as data in the page (some pastes and drops) is streamed to disk instead of being held in memory, up to a safety ceiling of 1 GiB per upload; set [attachments] max_stream_bytes in your own config.toml to change it (0 removes the ceiling). Project configuration cannot change it. A file over the limit is refused before it is read, with a message naming the file and the limit. Images keep their 64 MB limit.",
+            "zh": "附加大文件（比如安装包、压缩包）可能让桌面服务退出，因为整份文件会先被读进内存并编码，之后才检查大小。现在文件选择、粘贴和拖入只要文件有路径，就直接按路径附加，不再复制一份；只以数据形式存在于页面里的文件（部分粘贴和拖入）会流式写入磁盘，不再整份放在内存里，每次上传的安全上限默认为 1 GiB，可以在你自己的 config.toml 里用 [attachments] max_stream_bytes 调整（设为 0 即取消上限），项目配置不能修改它。超过限制的文件会在读取之前被拒绝，提示里会写明文件名和限制。图片仍保持 64 MB 的限制。"
+          },
+          "refs": [
+            13543,
+            12418
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Sending after a manual compaction works again, and the compact threshold applies at once",
+            "zh": "手动压缩后可以继续发送，压缩阈值修改后立即生效"
+          },
+          "body": {
+            "en": "After compacting a conversation by hand the next message could be blocked and the model could not be reached. That is fixed. Changing the compaction threshold in Settings now applies to the open session straight away without replacing it, and changing unrelated preferences no longer restarts the session's runtime. Sub-agents that were already running keep the threshold they started with; new ones use the new value. When a session is replaced for another reason, the read-only access you granted to folders outside the project is carried over unchanged and no new access is granted.",
+            "zh": "手动压缩对话之后，下一条消息可能被挡住、无法与模型沟通，现在已修复。在设置里修改压缩阈值会立即作用于正在打开的会话，不需要替换它；修改无关的偏好也不再重启会话的运行环境。已经在运行的子代理保持启动时的阈值，新建的子代理使用新值。会话因其他原因被替换时，你授予的项目之外文件夹的只读访问会原样保留，不会新增任何访问权限。"
+          },
+          "refs": [
+            12501
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Sessions no longer become unreadable when their integrity index files are lost",
+            "zh": "会话的完整性索引文件丢失后，不再让所有会话打不开"
+          },
+          "body": {
+            "en": "Each stored attachment or history block has a small integrity index next to it. If those index files went missing (for example after a cleanup or another program removed them) while the content itself was intact, every conversation failed to load with a transport error. The index is now rebuilt from the content on the first read, and only when both the content and the rebuilt index match the checksums recorded with the session; damaged content is still refused.",
+            "zh": "每个附件或历史块旁边都有一个很小的完整性索引文件。如果这些索引文件丢失（比如清理之后，或被其他程序删除），而内容本身完好，所有会话都会因为传输错误而打不开。现在第一次读取时会从内容重建索引，并且只有内容和重建出的索引都与会话里记录的校验值一致才会接受；内容损坏时仍然拒绝。"
+          },
+          "refs": [
+            14018,
+            14019
+          ]
+        }
+      ],
+      "changes": {
+        "new": [],
+        "improved": [],
+        "fixed": [
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Model settings agree with what each model can do and keep your defaults",
+              "zh": "模型设置与各模型的实际能力一致，并保留你的默认值"
+            },
+            "body": {
+              "en": "Choosing an image-understanding model now accepts the models Reasonix already knows can read images (built-in or discovered), while a model you explicitly disabled, or an official endpoint that restricts it, is still refused. Sub-agent reasoning choices come from each model's own capabilities, and a stale choice can be cleared. A planner you assigned stays visible even when it is the same as the default model, and choosing Follow conversation model clears it. Renaming a connection or editing other unrelated fields no longer resets its default model and reasoning effort.",
+              "zh": "选择图片理解模型时，现在会接受 Reasonix 已知能读图的模型（内置的或探测到的）；你明确停用的模型，或官方端点有限制的，仍会被拒绝。子代理的推理强度选项来自各模型自己的能力，过期的选择可以清除。你指定的规划模型即使与默认模型相同也会保持可见，选择「跟随对话模型」会清除这项指定。重命名连接或修改其他无关字段，不再重置它的默认模型和默认推理强度。"
+            },
+            "refs": [
+              14005
+            ]
+          },
+          {
+            "targets": [
+              "desktop",
+              "cli"
+            ],
+            "title": {
+              "en": "A tool call cut off mid-stream is no longer taken for a finished answer",
+              "zh": "工具调用在流中途被截断时，不再被当作已完成的回答"
+            },
+            "body": {
+              "en": "With models served over the Responses protocol, a stream that ended while a tool call was still open, or that carried a malformed call, could be accepted as a normal answer: the turn finished with only the text before the call, or a neighbouring call ran. Such a stream is now refused as a protocol error and nothing from that attempt is executed or saved as a final answer. It is not retried automatically; you can continue the conversation yourself. Ordinary text-only answers and complete calls are unaffected.",
+              "zh": "使用 Responses 协议的模型，如果流在工具调用尚未完成时就结束，或带着格式错误的调用，以前可能被当作正常回答接受：这一轮只留下调用之前的文字，或者相邻的另一个调用被执行。现在这样的流会作为协议错误被拒绝，该次尝试里没有任何东西被执行，也不会存成最终回答。它不会自动重试，你可以自己继续对话。普通的纯文字回答和完整的调用不受影响。"
+            },
+            "refs": [
+              12526
+            ]
+          },
+          {
+            "targets": [
+              "desktop",
+              "cli"
+            ],
+            "title": {
+              "en": "Studio's imported sessions no longer appear as extra sessions in 1.x",
+              "zh": "Studio 导入的会话不再在 1.x 里显示成多余的会话"
+            },
+            "body": {
+              "en": "Studio 2.x writes the sessions it imports into the project's sessions folder as files named v4-<id>.jsonl. 1.x listed those files as ordinary sessions titled by file name (111 extra rows in one report), duplicating conversations it already had. 1.x now treats any file whose name starts with v4- as Studio's: it is not listed, and 1.x's cleanup of stale lock and lease files leaves it alone.",
+              "zh": "Studio 2.x 把它导入的会话以 v4-<id>.jsonl 的文件名写进项目的会话文件夹。1.x 之前会把这些文件当作普通会话、用文件名作标题列出来（有报告称多出 111 行），与它本来就有的对话重复。现在 1.x 把文件名以 v4- 开头的文件视为 Studio 的：不再列出，1.x 清理过期锁文件和租约文件时也不会碰它们。"
+            },
+            "refs": [
+              13444
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Recovered older conversations no longer appear as duplicates or change places in the sidebar",
+              "zh": "恢复出来的旧对话不再重复出现，也不再在侧栏里变换身份"
+            },
+            "body": {
+              "en": "After an update, or when the session list was rebuilt on a fresh cache, copies made by conflict recovery could be listed as separate conversations (13 conversations became 25 rows in one report). The copies a parent already covers are now hidden again once the check has run in the background. A recovered conversation also keeps one identity in the sidebar after its content is verified or its parent is deleted, and a rebuild or shutdown of the session list no longer waits on a job that was already replaced. Nothing in your session files is rewritten.",
+              "zh": "更新之后，或会话列表在全新缓存上重建时，冲突恢复产生的副本可能被当成单独的对话列出来（有报告里 13 个对话变成 25 行）。现在后台检查完成后，已被其父会话覆盖的副本会重新隐藏。恢复出来的对话在内容校验或父会话被删除之后，也在侧栏里保持同一个身份；会话列表重建或退出时，不再等待一个已被替换的任务。不会改写你的任何会话文件。"
+            },
+            "refs": [
+              12822,
+              13594
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "The recovery status clears after an import retry succeeds",
+              "zh": "导入重试成功后，恢复状态不再残留"
+            },
+            "body": {
+              "en": "When an older session failed to import because of a workspace conflict and a later retry (or replay of an already completed import) succeeded, the earlier recovery status could stay behind. It is now cleared once the import is verified for exactly that source, version and target; failures of other sources stay pending. This does not bring back sessions that were never imported.",
+              "zh": "旧会话因工作区冲突导入失败，之后重试（或重放一次已完成的导入）成功时，之前的恢复状态可能一直留着。现在一旦确认这次导入对应的正是那个来源、版本和目标，就会清除它；其他来源的失败仍保持待处理。这并不会找回从未导入过的会话。"
+            },
+            "refs": [
+              12503
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Goal runs show their accumulated working time",
+              "zh": "目标模式会显示累计的工作时长"
+            },
+            "body": {
+              "en": "A goal that had worked through several automatic rounds still showed 0s of work time. The time spent actively working on the goal is now added up (pauses and time the app was closed do not count), kept with the session, and shown again after a restart. It is not given to the model.",
+              "zh": "一个已经自动进行了好几轮的目标，工作时长仍显示 0s。现在会累计在目标上实际工作的时间（暂停期间和应用关闭的时间不算），随会话保存，重启后仍会显示。这个数值不会提供给模型。"
+            },
+            "refs": [
+              12502
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Commands starting with ! find the programs on your login shell's PATH",
+              "zh": "以 ! 开头的命令能找到登录 shell 的 PATH 里的程序"
+            },
+            "body": {
+              "en": "When the desktop app is launched from the Dock or a similar launcher, it does not inherit the PATH your login shell sets up in .zshrc or .bashrc, so a command typed with ! could not find tools installed there. The login shell's PATH is now read before such a command runs and merged with the inherited one, keeping the existing entries and dropping duplicates; if the login shell cannot be queried, the inherited PATH is used as before.",
+              "zh": "从程序坞等启动器打开桌面应用时，它不会继承你在 .zshrc 或 .bashrc 里设置的登录 shell 的 PATH，所以用 ! 输入的命令找不到装在那里的工具。现在运行这类命令之前会读取登录 shell 的 PATH，并与继承来的 PATH 合并，保留原有项并去重；如果无法查询登录 shell，就像以前一样使用继承来的 PATH。"
+            },
+            "refs": [
+              13927
+            ]
+          },
+          {
+            "targets": [
+              "desktop",
+              "cli"
+            ],
+            "title": {
+              "en": "Remote sessions show an unread dot, and switching sessions no longer shows false connection warnings",
+              "zh": "远程会话也会显示未读圆点，切换会话不再出现误报的连接警告"
+            },
+            "body": {
+              "en": "A remote session now behaves like a local one: when a response finishes in the background an unread dot appears, and it clears once you read it. Session lists refresh when a background session finishes or ends, whether or not the one in front is running. Ordinary session switches no longer leave a false connection warning, a late reply from the session you switched away from can no longer overwrite the one in front, and real connection failures stay visible and clear on their own once the connection recovers. Update the remote Serve as well as the desktop app for the full behaviour; with an older Serve the dots fall back to timestamps.",
+              "zh": "远程会话现在和本地会话表现一致：后台的回复完成时会出现未读圆点，读过之后消失。后台会话完成或结束时会刷新会话列表，不论前台那个是否正在运行。普通的会话切换不再留下误报的连接警告，切走的会话迟到的回复也不会覆盖前台的状态，真实的连接失败仍然可见，连接恢复后会自行消除。要获得完整效果，需要同时更新远程的 Serve 和桌面应用；Serve 较旧时，圆点会退回按时间戳判断。"
+            },
+            "refs": [
+              11513
+            ]
+          },
+          {
+            "targets": [
+              "desktop",
+              "cli"
+            ],
+            "title": {
+              "en": "Go toolchain and network library updated to versions with published security fixes",
+              "zh": "Go 工具链和网络库升级到已发布安全修复的版本"
+            },
+            "body": {
+              "en": "The Go toolchain moves to 1.26.9 and golang.org/x/net to 0.60.0 (with the golang.org/x modules it requires), which clear the standard-library and x/net vulnerabilities the vulnerability scan reported on this line. The scan reports none reachable from Reasonix afterwards.",
+              "zh": "Go 工具链升级到 1.26.9，golang.org/x/net 升级到 0.60.0（连同它要求的 golang.org/x 各模块），修复了漏洞扫描在这条线上报出的标准库和 x/net 的漏洞；升级之后，扫描没有再报出 Reasonix 可达的漏洞。"
+            },
+            "refs": [
+              12951
+            ]
+          }
+        ]
+      },
+      "upgrade": [],
+      "risks": [
+        {
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "A recovered group's sidebar id can change once",
+            "zh": "恢复组在侧栏里的标识可能变化一次"
+          },
+          "body": {
+            "en": "Repairing an older cached identity for a recovered conversation group whose records carry no topic id can change that group's id once. An id written explicitly in your session files, and the files themselves, are never changed.",
+            "zh": "修复旧缓存里没有主题标识的恢复对话组的身份时，该组的标识可能变化一次。你的会话文件里显式写下的标识以及文件本身都不会被改动。"
+          },
+          "refs": [
+            13594
+          ]
+        }
+      ],
+      "contributors": [
+        "SivanCola",
+        "PeterHepta",
+        "XTLine",
+        "xxoingr"
+      ],
+      "links": {
+        "github": "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/desktop-v1.39.9",
+        "compare": "https://github.com/esengine/DeepSeek-Reasonix/compare/desktop-v1.39.8...desktop-v1.39.9",
+        "download": "https://reasonix.io/?download=desktop&channel=stable#start"
+      },
+      "releaseId": "1.39.9",
+      "baseVersion": "1.39.9",
+      "status": "reviewed",
+      "previousRelease": "1.39.8",
+      "builds": {
+        "cli": "v1.39.9",
+        "desktop": "v1.39.9",
+        "npm": "1.39.9"
+      }
+    },
+    {
       "version": "1.39.8",
       "date": "2026-10-07",
       "channel": "stable",

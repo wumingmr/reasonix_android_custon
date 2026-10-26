@@ -343,7 +343,7 @@ func expandOpenCodeGoInlineProviders(body string) (string, error) {
 
 func patchOpenCodeGoProvider(raw string, old, next ProviderEntry) (string, error) {
 	ov, nv := reflect.ValueOf(old), reflect.ValueOf(next)
-	for _, field := range []string{"Name", "Kind", "BaseURL", "RequestURL", "ChatURL", "Models", "Model", "Default", "PresetID", "PresetVersion", "ResponsesMode", "Effort"} {
+	for _, field := range []string{"Name", "Kind", "BaseURL", "RequestURL", "ChatURL", "ModelsURL", "Models", "Model", "Default", "PresetID", "PresetVersion", "ResponsesMode", "Effort"} {
 		a, b := ov.FieldByName(field).Interface(), nv.FieldByName(field).Interface()
 		if reflect.DeepEqual(a, b) {
 			continue
@@ -351,6 +351,17 @@ func patchOpenCodeGoProvider(raw string, old, next ProviderEntry) (string, error
 		f, _ := ov.Type().FieldByName(field)
 		var err error
 		raw, err = rawTOMLSet(raw, []string{strings.Split(f.Tag.Get("toml"), ",")[0]}, b)
+		if err != nil {
+			return raw, err
+		}
+	}
+	for model, price := range next.Prices {
+		if reflect.DeepEqual(old.Prices[model], price) {
+			continue
+		}
+		value := map[string]any{"cache_hit": price.CacheHit, "input": price.Input, "output": price.Output, "currency": price.Currency}
+		var err error
+		raw, err = rawTOMLSet(raw, []string{"providers", "prices", model}, value)
 		if err != nil {
 			return raw, err
 		}

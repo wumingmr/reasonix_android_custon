@@ -2038,7 +2038,8 @@ func selectableDesktopVisionModelRef(c *config.Config, ref string) (string, erro
 	if !entry.Configured() {
 		return "", fmt.Errorf("vision model %q is not available because provider %q has no key", ref, entry.Name)
 	}
-	if !config.EffectiveVision(entry) {
+	// Match the settings catalog, CLI selection, and runtime capability owner.
+	if config.NewModelCapabilityResolver().Resolve(entry).State != config.CapabilitySupported {
 		return "", fmt.Errorf("model %q does not support image input", ref)
 	}
 	return entry.Name + "/" + entry.Model, nil

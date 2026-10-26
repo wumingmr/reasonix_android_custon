@@ -30,7 +30,13 @@ func NewClientIdentityHeaders() http.Header {
 // for all three wire adapters. It never changes model input or other vendors.
 func ApplyOpenCodeGoHeaders(req *http.Request, _ string, fallback http.Header) {
 	path, ok := officialOpenCodeGoPath(req.URL.String())
-	if !ok || (path != "/zen/go/v1/chat/completions" && path != "/zen/go/v1/messages" && path != "/zen/go/v1/responses" && path != "/zen/go/v1/models") {
+	if !ok {
+		return
+	}
+	switch path {
+	case "/zen/go/v1/chat/completions", "/zen/go/v1/messages", "/zen/go/v1/responses", "/zen/go/v1/models",
+		"/inference/go/openai/v1/chat/completions", "/inference/go/anthropic/v1/messages", "/inference/go/openai/v1/responses", "/inference/go/v1/models":
+	default:
 		return
 	}
 	if req.Header.Get("User-Agent") == "" {

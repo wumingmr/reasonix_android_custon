@@ -19,6 +19,7 @@ function Fixture() {
     </nav>
     {[
       ["模型连接", "dial tcp: connection refused"],
+      ["未生成答复", "no_deliverable_output: model finished without a visible final answer after recovery; this turn did not complete"],
       ["服务限流", "HTTP 429: too many requests"],
       ["历史会话", "读取会话失败：unrecognized storage record revision"],
       ["文件操作", "open /tmp/数据.txt: permission denied"],

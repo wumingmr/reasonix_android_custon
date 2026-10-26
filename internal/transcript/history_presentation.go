@@ -56,7 +56,9 @@ func interruptedNotice(recovery *provider.InterruptedTurnRecovery) Message {
 		diagnostic := recovery.FailureDiagnostic
 		text := "The provider request failed. Check the connection settings and try again."
 		if diagnostic != nil {
-			if status := i18n.M.ProviderStatusMessage(diagnostic.Status); status != "" {
+			if diagnostic.Kind == "no_deliverable_output" {
+				text = i18n.M.NoDeliverableOutput
+			} else if status := i18n.M.ProviderStatusMessage(diagnostic.Status); status != "" {
 				text = status
 			} else if diagnostic.Status > 0 {
 				text = fmt.Sprintf("Provider request failed (HTTP %d).", diagnostic.Status)

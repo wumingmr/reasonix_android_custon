@@ -23,6 +23,7 @@ var ChineseTraditional = Messages{
 	ContextLimitRecovery:             "自動整理上下文後，請求仍然過長。請縮短最新訊息，或切換到支援更長上下文的模型。原始聊天記錄已保留",
 	SessionSaveRecovery:              "聊天記錄暫時無法儲存。請保留目前會話，並盡可能匯出備份；檢查磁碟剩餘空間和目錄寫入權限後再繼續",
 	EmptyFinal:                       "沒有產生可見回覆，已要求助手重新作答。",
+	NoDeliverableOutput:              "本輪未完成：模型未產生有效答覆，自動恢復也未成功。可傳送訊息繼續，或切換模型後重試。",
 	ExecutorHandoff:                  "助手尚未執行必要操作，已要求它使用相應工具。",
 	ToolBudget:                       "工具呼叫輪數已達上限，已要求助手總結目前進度。",
 	TaskBudget:                       "本任務已達花費預算上限，已要求給出最終回答。",

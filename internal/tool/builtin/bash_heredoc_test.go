@@ -14,9 +14,6 @@ import (
 
 func TestBashHereDocIssue5624CommandsReturnPromptly(t *testing.T) {
 	sh := requireHereDocBash(t)
-	prevBashShellPATH := bashShellPATH
-	bashShellPATH = func(context.Context) string { return "" }
-	t.Cleanup(func() { bashShellPATH = prevBashShellPATH })
 
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "app", "platform", "github"), 0o755); err != nil {

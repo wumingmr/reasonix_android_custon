@@ -53,20 +53,14 @@ func canonicalResumeEntries(ctx context.Context, sessionDir string) []resumeEntr
 	if service == nil {
 		return nil
 	}
-	return canonicalResumeEntriesFrom(ctx, service.Query(), resumeListCapFor())
+	return canonicalResumeEntriesFrom(ctx, service.Query())
 }
 
 // canonicalResumeEntriesFrom walks the whole catalog (up to
 // canonicalResumeWalkCap rows) before sorting by recency and applying the
 // display cap, so the newest conversation is offered regardless of where its
 // id sorts.
-//
-// displayCap is the caller's resolved ui.resume_list_limit. It used to be an
-// unconditional canonicalResumeScanCap, which silently hid everything past the
-// 100th-newest conversation from a picker configured to show more — searching
-// for an older conversation then matched nothing at all. A non-positive value
-// keeps every row.
-func canonicalResumeEntriesFrom(ctx context.Context, catalog canonicalCatalogLister, displayCap int) []resumeEntry {
+func canonicalResumeEntriesFrom(ctx context.Context, catalog canonicalCatalogLister) []resumeEntry {
 	var out []resumeEntry
 	cursor := ""
 	for walked := 0; walked < canonicalResumeWalkCap; {
@@ -90,8 +84,8 @@ func canonicalResumeEntriesFrom(ctx context.Context, catalog canonicalCatalogLis
 		cursor = page.NextCursor
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].session.ModTime.After(out[j].session.ModTime) })
-	if displayCap > 0 && len(out) > displayCap {
-		out = out[:displayCap]
+	if len(out) > canonicalResumeScanCap {
+		out = out[:canonicalResumeScanCap]
 	}
 	return out
 }

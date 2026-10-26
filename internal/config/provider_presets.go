@@ -651,7 +651,7 @@ var curatedProviderPresets = []ProviderPreset{
 		Entries: []ProviderEntry{{
 			Name:            "opencode-go",
 			Kind:            "openai",
-			BaseURL:         "https://opencode.ai/zen/go/v1",
+			BaseURL:         provider.OpenCodeGoChatBaseURL,
 			Models:          opencodeGoModels,
 			VisionModels:    opencodeGoVisionModels,
 			Default:         "glm-5.2",

@@ -29,7 +29,7 @@ func NewTaskToolWithOptions(opts TaskToolOptions) *TaskTool {
 		maxSteps:         opts.MaxSteps,
 		contextWindow:    opts.ContextWindow,
 		recentKeep:       opts.RecentKeep,
-		compactRatio:     opts.CompactRatio,
+		compaction:       compactionThreshold{opts.CompactRatio, opts.CompactRatioSource},
 		temperature:      opts.Temperature,
 		archiveDir:       opts.ArchiveDir,
 		keepPolicy:       opts.KeepPolicy,
@@ -60,7 +60,7 @@ func (t *TaskTool) subagentOptions(ctx context.Context, maxSteps int, pricing *p
 		Gate:                     t.gate,
 		ContextWindow:            ctxWin,
 		RecentKeep:               t.recentKeep,
-		CompactRatio:             t.compactRatio,
+		CompactRatio:             t.compaction.ratio(),
 		ArchiveDir:               t.archiveDir,
 		KeepPolicy:               t.keepPolicy,
 		ResponseLanguage:         ResponseLanguageFromContext(ctx),
@@ -102,19 +102,21 @@ func (t *TaskTool) WithImageRequestResolver(resolver ImageRequestResolver) *Task
 // Prefer NewTaskToolWithOptions for new call sites; the positional NewTaskTool
 // remains as a compatibility wrapper for one full iteration cycle.
 type TaskToolOptions struct {
-	ImageInput                            *imageinput.Config
-	ImageRequestResolver                  ImageRequestResolver
-	HooksForSession                       func(string) ToolHooks
-	Provider                              provider.Provider
-	Pricing                               *provider.Pricing
-	QuoteContext                          *event.QuoteContext
-	ParentRegistry                        *tool.Registry
-	MaxSteps                              int
-	ContextWindow                         int
-	RecentKeep                            int
-	SoftCompactRatio                      float64
-	ToolResultSnipRatio                   float64
-	CompactRatio                          float64
+	ImageInput           *imageinput.Config
+	ImageRequestResolver ImageRequestResolver
+	HooksForSession      func(string) ToolHooks
+	Provider             provider.Provider
+	Pricing              *provider.Pricing
+	QuoteContext         *event.QuoteContext
+	ParentRegistry       *tool.Registry
+	MaxSteps             int
+	ContextWindow        int
+	RecentKeep           int
+	SoftCompactRatio     float64
+	ToolResultSnipRatio  float64
+	CompactRatio         float64
+	// CompactRatioSource must be concurrency-safe; each child snapshots it once.
+	CompactRatioSource                    func() float64
 	CompactForceRatio                     float64
 	Temperature                           float64
 	ContextEditing, ArchiveDir, SysPrompt string

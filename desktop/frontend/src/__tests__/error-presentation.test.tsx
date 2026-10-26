@@ -23,6 +23,7 @@ for (const locale of ["en", "zh", "zh-TW"] as const) {
     ["HTTP 401", "error.auth"], ["HTTP 403", "error.forbidden"],
     ["HTTP 402", "error.quota"], ["HTTP 404", "error.endpoint"],
     ["request timed out", "error.timeout"], ["empty provider response", "error.empty"],
+    ["no_deliverable_output: model finished without a visible final answer after recovery", "error.noDeliverable"],
     ["model stream interrupted: unexpected EOF", "error.interrupted"],
     ["open /tmp/file: permission denied", "error.permission"],
     ["open /tmp/file: no such file or directory", "error.fileMissing"],
@@ -39,6 +40,9 @@ for (const locale of ["en", "zh", "zh-TW"] as const) {
   }
   assert.deepEqual(presentError("opaque failure", translate, locale, { kind: "transport_protocol", transportCode: "PROTOCOL_ERROR" }), {
     summary: dict["error.transportProtocol"], detail: "opaque failure\nHTTP/2: PROTOCOL_ERROR",
+  });
+  assert.deepEqual(presentError("saved failure", translate, locale, { kind: "no_deliverable_output" }), {
+    summary: dict["error.noDeliverable"], detail: "saved failure",
   });
   assert.notEqual(presentError("connection error: PROTOCOL_ERROR", translate, locale).summary, dict["error.transportProtocol"], "untyped wording is not transport evidence");
   if (locale !== "en") {

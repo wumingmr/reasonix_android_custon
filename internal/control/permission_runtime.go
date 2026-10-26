@@ -142,6 +142,7 @@ func (c *Controller) RestoreSessionAuthorizations(auth SessionAuthorizations) {
 	c.permissionStateMu.Lock()
 	defer c.permissionStateMu.Unlock()
 	c.approval.restoreSessionAuthorizations(auth)
+	c.restoreExternalFolderRefs(auth.externalFolderRefs)
 	if c.writeAccess.roots != nil && len(auth.WriteRoots) > 0 {
 		c.writeAccess.roots.GrantVerifiedSession(auth.WriteRoots)
 	}

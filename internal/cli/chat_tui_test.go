@@ -951,61 +951,6 @@ func TestTranscriptContentWidthReservesScrollbarColumn(t *testing.T) {
 	}
 }
 
-func TestLayoutWidthReservesOnlyUnderTermuxScrollback(t *testing.T) {
-	// Termux draws fewer columns than it reports; layout must leave the
-	// reserve unused so a full row cannot overflow and lose its last cell.
-	if got := layoutWidth(80, true, termuxWidthReserve); got != 80-termuxWidthReserve {
-		t.Fatalf("layoutWidth(80, true, %d) = %d, want %d",
-			termuxWidthReserve, got, 80-termuxWidthReserve)
-	}
-	// Every other terminal draws exactly the width it reports.
-	if got := layoutWidth(80, false, termuxWidthReserve); got != 80 {
-		t.Fatalf("layoutWidth(80, false, %d) = %d, want 80", termuxWidthReserve, got)
-	}
-	// A configured offset replaces the built-in reserve.
-	if got := layoutWidth(80, true, 3); got != 77 {
-		t.Fatalf("layoutWidth(80, true, 3) = %d, want 77", got)
-	}
-	// A negative reserve is ignored, and an oversized one cannot go below 1.
-	if got := layoutWidth(80, true, -5); got != 80 {
-		t.Fatalf("layoutWidth(80, true, -5) = %d, want 80", got)
-	}
-	if got := layoutWidth(0, true, 2); got != 1 {
-		t.Fatalf("layoutWidth(0, true, 2) = %d, want 1", got)
-	}
-	if got := layoutWidth(2, true, 8); got != 1 {
-		t.Fatalf("layoutWidth(2, true, 8) = %d, want 1", got)
-	}
-}
-
-func TestTermuxWidthReservePrefersConfiguredOffset(t *testing.T) {
-	// No config: the built-in reserve applies.
-	m := chatTUI{nativeScrollback: true}
-	if got := m.termuxWidthReserve(); got != termuxWidthReserve {
-		t.Fatalf("default reserve = %d, want %d", got, termuxWidthReserve)
-	}
-	// A configured offset wins, so a device whose reported size is exact can
-	// give back the columns.
-	three := 3
-	m = chatTUI{nativeScrollback: true, cfg: &config.Config{UI: config.UIConfig{TermuxWidthOffset: &three}}}
-	if got := m.termuxWidthReserve(); got != 3 {
-		t.Fatalf("configured reserve = %d, want 3", got)
-	}
-	// An explicit zero disables the reserve; only an absent setting keeps the
-	// default, which is why the config field is a pointer.
-	zero := 0
-	m = chatTUI{nativeScrollback: true, cfg: &config.Config{UI: config.UIConfig{TermuxWidthOffset: &zero}}}
-	if got := m.termuxWidthReserve(); got != 0 {
-		t.Fatalf("explicit-zero reserve = %d, want 0", got)
-	}
-	// A negative setting is nonsense; clamp it rather than widening the layout.
-	neg := -4
-	m = chatTUI{nativeScrollback: true, cfg: &config.Config{UI: config.UIConfig{TermuxWidthOffset: &neg}}}
-	if got := m.termuxWidthReserve(); got != 0 {
-		t.Fatalf("negative reserve = %d, want 0", got)
-	}
-}
-
 func TestModalPanelsHideComposerBox(t *testing.T) {
 	ask := event.Ask{
 		ID: "ask-1",

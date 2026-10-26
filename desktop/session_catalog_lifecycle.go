@@ -45,6 +45,7 @@ func (a *App) runSessionCatalog(ctx context.Context, initialReconcileDone chan s
 					"phase", event.Phase, "origin", event.Origin, "failure", event.Failure)
 				if event.Phase == "completed" {
 					a.requestHistoricalLegacyReconciliation(ctx)
+					go a.proveCatalogRecoveryLineage(ctx)
 				}
 			},
 			OnRevision: func(revision uint64, roots []string, reason string) {
@@ -94,5 +95,18 @@ func (a *App) runSessionCatalog(ctx context.Context, initialReconcileDone chan s
 		default:
 			return
 		}
+	}
+}
+
+// proveCatalogRecoveryLineage runs after discovery has listed every root: the
+// metadata scan lists recovery copies as ordinary conversations because it never
+// reads content, and this is the step that hides the ones a parent covers.
+func (a *App) proveCatalogRecoveryLineage(ctx context.Context) {
+	catalog := a.sessionCatalog.Load()
+	if catalog == nil || ctx.Err() != nil || a.shuttingDown.Load() {
+		return
+	}
+	if err := catalog.ProveRecoveryLineage(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		slog.Warn("desktop: recovery lineage proof deferred", "err", err)
 	}
 }

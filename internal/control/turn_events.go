@@ -211,6 +211,7 @@ func (s *turnEventSink) persistAndPublish(e event.Event) error {
 	if s == nil || s.c == nil {
 		return nil
 	}
+	e = withTerminalFailureDiagnostic(e)
 	if e.Kind == event.SessionOperation {
 		if err := s.c.persistMaintenanceOperation(e); err != nil {
 			return err

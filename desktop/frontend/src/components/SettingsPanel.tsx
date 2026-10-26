@@ -29,6 +29,7 @@ import { createLatestRequestGate, mergedFetchedProviderModels, mergeProviderMode
 import { cachedFetchProviderModelCatalog, cachedFetchProviderModels, invalidateProviderCacheByAPIKeyEnv, shouldSkipAutoRefresh } from "../lib/providerModelCache";
 import { providerBaseURLForSave, providerEndpointMismatchDetail, providerRequestURLForCatalogFormatChange, providerRequestURLFromConfig, trimmedBaseURL } from "../lib/providerEndpoint";
 import { providerModelVisionCapability, providerVisionModelsForView } from "../lib/providerVisionCapability";
+import { providerModelReasoningLevels } from "../lib/providerReasoningCapability";
 import { useUpdater } from "../lib/useUpdater";
 import {
   applyTheme,
@@ -4114,12 +4115,10 @@ export function ModelsSection({ s, busy, apply, backgroundApply, subtab, onboard
   const defaultRef = toRef(s.defaultModel, s);
   const plannerRef = toRef(s.plannerModel, s);
   const subagentRef = toRef(s.subagentModel, s);
-  const subagentOption = modelOptionFromRef(subagentRef, s);
-  const subagentOverride = subagentOption?.providerView?.modelOverrides?.find(item => item.model === subagentOption.model);
-  const subagentLevels = subagentRef ? (subagentOverride?.supportedEfforts?.length ? subagentOverride.supportedEfforts : subagentOption?.providerView?.supportedEfforts ?? []) : [];
+  const subagentOption = modelOptionFromRef(subagentRef || defaultRef, s);
+  const subagentLevels = providerModelReasoningLevels(subagentOption?.providerView, subagentOption?.model ?? "");
 
   const visionRef = s.visionModel === "auto" ? "auto" : toRef(s.visionModel, s);
-  const plannerSelectRef = plannerRef === defaultRef ? "" : plannerRef;
   const [defaultProvider] = defaultRef.split("/");
   const defaultProviderView = s.providers.find((p) => p.name === defaultProvider);
   const modelIssue = !defaultProviderView
@@ -4312,13 +4311,13 @@ export function ModelsSection({ s, busy, apply, backgroundApply, subtab, onboard
               <ModelPicker
                 s={s}
                 refs={refs}
-                value={plannerSelectRef}
+                value={plannerRef}
                 disabled={busy}
                 ariaLabel={t("settings.plannerModel")}
                 includeSameDefault
                 onPick={(ref) => void apply(() => saveModelSettings(s, {kind: "preference", field: "planner", ref: ref}))}
               />
-            <span className="model-assignment-connection">{plannerSelectRef && plannerSelectRef !== "auto" ? modelOptionMeta(modelOptionFromRef(plannerSelectRef, s)!, t) : t("settings.connectionFollowSession")}</span>
+            <span className="model-assignment-connection">{plannerRef && plannerRef !== "auto" ? modelOptionMeta(modelOptionFromRef(plannerRef, s)!, t) : t("settings.connectionFollowSession")}</span>
             </SettingsField>
 
             <SettingsField className="model-assignment-row" label={<ModelSettingHelp label={t("settings.imageUnderstandingModel")} text={t("providerUI.visionModelHelp")} />}>
@@ -6167,8 +6166,9 @@ export function ProviderEditor({
           .filter((level) => level && level !== "auto")
       )
     : [];
-  const normalizedDefaultEffort = defaultEffort.toLowerCase().trim();
-  const cleanDefaultEffort = cleanedSupportedEfforts.includes(normalizedDefaultEffort) ? normalizedDefaultEffort : "";
+  // An empty explicit list inherits backend options; it does not invalidate a
+  // saved default. Preserve declarations (and diagnostics) on unrelated edits.
+  const cleanDefaultEffort = reasoningProtocol === "none" ? "" : defaultEffort.toLowerCase().trim();
 
   const fetchModels = async () => {
     if (extraBodyInvalid) return;
@@ -6247,7 +6247,7 @@ export function ProviderEditor({
       models: ms,
       visionModels: vms,
       visionModelsConfigured,
-      default: ms[0] ?? "",
+      default: providerDefaultModel(initial?.default ?? "", ms),
       apiKeyEnv: effectiveApiKeyEnv,
       headers: effectiveHeaders,
       extraBody: effectiveExtraBody,
@@ -6262,9 +6262,7 @@ export function ProviderEditor({
       webSearch: effectiveServerWebSearchCapability && webSearch,
       serverWebSearchCapability: effectiveServerWebSearchCapability,
       supportedEfforts: cleanedSupportedEfforts,
-      // Clear the stored default if no levels are selected; the backend's
-      // NormalizeEffort would otherwise silently ignore an unsupported value.
-      defaultEffort: cleanedSupportedEfforts.length > 0 ? cleanDefaultEffort : "",
+      defaultEffort: cleanDefaultEffort,
       modelOverrides: mergeProviderModelContextWindows(modelOverrides, ms, modelContextWindows),
       modelCapabilities,
     };

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -502,6 +503,9 @@ func (s *Store) readIndex(ctx context.Context, ref Ref) (integrityIndex, error) 
 	}
 	defer root.Close()
 	data, err := root.ReadFile(s.indexRelativePath(ref.Digest))
+	if errors.Is(err, fs.ErrNotExist) {
+		data, err = s.rebuildIndex(ctx, ref)
+	}
 	if err != nil {
 		return integrityIndex{}, fmt.Errorf("read session content %s integrity index: %w", ref.Digest, err)
 	}
@@ -518,6 +522,38 @@ func (s *Store) readIndex(ctx context.Context, ref Ref) (integrityIndex, error) 
 		return integrityIndex{}, fmt.Errorf("session content %s integrity index metadata mismatch", ref.Digest)
 	}
 	return index, nil
+}
+
+// rebuildIndex regenerates a lost index from the object. The ref carries the
+// index digest, so the rebuilt bytes are accepted only if they hash to it; a
+// corrupted object cannot produce an index the ref would vouch for.
+func (s *Store) rebuildIndex(ctx context.Context, ref Ref) ([]byte, error) {
+	if ref.IndexDigest == "" {
+		return nil, fs.ErrNotExist
+	}
+	f, err := s.openRaw(ref)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	digests := newBlockDigestWriter(io.Discard)
+	if _, err := copyWithContext(ctx, digests, f); err != nil {
+		return nil, err
+	}
+	if hex.EncodeToString(digests.full.Sum(nil)) != ref.Digest {
+		return nil, fmt.Errorf("session content %s failed SHA-256 verification", ref.Digest)
+	}
+	data, err := json.Marshal(integrityIndex{Version: 1, Object: ref.Digest, Bytes: ref.Bytes, BlockBytes: IntegrityBlockBytes, Blocks: digests.finish()})
+	if err != nil {
+		return nil, err
+	}
+	if sum := sha256.Sum256(data); hex.EncodeToString(sum[:]) != ref.IndexDigest {
+		return nil, fmt.Errorf("session content %s rebuilt index does not match its recorded digest", ref.Digest)
+	}
+	// The verified bytes are returned whether or not they can be persisted, so a
+	// read-only store still serves its sessions.
+	_ = s.publishIndex(ctx, ref, data)
+	return data, nil
 }
 
 func (s *Store) verifyRange(ctx context.Context, f *os.File, ref Ref, offset, length int64) error {

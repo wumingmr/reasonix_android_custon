@@ -47,6 +47,7 @@ type Messages struct {
 	SessionSaveRecovery      string // durability failure; preserve the live conversation
 	// Host guard/recovery notices (event.Notice texts the fronts render verbatim).
 	EmptyFinal                       string // empty_final: no visible answer; retrying
+	NoDeliverableOutput              string // recovery exhausted without an answer
 	ExecutorHandoff                  string // executor_handoff: answered without using tools
 	ToolBudget                       string // tool_budget: tool-call round limit reached
 	TaskBudget                       string // tool_budget variant: task spend budget reached

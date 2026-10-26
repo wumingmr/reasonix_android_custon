@@ -1843,6 +1843,7 @@ func (c *Controller) runShell(command string, admission turnAdmission) {
 		res := shellrun.RunForeground(ctx, shellrun.Request{
 			Argv:           argv,
 			Dir:            c.workspaceRoot,
+			Env:            shellrun.LoginEnvironment(ctx, os.Environ(), sh.Path),
 			Timeout:        shellTimeout,
 			WaitDelay:      shellWaitDelay,
 			CommandPreview: diagnosticPreview,
@@ -2890,7 +2891,7 @@ func (c *Controller) GoalRuntime() GoalRuntimeView {
 		used, requests, tokenLimit, extensions := c.goalTokensUsed, c.goalRequestsUsed, c.goalTokenLimit, c.goalBudgetExtensions
 		c.goalResourceMu.Unlock()
 		return GoalRuntimeView{TurnsUsed: int(view.RoundsStarted), TurnsLimit: limit, TokensUsed: used,
-			RequestsUsed: requests, TokensLimit: tokenLimit, StopCause: view.StopReason, BudgetExtensions: extensions}
+			RequestsUsed: requests, WorkDurationMs: view.WorkDurationMs, TokensLimit: tokenLimit, StopCause: view.StopReason, BudgetExtensions: extensions}
 	}
 	return c.goals.runtimeView()
 }
@@ -4906,11 +4907,12 @@ func (c *Controller) ImageCapabilityChanged() bool {
 }
 
 // SessionAuthorizations snapshots this controller's same-session tool
-// grants ("Allow for this session") and Plan-mode read-only command trust,
+// grants ("Allow for this session"), external-folder refs, and Plan-mode trust,
 // for carrying into a replacement controller across a rebuild — see
 // RestoreSessionAuthorizations.
 func (c *Controller) SessionAuthorizations() SessionAuthorizations {
 	auth := c.approval.snapshotSessionAuthorizations()
+	auth.externalFolderRefs = c.snapshotExternalFolderRefs()
 	if c.writeAccess.roots != nil {
 		auth.WriteRoots = c.writeAccess.roots.SessionRoots()
 		if auth.WriteRoots == nil {

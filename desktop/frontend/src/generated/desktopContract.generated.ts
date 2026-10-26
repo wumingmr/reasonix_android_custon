@@ -3,7 +3,7 @@
 
 export const DESKTOP_PROTOCOL_VERSION = 11;
 
-export const DESKTOP_CONTRACT_DIGEST = "sha256:516fab4be9dc0e51bf6ce89c0590bb3ab995aafc3a397362cbbacd7a13cd43b6";
+export const DESKTOP_CONTRACT_DIGEST = "sha256:b15b003ee368eaa577f89919ef5938e9fdac210a90cf218dae5bb10a0518efad";
 
 export const DESKTOP_COMMANDS = [
   "AIRenameSession",
@@ -1859,6 +1859,7 @@ export interface goal_View {
   phase: string;
   maxGoalRounds?: number | null;
   roundsStarted: number;
+  workDurationMs?: number;
   blockedReason?: BlockReason | null;
   createdAt: string;
   updatedAt: string;
@@ -3876,6 +3877,8 @@ export interface RemoteSessionView {
   current?: boolean;
   running?: boolean;
   lastActivityAt?: number;
+  resultSequence?: number | null;
+  metadataReady?: boolean;
   pinned?: boolean;
 }
 

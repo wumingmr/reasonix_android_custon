@@ -52,7 +52,7 @@ func (a *App) completeRegisteredMigration(ctx context.Context, source desktopMig
 			if old.SessionID != id {
 				return workspacestate.ErrMutationConflict
 			}
-			return cp.complete(id, digest)
+			return a.completeRetiredMigrationRecovery(ctx, source, cp, path, fingerprint, id, digest, lifecycle)
 		}
 		mapping.RetainedArtifacts, err = retainedDesktopArtifacts(path)
 		if err != nil {
@@ -61,7 +61,7 @@ func (a *App) completeRegisteredMigration(ctx context.Context, source desktopMig
 		if err := a.workspaceRegistry().RecordRetiredSource(ctx, mapping, state.Generation); err != nil {
 			return err
 		}
-		return cp.complete(id, digest)
+		return a.completeRetiredMigrationRecovery(ctx, source, cp, path, fingerprint, id, digest, lifecycle)
 	}
 	ref := session.SessionRef{HostID: localDesktopHostID, SessionID: id}
 	if _, err := a.desktopSessionService("").Query().Stat(ctx, ref); err != nil {
@@ -88,7 +88,7 @@ func (a *App) completeRegisteredMigration(ctx context.Context, source desktopMig
 			return workspacestate.ErrMutationConflict
 		}
 		if _, err := a.canonicalSessionWorkspace(ctx, ref); err == nil {
-			return cp.complete(id, digest)
+			return a.completeMigrationRecovery(ctx, source, cp, path, fingerprint, id, digest)
 		}
 	}
 	if hook := a.desktopSessions.beforeMigrationRegistryCommit; hook != nil {
@@ -105,7 +105,30 @@ func (a *App) completeRegisteredMigration(ctx context.Context, source desktopMig
 			slog.Warn("desktop: legacy cleanup migration binding unavailable")
 		}
 	}
+	return a.completeMigrationRecovery(ctx, source, cp, path, fingerprint, id, digest)
+}
+
+// Archived targets have passed Snapshot validation; deleted receipts cannot
+// prove readable recovery and must retain their existing completion behavior.
+func (a *App) completeRetiredMigrationRecovery(ctx context.Context, source desktopMigrationSource, cp desktopMigrationCheckpoint, path, fingerprint, id, digest, lifecycle string) error {
+	if lifecycle == workspacestate.Archived {
+		return a.completeMigrationRecovery(ctx, source, cp, path, fingerprint, id, digest)
+	}
 	return cp.complete(id, digest)
+}
+
+// The registry and migration receipt are independently retryable. Settle a
+// conflict only after both have accepted this import, including receipt replays
+// that repair stale recovery metadata left by an earlier version.
+func (a *App) completeMigrationRecovery(ctx context.Context, source desktopMigrationSource, cp desktopMigrationCheckpoint, path, fingerprint, id, digest string) error {
+	if err := cp.complete(id, digest); err != nil {
+		return err
+	}
+	_, format := migrationCheckpointPath(cp)
+	if format != "legacy" || source.deferArchive {
+		return nil // Canonical and deferred archive imports keep their own recovery flow.
+	}
+	return a.workspaceRegistry().SettleImportedWorkspaceConflict(ctx, source.mappingKey(path), fingerprint, id)
 }
 
 func (a *App) prepareRegisteredMigration(ctx context.Context, source desktopMigrationSource, cp desktopMigrationCheckpoint, id, workspace string) error {

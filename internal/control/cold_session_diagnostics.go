@@ -59,11 +59,11 @@ func WriteColdSessionDiagnostics(ctx context.Context, dst io.Writer, query *sess
 		if err != nil {
 			return err
 		}
-		redacted := json.RawMessage(secrets.Redact(string(encoded)))
-		if !json.Valid(redacted) {
-			return errors.New("invalid redacted diagnostic field")
+		redacted, err := secrets.RedactJSON(encoded)
+		if err != nil {
+			return err
 		}
-		if err = writeGoalDiagnosticField(dst, name, redacted, true); err != nil {
+		if err = writeGoalDiagnosticField(dst, name, json.RawMessage(redacted), true); err != nil {
 			return err
 		}
 	}
@@ -100,13 +100,9 @@ func writeColdDiagnosticCommits(ctx context.Context, dst io.Writer, query *sessi
 		if commit.LastSequence() > snapshot.SnapshotSequence {
 			return nil
 		}
-		encoded, marshalErr := json.MarshalIndent(commit, "    ", "  ")
+		encoded, marshalErr := marshalDiagnosticCommit(commit)
 		if marshalErr != nil {
 			return marshalErr
-		}
-		encoded = []byte(secrets.Redact(string(encoded)))
-		if !json.Valid(encoded) {
-			return errors.New("redacted cold diagnostic commit is not valid JSON")
 		}
 		separator := "\n    "
 		if !first {

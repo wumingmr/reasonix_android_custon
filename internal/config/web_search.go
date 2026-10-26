@@ -64,9 +64,9 @@ func IsOpenCodeGoDeepSeekWebSearchEndpoint(e *ProviderEntry) bool {
 	path := strings.TrimRight(u.EscapedPath(), "/")
 	switch strings.ToLower(strings.TrimSpace(e.Kind)) {
 	case "responses":
-		return path == "/zen/go/v1"
+		return path == "/zen/go/v1" || path == "/inference/go/openai/v1"
 	case "anthropic":
-		return path == "/zen/go"
+		return path == "/zen/go" || path == "/inference/go/anthropic"
 	default:
 		return false
 	}

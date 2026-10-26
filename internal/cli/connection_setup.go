@@ -156,11 +156,14 @@ func (m chatTUI) handleConnectionSetupKey(msg tea.KeyPressMsg) (tea.Model, tea.C
 			return connectionCredentialSavedMsg{providerName: setup.providerName, result: result, err: err}
 		}
 	default:
-		// A key press with no Text is not user input (see quick_picker). The
-		// previous String() fallback turned IME composition keys into literal
-		// text and rejected the composed text's trailing space, because a
-		// space key reports "space" rather than " ".
-		if text := msg.Text; text != "" && !strings.ContainsAny(text, "\r\n") {
+		text := msg.Text
+		if text == "" {
+			s := msg.String()
+			if len(s) == 1 && s[0] >= 32 && s[0] < 127 {
+				text = s
+			}
+		}
+		if text != "" && !strings.ContainsAny(text, "\r\n") {
 			setup.invalidateTest()
 			setup.key += text
 		}

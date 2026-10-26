@@ -56,8 +56,16 @@ func submitIdentifiedWithSetup(ctrl control.SessionAPI, req control.SubmissionRe
 	return nil
 }
 
+type turnSubmissionPhase uint8
+
+const (
+	turnSubmissionIdle turnSubmissionPhase = iota
+	turnSubmissionReserved
+	turnSubmissionActive
+)
+
 type turnSubmissionState struct {
-	inFlight     bool
+	phase        turnSubmissionPhase
 	submissionID string
 }
 

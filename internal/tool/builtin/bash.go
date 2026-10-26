@@ -11,7 +11,6 @@ import (
 	"runtime"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -32,35 +31,7 @@ const (
 
 func init() { tool.RegisterBuiltin(bash{}) }
 
-var bashShellPATH = cachedBashShellPATH
-
 var bashSandboxCommand = sandbox.Command
-
-// cachedBashShellPATH memoizes the login-shell PATH lookup per login shell so a
-// shell isn't spawned on every POSIX shell tool call (the lookup runs up to three
-// interactive-login shells with a 2s timeout each). Empty results are cached too,
-// so a host without a usable login shell doesn't re-probe each command.
-var (
-	bashPathMu    sync.Mutex
-	bashPathCache = map[string]string{}
-)
-
-func cachedBashShellPATH(ctx context.Context) string {
-	key := loginShell()
-	bashPathMu.Lock()
-	if v, ok := bashPathCache[key]; ok {
-		bashPathMu.Unlock()
-		return v
-	}
-	bashPathMu.Unlock()
-
-	v := defaultBashShellPATH(ctx)
-
-	bashPathMu.Lock()
-	bashPathCache[key] = v
-	bashPathMu.Unlock()
-	return v
-}
 
 // bash runs a shell command. sb, when it enforces, wraps the command in an OS
 // sandbox; the zero value registered at init runs unconfined and is overridden
@@ -614,35 +585,12 @@ func bashCommandEnv(ctx context.Context) []string {
 		return env
 	}
 	currentPath, _ := envValue(env, "PATH")
-	if shellPath := strings.TrimSpace(bashShellPATH(ctx)); shellPath != "" {
+	if shellPath := strings.TrimSpace(shellrun.LoginShellPATH(ctx, env, loginShell())); shellPath != "" {
 		if merged := mergePathLists(shellPath, currentPath); merged != currentPath {
 			env = setEnvValue(env, "PATH", merged)
 		}
 	}
 	return env
-}
-
-func defaultBashShellPATH(ctx context.Context) string {
-	if runtime.GOOS == "windows" {
-		return ""
-	}
-	shell := loginShell()
-	if shell == "" {
-		return ""
-	}
-	const marker = "__REASONIX_BASH_PATH__="
-	script := "printf '\\n" + marker + "%s\\n' \"$PATH\""
-	for _, args := range [][]string{
-		{"-l", "-i", "-c", script},
-		{"-l", "-c", script},
-		{"-c", script},
-	} {
-		out := runShellPATHCommand(ctx, shell, args)
-		if path := parseShellPATH(out, marker); path != "" {
-			return path
-		}
-	}
-	return ""
 }
 
 func loginShell() string {
@@ -655,32 +603,9 @@ func loginShell() string {
 			return p
 		}
 	}
-	for _, name := range []string{"zsh", "bash", "sh"} {
-		if p, err := exec.LookPath(name); err == nil {
-			return p
-		}
-	}
-	return ""
-}
-
-func runShellPATHCommand(parent context.Context, shell string, args []string) []byte {
-	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
-	defer cancel()
-	cmd := proc.CommandContext(ctx, shell, args...)
-	// Explicit env so the login-shell probe honors [secrets]
-	// filter_subprocess_env instead of inheriting the full environment.
-	cmd.Env = secrets.ProcessEnv()
-	proc.PrepareShellPATHProbe(cmd)
-	cmd.Stdin = strings.NewReader("")
-	out, _ := cmd.CombinedOutput()
-	return out
-}
-
-func parseShellPATH(out []byte, marker string) string {
-	lines := strings.Split(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n")
-	for _, line := range slices.Backward(lines) {
-		if rest, ok := strings.CutPrefix(line, marker); ok {
-			return strings.TrimSpace(rest)
+	for _, shell := range []string{"/bin/zsh", "/bin/bash", "/bin/sh"} {
+		if isExecutableFile(shell) {
+			return shell
 		}
 	}
 	return ""

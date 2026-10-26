@@ -8,7 +8,7 @@ import (
 )
 
 func TestOpenCodeGoHeadersScopedStableAndPrivate(t *testing.T) {
-	for _, endpoint := range []string{"https://opencode.ai/zen/go/v1/messages", "https://opencode.ai/zen/go/v1/chat/completions", "https://opencode.ai/zen/go/v1/responses"} {
+	for _, endpoint := range []string{"https://opencode.ai/zen/go/v1/messages", "https://opencode.ai/zen/go/v1/chat/completions", "https://opencode.ai/zen/go/v1/responses", "https://opencode.ai/inference/go/openai/v1/chat/completions", "https://opencode.ai/inference/go/anthropic/v1/messages", "https://opencode.ai/inference/go/openai/v1/responses", "https://opencode.ai/inference/go/v1/models"} {
 		ctx := WithCacheSession(context.Background(), "/private/path/to/session.jsonl")
 		var previous string
 		for i := range 3 {

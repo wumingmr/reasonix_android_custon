@@ -147,7 +147,6 @@ func TestGuardianRepeatedReasoningOnlyStopsFailClosedWithoutReusingPriorAllow(t 
 		{text: `{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"first action is safe"}`},
 		{reasoning: "dangerous review 1", usage: &provider.Usage{FinishReason: "stop"}},
 		{reasoning: "dangerous review 2", usage: &provider.Usage{FinishReason: "stop"}},
-		{reasoning: "dangerous review 3", usage: &provider.Usage{FinishReason: "stop"}},
 	}}
 	prov := &reasoningScriptedProvider{scriptedProvider: base}
 	gs := NewSession(prov, tool.NewRegistry(), PolicyPrompt(), "guardian-test", 0, nil, &captureSink{})
@@ -162,8 +161,8 @@ func TestGuardianRepeatedReasoningOnlyStopsFailClosedWithoutReusingPriorAllow(t 
 	if allow || err == nil {
 		t.Fatalf("second ReviewVerdict = allow %v err %v, want fail-closed error", allow, err)
 	}
-	if got := len(base.requestsSnapshot()); got != 4 {
-		t.Fatalf("provider requests = %d, want 4 (prior allow plus three bounded empty finals)", got)
+	if got := len(base.requestsSnapshot()); got != 3 {
+		t.Fatalf("provider requests = %d, want 3 (prior allow plus one empty final and one recovery)", got)
 	}
 	if after := gs.sess.Snapshot(); !reflect.DeepEqual(after, before) {
 		t.Fatalf("failed reasoning-only review did not roll back session:\nbefore=%+v\nafter=%+v", before, after)
@@ -176,8 +175,8 @@ func TestGuardianRepeatedReasoningOnlyStopsFailClosedWithoutReusingPriorAllow(t 
 		t.Fatalf("review after rollback = allow %v err %v, want allow nil", allow, err)
 	}
 	reqs := base.requestsSnapshot()
-	if got := len(reqs); got != 5 {
-		t.Fatalf("provider requests after recovery = %d, want 5", got)
+	if got := len(reqs); got != 4 {
+		t.Fatalf("provider requests after recovery = %d, want 4", got)
 	}
 	last := reqs[len(reqs)-1]
 	for i := 1; i < len(last.Messages); i++ {

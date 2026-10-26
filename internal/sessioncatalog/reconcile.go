@@ -34,6 +34,10 @@ func (c *Catalog) reconcileDirectory(ctx context.Context, target DirectoryTarget
 	if c.opts.MetadataOnly {
 		return c.reconcileMetadata(ctx, target, sequence)
 	}
+	return c.reconcileDirectoryFull(ctx, target, sequence)
+}
+
+func (c *Catalog) reconcileDirectoryFull(ctx context.Context, target DirectoryTarget, sequence uint64) error {
 	target.Path = cleanCatalogAccessPath(target.Path)
 	if target.Path == "" {
 		return nil

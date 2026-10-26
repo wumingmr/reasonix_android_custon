@@ -85,24 +85,57 @@ func (s State) SourceKeys(key string) []string {
 
 // ResolveSource rejects ambiguous normalized ownership instead of choosing a
 // destination or admitting another import. Exact durable keys remain usable.
+// Receipts of one source and content split across sessions settle on the single
+// live owner; the retired copies keep their receipts and content untouched.
 func (s State) ResolveSource(key string) (SourceMapping, bool, error) {
 	if mapping, ok := s.SourceMappings[key]; ok {
 		return cloneSourceMapping(mapping), true, nil
 	}
-	var result SourceMapping
-	found := false
+	var owners []SourceMapping
 	for _, owner := range s.sourceIdentityIndex().owners[key] {
-		mapping, exists := s.SourceMappings[owner]
-		if !exists {
-			continue
+		if mapping, exists := s.SourceMappings[owner]; exists {
+			owners = append(owners, mapping)
 		}
-		if found && (result.SessionID != mapping.SessionID || result.WorkspaceID != mapping.WorkspaceID || result.Fingerprint != mapping.Fingerprint) {
+	}
+	if len(owners) == 0 {
+		return SourceMapping{}, false, nil
+	}
+	slices.SortFunc(owners, func(a, b SourceMapping) int { return strings.Compare(a.SourceKey, b.SourceKey) })
+	if !sameOwner(owners[0], owners[1:]) {
+		live, ok := s.liveDuplicateOwners(owners)
+		if !ok {
 			return SourceMapping{}, false, ErrMutationConflict
 		}
-		if !found || mapping.SourceKey < result.SourceKey {
-			result = mapping
-		}
-		found = true
+		owners = live
 	}
-	return cloneSourceMapping(result), found, nil
+	return cloneSourceMapping(owners[0]), true, nil
+}
+
+func sameOwner(first SourceMapping, rest []SourceMapping) bool {
+	for _, other := range rest {
+		if other.SessionID != first.SessionID || other.WorkspaceID != first.WorkspaceID || other.Fingerprint != first.Fingerprint {
+			return false
+		}
+	}
+	return true
+}
+
+// liveDuplicateOwners narrows receipts that disagree only on which session
+// holds them to the mappings of the one session still in use. Different
+// content, workspaces, or zero or several live sessions stay ambiguous.
+func (s State) liveDuplicateOwners(owners []SourceMapping) ([]SourceMapping, bool) {
+	first := owners[0]
+	var live []SourceMapping
+	for _, owner := range owners {
+		if owner.Fingerprint == "" || owner.Fingerprint != first.Fingerprint || owner.WorkspaceID != first.WorkspaceID {
+			return nil, false
+		}
+		if lifecycle := s.SessionStates[owner.SessionID].Lifecycle; lifecycle == Active {
+			live = append(live, owner)
+		}
+	}
+	if len(live) == 0 || !sameOwner(live[0], live[1:]) {
+		return nil, false
+	}
+	return live, true
 }

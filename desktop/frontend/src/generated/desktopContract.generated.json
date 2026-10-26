@@ -27281,6 +27281,13 @@
           }
         },
         {
+          "name": "workDurationMs",
+          "optional": true,
+          "type": {
+            "kind": "integer"
+          }
+        },
+        {
           "name": "blockedReason",
           "optional": true,
           "type": {
@@ -37960,6 +37967,23 @@
           "optional": true,
           "type": {
             "kind": "integer"
+          }
+        },
+        {
+          "name": "resultSequence",
+          "optional": true,
+          "type": {
+            "elem": {
+              "kind": "integer"
+            },
+            "kind": "nullable"
+          }
+        },
+        {
+          "name": "metadataReady",
+          "optional": true,
+          "type": {
+            "kind": "boolean"
           }
         },
         {

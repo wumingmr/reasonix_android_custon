@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -102,10 +101,7 @@ func (m chatTUI) handleSkillPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 			return m.saveSkillPick()
 		case "backspace":
 			if len(p.query) > 0 {
-				// Drop one rune, not one byte: a byte slice would split a
-				// multi-byte character and leave invalid UTF-8 in the query.
-				_, n := utf8.DecodeLastRuneInString(p.query)
-				p.query = p.query[:len(p.query)-n]
+				p.query = p.query[:len(p.query)-1]
 				p.sel = clampSel(p.sel, p.filteredSkills())
 			}
 			return m, nil
@@ -121,11 +117,10 @@ func (m chatTUI) handleSkillPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 			}
 			return m, nil
 		default:
-			// Same contract as quick_picker: only printable input carries Text,
-			// so an IME composition key (empty Text) must not be turned into
-			// text via String().
-			if msg.Text != "" {
-				p.query += msg.Text
+			if t := msg.Text; t != "" {
+				p.query += t
+			} else if s := msg.String(); len(s) == 1 && s[0] >= 32 && s[0] < 127 {
+				p.query += s
 			}
 			p.sel = clampSel(p.sel, p.filteredSkills())
 			return m, nil

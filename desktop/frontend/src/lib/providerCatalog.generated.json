@@ -911,22 +911,22 @@
       "region": "global",
       "product": "go",
       "format": "openai",
-      "baseUrl": "https://opencode.ai/zen/go/v1",
+      "baseUrl": "https://opencode.ai/inference/go/openai/v1",
       "protocols": {
         "anthropic": {
-          "baseUrl": "https://opencode.ai/zen/go",
-          "source": "https://opencode.ai/docs/go/",
-          "checkedOn": "2026-09-07"
+          "baseUrl": "https://opencode.ai/inference/go/anthropic",
+          "source": "https://opencode.ai/v2/docs/console/go/#endpoints",
+          "checkedOn": "2026-10-21"
         },
         "openai": {
-          "baseUrl": "https://opencode.ai/zen/go/v1",
-          "source": "https://opencode.ai/docs/go/",
-          "checkedOn": "2026-09-07"
+          "baseUrl": "https://opencode.ai/inference/go/openai/v1",
+          "source": "https://opencode.ai/v2/docs/console/go/#endpoints",
+          "checkedOn": "2026-10-21"
         },
         "responses": {
-          "baseUrl": "https://opencode.ai/zen/go/v1",
-          "source": "https://opencode.ai/docs/go/",
-          "checkedOn": "2026-09-07"
+          "baseUrl": "https://opencode.ai/inference/go/openai/v1",
+          "source": "https://opencode.ai/v2/docs/console/go/#endpoints",
+          "checkedOn": "2026-10-21"
         }
       }
     },
@@ -936,22 +936,22 @@
       "region": "global",
       "product": "go",
       "format": "anthropic",
-      "baseUrl": "https://opencode.ai/zen/go",
+      "baseUrl": "https://opencode.ai/inference/go/anthropic",
       "protocols": {
         "anthropic": {
-          "baseUrl": "https://opencode.ai/zen/go",
-          "source": "https://opencode.ai/docs/go/",
-          "checkedOn": "2026-09-07"
+          "baseUrl": "https://opencode.ai/inference/go/anthropic",
+          "source": "https://opencode.ai/v2/docs/console/go/#endpoints",
+          "checkedOn": "2026-10-21"
         },
         "openai": {
-          "baseUrl": "https://opencode.ai/zen/go/v1",
-          "source": "https://opencode.ai/docs/go/",
-          "checkedOn": "2026-09-07"
+          "baseUrl": "https://opencode.ai/inference/go/openai/v1",
+          "source": "https://opencode.ai/v2/docs/console/go/#endpoints",
+          "checkedOn": "2026-10-21"
         },
         "responses": {
-          "baseUrl": "https://opencode.ai/zen/go/v1",
-          "source": "https://opencode.ai/docs/go/",
-          "checkedOn": "2026-09-07"
+          "baseUrl": "https://opencode.ai/inference/go/openai/v1",
+          "source": "https://opencode.ai/v2/docs/console/go/#endpoints",
+          "checkedOn": "2026-10-21"
         }
       }
     },
@@ -964,19 +964,19 @@
       "baseUrl": "https://opencode.ai/zen/go",
       "protocols": {
         "anthropic": {
-          "baseUrl": "https://opencode.ai/zen/go",
-          "source": "https://opencode.ai/docs/go/",
-          "checkedOn": "2026-09-07"
+          "baseUrl": "https://opencode.ai/inference/go/anthropic",
+          "source": "https://opencode.ai/v2/docs/console/go/#endpoints",
+          "checkedOn": "2026-10-21"
         },
         "openai": {
-          "baseUrl": "https://opencode.ai/zen/go/v1",
-          "source": "https://opencode.ai/docs/go/",
-          "checkedOn": "2026-09-07"
+          "baseUrl": "https://opencode.ai/inference/go/openai/v1",
+          "source": "https://opencode.ai/v2/docs/console/go/#endpoints",
+          "checkedOn": "2026-10-21"
         },
         "responses": {
-          "baseUrl": "https://opencode.ai/zen/go/v1",
-          "source": "https://opencode.ai/docs/go/",
-          "checkedOn": "2026-09-07"
+          "baseUrl": "https://opencode.ai/inference/go/openai/v1",
+          "source": "https://opencode.ai/v2/docs/console/go/#endpoints",
+          "checkedOn": "2026-10-21"
         }
       }
     },
@@ -989,19 +989,19 @@
       "baseUrl": "https://opencode.ai/zen/go/v1",
       "protocols": {
         "anthropic": {
-          "baseUrl": "https://opencode.ai/zen/go",
-          "source": "https://opencode.ai/docs/go/",
-          "checkedOn": "2026-09-07"
+          "baseUrl": "https://opencode.ai/inference/go/anthropic",
+          "source": "https://opencode.ai/v2/docs/console/go/#endpoints",
+          "checkedOn": "2026-10-21"
         },
         "openai": {
-          "baseUrl": "https://opencode.ai/zen/go/v1",
-          "source": "https://opencode.ai/docs/go/",
-          "checkedOn": "2026-09-07"
+          "baseUrl": "https://opencode.ai/inference/go/openai/v1",
+          "source": "https://opencode.ai/v2/docs/console/go/#endpoints",
+          "checkedOn": "2026-10-21"
         },
         "responses": {
-          "baseUrl": "https://opencode.ai/zen/go/v1",
-          "source": "https://opencode.ai/docs/go/",
-          "checkedOn": "2026-09-07"
+          "baseUrl": "https://opencode.ai/inference/go/openai/v1",
+          "source": "https://opencode.ai/v2/docs/console/go/#endpoints",
+          "checkedOn": "2026-10-21"
         }
       }
     },
@@ -1014,19 +1014,19 @@
       "baseUrl": "",
       "protocols": {
         "anthropic": {
-          "baseUrl": "https://opencode.ai/zen/go",
-          "source": "https://opencode.ai/docs/go/",
-          "checkedOn": "2026-09-07"
+          "baseUrl": "https://opencode.ai/inference/go/anthropic",
+          "source": "https://opencode.ai/v2/docs/console/go/#endpoints",
+          "checkedOn": "2026-10-21"
         },
         "openai": {
-          "baseUrl": "https://opencode.ai/zen/go/v1",
-          "source": "https://opencode.ai/docs/go/",
-          "checkedOn": "2026-09-07"
+          "baseUrl": "https://opencode.ai/inference/go/openai/v1",
+          "source": "https://opencode.ai/v2/docs/console/go/#endpoints",
+          "checkedOn": "2026-10-21"
         },
         "responses": {
-          "baseUrl": "https://opencode.ai/zen/go/v1",
-          "source": "https://opencode.ai/docs/go/",
-          "checkedOn": "2026-09-07"
+          "baseUrl": "https://opencode.ai/inference/go/openai/v1",
+          "source": "https://opencode.ai/v2/docs/console/go/#endpoints",
+          "checkedOn": "2026-10-21"
         }
       }
     },
@@ -1036,22 +1036,22 @@
       "region": "global",
       "product": "go",
       "format": "responses",
-      "baseUrl": "https://opencode.ai/zen/go/v1",
+      "baseUrl": "https://opencode.ai/inference/go/openai/v1",
       "protocols": {
         "anthropic": {
-          "baseUrl": "https://opencode.ai/zen/go",
-          "source": "https://opencode.ai/docs/go/",
-          "checkedOn": "2026-09-07"
+          "baseUrl": "https://opencode.ai/inference/go/anthropic",
+          "source": "https://opencode.ai/v2/docs/console/go/#endpoints",
+          "checkedOn": "2026-10-21"
         },
         "openai": {
-          "baseUrl": "https://opencode.ai/zen/go/v1",
-          "source": "https://opencode.ai/docs/go/",
-          "checkedOn": "2026-09-07"
+          "baseUrl": "https://opencode.ai/inference/go/openai/v1",
+          "source": "https://opencode.ai/v2/docs/console/go/#endpoints",
+          "checkedOn": "2026-10-21"
         },
         "responses": {
-          "baseUrl": "https://opencode.ai/zen/go/v1",
-          "source": "https://opencode.ai/docs/go/",
-          "checkedOn": "2026-09-07"
+          "baseUrl": "https://opencode.ai/inference/go/openai/v1",
+          "source": "https://opencode.ai/v2/docs/console/go/#endpoints",
+          "checkedOn": "2026-10-21"
         }
       }
     },

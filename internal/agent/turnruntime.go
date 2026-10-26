@@ -13,9 +13,8 @@ type turnRuntime struct {
 	runMaxSteps    int
 	runMaxStepsKey string
 
-	terminal    terminalProtocolState
-	usedAnyTool bool
-	graceRound  bool
+	terminal   terminalProtocolState
+	graceRound bool
 
 	input          string
 	workDurationMs func() int64
@@ -61,9 +60,12 @@ type turnRuntime struct {
 
 // terminalProtocolState groups the run's terminal-protocol bookkeeping: the
 type terminalProtocolState struct {
-	// emptyFinalBlocks counts consecutive reasoning-only stops retried for a
-	// visible final answer.
+	// emptyFinalBlocks counts no-answer stops across the entire Run, including
+	// intervening tool rounds. Tool progress must not replenish recovery.
 	emptyFinalBlocks int
+	// answeringRecovery marks the next committed response as the reply to a
+	// synthetic no-answer recovery, so diagnostics attribute only that one.
+	answeringRecovery bool
 }
 
 // pendingTurn is what someone outside the Run arms for the next one: a

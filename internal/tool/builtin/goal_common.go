@@ -37,6 +37,8 @@ func goalToolResultWithInstruction(view *goaldomain.View, instruction string) (s
 	value := goalToolValue{}
 	if view != nil {
 		snapshot := view.Snapshot
+		// Work duration is host/UI metadata, not model-visible goal state.
+		snapshot.WorkDurationMs = 0
 		value.Goal = &snapshot
 		value.Activation = view.Activation
 		value.StopReason = view.StopReason

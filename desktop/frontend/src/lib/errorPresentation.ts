@@ -26,11 +26,13 @@ const codeKeys: Record<string, DictKey> = {
   stream_interrupted: "error.interrupted", empty_response: "error.empty", stale_generation: "error.conflict",
   provider_connection: "error.connection", cancelled: "error.cancelled",
   transport_protocol: "error.transportProtocol",
+  no_deliverable_output: "error.noDeliverable",
 };
 
 // Narrow legacy matches bridge errors from older services and OS libraries.
 // Unknown errors deliberately keep a neutral summary instead of guessing.
 const legacyKeys: [RegExp, DictKey][] = [
+  [/\bno_deliverable_output\b/, "error.noDeliverable"],
   [/\b(?:insufficient_quota|insufficient balance|quota exhausted)\b|余额不足|額度不足|额度不足/i, "error.quota"],
   [/\b(?:context_length_exceeded|context (?:window|length).*(?:exceed|limit)|maximum context length)\b|超出.*上下文/i, "error.context"],
   [/\b(?:ENOSPC|no space left on device|disk full)\b/i, "error.diskFull"],
@@ -65,6 +67,9 @@ function statusKey(status: number): DictKey | undefined {
 
 export function presentError(error: unknown, translate: Translator = t, locale: Locale = getLocale(), diagnostic?: WireEvent["diagnostic"]): ErrorPresentation {
   const detail = errorDetail(error).trim();
+  if (diagnostic?.kind === "no_deliverable_output") {
+    return { summary: translate("error.noDeliverable"), detail };
+  }
   if (diagnostic?.kind === "transport_protocol") {
     return { summary: translate("error.transportProtocol"), detail: [detail, diagnostic.transportCode ? `HTTP/2: ${diagnostic.transportCode}` : ""].filter(Boolean).join("\n") };
   }

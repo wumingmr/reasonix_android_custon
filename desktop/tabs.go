@@ -1488,9 +1488,9 @@ func (s *tabEventSink) Emit(e event.Event) {
 	if s == nil {
 		return
 	}
-	if e.Kind == event.TurnStarted {
+	if e.Kind == event.TurnStarted || e.Kind == event.TurnDone {
 		s.mu.Lock()
-		s.turn.inFlight = true
+		s.turn.phase = turnSubmissionActive
 		s.mu.Unlock()
 	}
 	tabID, app := s.binding()
@@ -1617,16 +1617,20 @@ func (s *tabEventSink) clearBotSink(generation uint64) {
 func (s *tabEventSink) tryBeginTurn(submissionID ...string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.turn.inFlight {
+	if s.turn.phase != turnSubmissionIdle {
 		return false
 	}
-	s.turn = turnSubmissionState{inFlight: true, submissionID: firstSubmissionID(submissionID)}
+	s.turn = turnSubmissionState{phase: turnSubmissionReserved, submissionID: firstSubmissionID(submissionID)}
 	return true
 }
 
 func (s *tabEventSink) cancelTurnStart() {
 	s.mu.Lock()
-	s.turn = turnSubmissionState{}
+	// A management command can finish after queued work has started. Only its
+	// provisional reservation may be released; TurnDone owns a started turn.
+	if s.turn.phase == turnSubmissionReserved {
+		s.turn = turnSubmissionState{}
+	}
 	s.mu.Unlock()
 }
 

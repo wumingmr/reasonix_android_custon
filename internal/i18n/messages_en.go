@@ -22,6 +22,7 @@ var English = Messages{
 	ContextLimitRecovery:             "Automatic context recovery could not fit this request. Shorten the latest message or choose a model with a larger context window. The original history is kept",
 	SessionSaveRecovery:              "The conversation could not be saved. Keep it open and export a backup if available. Check free disk space and folder permissions before resuming",
 	EmptyFinal:                       "No visible answer was produced; asking the assistant to respond again.",
+	NoDeliverableOutput:              "This turn did not complete: the model produced no answer, even after recovery. Send a message to continue, or switch models and try again.",
 	ExecutorHandoff:                  "The assistant answered before taking action; asking it to use the required tools.",
 	ToolBudget:                       "Tool round limit reached; asking the assistant to summarize progress.",
 	TaskBudget:                       "This task reached its spend budget; asking for a final answer.",

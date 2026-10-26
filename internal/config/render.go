@@ -80,24 +80,6 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		} else {
 			b.WriteString("# cursor_shape = \"bar\"   # block|underline|bar; text input cursor shape\n")
 		}
-		if off := c.UI.TermuxWidthOffset; off != nil {
-			fmt.Fprintf(&b, "termux_width_offset = %d   # columns Termux reports but does not draw; 0 trusts the reported width exactly\n", *off)
-		} else {
-			b.WriteString("# termux_width_offset = 1   # columns Termux reports but does not draw; raise it if the last cell of a full row is cut off\n")
-		}
-		// ResumeListLimit 必须在此输出。RenderTOMLForScope 是全量重写 [ui] 段,
-		// 不认识就等于删除 —— 任何触发配置回写的操作(改设置、跑 doctor)都会把
-		// 用户手写的 resume_list_limit 静默抹掉。
-		//
-		// 这里用 != 0 而不是像 termux_width_offset 那样判断"是否已设置"是有意的:
-		// 0 与未设置解析出同一个生效值(见 UIConfig.ResumeLimit,都回落到内置 10),
-		// 所以把显式的 0 规整成一行注释不改变任何行为,只是省掉冗余配置。
-		// 非零值(含负数)必须原样写出,否则用户设的上限会消失。
-		if n := c.UI.ResumeListLimit; n != 0 {
-			fmt.Fprintf(&b, "resume_list_limit = %d   # resume picker offers this many conversations; negative means no cap; 0/absent keeps the built-in default\n", n)
-		} else {
-			b.WriteString("# resume_list_limit = 200   # resume picker offers this many conversations; negative means no cap; 0/absent keeps the built-in default\n")
-		}
 		if strings.TrimSpace(c.UI.CloseBehavior) != "" && scope == RenderScopeProject {
 			fmt.Fprintf(&b, "close_behavior = %q   # legacy desktop close behavior; prefer [desktop].close_behavior in user config\n", c.DesktopCloseBehavior())
 		}
@@ -176,6 +158,10 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		if c.CLITelemetryConfigured() {
 			b.WriteString("[telemetry]\n")
 			fmt.Fprintf(&b, "cli_metrics = %q   # CLI content-free usage metrics: auto|on|off; auto requires a local interactive terminal\n\n", c.CLITelemetryMode())
+		}
+		if c.Attachments.MaxStreamBytes != nil {
+			b.WriteString("[attachments]\n")
+			fmt.Fprintf(&b, "max_stream_bytes = %d   # user/global only; ordinary streamed file bytes; 0 = unlimited; unset = 1 GiB\n\n", *c.Attachments.MaxStreamBytes)
 		}
 
 		b.WriteString("[notifications]\n")
@@ -845,12 +831,6 @@ func RenderTOMLProjectDelta(c *Config) string {
 		}
 		if strings.TrimSpace(c.UI.CursorShape) != "" {
 			fmt.Fprintf(&b, "cursor_shape = %q\n", c.UICursorShape())
-		}
-		if c.UI.TermuxWidthOffset != nil && d.UI.TermuxWidthOffset == nil {
-			fmt.Fprintf(&b, "termux_width_offset = %d\n", *c.UI.TermuxWidthOffset)
-		}
-		if c.UI.ResumeListLimit != 0 && d.UI.ResumeListLimit == 0 {
-			fmt.Fprintf(&b, "resume_list_limit = %d\n", c.UI.ResumeListLimit)
 		}
 		if c.UI.CloseBehavior != d.UI.CloseBehavior {
 			fmt.Fprintf(&b, "close_behavior = %q\n", c.DesktopCloseBehavior())

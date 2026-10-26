@@ -76,15 +76,16 @@ type BlockReason struct {
 }
 
 type Snapshot struct {
-	ID            string       `json:"id"`
-	Revision      uint64       `json:"revision"`
-	Objective     string       `json:"objective"`
-	Phase         Phase        `json:"phase"`
-	MaxGoalRounds *uint64      `json:"maxGoalRounds"`
-	RoundsStarted uint64       `json:"roundsStarted"`
-	BlockedReason *BlockReason `json:"blockedReason,omitempty"`
-	CreatedAt     time.Time    `json:"createdAt"`
-	UpdatedAt     time.Time    `json:"updatedAt"`
+	ID             string       `json:"id"`
+	Revision       uint64       `json:"revision"`
+	Objective      string       `json:"objective"`
+	Phase          Phase        `json:"phase"`
+	MaxGoalRounds  *uint64      `json:"maxGoalRounds"`
+	RoundsStarted  uint64       `json:"roundsStarted"`
+	WorkDurationMs int64        `json:"workDurationMs,omitempty"`
+	BlockedReason  *BlockReason `json:"blockedReason,omitempty"`
+	CreatedAt      time.Time    `json:"createdAt"`
+	UpdatedAt      time.Time    `json:"updatedAt"`
 }
 
 func (s Snapshot) Ref() Ref { return Ref{ID: s.ID, Revision: s.Revision} }
@@ -509,6 +510,9 @@ func validLimit(limit *uint64, roundsStarted uint64) error {
 }
 
 func validateSnapshot(snapshot Snapshot) error {
+	if snapshot.WorkDurationMs < 0 {
+		return goalError(ErrUnsupportedVersion, "goal state has negative work duration")
+	}
 	if snapshot.ID == "" || snapshot.Revision == 0 {
 		return goalError(ErrUnsupportedVersion, "goal state has invalid identity")
 	}

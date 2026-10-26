@@ -1,18 +1,3 @@
-<div align="center">
-
-> **📱 Termux / Android：本仓库是可直接使用的 Termux 版本**
->
-> 在 Android Termux 上编译的 Reasonix，追加了 Android 平台适配，并修复了几个在
-> Termux 上无法正常使用的交互缺陷（中文与空格打不进去、搜索后方向键选不中等）。
->
-> 👉 **下载请到 [Releases 页面](https://github.com/wumingmr/reasonix_android_custon/releases)**
->
-> Termux 定制部分由 AI 助手全程完成；上游代码与设计归 `esengine` 所有。
-
-</div>
-
----
-
 <p align="center">
   <img src="docs/logo-ghost-wave-effect.svg" alt="Reasonix" width="360"/>
 </p>

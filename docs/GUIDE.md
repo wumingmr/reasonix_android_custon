@@ -397,8 +397,17 @@ live Anthropic and Responses requests currently fail in the OpenCode Go upstream
 conversion. The OpenCode Go preset includes its native `kimi-k3` subscription
 route with image input,
 `high`/`max` reasoning effort, and a 1,048,576-token context window. Existing untouched
-OpenCode Go preset installs are upgraded automatically; edited model catalogs
-are preserved. The Kimi CN and Kimi Global direct-API presets also include
+OpenCode Go preset installs are upgraded automatically. Since config schema 13,
+standard Go connections use the [documented inference endpoints](https://opencode.ai/v2/docs/console/go/#endpoints):
+`/inference/go/openai/v1` for Chat/Responses and `/inference/go/anthropic` for Messages.
+Discovery uses `/inference/go/v1/models`. Existing Go Chat connections containing
+DeepSeek gain `deepseek-v4.1-flash` once, without changing their selected model,
+credential reference, or custom fields. Later model deletions survive restarts;
+custom request endpoints and custom bodies require manual review and stay unchanged.
+V4.1 Flash uses DeepSeek thinking (`disabled`/`low`/`high`/`max`, default `high`)
+and preserves reasoning across tool calls and subsequent turns. Old `/zen/go`
+routes remain recognized, and both route generations send a stable conversation
+header for OpenCode cache routing. The Kimi CN and Kimi Global direct-API presets also include
 `kimi-k3` with image input, a 1,048,576-token context window, and the official
 `low`/`high`/`max` effort scale (default `max`). For the official K3 endpoints,
 Reasonix preserves complete assistant messages across turns, sends output limits

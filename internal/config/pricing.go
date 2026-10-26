@@ -283,6 +283,11 @@ func ApplyUserConfigUpgradesOnStartup(path string) (bool, error) {
 		return changed, err
 	}
 	upgraded, err = upgradeMimoCatalogFileLocked(path, fileutil.AtomicWriteFile)
+	changed = changed || upgraded
+	if err != nil {
+		return changed, err
+	}
+	upgraded, err = upgradeOpenCodeGoInferenceFileLocked(path, fileutil.AtomicWriteFile)
 	return changed || upgraded, err
 }
 

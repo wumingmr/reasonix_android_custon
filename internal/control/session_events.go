@@ -510,6 +510,18 @@ func (c *Controller) v3EventsFor(e event.Event, projection session.Projection) (
 			return nil, err
 		}
 		out = append(out, session.Event{Kind: "assistant/attempt", Payload: payload})
+		if e.StreamAttempt.Response != nil {
+			// Required attempt payloads are strict in previous readers. Keep
+			// observational metadata in an independently skippable event.
+			payload, err := makePayload(map[string]any{
+				"schemaVersion": 1, "messageId": e.MessageID,
+				"attemptId": e.StreamAttempt.ID, "response": e.StreamAttempt.Response,
+			})
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, session.Event{Kind: "diagnostic/response", Optional: true, Payload: payload})
+		}
 	case event.AskRequest, event.ApprovalRequest, event.MCPInteractionRequest:
 		kind := strings.TrimSpace(e.PromptKind)
 		if kind == "" {

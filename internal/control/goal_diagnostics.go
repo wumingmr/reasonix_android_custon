@@ -144,19 +144,10 @@ func writeSessionDiagnosticCommits(ctx context.Context, dst io.Writer, store *se
 	changes := []goalDiagnosticTransition{}
 	activation := goaldomain.ActivationDisarmed
 	err := visitAcceptedGoalDiagnosticCommits(ctx, store, cut, func(commit session.Commit) error {
-		encoded, err := json.MarshalIndent(commit, "    ", "  ")
+		encoded, err := marshalDiagnosticCommit(commit)
 		if err != nil {
 			return err
 		}
-		encoded, err = secrets.RedactJSON(encoded)
-		if err != nil {
-			return err
-		}
-		var formatted bytes.Buffer
-		if err := json.Indent(&formatted, encoded, "    ", "  "); err != nil {
-			return err
-		}
-		encoded = formatted.Bytes()
 		separator := "\n    "
 		if !first {
 			separator = ",\n    "

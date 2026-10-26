@@ -134,6 +134,8 @@ func DiagnoseFailure(err error) *FailureDiagnostic {
 	switch {
 	case errors.Is(err, context.Canceled):
 		d.Kind = FailureKindCancelled
+	case errors.Is(err, ErrNoDeliverableOutput):
+		d.Kind = "no_deliverable_output"
 	case AsRecoveryWaitExhausted(err) != nil:
 		d.Kind = "recovery_wait_exhausted"
 	case AsQuotaError(err) != nil:

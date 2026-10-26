@@ -41,6 +41,9 @@ func explainError(err error) error {
 	if errors.Is(err, turnevent.ErrTurnLedgerUnavailable) {
 		return err
 	}
+	if errors.Is(err, provider.ErrNoDeliverableOutput) {
+		return &explainedError{msg: i18n.M.NoDeliverableOutput, cause: err}
+	}
 	// The exhausted wait wraps its transport cause; explain the wait itself
 	// before the connect/status branches below explain that cause instead.
 	if wait := provider.AsRecoveryWaitExhausted(err); wait != nil {

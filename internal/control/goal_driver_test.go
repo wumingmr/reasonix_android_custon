@@ -115,6 +115,9 @@ func TestGoalDriverContinuesAfterFinalAndCompletesThroughExactRoundAuthority(t *
 	if err != nil || view == nil || view.RoundsStarted != 2 || view.Revision != 2 {
 		t.Fatalf("goal view = %+v, err = %v", view, err)
 	}
+	if got := c.GoalRuntime().WorkDurationMs; got <= 0 {
+		t.Fatalf("completed automatic rounds have work duration %d, want positive cumulative active time", got)
+	}
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
 	if runner.calls != 3 || !strings.Contains(runner.inputs[1], `"round":1`) || !strings.Contains(runner.inputs[2], `"round":2`) || !strings.Contains(runner.inputs[1], "<goal-round>") {

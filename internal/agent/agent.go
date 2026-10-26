@@ -41,7 +41,7 @@ const maxToolOutputBytes = 32 * 1024
 
 var deprecatedContextRetentionWarning sync.Once
 
-const maxEmptyFinalBlocks = 3
+const maxEmptyFinalBlocks = 2
 
 // These bounds cover corrected tool arguments and protocol/context repairs.
 // Transport failures never replay the failed request automatically.
@@ -299,8 +299,7 @@ type Agent struct {
 	responseLanguage  atomic.Value // string: auto|zh|en
 	reasoningLanguage atomic.Value // string: auto|zh|en
 
-	requireVisibleFinal bool // internal callers require final Content
-	continuationPolicy  ContinuationPolicy
+	continuationPolicy ContinuationPolicy
 
 	// unwrittenResolve is the resolve watermark a failed state write still owes.
 	// It outlives the conversation, which is why it is not in sessionRuntime.
@@ -758,10 +757,6 @@ func (a *Agent) steerQueueLen() int {
 	return len(a.steerQueue)
 }
 
-// CompactRatio returns the fraction of the window at which auto-compaction
-// fires (e.g. 0.8). The status line uses it to show headroom to the next compact.
-func (a *Agent) CompactRatio() float64 { return a.compactRatio }
-
 // CompactNow forces one projection compaction (canonical transcript untouched).
 func (a *Agent) CompactNow(ctx context.Context, instructions string) error {
 	_, err := a.contextManager().Prepare(ctx, ContextPreparePolicy{
@@ -801,7 +796,8 @@ type Options struct {
 	// provider instance. It is attached to emitted Usage events so downstream
 	// usage accounting can attribute tokens to the exact model.
 	ModelRef string
-	// RequireVisibleFinal makes internal callers reject reasoning-only responses.
+	// RequireVisibleFinal is retained for source compatibility. All callers now
+	// reject terminal responses without an answer or a structured finalizer.
 	RequireVisibleFinal bool
 	// ContinuationPolicy is the internal host policy for synthetic same-Run
 	// continuation. The zero value (ContinuationDisabled) is the product default.
@@ -833,6 +829,8 @@ type Options struct {
 	// RecentKeep fall back to defaults when unset.
 	ContextWindow int
 	CompactRatio  float64
+	// CompactRatioSource must be concurrency-safe; root/planner decisions stay live.
+	CompactRatioSource func() float64
 	// Deprecated compatibility inputs. New agents ignore these fields; automatic
 	// maintenance is controlled only by CompactRatio.
 	SoftCompactRatio       float64
@@ -1031,6 +1029,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 			maxSubagentDepth:   maxSubagentDepth,
 			contextWindow:      opts.ContextWindow,
 			compactRatio:       opts.CompactRatio,
+			compactRatioSource: opts.CompactRatioSource,
 			recentKeep:         opts.RecentKeep,
 			archiveDir:         opts.ArchiveDir,
 		},
@@ -1043,7 +1042,6 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 			ledger: evidence.NewLedger(),
 			budget: runBudget{limit: normalizeTaskBudget(opts.TaskBudget)},
 		},
-		requireVisibleFinal:    opts.RequireVisibleFinal,
 		continuationPolicy:     opts.ContinuationPolicy,
 		readOnlyExecution:      opts.ReadOnlyExecution,
 		plannerMCPExecution:    opts.PlannerMCPExecution,
@@ -1290,7 +1288,7 @@ func hasVisibleFinalAnswer(text string) bool {
 }
 
 func emptyFinalRetryMessage() string {
-	return "The previous assistant response finished without any visible answer text. Continue the same task now and provide a concise visible answer to the user. Do not send reasoning only."
+	return "The previous assistant response finished without any visible answer text. Continue the same task from the recorded results: call the available tools if work remains, or provide a concise visible answer. Do not repeat completed actions or send reasoning only."
 }
 
 func emptyFinalNotice() string {

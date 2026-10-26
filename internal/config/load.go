@@ -1533,7 +1533,7 @@ func normalizeLegacyOpenCodeGoKimiK3Catalog(c *Config) (changed bool) {
 		presetID := strings.TrimSpace(p.PresetID)
 		if (presetID != "opencode-go" && (presetID != "" || strings.TrimSpace(p.Name) != "opencode-go")) ||
 			!strings.EqualFold(strings.TrimSpace(p.Kind), "openai") ||
-			normalizedBaseURLForMigration(p.BaseURL) != "https://opencode.ai/zen/go/v1" ||
+			!officialOpenCodeGoKindURL("openai", p.BaseURL) ||
 			!stringSlicesEqual(p.Models, legacyOpenCodeGoModels) ||
 			strings.TrimSpace(p.Model) != "" {
 			continue
@@ -1563,7 +1563,7 @@ func normalizeLegacyOpenCodeGoVisionCatalog(c *Config) (changed bool) {
 		presetID := strings.TrimSpace(p.PresetID)
 		if (presetID != "opencode-go" && (presetID != "" || strings.TrimSpace(p.Name) != "opencode-go")) ||
 			!strings.EqualFold(strings.TrimSpace(p.Kind), "openai") ||
-			normalizedBaseURLForMigration(p.BaseURL) != "https://opencode.ai/zen/go/v1" ||
+			!officialOpenCodeGoKindURL("openai", p.BaseURL) ||
 			!stringSlicesEqual(p.Models, preVisionOpenCodeGoModels) ||
 			strings.TrimSpace(p.Model) != "" {
 			continue
