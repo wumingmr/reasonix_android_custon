@@ -13,6 +13,7 @@ var ChineseTraditional = Messages{
 	TurnCancelled:                    "已取消 — 回到提示符",
 	InterruptedRecovery:              "本輪已中斷。部分輸出會永久保留供查看；只有完整工具呼叫及結果和有界恢復摘要會進入模型下一輪。繼續或回復前請先檢查目前工作區。",
 	FinalReadinessRecovery:           "剩餘任務或收尾檢查已暫停。執行 /continue-checks 可保留已完成證據並繼續剩餘工作。",
+	ReplayOmittedLabel:               "已省略更早的歷史回放 — 前面還有 %d 條訊息保留在會話上下文中",
 	ReadinessContinuing:              "Reasonix 正在自動完成剩餘任務或檢查。",
 	RecoveryPaused:                   "已暫停自動重試。Reasonix 已停止重複嘗試，並保留已完成的工作。傳送「繼續」即可開始新一輪，也可以補充要求來調整方向。",
 	CompletionUncertain:              "完成狀態未確認。目前結果與已完成工作均已保留。傳送「繼續」可接著完成，也可以補充說明需要調整的內容。",

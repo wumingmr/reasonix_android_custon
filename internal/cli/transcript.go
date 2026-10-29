@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"reasonix/internal/i18n"
 	"reasonix/internal/provider"
 )
 
@@ -42,7 +44,11 @@ type transcriptSource struct {
 	copyRendered string
 	planMode     bool
 	maxLines     int
-	history      []provider.Message
+	// replayOmitted counts earlier history messages that a replay bundle
+	// deliberately does not render (tail truncation). It feeds the
+	// "earlier history omitted" notice line; 0 renders nothing.
+	replayOmitted int
+	history       []provider.Message
 }
 
 func (m *chatTUI) ensureTranscriptSources() {
@@ -134,6 +140,9 @@ func (m chatTUI) renderReplayBundleWithRenderers(
 ) string {
 	var b strings.Builder
 	b.WriteString(renderTUIBanner(m.label, source.raw, contentWidth))
+	if source.replayOmitted > 0 {
+		b.WriteString(replayOmittedNotice(source.replayOmitted, contentWidth) + "\n\n")
+	}
 	for _, section := range replaySectionsForWithRenderers(
 		source.history,
 		contentWidth,
@@ -143,6 +152,18 @@ func (m chatTUI) renderReplayBundleWithRenderers(
 		b.WriteString(section)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// replayOmittedNotice is the dim separator line shown when a replay bundle
+// deliberately renders only the recent tail of a long session.
+func replayOmittedNotice(omitted int, width int) string {
+	var text string
+	if omitted > 0 {
+		text = fmt.Sprintf("  · -- %s (%d) --", i18n.M.ReplayOmittedLabel, omitted)
+	} else {
+		text = fmt.Sprintf("  · -- %s --", i18n.M.ReplayOmittedLabel)
+	}
+	return wrapForViewport(text, width, activeCLITheme.faint)
 }
 
 func (m chatTUI) renderReplayBundleCopy(
