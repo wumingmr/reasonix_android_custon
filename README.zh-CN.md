@@ -7,6 +7,8 @@
   &nbsp;·&nbsp;
   <strong>简体中文</strong>
   &nbsp;·&nbsp;
+  <strong><a href="./docs/TERMUX.zh-CN.md">Termux / Android</a></strong>
+  &nbsp;·&nbsp;
   <a href="./docs/GUIDE.zh-CN.md">指南</a>
   &nbsp;·&nbsp;
   <a href="./docs/ACP.zh-CN.md">ACP</a>

@@ -11,6 +11,12 @@ Termux 定制版构建，基线为上游 [Reasonix](https://github.com/esengine/
 
 内嵌版本：`$VERSION`
 
+> [!IMPORTANT]
+> **首次在 Termux 使用请先阅读：**
+> [Termux / Android 安装、沙箱限制与 wrapper 指南](https://github.com/$REPO/blob/master/docs/TERMUX.zh-CN.md)。
+> 默认 `workspace-write` 在 Android 上因缺少可用的 bubblewrap backend，shell 会
+> 安全地拒绝运行；文档说明了 `danger-full-access` 的风险边界和可选解决办法。
+
 ## 相对上游改了什么
 
 ### 平台适配
