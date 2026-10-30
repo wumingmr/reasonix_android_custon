@@ -82,9 +82,22 @@ jobs:
             --exclude='rebuild-termux-patch.sh' --exclude='release-termux.sh' \
             --exclude='release-notes-termux.md' \
             "$GITHUB_WORKSPACE/upstream/" "$GITHUB_WORKSPACE/"
+          # Never stage the temporary nested Git repository as a gitlink.
+          rm -rf "$GITHUB_WORKSPACE/upstream"
           git add -A
           git -c user.name="reasonix-termux-bot" \
               -c user.email="reasonix-termux-bot@users.noreply.github.com" \
               commit -m "sync upstream ${{ steps.upstream.outputs.tag }} (Termux patch applied)"
+
+          # The source commit now tracks a new upstream tag. Rebase the
+          # cumulative patch onto that tag immediately; otherwise the next
+          # local release would reject the stale patch.
+          ./rebuild-termux-patch.sh
+          git add reasonix-termux.patch
+          if ! git diff --cached --quiet -- reasonix-termux.patch; then
+            git -c user.name="reasonix-termux-bot" \
+                -c user.email="reasonix-termux-bot@users.noreply.github.com" \
+                commit -m "chore(termux): rebuild cumulative patch for ${{ steps.upstream.outputs.tag }}"
+          fi
           git push origin master
-          echo "Sources synced to master"
+          echo "Sources and cumulative patch synced to master"
