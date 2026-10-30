@@ -28,11 +28,22 @@ type EffortCapability struct {
 	Default   string
 }
 
-type modelReasoningCapability struct{ Protocol string }
+type modelReasoningCapability struct {
+	Protocol string
+	// ContextWindow is a fact about the model itself: zero means none is
+	// established, which is the honest answer for most ids. It is read by
+	// ResolvedContextWindow as the fallback under everything the configuration
+	// declared, so a hand-added relay serving a known model inherits the
+	// model's real ceiling instead of running with compaction switched off.
+	ContextWindow int
+}
 
+// modelReasoningCapabilities is keyed by exact model id, so a gateway serving a
+// model under the same id inherits its declaration. The windows here are the
+// ones the vendors publish for the model, independent of who serves it.
 var modelReasoningCapabilities = map[string]modelReasoningCapability{
-	"deepseek-v4-flash": {Protocol: ReasoningProtocolDeepSeek},
-	"deepseek-v4-pro":   {Protocol: ReasoningProtocolDeepSeek},
+	"deepseek-v4-flash": {Protocol: ReasoningProtocolDeepSeek, ContextWindow: 1_000_000},
+	"deepseek-v4-pro":   {Protocol: ReasoningProtocolDeepSeek, ContextWindow: 1_000_000},
 }
 
 // EffortCapabilityForEntry returns the user-facing /effort levels for a resolved

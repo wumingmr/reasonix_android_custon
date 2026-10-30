@@ -301,6 +301,12 @@ type Agent struct {
 
 	continuationPolicy ContinuationPolicy
 
+	// windowProbe is what an endpoint that declares no window has told us about
+	// it so far, from requests this agent actually sent. It lives on the Agent
+	// rather than sessionRuntime because it describes the provider/model pair,
+	// not the conversation, and SetSession must not forget it.
+	windowProbe contextWindowProbe
+
 	// unwrittenResolve is the resolve watermark a failed state write still owes.
 	// It outlives the conversation, which is why it is not in sessionRuntime.
 	unwrittenResolve unwrittenResolve
