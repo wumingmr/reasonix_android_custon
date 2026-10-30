@@ -502,6 +502,472 @@ index 0000000000000000000000000000000000000000..2166e748040f3eac8517f0c9c1fb3556
 +  `TestCurrentConfigRepairsExactProviderEndpointContract`、
 +  `TestUpgradeDeepSeekProviderProtocolWritesThroughSymlinkAndPreservesMode`）
 +  在未改动的 master 上同样失败，属预存的环境性失败，与本次改动无关
+diff --git a/internal/agent/agent.go b/internal/agent/agent.go
+index 13fe0c5122e4bda65615459dfe3f079879d9c1e2..b17ebc05812f35bba8b3158c8e8fe7e36eab925a 100644
+--- a/internal/agent/agent.go
++++ b/internal/agent/agent.go
+@@ -301,6 +301,12 @@ type Agent struct {
+ 
+ 	continuationPolicy ContinuationPolicy
+ 
++	// windowProbe is what an endpoint that declares no window has told us about
++	// it so far, from requests this agent actually sent. It lives on the Agent
++	// rather than sessionRuntime because it describes the provider/model pair,
++	// not the conversation, and SetSession must not forget it.
++	windowProbe contextWindowProbe
++
+ 	// unwrittenResolve is the resolve watermark a failed state write still owes.
+ 	// It outlives the conversation, which is why it is not in sessionRuntime.
+ 	unwrittenResolve unwrittenResolve
+diff --git a/internal/agent/context_overflow_probe_test.go b/internal/agent/context_overflow_probe_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..70566983610b2cb5f20304d1798f569e62d816e7
+--- /dev/null
++++ b/internal/agent/context_overflow_probe_test.go
+@@ -0,0 +1,142 @@
++package agent
++
++import (
++	"context"
++	"strings"
++	"sync"
++	"testing"
++
++	"reasonix/internal/event"
++	"reasonix/internal/provider"
++	"reasonix/internal/tool"
++)
++
++// unnumberedOverflowProvider answers a bare "prompt is too long" — the shape
++// Zhipu GLM and several relays use — which states no window and no counts.
++type unnumberedOverflowProvider struct {
++	mu    sync.Mutex
++	errs  []error
++	reqs  []provider.Request
++	texts []string
++}
++
++func (p *unnumberedOverflowProvider) Name() string { return "unnumbered-overflow" }
++
++func (p *unnumberedOverflowProvider) ContextBudgetPolicy() provider.ContextBudgetPolicy {
++	return provider.ContextBudgetPolicy{
++		WindowMode: provider.ContextWindowShared,
++		LimitMode:  provider.OutputLimitOmitWhenSafe,
++	}
++}
++
++func (p *unnumberedOverflowProvider) Stream(_ context.Context, req provider.Request) (<-chan provider.Chunk, error) {
++	p.mu.Lock()
++	p.reqs = append(p.reqs, req)
++	idx := len(p.reqs) - 1
++	var err error
++	if idx < len(p.errs) {
++		err = p.errs[idx]
++	}
++	text := "done"
++	if idx < len(p.texts) && p.texts[idx] != "" {
++		text = p.texts[idx]
++	}
++	p.mu.Unlock()
++	if err != nil {
++		return nil, err
++	}
++	ch := make(chan provider.Chunk, 2)
++	ch <- provider.Chunk{Type: provider.ChunkText, Text: text}
++	ch <- provider.Chunk{Type: provider.ChunkDone}
++	close(ch)
++	return ch, nil
++}
++
++func unnumberedOverflow() error {
++	return &provider.ContextLimitError{
++		APIError: &provider.APIError{Provider: "p", Status: 400, Body: `{"error":{"message":"prompt is too long"}}`},
++	}
++}
++
++// newUnnumberedBudgetAgent sits a realistically sized conversation under a
++// 128k window. The size matters: a measurement below the fold floor is
++// deliberately never adopted, so a two-message fixture would exercise the
++// refusal path instead of the measurement path.
++func newUnnumberedBudgetAgent(t *testing.T, p provider.Provider) *Agent {
++	t.Helper()
++	big := strings.Repeat("word ", 4_000)
++	msgs := []provider.Message{{Role: provider.RoleSystem, Content: "sys"}}
++	for range 20 {
++		msgs = append(msgs,
++			provider.Message{Role: provider.RoleAssistant, Content: big},
++			provider.Message{Role: provider.RoleUser, Content: "continue"},
++		)
++	}
++	sess := NewSession("")
++	sess.Replace(msgs)
++	registry := tool.NewRegistry()
++	registry.Add(budgetTestTool{})
++	// A configured window is what a booted agent always carries, because boot
++	// resolves one through config.EffectiveContextWindow.
++	return New(p, registry, sess, Options{ContextWindow: 128_000, CompactRatio: 2, Temperature: 0.25}, event.Discard)
++}
++
++// A provider that reports no numbers still told us something: the prompt it
++// refused is larger than its window. The retry is sized from that measurement
++// instead of resending the request that was just rejected.
++func TestUnnumberedOverflowSizesTheRetryFromTheRefusedPrompt(t *testing.T) {
++	prov := &unnumberedOverflowProvider{errs: []error{unnumberedOverflow(), nil}}
++	a := newUnnumberedBudgetAgent(t, prov)
++
++	got := a.streamWithSamplingRecovery(context.Background(), 1)
++	if got.err != nil {
++		t.Fatalf("recovery failed: %v", got.err)
++	}
++	prov.mu.Lock()
++	defer prov.mu.Unlock()
++	if len(prov.reqs) < 2 {
++		t.Fatalf("provider requests = %d, want a retry after the refusal", len(prov.reqs))
++	}
++	if prov.reqs[1].MaxTokens <= 0 {
++		t.Fatalf("retry MaxTokens = %d, the measurement did not size the retry", prov.reqs[1].MaxTokens)
++	}
++	// The retry is sized from the measurement, so it must fit inside the bound
++	// the refusal established: resending the same oversized request buys nothing.
++	if bound := a.probedWindow(); prov.reqs[1].MaxTokens >= bound {
++		t.Fatalf("retry MaxTokens = %d does not fit the probed window %d", prov.reqs[1].MaxTokens, bound)
++	}
++	if a.probedWindow() <= 0 {
++		t.Fatal("the refused prompt did not establish a window bound")
++	}
++}
++
++// The refusal is recorded even when the provider named no counts of its own,
++// so a later accepted measurement can tighten the bound.
++func TestUnnumberedOverflowRecordsTheEstimateItRejected(t *testing.T) {
++	prov := &unnumberedOverflowProvider{errs: []error{unnumberedOverflow()}}
++	a := newUnnumberedBudgetAgent(t, prov)
++	_ = a.streamWithSamplingRecovery(context.Background(), 1)
++	if got := a.probedWindow(); got <= 0 {
++		t.Fatalf("probed window = %d, want the size of the refused request", got)
++	}
++}
++
++// A provider that states its own window keeps it: the measurement is only the
++// fallback for an unstated one, never a replacement for a real answer.
++func TestAReportedWindowIsNotReplacedByTheMeasurement(t *testing.T) {
++	prov := &scriptedBudgetProvider{
++		policy: provider.ContextBudgetPolicy{
++			WindowMode: provider.ContextWindowShared, AutoOutputTokens: 384_000,
++			MaxOutputTokens: 384_000, LimitMode: provider.OutputLimitOmitWhenSafe,
++		},
++		errs: []error{issue8909Limit(), nil},
++	}
++	a := newUnnumberedBudgetAgent(t, prov)
++	if got := a.streamWithSamplingRecovery(context.Background(), 1); got.err != nil {
++		t.Fatalf("recovery failed: %v", got.err)
++	}
++	if a.lastAdmission().ObservedWindow != issue8909Limit().WindowTokens {
++		t.Fatalf("observed window = %d, want the provider's %d",
++			a.lastAdmission().ObservedWindow, issue8909Limit().WindowTokens)
++	}
++}
+diff --git a/internal/agent/context_recovery.go b/internal/agent/context_recovery.go
+index 2f5c873e866cadd29112c76a6134c8e151ea022c..2e148ac053926e33693ebaea373c8a86e59088f4 100644
+--- a/internal/agent/context_recovery.go
++++ b/internal/agent/context_recovery.go
+@@ -23,6 +23,15 @@ func (a *Agent) recoverContextLimit(ctx context.Context, frozen samplingRequest,
+ 	if limit.PromptTokens > 0 {
+ 		a.setPromptTokenCalibrationFromActive(limit.PromptTokens)
+ 	}
++	// The refused prompt is the smallest one known not to fit. Measured against
++	// the estimate that was actually sent, because a provider that answers a
++	// bare "prompt is too long" reports no count of its own — and the estimate
++	// is the size of the request it just rejected.
++	refused := limit.PromptTokens
++	if refused <= 0 {
++		refused = a.estimatedRequestTokens(frozen.req)
++	}
++	a.noteRejectedPromptTokens(refused)
+ 	a.learnContextBudget(limit.WindowTokens, limit.CompletionTokens, omitted)
+ 	adm := a.lastAdmission()
+ 	adm.ObservedWindow = limit.WindowTokens
+@@ -35,10 +44,26 @@ func (a *Agent) recoverContextLimit(ctx context.Context, frozen samplingRequest,
+ 	if prompt <= 0 {
+ 		prompt = a.estimatedRequestTokens(frozen.req)
+ 	}
++	// A provider that reports no window leaves only the measurement: the prompt
++	// it just refused is larger than its window. Adopting that bound is what
++	// turns "resend the same oversized request" into a retry that fits.
++	//
++	// The measurement has to be usable, though. A bound below the fold floor is
++	// not a window any projection can be built inside, and a bound that does
++	// not exceed the prompt it came from sizes a retry to zero or less, leaving
++	// the summary budget with nothing — the retry is then dropped entirely
++	// rather than made smaller, which is the honest outcome.
++	adopted := false
++	if limit.WindowTokens <= 0 {
++		if probed := a.probedWindow(); probed >= minProbeWindowTokens && probed > prompt && (window <= 0 || probed < window) {
++			window = probed
++			adopted = true
++		}
++	}
+ 	physical := window - prompt - outputBudgetReserve
+-	// An overflow without token numbers cannot size a retry: the estimate that
+-	// admitted the request is the number the provider just rejected.
+-	if limit.PromptTokens <= 0 && limit.WindowTokens <= 0 {
++	// An overflow that establishes no ceiling cannot size a retry: the estimate
++	// that admitted the request is the number the provider just rejected.
++	if prompt <= 0 || (limit.WindowTokens <= 0 && !adopted) {
+ 		physical = 0
+ 	}
+ 	if physical > 0 && budget.retries == 0 {
+diff --git a/internal/agent/context_window_probe.go b/internal/agent/context_window_probe.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..ed518617413aa18c11508cbe225465b319e6aba7
+--- /dev/null
++++ b/internal/agent/context_window_probe.go
+@@ -0,0 +1,129 @@
++package agent
++
++import (
++	"sync/atomic"
++
++	"reasonix/internal/provider"
++)
++
++// contextWindowProbe is what an endpoint that declares no usable window still
++// tells us about it, measured from requests this agent actually sent: the
++// smallest prompt it refused as too long, and the largest prompt it accepted
++// afterwards. A refusal states a ceiling nobody can exceed; an accepted prompt
++// states a size that did reach the model. Together they bound the real window
++// instead of guessing at one.
++//
++// The Agent's learnedContextBudget already adopts the window a refusal names.
++// This probe exists because that number is only the provider's report: relays
++// commonly answer with the ceiling of the route rather than of the model, and
++// a window adopted from it alone can be as wrong as no window at all. An
++// accepted measurement taken after the refusal is the only observation that
++// distinguishes the two.
++//
++// The zero value is ready to use, because an Agent must never carry a window
++// nobody established.
++type contextWindowProbe struct {
++	rejected promptTokenExtreme
++	// accepted is only written once a refusal established what does not fit.
++	// An accepted prompt before that says nothing about the ceiling — it is a
++	// turn that happened to be short — and adopting it as a window would
++	// compact away almost the whole conversation.
++	accepted promptTokenExtreme
++	// refused marks that a refusal has happened, so the accepted side stays
++	// dormant until then.
++	refused atomic.Bool
++}
++
++// promptTokenExtreme tracks one end of a sequence of token counts. Zero is the
++// empty state, so a caller reads get() == 0 as "nothing observed".
++type promptTokenExtreme struct {
++	value atomic.Int64
++}
++
++// noteMin records tokens when it is smaller than what is already known.
++func (t *promptTokenExtreme) noteMin(tokens int) {
++	if t == nil || tokens <= 0 {
++		return
++	}
++	next := int64(tokens)
++	for {
++		current := t.value.Load()
++		if current != 0 && next >= current {
++			return
++		}
++		if t.value.CompareAndSwap(current, next) {
++			return
++		}
++	}
++}
++
++// noteMax records tokens when it is larger than what is already known.
++func (t *promptTokenExtreme) noteMax(tokens int) {
++	if t == nil || tokens <= 0 {
++		return
++	}
++	next := int64(tokens)
++	for {
++		current := t.value.Load()
++		if current != 0 && next <= current {
++			return
++		}
++		if t.value.CompareAndSwap(current, next) {
++			return
++		}
++	}
++}
++
++func (t *promptTokenExtreme) get() int {
++	if t == nil {
++		return 0
++	}
++	return int(t.value.Load())
++}
++
++// noteRejectedPromptTokens records a prompt the provider refused as too long.
++func (a *Agent) noteRejectedPromptTokens(tokens int) {
++	if a == nil {
++		return
++	}
++	a.windowProbe.rejected.noteMin(tokens)
++	a.windowProbe.refused.Store(true)
++}
++
++// noteAcceptedPromptTokens records a provider-counted prompt size that reached
++// the model. It applies the same trust rule as prompt calibration: an estimate
++// is our own arithmetic and may not become a measurement.
++func (a *Agent) noteAcceptedPromptTokens(usage *provider.Usage) {
++	if a == nil || usage == nil || usage.Estimated || !a.windowProbe.refused.Load() {
++		return
++	}
++	a.windowProbe.accepted.noteMax(usage.LatestPromptTokens())
++}
++
++// probedWindow is the window the probe establishes, or zero while it has
++// established nothing. Zero means "no evidence", which leaves the configured
++// window — including the conservative fallback — in charge.
++//
++// The accepted bound wins when it exists: it is the only size known to have
++// fit. The refused size stands in until such a measurement arrives, because a
++// prompt the provider just rejected is a bound it cannot exceed either way.
++func (a *Agent) probedWindow() int {
++	if a == nil || !a.windowProbe.refused.Load() {
++		return 0
++	}
++	rejected := a.windowProbe.rejected.get()
++	if rejected <= 0 {
++		return 0
++	}
++	if accepted := a.windowProbe.accepted.get(); accepted > 0 && accepted < rejected {
++		return accepted
++	}
++	return rejected
++}
++
++// minProbeWindowTokens is the smallest window a measurement is allowed to
++// establish. Below it, no fold can be summarized into something the window
++// holds, so adopting the number would leave every later turn unserviceable
++// rather than merely conservative. It matches the floor the summary planner
++// works with, expressed once here so the two cannot drift apart.
++const minProbeWindowTokens = 8 * 1024
+diff --git a/internal/agent/context_window_probe_test.go b/internal/agent/context_window_probe_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..d707373933b1b30886f79fb5b220f384ad6fb1c4
+--- /dev/null
++++ b/internal/agent/context_window_probe_test.go
+@@ -0,0 +1,110 @@
++package agent
++
++import (
++	"testing"
++
++	"reasonix/internal/provider"
++)
++
++// An accepted prompt on its own says nothing about the ceiling: it is a turn
++// that happened to be short. Adopting it as the window would compact away
++// almost the whole conversation, so the probe stays silent until something was
++// actually refused.
++func TestProbeIgnoresAcceptedPromptsBeforeAnyRefusal(t *testing.T) {
++	a := &Agent{}
++	a.noteAcceptedPromptTokens(&provider.Usage{PromptTokens: 1_200})
++	if got := a.probedWindow(); got != 0 {
++		t.Fatalf("window = %d without a refusal, want no bound", got)
++	}
++	if got := a.effectiveContextWindow(); got != 0 {
++		t.Fatalf("effective window = %d, want the configured zero", got)
++	}
++}
++
++// The refused size is the first bound: the provider said a prompt that large
++// does not fit, so nothing bigger runs. It stands until a fitted measurement
++// arrives.
++func TestProbeAdoptsTheRefusedSizeAsABound(t *testing.T) {
++	a := &Agent{}
++	a.noteRejectedPromptTokens(900_000)
++	if got := a.probedWindow(); got != 900_000 {
++		t.Fatalf("window = %d, want the refused 900000", got)
++	}
++	// A smaller refusal is a tighter bound; a larger one cannot be, since the
++	// smaller prompt already failed.
++	a.noteRejectedPromptTokens(700_000)
++	a.noteRejectedPromptTokens(800_000)
++	if got := a.probedWindow(); got != 700_000 {
++		t.Fatalf("window = %d, want the smallest refusal 700000", got)
++	}
++}
++
++// The measurement that distinguishes a route-wide ceiling from the model's own
++// is a prompt that fit after a refusal: that is the only size known to work.
++func TestProbePrefersTheLargestAcceptedPromptAfterARefusal(t *testing.T) {
++	a := &Agent{}
++	a.noteRejectedPromptTokens(900_000)
++	a.noteAcceptedPromptTokens(&provider.Usage{PromptTokens: 400_000})
++	a.noteAcceptedPromptTokens(&provider.Usage{PromptTokens: 600_000})
++	a.noteAcceptedPromptTokens(&provider.Usage{PromptTokens: 500_000})
++	if got := a.probedWindow(); got != 600_000 {
++		t.Fatalf("window = %d, want the largest accepted 600000", got)
++	}
++	// An accepted prompt at or above the refusal contradicts it and must not
++	// raise the bound: the refusal already proved that size does not fit.
++	a.noteAcceptedPromptTokens(&provider.Usage{PromptTokens: 950_000})
++	if got := a.probedWindow(); got != 900_000 {
++		t.Fatalf("window = %d, an accepted prompt above the refusal raised the bound", got)
++	}
++
++	// Smaller accepted prompts keep the largest reachable size: 600000 is known
++	// to have fit, while the refusal only says 900000 did not.
++	smaller := &Agent{}
++	smaller.noteRejectedPromptTokens(900_000)
++	smaller.noteAcceptedPromptTokens(&provider.Usage{PromptTokens: 700_000})
++	if got := smaller.probedWindow(); got != 700_000 {
++		t.Fatalf("window = %d, want the accepted 700000", got)
++	}
++}
++
++// Estimates are our own arithmetic and never become measurements.
++func TestProbeIgnoresEstimatedUsage(t *testing.T) {
++	a := &Agent{}
++	a.noteRejectedPromptTokens(900_000)
++	a.noteAcceptedPromptTokens(&provider.Usage{PromptTokens: 100, Estimated: true})
++	if got := a.probedWindow(); got != 900_000 {
++		t.Fatalf("window = %d, an estimate was adopted as a measurement", got)
++	}
++}
++
++// The probe never overrides the window the run was started with: that number
++// already came from the configuration, the model catalog or the fallback, and
++// the recovery ladder tightens it deliberately. The probe only reports what it
++// measured, for surfaces that show where a bound came from.
++func TestProbeNeverOverridesTheConfiguredWindow(t *testing.T) {
++	a := &Agent{}
++	a.contextWindow = 1_048_576
++	a.noteRejectedPromptTokens(400_000)
++	if got := a.effectiveContextWindow(); got != 1_048_576 {
++		t.Fatalf("window = %d, the probe overrode the configured window", got)
++	}
++	if got := a.probedWindow(); got != 400_000 {
++		t.Fatalf("probed window = %d, want the measured 400000", got)
++	}
++}
++
++// A measurement too small to hold even one fold is reported but never adopted:
++// a window nothing can be summarized into is worse than an honest unknown.
++func TestAMeasurementBelowTheFoldFloorIsNotAWindow(t *testing.T) {
++	if probed := minProbeWindowTokens - 1; probed <= 0 {
++		t.Fatal("probe floor must be positive")
++	}
++	a := &Agent{}
++	a.noteRejectedPromptTokens(minProbeWindowTokens - 1)
++	if got := a.probedWindow(); got <= 0 {
++		t.Fatalf("probed window = %d, the measurement should still be reported", got)
++	}
++	if got := a.probedWindow(); got >= minProbeWindowTokens {
++		t.Fatalf("probed window = %d, a sub-floor measurement must not reach the floor", got)
++	}
++}
 diff --git a/internal/agent/migrate.go b/internal/agent/migrate.go
 index 0dcb8408353d987ff8c0d936cf7c382470e6e390..276214297d22b7e279aebd513279e887e8575731 100644
 --- a/internal/agent/migrate.go
@@ -553,6 +1019,98 @@ index 0dcb8408353d987ff8c0d936cf7c382470e6e390..276214297d22b7e279aebd513279e887
  		return err
  	}
  	return nil
+diff --git a/internal/agent/run_usage.go b/internal/agent/run_usage.go
+index 0311fd564d28184e446d71aca07d598fb479c672..1403a0ee6a3088fbc7617350c271a8f715d486a8 100644
+--- a/internal/agent/run_usage.go
++++ b/internal/agent/run_usage.go
+@@ -212,6 +212,7 @@ func (a *Agent) storeLatestRequestUsage(attempt *provider.Usage) {
+ 	// Keep the per-attempt RequestCount; context calculations do not use it.
+ 	a.sess.output.lastUsage.Store(&clone)
+ 	a.setPromptTokenCalibrationFromUsage(&clone)
++	a.noteAcceptedPromptTokens(&clone)
+ }
+ 
+ // finalizeSamplingUsage builds the Usage event payload for consumers that
+diff --git a/internal/boot/boot.go b/internal/boot/boot.go
+index 2a9c0573abe967aeca51b2537cd82737a5b155e9..4fa9b093db0a6846159b4e02cb61c3fbc538eda9 100644
+--- a/internal/boot/boot.go
++++ b/internal/boot/boot.go
+@@ -1138,7 +1138,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
+ 			HooksForSession:     func(id string) agent.ToolHooks { return hookRunner.ForSession(id) },
+ 			ParentRegistry:      reg,
+ 			MaxSteps:            maxSteps,
+-			ContextWindow:       entry.ContextWindow,
++			ContextWindow:       config.EffectiveContextWindow(entry),
+ 			RecentKeep:          cfg.Agent.RecentKeep,
+ 			SoftCompactRatio:    cfg.Agent.SoftCompactRatio,
+ 			ToolResultSnipRatio: cfg.Agent.ToolResultSnipRatio,
+@@ -1283,7 +1283,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
+ 		}
+ 		defer releaseSlot()
+ 		sk = skill.WithCodeGraphTools(sk, skill.CodeGraphReadTools(reg))
+-		prov, price, ctxWin := execProv, entry.Price, entry.ContextWindow
++		prov, price, ctxWin := execProv, entry.Price, config.EffectiveContextWindow(entry)
+ 		modelRef := subagentModelRef(cfg, sk)
+ 		effortRef := subagentEffortRef(cfg, sk, subagentEffort)
+ 		if modelRef != "" || effortRef != "" {
+@@ -1352,7 +1352,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
+ 		}
+ 		defer releaseSlot()
+ 		sk = skill.WithCodeGraphTools(sk, skill.CodeGraphReadTools(reg))
+-		prov, price, ctxWin := execProv, entry.Price, entry.ContextWindow
++		prov, price, ctxWin := execProv, entry.Price, config.EffectiveContextWindow(entry)
+ 		modelRef := subagentModelRef(cfg, sk)
+ 		effortRef := subagentEffortRef(cfg, sk, subagentEffort)
+ 		if modelRef != "" || effortRef != "" {
+@@ -1715,7 +1715,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
+ 		WorkspaceLease:               workspaceLease,
+ 		CapabilityLedger:             capLedger,
+ 		CapabilityAudit:              capAudit,
+-		ContextWindow:                entry.ContextWindow,
++		ContextWindow:                config.EffectiveContextWindow(entry),
+ 		MaxOutputTokens:              entry.MaxOutputTokens,
+ 		SoftCompactRatio:             cfg.Agent.SoftCompactRatio,
+ 		ToolResultSnipRatio:          cfg.Agent.ToolResultSnipRatio,
+@@ -1797,7 +1797,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
+ 			Hooks:                        hookRunner.ForRole("planner"),
+ 			ModelRef:                     modelRefFromEntry(pe),
+ 			QuoteContext:                 quoteCtx,
+-			ContextWindow:                pe.ContextWindow,
++			ContextWindow:                config.EffectiveContextWindow(pe),
+ 			SoftCompactRatio:             cfg.Agent.SoftCompactRatio,
+ 			ToolResultSnipRatio:          cfg.Agent.ToolResultSnipRatio,
+ 			CompactRatio:                 cfg.Agent.CompactRatio,
+diff --git a/internal/boot/resolver.go b/internal/boot/resolver.go
+index 27744a853f2d2956c247b7014f2d9e1b5bbc2968..3aa1609da4dd1d5d8cccd27efbaf6ab9d88124ba 100644
+--- a/internal/boot/resolver.go
++++ b/internal/boot/resolver.go
+@@ -55,12 +55,16 @@ func (r *LocalProviderResolver) Catalog() []provider.Descriptor {
+ 			if r.capabilities != nil {
+ 				capability = r.capabilities.Resolve(&entry)
+ 			}
++			// The catalog reports what is known about the window, not the fallback
++			// an unknown one runs on: a picker showing 128k for every relay model
++			// would state a fact nobody established.
+ 			d := provider.Descriptor{
+ 				Ref: ref, DisplayName: entry.Name, Model: entry.Model,
+-				ContextWindow: entry.ContextWindow, Vision: capability.State == config.CapabilitySupported,
++				Vision:          capability.State == config.CapabilitySupported,
+ 				InputModalities: append([]provider.ModelModality(nil), capability.InputModalities...),
+ 				Tools:           true, DefaultEffort: config.EffectiveEffort(&entry),
+ 			}
++			d.ContextWindow, _ = config.ResolvedContextWindow(&entry)
+ 			if capability.ModelInfo.ContextWindow > 0 && d.ContextWindow == 0 {
+ 				d.ContextWindow = capability.ModelInfo.ContextWindow
+ 			}
+@@ -263,7 +267,7 @@ func syntheticEntryFromResolver(r provider.Resolver, ref string) *config.Provide
+ 	}
+ 	contextWindow := match.ContextWindow
+ 	if contextWindow <= 0 {
+-		contextWindow = 128_000
++		contextWindow = config.DefaultUnknownContextWindow
+ 	}
+ 	entry := &config.ProviderEntry{
+ 		Name: name, Model: model, ContextWindow: contextWindow,
 diff --git a/internal/cli/branch.go b/internal/cli/branch.go
 index 806644db6edbad38f1d7be69a2de9b6709c1d9a6..28c52b8462af60fbedcdc882598187e3edf5bd1b 100644
 --- a/internal/cli/branch.go
@@ -1616,6 +2174,333 @@ index 0000000000000000000000000000000000000000..da3ae31ea99d1cfbb07954354ee1acf5
 +		t.Fatalf("trimSearchRune left invalid UTF-8: %q", trimmed)
 +	}
 +}
+diff --git a/internal/cli/setup_manager.go b/internal/cli/setup_manager.go
+index 275a5771b62fe58fb4ed82efec91045654db4e1d..93fb6eefce26c3d786e0978a2efc90b0faf9bef7 100644
+--- a/internal/cli/setup_manager.go
++++ b/internal/cli/setup_manager.go
+@@ -9,6 +9,7 @@ import (
+ 	"io"
+ 	"os"
+ 	"sort"
++	"strconv"
+ 	"strings"
+ 	"time"
+ 
+@@ -589,31 +590,137 @@ func manageProvider(s *providerSetupSession, providerIndex int) {
+ 		return
+ 	}
+ 	p := s.cfg.Providers[providerIndex]
+-	idx, err := selectOne(fmt.Sprintf(i18n.M.SetupProviderActionsFmt, p.Name), []menuItem{
+-		{name: i18n.M.SetupEditProvider},
+-		{name: i18n.M.SetupUpdateKey},
+-		{name: i18n.M.SetupTestRefresh},
+-		{name: i18n.M.SetupSetDefault},
+-		{name: i18n.M.SetupRemoveProvider},
+-		{name: i18n.M.SetupBack},
+-	})
+-	if err != nil || idx == 5 {
++	idx, err := selectOne(fmt.Sprintf(i18n.M.SetupProviderActionsFmt, p.Name), providerActionItems(p))
++	if err != nil {
+ 		return
+ 	}
+ 	switch idx {
+-	case 0:
++	case providerActionEdit:
+ 		editProvider(s, p)
+-	case 1:
++	case providerActionKey:
+ 		updateProviderKey(s, p)
+-	case 2:
++	case providerActionRefresh:
+ 		testAndRefreshProvider(s, p)
+-	case 3:
++	case providerActionWindows:
++		editProviderModelWindows(s, p)
++	case providerActionDefault:
+ 		setDefaultProvider(s, p)
+-	case 4:
++	case providerActionRemove:
+ 		removeProviderFromSession(s, p)
+ 	}
+ }
+ 
++// The per-provider action menu. The positions are named so the dispatcher and
++// the menu cannot drift apart, which a bare index switch invites.
++const (
++	providerActionEdit = iota
++	providerActionKey
++	providerActionRefresh
++	providerActionWindows
++	providerActionDefault
++	providerActionRemove
++	providerActionBack
++)
++
++func providerActionItems(p config.ProviderEntry) []menuItem {
++	return []menuItem{
++		{name: i18n.M.SetupEditProvider},
++		{name: i18n.M.SetupUpdateKey},
++		{name: i18n.M.SetupTestRefresh},
++		{name: i18n.M.SetupModelWindows, desc: modelWindowsSummary(p)},
++		{name: i18n.M.SetupSetDefault},
++		{name: i18n.M.SetupRemoveProvider},
++		{name: i18n.M.SetupBack},
++	}
++}
++
++// modelWindowsSummary describes in one line whether this connection's models
++// share a window or declare their own, so the menu states the current answer
++// instead of only offering the action.
++func modelWindowsSummary(p config.ProviderEntry) string {
++	models := p.ModelList()
++	declared := make([]string, 0, len(models))
++	for _, model := range models {
++		if limits, ok := p.ModelLimits(model); ok && limits.ContextWindow > 0 {
++			declared = append(declared, model)
++		}
++	}
++	switch {
++	case len(declared) == 0 && p.ContextWindow > 0:
++		return fmt.Sprintf("%d tokens for all %d", p.ContextWindow, len(models))
++	case len(declared) == 0:
++		return i18n.M.SetupModelWindowNone
++	case len(declared) == 1:
++		return fmt.Sprintf("%s only", declared[0])
++	default:
++		return fmt.Sprintf("%d of %d models", len(declared), len(models))
++	}
++}
++
++// editProviderModelWindows sets the context window per model on a connection
++// whose models differ in capacity — the shape every relay has. Leaving a prompt
++// blank clears that model's own window so it inherits the connection's again,
++// and the prompt prints what it would inherit, because a window smaller than
++// the model's real one makes compaction fire early.
++func editProviderModelWindows(s *providerSetupSession, current config.ProviderEntry) {
++	models := current.ModelList()
++	if len(models) == 0 {
++		fmt.Fprintln(os.Stderr, i18n.M.CustomFetchEmpty)
++		return
++	}
++	in := bufio.NewScanner(os.Stdin)
++	edited := current
++	changed := false
++	for _, model := range models {
++		inherited := current.InheritedLimits(model)
++		label := fmt.Sprintf(i18n.M.SetupModelWindowPromptFmt, model)
++		if inherited.ContextWindow > 0 {
++			label += " (" + fmt.Sprintf(i18n.M.SetupModelWindowHintFmt, inherited.ContextWindow) + ")"
++		}
++		existing, _ := current.ModelLimits(model)
++		def := ""
++		if existing.ContextWindow > 0 {
++			def = strconv.Itoa(existing.ContextWindow)
++		}
++		raw := ask(in, os.Stdout, label, def)
++		window := parseContextWindowAnswer(raw, existing.ContextWindow)
++		if window == existing.ContextWindow {
++			continue
++		}
++		limits := existing
++		limits.ContextWindow = window
++		if err := edited.SetModelLimits(model, limits); err != nil {
++			fmt.Fprintf(os.Stderr, "%s: %v\n", model, err)
++			continue
++		}
++		changed = true
++	}
++	if !changed {
++		return
++	}
++	if err := s.upsert([]config.ProviderEntry{edited}); err != nil {
++		fmt.Fprintln(os.Stderr, err)
++	}
++}
++
++// parseContextWindowAnswer turns a typed prompt answer into a window. Empty or
++// unparseable input keeps what the model had, and a non-positive number clears
++// it so the model inherits again — the only way the wizard can undo a window.
++func parseContextWindowAnswer(raw string, current int) int {
++	raw = strings.TrimSpace(raw)
++	if raw == "" {
++		return current
++	}
++	n, err := strconv.Atoi(raw)
++	if err != nil {
++		return current
++	}
++	if n <= 0 {
++		return 0
++	}
++	return n
++}
++
+ func editProvider(s *providerSetupSession, current config.ProviderEntry) {
+ 	in := bufio.NewScanner(os.Stdin)
+ 	edited := current
+@@ -717,11 +824,15 @@ func testAndRefreshProvider(s *providerSetupSession, p config.ProviderEntry) {
+ 	if s.cfg != nil {
+ 		proxy = s.cfg.NetworkProxySpec()
+ 	}
+-	models, err := p.FetchModelsWithProxy(ctx, proxy)
++	catalog, err := p.FetchModelCatalogWithProxy(ctx, proxy)
+ 	if err != nil {
+ 		fmt.Fprintf(os.Stderr, i18n.M.FetchModelsFailedFmt+"\n", p.Name, err)
+ 		return
+ 	}
++	models := make([]string, 0, len(catalog))
++	for _, info := range catalog {
++		models = append(models, info.ID)
++	}
+ 	if len(models) == 0 {
+ 		fmt.Fprintln(os.Stderr, i18n.M.CustomFetchEmpty)
+ 		return
+@@ -743,11 +854,19 @@ func testAndRefreshProvider(s *providerSetupSession, p config.ProviderEntry) {
+ 	if !containsString(selected, p.Default) {
+ 		p.Default = selected[0]
+ 	}
++	// Listings that state a window per model are the only free source of truth
++	// about capacity, so record what this one declared. Models the user already
++	// gave a window keep it; the rest gain the endpoint's own number instead of
++	// inheriting a connection-wide guess.
++	filled := p.ApplyDiscoveredLimits(catalog)
+ 	if err := s.upsert([]config.ProviderEntry{p}); err != nil {
+ 		fmt.Fprintln(os.Stderr, err)
+ 		return
+ 	}
+ 	fmt.Printf("  %s\n", green(fmt.Sprintf(i18n.M.FetchModelsSuccessFmt, len(models), p.Name)))
++	if filled > 0 {
++		fmt.Printf("  %s\n", dim(fmt.Sprintf(i18n.M.SetupModelWindowDiscoveredFmt, filled)))
++	}
+ }
+ 
+ func temporarilySetCredential(key, value string) func() {
+diff --git a/internal/cli/setup_model_limits_test.go b/internal/cli/setup_model_limits_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..17139ab3140f10270ca596a3ccadce5b3a012cce
+--- /dev/null
++++ b/internal/cli/setup_model_limits_test.go
+@@ -0,0 +1,120 @@
++package cli
++
++import (
++	"strings"
++	"testing"
++
++	"reasonix/internal/config"
++	"reasonix/internal/i18n"
++)
++
++// Blank keeps the model's current window; a non-positive number clears it so
++// the model inherits again. That is the only way the wizard can undo a window,
++// and typing nothing must not silently do it.
++func TestParseContextWindowAnswer(t *testing.T) {
++	for _, tc := range []struct {
++		name string
++		raw  string
++		had  int
++		want int
++	}{
++		{"blank keeps", "", 500_000, 500_000},
++		{"blank with nothing keeps nothing", "  ", 0, 0},
++		{"number sets", "1000000", 0, 1_000_000},
++		{"zero clears", "0", 500_000, 0},
++		{"negative clears", "-5", 500_000, 0},
++		{"garbage keeps", "many", 500_000, 500_000},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			if got := parseContextWindowAnswer(tc.raw, tc.had); got != tc.want {
++				t.Fatalf("parse(%q, %d) = %d, want %d", tc.raw, tc.had, got, tc.want)
++			}
++		})
++	}
++}
++
++// The menu line states the current answer, so the manager reads as a summary
++// and not only as a list of actions.
++func TestModelWindowsSummaryDescribesTheCurrentShape(t *testing.T) {
++	shared := config.ProviderEntry{Name: "relay", Kind: "openai", Models: []string{"a", "b"}, ContextWindow: 100_000}
++	if got := modelWindowsSummary(shared); !strings.Contains(got, "100000") {
++		t.Fatalf("shared summary = %q", got)
++	}
++	none := config.ProviderEntry{Name: "relay", Kind: "openai", Models: []string{"a"}}
++	if got := modelWindowsSummary(none); got != i18n.M.SetupModelWindowNone {
++		t.Fatalf("summary for a connection with no window = %q", got)
++	}
++	perModel := config.ProviderEntry{
++		Name: "relay", Kind: "openai", Models: []string{"a", "b", "c"},
++		ModelOverrides: map[string]config.ProviderModelOverride{"a": {ContextWindow: 1_000}, "b": {ContextWindow: 2_000}},
++	}
++	if got := modelWindowsSummary(perModel); !strings.Contains(got, "2") {
++		t.Fatalf("per-model summary = %q", got)
++	}
++}
++
++// A window set through the setup session reaches the saved configuration and
++// leaves every other field of the connection alone.
++func TestSetupSessionPreservesPerModelWindows(t *testing.T) {
++	cfg := config.Default()
++	cfg.Providers = []config.ProviderEntry{{
++		Name: "relay", Kind: "openai", BaseURL: "https://relay.example/v1",
++		Models: []string{"big", "small"}, Default: "big",
++		SupportedEfforts: []string{"low", "high"}, DefaultEffort: "high",
++	}}
++	session := newProviderSetupSession(cfg)
++
++	edited := cfg.Providers[0]
++	if err := edited.SetModelLimits("big", config.ModelLimits{ContextWindow: 1_000_000, MaxOutputTokens: 32_768}); err != nil {
++		t.Fatal(err)
++	}
++	if err := session.upsert([]config.ProviderEntry{edited}); err != nil {
++		t.Fatal(err)
++	}
++
++	saved := cfg.Providers[0]
++	limits, ok := saved.ModelLimits("big")
++	if !ok || limits.ContextWindow != 1_000_000 || limits.MaxOutputTokens != 32_768 {
++		t.Fatalf("saved limits = %+v ok=%v", limits, ok)
++	}
++	if _, ok := saved.ModelOverrides["small"]; ok {
++		t.Fatal("a model nobody set gained an override")
++	}
++	if saved.ContextWindow != 0 {
++		t.Fatalf("connection-wide window was written as %d", saved.ContextWindow)
++	}
++	if len(saved.SupportedEfforts) != 2 || saved.DefaultEffort != "high" {
++		t.Fatalf("the effort ladder was lost: %+v", saved)
++	}
++}
++
++// Per-provider actions must offer the per-model window editor, because it is
++// the only terminal surface that can set one; hand-editing TOML is not an
++// option most users of this build have.
++func TestProviderActionsOfferPerModelWindows(t *testing.T) {
++	entry := config.ProviderEntry{
++		Name: "relay", Kind: "openai", BaseURL: "https://relay.example/v1",
++		Models: []string{"a", "b"}, Default: "a", ContextWindow: 100_000,
++	}
++	items := providerActionItems(entry)
++	index := -1
++	for i, item := range items {
++		if item.name == i18n.M.SetupModelWindows {
++			index = i
++			if item.desc == "" {
++				t.Fatal("the window editor offers no summary of the current shape")
++			}
++		}
++	}
++	if index < 0 {
++		t.Fatalf("per-model window editor missing from %v", items)
++	}
++	// The dispatcher addresses this action by a named position, so the menu and
++	// the switch cannot drift apart.
++	if index != providerActionWindows {
++		t.Fatalf("window editor sits at %d, dispatcher expects %d", index, providerActionWindows)
++	}
++	if items[providerActionBack].name != i18n.M.SetupBack {
++		t.Fatalf("Back is not at the position the dispatcher treats as Back: %v", items)
++	}
++}
 diff --git a/internal/cli/skill_picker.go b/internal/cli/skill_picker.go
 index 19ba3aa3aea51976c43acd8f2800ec4e5dd4ef54..b2554e10f2294c75fc22ecfa95670a01d5eabe08 100644
 --- a/internal/cli/skill_picker.go
@@ -1771,6 +2656,528 @@ index a2e1c1ae9bd7b3bb4bd755a7e73086e10001c4e3..cdf40a33d26079b7a207fd01c01b52df
  }
  
  // CLIConfig controls user-global native CLI behavior. It is separate from
+diff --git a/internal/config/effort.go b/internal/config/effort.go
+index 60f07b96700be8dabed006f8094d46d6acb6f7c9..9e72b4b90690565a401b8a6b4bb8e2416a56dcc8 100644
+--- a/internal/config/effort.go
++++ b/internal/config/effort.go
+@@ -28,11 +28,22 @@ type EffortCapability struct {
+ 	Default   string
+ }
+ 
+-type modelReasoningCapability struct{ Protocol string }
++type modelReasoningCapability struct {
++	Protocol string
++	// ContextWindow is a fact about the model itself: zero means none is
++	// established, which is the honest answer for most ids. It is read by
++	// ResolvedContextWindow as the fallback under everything the configuration
++	// declared, so a hand-added relay serving a known model inherits the
++	// model's real ceiling instead of running with compaction switched off.
++	ContextWindow int
++}
+ 
++// modelReasoningCapabilities is keyed by exact model id, so a gateway serving a
++// model under the same id inherits its declaration. The windows here are the
++// ones the vendors publish for the model, independent of who serves it.
+ var modelReasoningCapabilities = map[string]modelReasoningCapability{
+-	"deepseek-v4-flash": {Protocol: ReasoningProtocolDeepSeek},
+-	"deepseek-v4-pro":   {Protocol: ReasoningProtocolDeepSeek},
++	"deepseek-v4-flash": {Protocol: ReasoningProtocolDeepSeek, ContextWindow: 1_000_000},
++	"deepseek-v4-pro":   {Protocol: ReasoningProtocolDeepSeek, ContextWindow: 1_000_000},
+ }
+ 
+ // EffortCapabilityForEntry returns the user-facing /effort levels for a resolved
+diff --git a/internal/config/model_limits.go b/internal/config/model_limits.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..fb1c34f8f190b1e7e8d5e3376d67cccaf692e4bf
+--- /dev/null
++++ b/internal/config/model_limits.go
+@@ -0,0 +1,103 @@
++package config
++
++import (
++	"errors"
++	"strings"
++)
++
++// ErrModelContextWindowNegative refuses a per-model window below zero. Zero is
++// how a model inherits its connection's window, so a negative value has no
++// meaning to fall back to.
++var ErrModelContextWindowNegative = errors.New("a model's context window cannot be negative")
++
++// ModelLimits is what one model declares for itself on a connection whose
++// models do not share the same budgets. Zero inherits; a negative output cap is
++// the stored spelling of "send no cap" and is kept exactly as written.
++type ModelLimits struct {
++	ContextWindow   int
++	MaxOutputTokens int
++}
++
++// ModelLimits reports the limits stored for model itself. The bool is false
++// when the model declares none and inherits both, which is different from
++// declaring zero-sized limits.
++func (e *ProviderEntry) ModelLimits(model string) (ModelLimits, bool) {
++	ov, ok := e.modelOverrideForModel(model)
++	if !ok || (ov.ContextWindow <= 0 && ov.MaxOutputTokens == 0) {
++		return ModelLimits{}, false
++	}
++	return ModelLimits{ContextWindow: max(ov.ContextWindow, 0), MaxOutputTokens: ov.MaxOutputTokens}, true
++}
++
++// SetModelLimits stores limits for model, or clears them when both are zero so
++// the model inherits again. Every other field of that model's override — its
++// reasoning protocol, effort ladder, vision flag — is preserved.
++func (e *ProviderEntry) SetModelLimits(model string, limits ModelLimits) error {
++	model = strings.TrimSpace(model)
++	if e == nil || model == "" {
++		return nil
++	}
++	if limits.ContextWindow < 0 {
++		return ErrModelContextWindowNegative
++	}
++	key := e.storedModelOverrideKey(model)
++	ov := e.ModelOverrides[key]
++	ov.ContextWindow, ov.MaxOutputTokens = limits.ContextWindow, limits.MaxOutputTokens
++	if modelOverrideEmpty(ov) {
++		delete(e.ModelOverrides, key)
++		if len(e.ModelOverrides) == 0 {
++			e.ModelOverrides = nil
++		}
++		return nil
++	}
++	if e.ModelOverrides == nil {
++		e.ModelOverrides = map[string]ProviderModelOverride{}
++	}
++	e.ModelOverrides[key] = ov
++	return nil
++}
++
++// InheritedLimits is what model runs on when it declares no limits: the entry
++// resolved onto that model with only those two fields of its override removed.
++// Surfaces that show a blank field next to an inherited value use it, so a
++// blank means the number displayed rather than an unknown.
++func (e *ProviderEntry) InheritedLimits(model string) ModelLimits {
++	if e == nil {
++		return ModelLimits{}
++	}
++	cp := *e
++	cp.Model = strings.TrimSpace(model)
++	if key := cp.storedModelOverrideKey(cp.Model); key != "" {
++		if _, ok := cp.ModelOverrides[key]; ok {
++			overrides := make(map[string]ProviderModelOverride, len(cp.ModelOverrides))
++			for k, v := range cp.ModelOverrides {
++				overrides[k] = v
++			}
++			ov := overrides[key]
++			ov.ContextWindow, ov.MaxOutputTokens = 0, 0
++			overrides[key] = ov
++			cp.ModelOverrides = overrides
++		}
++	}
++	resolved := ResolveReasoningEntry(&cp)
++	return ModelLimits{ContextWindow: resolved.ContextWindow, MaxOutputTokens: resolved.MaxOutputTokens}
++}
++
++// storedModelOverrideKey is the key a new or existing override for model is
++// stored under: the existing key when one matches case-insensitively, so an
++// edit never leaves the model declared twice, else the trimmed id itself.
++func (e *ProviderEntry) storedModelOverrideKey(model string) string {
++	model = strings.TrimSpace(model)
++	if e == nil || model == "" {
++		return model
++	}
++	if _, ok := e.ModelOverrides[model]; ok {
++		return model
++	}
++	for key := range e.ModelOverrides {
++		if strings.EqualFold(strings.TrimSpace(key), model) {
++			return key
++		}
++	}
++	return model
++}
+diff --git a/internal/config/model_limits_discovery.go b/internal/config/model_limits_discovery.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..822212294748f2f2ecbba747848514c9a54a1b62
+--- /dev/null
++++ b/internal/config/model_limits_discovery.go
+@@ -0,0 +1,80 @@
++package config
++
++import (
++	"strings"
++
++	"reasonix/internal/provider"
++)
++
++// ApplyDiscoveredLimits writes what a model listing declared about each
++// selected model into this entry's per-model overrides, and reports how many
++// models it filled in.
++//
++// It only fills gaps. A window the user already declared — per model or for the
++// whole connection — is left exactly as written, because a listing is the
++// endpoint's claim and the configuration is the person's answer. An endpoint
++// that reports no capacity for a model leaves that model inheriting, which is
++// the same state it was in before the call.
++func (e *ProviderEntry) ApplyDiscoveredLimits(catalog []provider.ModelInfo) int {
++	if e == nil || len(catalog) == 0 {
++		return 0
++	}
++	discovered := make(map[string]provider.ModelInfo, len(catalog))
++	for _, info := range catalog {
++		if id := strings.TrimSpace(info.ID); id != "" {
++			discovered[id] = info
++		}
++	}
++	filled := 0
++	for _, model := range e.ModelList() {
++		info, ok := discovered[strings.TrimSpace(model)]
++		if !ok || (info.ContextWindow <= 0 && info.MaxOutputTokens <= 0) {
++			continue
++		}
++		existing, declared := e.ModelLimits(model)
++		if declared && existing.ContextWindow > 0 {
++			// The model already states its own window; discovery adds nothing.
++			continue
++		}
++		next := existing
++		if info.ContextWindow > 0 {
++			next.ContextWindow = info.ContextWindow
++		}
++		if info.MaxOutputTokens > 0 && next.MaxOutputTokens == 0 {
++			next.MaxOutputTokens = info.MaxOutputTokens
++		}
++		if next == existing {
++			continue
++		}
++		if err := e.SetModelLimits(model, next); err != nil {
++			continue
++		}
++		filled++
++	}
++	return filled
++}
++
++// DiscoveredLimitsSummary reports, per model, the window and output cap a
++// listing declared. It exists so an interactive surface can show what it is
++// about to write before writing it, instead of silently changing budgets.
++func DiscoveredLimitsSummary(catalog []provider.ModelInfo) []ModelInfoLimits {
++	out := make([]ModelInfoLimits, 0, len(catalog))
++	for _, info := range catalog {
++		if info.ContextWindow <= 0 && info.MaxOutputTokens <= 0 {
++			continue
++		}
++		out = append(out, ModelInfoLimits{
++			Model:           info.ID,
++			ContextWindow:   info.ContextWindow,
++			MaxOutputTokens: info.MaxOutputTokens,
++		})
++	}
++	return out
++}
++
++// ModelInfoLimits is one model's discovered limits, for display.
++type ModelInfoLimits struct {
++	Model           string
++	ContextWindow   int
++	MaxOutputTokens int
++}
+diff --git a/internal/config/model_limits_test.go b/internal/config/model_limits_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..c264d31bc6261d445b0ef9329c48f1b3d602db3e
+--- /dev/null
++++ b/internal/config/model_limits_test.go
+@@ -0,0 +1,118 @@
++package config
++
++import (
++	"testing"
++
++	"reasonix/internal/provider"
++)
++
++// The stored limits are per model, so setting one never disturbs another
++// model's reasoning ladder or vision flag on the same connection.
++func TestSetModelLimitsPreservesTheRestOfTheOverride(t *testing.T) {
++	vision := true
++	entry := &ProviderEntry{
++		Name: "relay", Kind: "openai",
++		Models: []string{"a", "b"},
++		ModelOverrides: map[string]ProviderModelOverride{
++			"a": {ReasoningProtocol: "deepseek", SupportedEfforts: []string{"low", "high"}, Vision: &vision},
++			"b": {ContextWindow: 32_000},
++		},
++	}
++	if err := entry.SetModelLimits("a", ModelLimits{ContextWindow: 128_000, MaxOutputTokens: 8_192}); err != nil {
++		t.Fatal(err)
++	}
++	kept := entry.ModelOverrides["a"]
++	if kept.ReasoningProtocol != "deepseek" || len(kept.SupportedEfforts) != 2 || kept.Vision == nil || !*kept.Vision {
++		t.Fatalf("unrelated fields were dropped: %+v", kept)
++	}
++	if kept.ContextWindow != 128_000 || kept.MaxOutputTokens != 8_192 {
++		t.Fatalf("limits not stored: %+v", kept)
++	}
++	if entry.ModelOverrides["b"].ContextWindow != 32_000 {
++		t.Fatal("another model's limits changed")
++	}
++}
++
++// Clearing both limits removes the override so the model inherits again, and an
++// override that still carries other declarations is kept rather than deleted.
++func TestSetModelLimitsClearsByInheriting(t *testing.T) {
++	entry := &ProviderEntry{
++		Name: "relay", Kind: "openai", Models: []string{"a", "b"},
++		ModelOverrides: map[string]ProviderModelOverride{
++			"a": {ContextWindow: 1_000},
++			"b": {ContextWindow: 2_000, ReasoningProtocol: "deepseek"},
++		},
++	}
++	if err := entry.SetModelLimits("a", ModelLimits{}); err != nil {
++		t.Fatal(err)
++	}
++	if _, ok := entry.ModelOverrides["a"]; ok {
++		t.Fatal("cleared override survived")
++	}
++	if err := entry.SetModelLimits("b", ModelLimits{}); err != nil {
++		t.Fatal(err)
++	}
++	if entry.ModelOverrides["b"].ReasoningProtocol != "deepseek" {
++		t.Fatal("clearing limits discarded the reasoning declaration")
++	}
++	if _, ok := entry.ModelLimits("b"); ok {
++		t.Fatal("cleared limits still report themselves as declared")
++	}
++}
++
++// A negative window has nothing to mean, so it is refused instead of silently
++// reinterpreted as "inherit".
++func TestSetModelLimitsRefusesANegativeWindow(t *testing.T) {
++	entry := &ProviderEntry{Name: "relay", Kind: "openai", Models: []string{"a"}}
++	if err := entry.SetModelLimits("a", ModelLimits{ContextWindow: -1}); err == nil {
++		t.Fatal("negative window accepted")
++	}
++}
++
++// InheritedLimits is what a blank field on a settings form means, so it must
++// report the connection's value with the model's own limits taken back out.
++func TestInheritedLimitsDropsOnlyTheModelsOwnLimits(t *testing.T) {
++	entry := &ProviderEntry{
++		Name: "relay", Kind: "openai", Models: []string{"a"},
++		ContextWindow: 200_000, MaxOutputTokens: 4_096,
++		ModelOverrides: map[string]ProviderModelOverride{
++			"a": {ContextWindow: 64_000, MaxOutputTokens: 1_024},
++		},
++	}
++	if got := entry.InheritedLimits("a"); got.ContextWindow != 200_000 || got.MaxOutputTokens != 4_096 {
++		t.Fatalf("inherited = %+v, want the connection's 200000/4096", got)
++	}
++	if limits, ok := entry.ModelLimits("a"); !ok || limits.ContextWindow != 64_000 {
++		t.Fatalf("stored limits = %+v ok=%v", limits, ok)
++	}
++}
++
++// Discovery fills only gaps: a window the person declared is their answer, and
++// a model the listing said nothing about stays inheriting.
++func TestApplyDiscoveredLimitsFillsOnlyGaps(t *testing.T) {
++	entry := &ProviderEntry{
++		Name: "relay", Kind: "openai",
++		Models: []string{"known", "declared", "silent"},
++		ModelOverrides: map[string]ProviderModelOverride{
++			"declared": {ContextWindow: 64_000},
++		},
++	}
++	catalog := []provider.ModelInfo{
++		{ID: "known", ContextWindow: 1_000_000, MaxOutputTokens: 131_072},
++		{ID: "declared", ContextWindow: 128_000},
++		{ID: "silent"},
++	}
++	if filled := entry.ApplyDiscoveredLimits(catalog); filled != 1 {
++		t.Fatalf("filled = %d, want only the model that had no window", filled)
++	}
++	known, ok := entry.ModelLimits("known")
++	if !ok || known.ContextWindow != 1_000_000 || known.MaxOutputTokens != 131_072 {
++		t.Fatalf("discovered limits = %+v ok=%v", known, ok)
++	}
++	if entry.ModelOverrides["declared"].ContextWindow != 64_000 {
++		t.Fatal("a declared window was overwritten by the listing")
++	}
++	if _, ok := entry.ModelLimits("silent"); ok {
++		t.Fatal("a model the listing said nothing about gained limits")
++	}
++}
+diff --git a/internal/config/model_window.go b/internal/config/model_window.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..02df223c72784da141bfe920e36443ed67d193f3
+--- /dev/null
++++ b/internal/config/model_window.go
+@@ -0,0 +1,81 @@
++package config
++
++// Where a model's context window comes from, and what happens when nothing
++// establishes one. The window is a fact about the model rather than about who
++// serves it, but it was only ever recorded per configured entry — so a source
++// added by hand resolved to nothing, and a zero window turns compaction off.
++// A session then grows until the provider refuses the request.
++
++// DefaultUnknownContextWindow is the conservative working window for a custom
++// endpoint that declares no capacity and serves a model nothing known about.
++// It is deliberately below the smallest window a modern chat model ships with:
++// too small only compacts earlier, while too large makes the provider reject
++// the request outright. Users replace it per model with a model_overrides
++// entry, or per connection with the provider's own context_window.
++const DefaultUnknownContextWindow = 128_000
++
++// ResolvedContextWindow reports the window to run this entry against and
++// whether anything established it. Most-specific first: what the configuration
++// says for this entry (including its per-model override), then what is known
++// about the model itself. Callers that must not confuse "nobody said" with "no
++// compaction wanted" need the second return; everything else can use
++// EffectiveContextWindow, which also applies the fallback.
++func ResolvedContextWindow(e *ProviderEntry) (int, bool) {
++	if e == nil {
++		return 0, false
++	}
++	if window := e.declaredContextWindow(); window > 0 {
++		return window, true
++	}
++	if window := builtinModelContextWindow(e); window > 0 {
++		return window, true
++	}
++	return 0, false
++}
++
++// EffectiveContextWindow is the window a run must budget against: the declared
++// or known one, or the conservative fallback when nothing established it. It is
++// never zero, so it never silently disables compaction. A caller that
++// deliberately wants compaction off keeps checking the raw
++// ProviderEntry.ContextWindow instead.
++func EffectiveContextWindow(e *ProviderEntry) int {
++	if window, ok := ResolvedContextWindow(e); ok {
++		return window
++	}
++	return DefaultUnknownContextWindow
++}
++
++// declaredContextWindow is what the configuration said for this exact model:
++// the per-model override first, then the connection-wide value. This ordering
++// matches applyModelOverride, which the entry normally went through already;
++// checking the override directly keeps the answer right for a raw
++// ProviderEntry that never did.
++func (e *ProviderEntry) declaredContextWindow() int {
++	if e == nil {
++		return 0
++	}
++	if e.Model != "" {
++		if ov, ok := e.modelOverrideForModel(e.Model); ok && ov.ContextWindow > 0 {
++			return ov.ContextWindow
++		}
++	}
++	if e.ContextWindow > 0 {
++		return e.ContextWindow
++	}
++	return 0
++}
++
++// builtinModelContextWindow is what the compiled-in catalog knows about the
++// model itself, regardless of which gateway serves it. Only facts the catalog
++// actually states count: a model whose window nobody published stays unknown
++// instead of inheriting a guess from its family name.
++func builtinModelContextWindow(e *ProviderEntry) int {
++	if e == nil {
++		return 0
++	}
++	cap, ok := modelReasoningCapabilityForEntry(e)
++	if !ok || cap.ContextWindow <= 0 {
++		return 0
++	}
++	return cap.ContextWindow
++}
+diff --git a/internal/config/model_window_test.go b/internal/config/model_window_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..6ec6693fb6783a87b658ac39a2da4c4a1dbbfbce
+--- /dev/null
++++ b/internal/config/model_window_test.go
+@@ -0,0 +1,80 @@
++package config
++
++import "testing"
++
++// A relay added by hand records no window anywhere, and a zero window turns
++// compaction off. When the model itself is a known one, its own ceiling is the
++// answer, so the session is not left growing until the provider refuses it.
++func TestARelayInheritsTheWindowKnownForTheModel(t *testing.T) {
++	cfg := &Config{Providers: []ProviderEntry{{
++		Name: "relay", Kind: "openai", BaseURL: "https://relay.example.com/v1",
++		Models: []string{"deepseek-v4-pro"}, Default: "deepseek-v4-pro",
++	}}}
++	entry, ok := cfg.ResolveModel("relay/deepseek-v4-pro")
++	if !ok {
++		t.Fatal("relay model did not resolve")
++	}
++	if entry.ContextWindow != 0 {
++		t.Fatalf("entry carries a window %d nobody declared", entry.ContextWindow)
++	}
++	window, declared := ResolvedContextWindow(entry)
++	if !declared || window != 1_000_000 {
++		t.Fatalf("window = %d declared=%v, want the model's own ceiling", window, declared)
++	}
++}
++
++// Everything the configuration says outranks the built-in fact: the catalog is
++// the fallback for what nobody declared, not an override of what somebody did.
++func TestDeclaredWindowsOutrankTheModelCatalog(t *testing.T) {
++	resource := ProviderEntry{
++		Name: "relay", Kind: "openai", BaseURL: "https://relay.example.com/v1",
++		Models: []string{"deepseek-v4-pro"}, Default: "deepseek-v4-pro",
++		ContextWindow: 128_000,
++	}
++	cfg := &Config{Providers: []ProviderEntry{resource}}
++	entry, _ := cfg.ResolveModel("relay/deepseek-v4-pro")
++	if window, _ := ResolvedContextWindow(entry); window != 128_000 {
++		t.Fatalf("provider-wide window = %d, want the configured 128000", window)
++	}
++
++	cfg.Providers[0].ContextWindow = 0
++	cfg.Providers[0].ModelOverrides = map[string]ProviderModelOverride{
++		"deepseek-v4-pro": {ContextWindow: 64_000},
++	}
++	entry, _ = cfg.ResolveModel("relay/deepseek-v4-pro")
++	if window, _ := ResolvedContextWindow(entry); window != 64_000 {
++		t.Fatalf("per-model window = %d, want the configured 64000", window)
++	}
++}
++
++// Nothing established is not the same as "no compaction wanted". The fallback
++// keeps maintenance on for a relay serving a model nobody published numbers
++// for, while ResolvedContextWindow still reports that nobody said.
++func TestAnUnestablishedWindowFallsBackWithoutClaimingToKnow(t *testing.T) {
++	entry := &ProviderEntry{
++		Name: "relay", Kind: "openai", BaseURL: "https://relay.example.com/v1",
++		Model: "some-unlisted-model",
++	}
++	if window, declared := ResolvedContextWindow(entry); declared || window != 0 {
++		t.Fatalf("unestablished window reported as %d declared=%v", window, declared)
++	}
++	if window := EffectiveContextWindow(entry); window != DefaultUnknownContextWindow {
++		t.Fatalf("effective window = %d, want the %d fallback", window, DefaultUnknownContextWindow)
++	}
++}
++
++// The per-model override wins even on a raw entry that never went through
++// model resolution, which is how a settings surface reads a saved connection.
++func TestDeclaredContextWindowReadsTheOverrideDirectly(t *testing.T) {
++	entry := &ProviderEntry{
++		Name: "relay", Kind: "openai",
++		Model:         "deepseek-v4-pro",
++		ContextWindow: 200_000,
++		ModelOverrides: map[string]ProviderModelOverride{
++			"deepseek-v4-pro": {ContextWindow: 64_000},
++		},
++	}
++	if window := entry.declaredContextWindow(); window != 64_000 {
++		t.Fatalf("declared window = %d, want the per-model 64000", window)
++	}
++}
 diff --git a/internal/config/mutate.go b/internal/config/mutate.go
 index 7c33fea5dd5ac141ea79bf8248988eda3d0414ec..8202561cb4133e7b16f68e14b046f9beddcaa903 100644
 --- a/internal/config/mutate.go
@@ -2034,7 +3441,7 @@ index 0435516486e41eb6227eed1dd9a9903709d22242..8dc3b3340389022e5739cbc088e3d326
  // keeping the two properties a bare rename drops: the file's current permission
  // bits (an executable script must not come back 0644) and the symlink target
 diff --git a/internal/i18n/i18n.go b/internal/i18n/i18n.go
-index 0255e3f278384846a84848c4eecbf848f144cc33..fd4b87aa2ef7055a53e18ac6ddd8bc9c38bb479a 100644
+index 0255e3f278384846a84848c4eecbf848f144cc33..258de889201c29120216034c88143cf89d95defc 100644
 --- a/internal/i18n/i18n.go
 +++ b/internal/i18n/i18n.go
 @@ -36,6 +36,7 @@ type Messages struct {
@@ -2045,8 +3452,112 @@ index 0255e3f278384846a84848c4eecbf848f144cc33..fd4b87aa2ef7055a53e18ac6ddd8bc9c
  	ReadinessContinuing      string // host is automatically finishing known readiness gaps
  	RecoveryPaused           string // controlled Auto retry pause; user can continue in the next message
  	CompletionUncertain      string // completion validator could not confirm the result; work is kept
+@@ -483,52 +484,57 @@ type Messages struct {
+ 	SkillPickerStatusUnreadable  string // "unreadable" path status label
+ 
+ 	// init wizard
+-	EnterAPIKeysHeader       string // header before the per-env-var prompts
+-	WroteFileFmt             string // "Wrote %s" — used for reasonix.toml and .env both
+-	SetupComplete            string // success line at end of init
+-	SetupCancelled           string // shown when the user aborts the wizard
+-	TryHintFmt               string // "Try: %s" — %s = command to try (styled)
+-	NextHint                 string // non-interactive post-write hint
+-	ConfirmReconfigureFmt    string // "%s already exists. Reconfigure and overwrite?"
+-	NotOverwritingFmt        string // non-interactive overwrite refusal
+-	SetupManagerTitle        string
+-	SetupAddOpenAI           string
+-	SetupAddAnthropic        string
+-	SetupProviderExistsFmt   string
+-	SetupSaveExit            string
+-	SetupSaveExitDesc        string
+-	SetupCancel              string
+-	SetupCancelDesc          string
+-	SetupModelsUnit          string
+-	SetupKeySet              string
+-	SetupKeyMissing          string
+-	SetupDefaultBadge        string
+-	SetupProviderActionsFmt  string
+-	SetupEditProvider        string
+-	SetupUpdateKey           string
+-	SetupTestRefresh         string
+-	SetupSetDefault          string
+-	SetupRemoveProvider      string
+-	SetupBack                string
+-	SetupPromptModels        string
+-	SetupSharedKeyWarningFmt string
+-	SetupKeyEnvTakenFmt      string
+-	SetupKeyEnvStoredFmt     string
+-	SetupKeyEnvSettingFmt    string
+-	SetupKeyEnvShellFmt      string
+-	SetupKeyEnvRetry         string
+-	SetupPromptAPIKeyFmt     string
+-	SetupSelectDefaultModel  string
+-	SetupConfirmRemoveFmt    string
+-	SetupSummaryTitle        string
+-	SetupSummaryAddedFmt     string
+-	SetupSummaryEditedFmt    string
+-	SetupSummaryRemovedFmt   string
+-	SetupSummaryDefaultFmt   string
+-	SetupSummaryKeysFmt      string
+-	SetupSummaryNoChanges    string
+-	SetupConfirmSave         string
+-	SetupConcurrentChangeFmt string
++	EnterAPIKeysHeader            string // header before the per-env-var prompts
++	WroteFileFmt                  string // "Wrote %s" — used for reasonix.toml and .env both
++	SetupComplete                 string // success line at end of init
++	SetupCancelled                string // shown when the user aborts the wizard
++	TryHintFmt                    string // "Try: %s" — %s = command to try (styled)
++	NextHint                      string // non-interactive post-write hint
++	ConfirmReconfigureFmt         string // "%s already exists. Reconfigure and overwrite?"
++	NotOverwritingFmt             string // non-interactive overwrite refusal
++	SetupManagerTitle             string
++	SetupAddOpenAI                string
++	SetupAddAnthropic             string
++	SetupProviderExistsFmt        string
++	SetupSaveExit                 string
++	SetupSaveExitDesc             string
++	SetupCancel                   string
++	SetupCancelDesc               string
++	SetupModelsUnit               string
++	SetupKeySet                   string
++	SetupKeyMissing               string
++	SetupDefaultBadge             string
++	SetupProviderActionsFmt       string
++	SetupEditProvider             string
++	SetupUpdateKey                string
++	SetupTestRefresh              string
++	SetupSetDefault               string
++	SetupRemoveProvider           string
++	SetupBack                     string
++	SetupPromptModels             string
++	SetupModelWindows             string
++	SetupModelWindowPromptFmt     string
++	SetupModelWindowHintFmt       string
++	SetupModelWindowNone          string
++	SetupModelWindowDiscoveredFmt string
++	SetupSharedKeyWarningFmt      string
++	SetupKeyEnvTakenFmt           string
++	SetupKeyEnvStoredFmt          string
++	SetupKeyEnvSettingFmt         string
++	SetupKeyEnvShellFmt           string
++	SetupKeyEnvRetry              string
++	SetupPromptAPIKeyFmt          string
++	SetupSelectDefaultModel       string
++	SetupConfirmRemoveFmt         string
++	SetupSummaryTitle             string
++	SetupSummaryAddedFmt          string
++	SetupSummaryEditedFmt         string
++	SetupSummaryRemovedFmt        string
++	SetupSummaryDefaultFmt        string
++	SetupSummaryKeysFmt           string
++	SetupSummaryNoChanges         string
++	SetupConfirmSave              string
++	SetupConcurrentChangeFmt      string
+ 
+ 	// model fetching
+ 	FetchingModelsFmt          string // "Fetching models for %s..."
 diff --git a/internal/i18n/messages_en.go b/internal/i18n/messages_en.go
-index 89b8c55e90f1ed284c0902140c4320a4fa695535..5891d60c9e53eac7c67b7f111a67f3889a6ff90e 100644
+index 89b8c55e90f1ed284c0902140c4320a4fa695535..bdc642227d49f352570853a0ac64607120ec610c 100644
 --- a/internal/i18n/messages_en.go
 +++ b/internal/i18n/messages_en.go
 @@ -12,6 +12,7 @@ var English = Messages{
@@ -2057,8 +3568,112 @@ index 89b8c55e90f1ed284c0902140c4320a4fa695535..5891d60c9e53eac7c67b7f111a67f388
  	ReadinessContinuing:              "Reasonix is finishing the remaining task work or checks automatically.",
  	RecoveryPaused:                   "Automatic retries paused. Reasonix stopped repeated attempts and kept completed work. Send “Continue” to start a fresh attempt, or add instructions to change direction.",
  	CompletionUncertain:              "Completion could not be confirmed. The current result and completed work are kept. Send \"continue\" to resume, or restate what should change.",
+@@ -446,52 +447,57 @@ var English = Messages{
+ 	RewindUnavailableFmt:         "rewind unavailable: %s",
+ 	RewindEmpty:                  "(empty)",
+ 
+-	EnterAPIKeysHeader:       "Enter API keys (Enter to skip and set later):",
+-	WroteFileFmt:             "Wrote %s",
+-	SetupComplete:            "Setup complete.",
+-	SetupCancelled:           "setup cancelled.",
+-	TryHintFmt:               "Try: %s",
+-	NextHint:                 "Next: set your API key (run `reasonix setup` or export DEEPSEEK_API_KEY=...), then run `reasonix run \"your task\"`.",
+-	ConfirmReconfigureFmt:    "%s already exists. Reconfigure and overwrite?",
+-	NotOverwritingFmt:        "%s already exists; not overwriting",
+-	SetupManagerTitle:        "Provider configuration",
+-	SetupAddOpenAI:           "Add OpenAI-compatible provider",
+-	SetupAddAnthropic:        "Add Anthropic-compatible provider",
+-	SetupProviderExistsFmt:   "Provider %q already exists. Manage the existing provider to edit its models or settings.",
+-	SetupSaveExit:            "Save and exit",
+-	SetupSaveExitDesc:        "write staged changes",
+-	SetupCancel:              "Cancel",
+-	SetupCancelDesc:          "discard all staged changes",
+-	SetupModelsUnit:          "models",
+-	SetupKeySet:              "key set",
+-	SetupKeyMissing:          "key missing",
+-	SetupDefaultBadge:        "default",
+-	SetupProviderActionsFmt:  "Manage %s",
+-	SetupEditProvider:        "Edit provider",
+-	SetupUpdateKey:           "Update API key",
+-	SetupTestRefresh:         "Test connection / refresh models",
+-	SetupSetDefault:          "Set default model",
+-	SetupRemoveProvider:      "Remove provider",
+-	SetupBack:                "Back",
+-	SetupPromptModels:        "Models (comma-separated)",
+-	SetupSharedKeyWarningFmt: "%s is also used by %s at %s. Share this credential?",
+-	SetupKeyEnvTakenFmt:      "%s is already used by provider %s; saving this key under it would replace that provider's key.",
+-	SetupKeyEnvStoredFmt:     "%s already holds a saved credential; saving this key under it would overwrite that value.",
+-	SetupKeyEnvSettingFmt:    "%s is read by a bot or remote-host setting; saving this key under it would hand that setting your key.",
+-	SetupKeyEnvShellFmt:      "%s is already set in the environment Reasonix runs in; saving this key under it would override that value.",
+-	SetupKeyEnvRetry:         "Enter another name, or press Enter to let Reasonix choose a private variable.",
+-	SetupPromptAPIKeyFmt:     "Enter new value for %s",
+-	SetupSelectDefaultModel:  "Select default model",
+-	SetupConfirmRemoveFmt:    "Remove provider %s?",
+-	SetupSummaryTitle:        "Pending changes:",
+-	SetupSummaryAddedFmt:     "Added: %s",
+-	SetupSummaryEditedFmt:    "Edited: %s",
+-	SetupSummaryRemovedFmt:   "Removed: %s",
+-	SetupSummaryDefaultFmt:   "Default model: %s",
+-	SetupSummaryKeysFmt:      "API keys updated: %d",
+-	SetupSummaryNoChanges:    "No changes",
+-	SetupConfirmSave:         "Save these changes?",
+-	SetupConcurrentChangeFmt: "Configuration changed while setup was open (%s). No staged setup changes were saved; run setup again to review the latest configuration.",
++	EnterAPIKeysHeader:            "Enter API keys (Enter to skip and set later):",
++	WroteFileFmt:                  "Wrote %s",
++	SetupComplete:                 "Setup complete.",
++	SetupCancelled:                "setup cancelled.",
++	TryHintFmt:                    "Try: %s",
++	NextHint:                      "Next: set your API key (run `reasonix setup` or export DEEPSEEK_API_KEY=...), then run `reasonix run \"your task\"`.",
++	ConfirmReconfigureFmt:         "%s already exists. Reconfigure and overwrite?",
++	NotOverwritingFmt:             "%s already exists; not overwriting",
++	SetupManagerTitle:             "Provider configuration",
++	SetupAddOpenAI:                "Add OpenAI-compatible provider",
++	SetupAddAnthropic:             "Add Anthropic-compatible provider",
++	SetupProviderExistsFmt:        "Provider %q already exists. Manage the existing provider to edit its models or settings.",
++	SetupSaveExit:                 "Save and exit",
++	SetupSaveExitDesc:             "write staged changes",
++	SetupCancel:                   "Cancel",
++	SetupCancelDesc:               "discard all staged changes",
++	SetupModelsUnit:               "models",
++	SetupKeySet:                   "key set",
++	SetupKeyMissing:               "key missing",
++	SetupDefaultBadge:             "default",
++	SetupProviderActionsFmt:       "Manage %s",
++	SetupEditProvider:             "Edit provider",
++	SetupUpdateKey:                "Update API key",
++	SetupTestRefresh:              "Test connection / refresh models",
++	SetupSetDefault:               "Set default model",
++	SetupRemoveProvider:           "Remove provider",
++	SetupBack:                     "Back",
++	SetupPromptModels:             "Models (comma-separated)",
++	SetupModelWindows:             "Edit per-model context windows",
++	SetupModelWindowPromptFmt:     "Context window for %s in tokens",
++	SetupModelWindowHintFmt:       "inherits %d",
++	SetupModelWindowNone:          "no model lists a window of its own",
++	SetupModelWindowDiscoveredFmt: "models reported their own context windows: %d (see Edit per-model context windows)",
++	SetupSharedKeyWarningFmt:      "%s is also used by %s at %s. Share this credential?",
++	SetupKeyEnvTakenFmt:           "%s is already used by provider %s; saving this key under it would replace that provider's key.",
++	SetupKeyEnvStoredFmt:          "%s already holds a saved credential; saving this key under it would overwrite that value.",
++	SetupKeyEnvSettingFmt:         "%s is read by a bot or remote-host setting; saving this key under it would hand that setting your key.",
++	SetupKeyEnvShellFmt:           "%s is already set in the environment Reasonix runs in; saving this key under it would override that value.",
++	SetupKeyEnvRetry:              "Enter another name, or press Enter to let Reasonix choose a private variable.",
++	SetupPromptAPIKeyFmt:          "Enter new value for %s",
++	SetupSelectDefaultModel:       "Select default model",
++	SetupConfirmRemoveFmt:         "Remove provider %s?",
++	SetupSummaryTitle:             "Pending changes:",
++	SetupSummaryAddedFmt:          "Added: %s",
++	SetupSummaryEditedFmt:         "Edited: %s",
++	SetupSummaryRemovedFmt:        "Removed: %s",
++	SetupSummaryDefaultFmt:        "Default model: %s",
++	SetupSummaryKeysFmt:           "API keys updated: %d",
++	SetupSummaryNoChanges:         "No changes",
++	SetupConfirmSave:              "Save these changes?",
++	SetupConcurrentChangeFmt:      "Configuration changed while setup was open (%s). No staged setup changes were saved; run setup again to review the latest configuration.",
+ 
+ 	// model fetching
+ 	FetchingModelsFmt:          "Fetching models for %s...",
 diff --git a/internal/i18n/messages_zh.go b/internal/i18n/messages_zh.go
-index b2803934e39168a3689775d1ee748a7cde3002c2..4d7f8938763d621949bf13343931548006400e01 100644
+index b2803934e39168a3689775d1ee748a7cde3002c2..64789e41b3ab3cbc9952edc80e867645387669da 100644
 --- a/internal/i18n/messages_zh.go
 +++ b/internal/i18n/messages_zh.go
 @@ -13,6 +13,7 @@ var Chinese = Messages{
@@ -2069,8 +3684,112 @@ index b2803934e39168a3689775d1ee748a7cde3002c2..4d7f8938763d621949bf133439315480
  	ReadinessContinuing:              "Reasonix 正在自动完成剩余任务或检查。",
  	RecoveryPaused:                   "已暂停自动重试。Reasonix 已停止重复尝试，并保留已完成的工作。发送“继续”即可开始新一轮，也可以补充要求来调整方向。",
  	CompletionUncertain:              "完成状态未确认。当前结果和已完成工作均已保留。发送“继续”可接着完成，也可以补充说明需要调整的内容。",
+@@ -447,52 +448,57 @@ var Chinese = Messages{
+ 	RewindUnavailableFmt:         "无法回滚：%s",
+ 	RewindEmpty:                  "(空)",
+ 
+-	EnterAPIKeysHeader:       "输入 API key（回车跳过、稍后再设）：",
+-	WroteFileFmt:             "已写入 %s",
+-	SetupComplete:            "设置完成。",
+-	SetupCancelled:           "设置已取消。",
+-	TryHintFmt:               "试试: %s",
+-	NextHint:                 "下一步：设置 API key（运行 `reasonix setup` 或 export DEEPSEEK_API_KEY=...），然后运行 `reasonix run \"你的任务\"`。",
+-	ConfirmReconfigureFmt:    "%s 已存在。重新配置并覆盖？",
+-	NotOverwritingFmt:        "%s 已存在，不覆盖",
+-	SetupManagerTitle:        "供应商配置",
+-	SetupAddOpenAI:           "添加 OpenAI 兼容供应商",
+-	SetupAddAnthropic:        "添加 Anthropic 兼容供应商",
+-	SetupProviderExistsFmt:   "供应商 %q 已存在。请进入现有供应商管理来编辑模型或设置。",
+-	SetupSaveExit:            "保存并退出",
+-	SetupSaveExitDesc:        "写入当前暂存的修改",
+-	SetupCancel:              "取消",
+-	SetupCancelDesc:          "放弃全部暂存修改",
+-	SetupModelsUnit:          "个模型",
+-	SetupKeySet:              "已设置 Key",
+-	SetupKeyMissing:          "缺少 Key",
+-	SetupDefaultBadge:        "默认",
+-	SetupProviderActionsFmt:  "管理 %s",
+-	SetupEditProvider:        "编辑供应商",
+-	SetupUpdateKey:           "更新 API Key",
+-	SetupTestRefresh:         "测试连接 / 刷新模型列表",
+-	SetupSetDefault:          "设置默认模型",
+-	SetupRemoveProvider:      "删除供应商",
+-	SetupBack:                "返回",
+-	SetupPromptModels:        "模型列表（用逗号分隔）",
+-	SetupSharedKeyWarningFmt: "%s 已被 %s（%s）使用。确认共享这项凭据？",
+-	SetupKeyEnvTakenFmt:      "%s 已被 provider %s 使用；把这个 key 存进去会替换那个 provider 的 key。",
+-	SetupKeyEnvStoredFmt:     "%s 已经保存了一项凭据；把这个 key 存进去会覆盖原来的值。",
+-	SetupKeyEnvSettingFmt:    "%s 已被机器人或远程主机设置读取；把这个 key 存进去会让那项设置拿到你的 key。",
+-	SetupKeyEnvShellFmt:      "%s 已在 Reasonix 运行的环境变量中设置；把这个 key 存进去会覆盖那个值。",
+-	SetupKeyEnvRetry:         "请换一个变量名，或直接回车由 Reasonix 分配独立变量。",
+-	SetupPromptAPIKeyFmt:     "输入 %s 的新值",
+-	SetupSelectDefaultModel:  "选择默认模型",
+-	SetupConfirmRemoveFmt:    "确认删除供应商 %s？",
+-	SetupSummaryTitle:        "待保存修改：",
+-	SetupSummaryAddedFmt:     "新增：%s",
+-	SetupSummaryEditedFmt:    "编辑：%s",
+-	SetupSummaryRemovedFmt:   "删除：%s",
+-	SetupSummaryDefaultFmt:   "默认模型：%s",
+-	SetupSummaryKeysFmt:      "更新 API Key：%d 项",
+-	SetupSummaryNoChanges:    "没有修改",
+-	SetupConfirmSave:         "保存这些修改？",
+-	SetupConcurrentChangeFmt: "setup 打开期间配置已被修改（%s）。本次暂存修改未写入，请重新运行 setup 检查最新配置。",
++	EnterAPIKeysHeader:            "输入 API key（回车跳过、稍后再设）：",
++	WroteFileFmt:                  "已写入 %s",
++	SetupComplete:                 "设置完成。",
++	SetupCancelled:                "设置已取消。",
++	TryHintFmt:                    "试试: %s",
++	NextHint:                      "下一步：设置 API key（运行 `reasonix setup` 或 export DEEPSEEK_API_KEY=...），然后运行 `reasonix run \"你的任务\"`。",
++	ConfirmReconfigureFmt:         "%s 已存在。重新配置并覆盖？",
++	NotOverwritingFmt:             "%s 已存在，不覆盖",
++	SetupManagerTitle:             "供应商配置",
++	SetupAddOpenAI:                "添加 OpenAI 兼容供应商",
++	SetupAddAnthropic:             "添加 Anthropic 兼容供应商",
++	SetupProviderExistsFmt:        "供应商 %q 已存在。请进入现有供应商管理来编辑模型或设置。",
++	SetupSaveExit:                 "保存并退出",
++	SetupSaveExitDesc:             "写入当前暂存的修改",
++	SetupCancel:                   "取消",
++	SetupCancelDesc:               "放弃全部暂存修改",
++	SetupModelsUnit:               "个模型",
++	SetupKeySet:                   "已设置 Key",
++	SetupKeyMissing:               "缺少 Key",
++	SetupDefaultBadge:             "默认",
++	SetupProviderActionsFmt:       "管理 %s",
++	SetupEditProvider:             "编辑供应商",
++	SetupUpdateKey:                "更新 API Key",
++	SetupTestRefresh:              "测试连接 / 刷新模型列表",
++	SetupSetDefault:               "设置默认模型",
++	SetupRemoveProvider:           "删除供应商",
++	SetupBack:                     "返回",
++	SetupPromptModels:             "模型列表（用逗号分隔）",
++	SetupModelWindows:             "编辑各模型上下文窗口",
++	SetupModelWindowPromptFmt:     "%s 的上下文窗口（tokens）",
++	SetupModelWindowHintFmt:       "继承 %d",
++	SetupModelWindowNone:          "没有任何模型单独设置窗口",
++	SetupModelWindowDiscoveredFmt: "已从端点读到 %d 个模型的上下文窗口（可在“编辑各模型上下文窗口”中查看）",
++	SetupSharedKeyWarningFmt:      "%s 已被 %s（%s）使用。确认共享这项凭据？",
++	SetupKeyEnvTakenFmt:           "%s 已被 provider %s 使用；把这个 key 存进去会替换那个 provider 的 key。",
++	SetupKeyEnvStoredFmt:          "%s 已经保存了一项凭据；把这个 key 存进去会覆盖原来的值。",
++	SetupKeyEnvSettingFmt:         "%s 已被机器人或远程主机设置读取；把这个 key 存进去会让那项设置拿到你的 key。",
++	SetupKeyEnvShellFmt:           "%s 已在 Reasonix 运行的环境变量中设置；把这个 key 存进去会覆盖那个值。",
++	SetupKeyEnvRetry:              "请换一个变量名，或直接回车由 Reasonix 分配独立变量。",
++	SetupPromptAPIKeyFmt:          "输入 %s 的新值",
++	SetupSelectDefaultModel:       "选择默认模型",
++	SetupConfirmRemoveFmt:         "确认删除供应商 %s？",
++	SetupSummaryTitle:             "待保存修改：",
++	SetupSummaryAddedFmt:          "新增：%s",
++	SetupSummaryEditedFmt:         "编辑：%s",
++	SetupSummaryRemovedFmt:        "删除：%s",
++	SetupSummaryDefaultFmt:        "默认模型：%s",
++	SetupSummaryKeysFmt:           "更新 API Key：%d 项",
++	SetupSummaryNoChanges:         "没有修改",
++	SetupConfirmSave:              "保存这些修改？",
++	SetupConcurrentChangeFmt:      "setup 打开期间配置已被修改（%s）。本次暂存修改未写入，请重新运行 setup 检查最新配置。",
+ 
+ 	// model fetching
+ 	FetchingModelsFmt:          "正在获取 %s 的模型列表...",
 diff --git a/internal/i18n/messages_zh_tw.go b/internal/i18n/messages_zh_tw.go
-index 55f9f624cfe80b4bd9ca2b89cf54d8092312bcc4..e2037a305c961b221557c5a95d4c69f58c33eb5a 100644
+index 55f9f624cfe80b4bd9ca2b89cf54d8092312bcc4..62cee915c3a689ace727a718c26dcfb0a950343e 100644
 --- a/internal/i18n/messages_zh_tw.go
 +++ b/internal/i18n/messages_zh_tw.go
 @@ -13,6 +13,7 @@ var ChineseTraditional = Messages{
@@ -2081,6 +3800,110 @@ index 55f9f624cfe80b4bd9ca2b89cf54d8092312bcc4..e2037a305c961b221557c5a95d4c69f5
  	ReadinessContinuing:              "Reasonix 正在自動完成剩餘任務或檢查。",
  	RecoveryPaused:                   "已暫停自動重試。Reasonix 已停止重複嘗試，並保留已完成的工作。傳送「繼續」即可開始新一輪，也可以補充要求來調整方向。",
  	CompletionUncertain:              "完成狀態未確認。目前結果與已完成工作均已保留。傳送「繼續」可接著完成，也可以補充說明需要調整的內容。",
+@@ -420,52 +421,57 @@ var ChineseTraditional = Messages{
+ 	RewindUnavailableFmt:         "無法回滾：%s",
+ 	RewindEmpty:                  "(空)",
+ 
+-	EnterAPIKeysHeader:       "輸入 API key（Enter 跳過、稍後再設）：",
+-	WroteFileFmt:             "已寫入 %s",
+-	SetupComplete:            "設定完成。",
+-	SetupCancelled:           "設定已取消。",
+-	TryHintFmt:               "試試: %s",
+-	NextHint:                 "下一步：設定 API key（執行 `reasonix setup` 或 export DEEPSEEK_API_KEY=...），然後執行 `reasonix run \"你的任務\"`。",
+-	ConfirmReconfigureFmt:    "%s 已存在。重新設定並覆蓋？",
+-	NotOverwritingFmt:        "%s 已存在，不覆蓋",
+-	SetupManagerTitle:        "供應商設定",
+-	SetupAddOpenAI:           "新增 OpenAI 相容供應商",
+-	SetupAddAnthropic:        "新增 Anthropic 相容供應商",
+-	SetupProviderExistsFmt:   "供應商 %q 已存在。請進入現有供應商管理來編輯模型或設定。",
+-	SetupSaveExit:            "儲存並離開",
+-	SetupSaveExitDesc:        "寫入目前暫存的修改",
+-	SetupCancel:              "取消",
+-	SetupCancelDesc:          "放棄全部暫存修改",
+-	SetupModelsUnit:          "個模型",
+-	SetupKeySet:              "已設定 Key",
+-	SetupKeyMissing:          "缺少 Key",
+-	SetupDefaultBadge:        "預設",
+-	SetupProviderActionsFmt:  "管理 %s",
+-	SetupEditProvider:        "編輯供應商",
+-	SetupUpdateKey:           "更新 API Key",
+-	SetupTestRefresh:         "測試連線 / 重新整理模型列表",
+-	SetupSetDefault:          "設定預設模型",
+-	SetupRemoveProvider:      "刪除供應商",
+-	SetupBack:                "返回",
+-	SetupPromptModels:        "模型列表（用逗號分隔）",
+-	SetupSharedKeyWarningFmt: "%s 已被 %s（%s）使用。確認共用這項憑據？",
+-	SetupKeyEnvTakenFmt:      "%s 已被 provider %s 使用；把這個 key 存進去會取代那個 provider 的 key。",
+-	SetupKeyEnvStoredFmt:     "%s 已經儲存了一項憑據；把這個 key 存進去會覆寫原本的值。",
+-	SetupKeyEnvSettingFmt:    "%s 已被機器人或遠端主機設定讀取；把這個 key 存進去會讓那項設定拿到你的 key。",
+-	SetupKeyEnvShellFmt:      "%s 已在 Reasonix 執行的環境變數中設定；把這個 key 存進去會覆寫那個值。",
+-	SetupKeyEnvRetry:         "請換一個變數名稱，或直接按 Enter 由 Reasonix 分配獨立變數。",
+-	SetupPromptAPIKeyFmt:     "輸入 %s 的新值",
+-	SetupSelectDefaultModel:  "選擇預設模型",
+-	SetupConfirmRemoveFmt:    "確認刪除供應商 %s？",
+-	SetupSummaryTitle:        "待儲存修改：",
+-	SetupSummaryAddedFmt:     "新增：%s",
+-	SetupSummaryEditedFmt:    "編輯：%s",
+-	SetupSummaryRemovedFmt:   "刪除：%s",
+-	SetupSummaryDefaultFmt:   "預設模型：%s",
+-	SetupSummaryKeysFmt:      "更新 API Key：%d 項",
+-	SetupSummaryNoChanges:    "沒有修改",
+-	SetupConfirmSave:         "儲存這些修改？",
+-	SetupConcurrentChangeFmt: "setup 開啟期間設定已被修改（%s）。本次暫存修改未寫入，請重新執行 setup 檢查最新設定。",
++	EnterAPIKeysHeader:            "輸入 API key（Enter 跳過、稍後再設）：",
++	WroteFileFmt:                  "已寫入 %s",
++	SetupComplete:                 "設定完成。",
++	SetupCancelled:                "設定已取消。",
++	TryHintFmt:                    "試試: %s",
++	NextHint:                      "下一步：設定 API key（執行 `reasonix setup` 或 export DEEPSEEK_API_KEY=...），然後執行 `reasonix run \"你的任務\"`。",
++	ConfirmReconfigureFmt:         "%s 已存在。重新設定並覆蓋？",
++	NotOverwritingFmt:             "%s 已存在，不覆蓋",
++	SetupManagerTitle:             "供應商設定",
++	SetupAddOpenAI:                "新增 OpenAI 相容供應商",
++	SetupAddAnthropic:             "新增 Anthropic 相容供應商",
++	SetupProviderExistsFmt:        "供應商 %q 已存在。請進入現有供應商管理來編輯模型或設定。",
++	SetupSaveExit:                 "儲存並離開",
++	SetupSaveExitDesc:             "寫入目前暫存的修改",
++	SetupCancel:                   "取消",
++	SetupCancelDesc:               "放棄全部暫存修改",
++	SetupModelsUnit:               "個模型",
++	SetupKeySet:                   "已設定 Key",
++	SetupKeyMissing:               "缺少 Key",
++	SetupDefaultBadge:             "預設",
++	SetupProviderActionsFmt:       "管理 %s",
++	SetupEditProvider:             "編輯供應商",
++	SetupUpdateKey:                "更新 API Key",
++	SetupTestRefresh:              "測試連線 / 重新整理模型列表",
++	SetupSetDefault:               "設定預設模型",
++	SetupRemoveProvider:           "刪除供應商",
++	SetupBack:                     "返回",
++	SetupPromptModels:             "模型列表（用逗號分隔）",
++	SetupModelWindows:             "編輯各模型上下文視窗",
++	SetupModelWindowPromptFmt:     "%s 的上下文視窗（tokens）",
++	SetupModelWindowHintFmt:       "繼承 %d",
++	SetupModelWindowNone:          "沒有任何模型單獨設定視窗",
++	SetupModelWindowDiscoveredFmt: "已從端點讀到 %d 個模型的上下文視窗（可在「編輯各模型上下文視窗」中檢視）",
++	SetupSharedKeyWarningFmt:      "%s 已被 %s（%s）使用。確認共用這項憑據？",
++	SetupKeyEnvTakenFmt:           "%s 已被 provider %s 使用；把這個 key 存進去會取代那個 provider 的 key。",
++	SetupKeyEnvStoredFmt:          "%s 已經儲存了一項憑據；把這個 key 存進去會覆寫原本的值。",
++	SetupKeyEnvSettingFmt:         "%s 已被機器人或遠端主機設定讀取；把這個 key 存進去會讓那項設定拿到你的 key。",
++	SetupKeyEnvShellFmt:           "%s 已在 Reasonix 執行的環境變數中設定；把這個 key 存進去會覆寫那個值。",
++	SetupKeyEnvRetry:              "請換一個變數名稱，或直接按 Enter 由 Reasonix 分配獨立變數。",
++	SetupPromptAPIKeyFmt:          "輸入 %s 的新值",
++	SetupSelectDefaultModel:       "選擇預設模型",
++	SetupConfirmRemoveFmt:         "確認刪除供應商 %s？",
++	SetupSummaryTitle:             "待儲存修改：",
++	SetupSummaryAddedFmt:          "新增：%s",
++	SetupSummaryEditedFmt:         "編輯：%s",
++	SetupSummaryRemovedFmt:        "刪除：%s",
++	SetupSummaryDefaultFmt:        "預設模型：%s",
++	SetupSummaryKeysFmt:           "更新 API Key：%d 項",
++	SetupSummaryNoChanges:         "沒有修改",
++	SetupConfirmSave:              "儲存這些修改？",
++	SetupConcurrentChangeFmt:      "setup 開啟期間設定已被修改（%s）。本次暫存修改未寫入，請重新執行 setup 檢查最新設定。",
+ 
+ 	// model fetching
+ 	FetchingModelsFmt:          "正在取得 %s 的模型列表...",
 diff --git a/internal/mcplaunch/process_other.go b/internal/mcplaunch/process_other.go
 index fb59685cf8052330a2bc1653bf3ea64c726840d5..4973ace1dff6625b5b20bb4b2c1eb1aea7133251 100644
 --- a/internal/mcplaunch/process_other.go
@@ -2193,6 +4016,293 @@ index ad7d6fef52aab5f614f61d96d4405305aaab14a8..37f7de4768685b16b945e0b344d13615
  		}
  	}
  	return ""
+diff --git a/internal/provider/openai/context_metadata.go b/internal/provider/openai/context_metadata.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..a4aed2860b899f7c11569becd60a0a18f9c67b6c
+--- /dev/null
++++ b/internal/provider/openai/context_metadata.go
+@@ -0,0 +1,87 @@
++package openai
++
++import "encoding/json"
++
++// modelCapacity is what one /models row declares about how much it can hold.
++// Zero means the row said nothing: an absent field is not a claim that the
++// model has no limit, so callers must treat zero as "unknown", never as "none".
++type modelCapacity struct {
++	// ContextWindow is the total prompt+completion budget the endpoint reports.
++	ContextWindow int
++	// MaxOutputTokens is the completion ceiling the endpoint reports, when it
++	// reports one separately from the window.
++	MaxOutputTokens int
++}
++
++// modelCapacityKeys are read in order; the first positive value wins. Official
++// OpenAI-shaped listings use none of them, vLLM/SGLang use max_model_len,
++// Together and Groq use context_length, and several aggregators use
++// max_context_length or max_input_tokens.
++var (
++	modelContextWindowKeys   = []string{"context_length", "max_context_length", "max_model_len", "max_input_tokens"}
++	modelMaxOutputTokenKeys  = []string{"max_completion_tokens", "max_output_tokens"}
++	modelCapacityNestedScope = []string{"top_provider", "capabilities", "limits"}
++)
++
++// parseModelCapacity reads a listing row's declared capacity. Nested scopes are
++// consulted after the top level, because a row that states its own numbers is
++// more specific than the provider block summarising them.
++func parseModelCapacity(entry map[string]json.RawMessage) modelCapacity {
++	out := modelCapacity{
++		ContextWindow:   firstPositiveInt(entry, modelContextWindowKeys),
++		MaxOutputTokens: firstPositiveInt(entry, modelMaxOutputTokenKeys),
++	}
++	if out.ContextWindow > 0 && out.MaxOutputTokens > 0 {
++		return out
++	}
++	for _, scope := range modelCapacityNestedScope {
++		var nested map[string]json.RawMessage
++		if json.Unmarshal(entry[scope], &nested) != nil {
++			continue
++		}
++		if out.ContextWindow <= 0 {
++			out.ContextWindow = firstPositiveInt(nested, modelContextWindowKeys)
++		}
++		if out.MaxOutputTokens <= 0 {
++			out.MaxOutputTokens = firstPositiveInt(nested, modelMaxOutputTokenKeys)
++		}
++		if out.ContextWindow > 0 && out.MaxOutputTokens > 0 {
++			return out
++		}
++	}
++	return out
++}
++
++// firstPositiveInt returns the first key whose value decodes as a positive
++// integer. A malformed or non-positive value is skipped rather than clamped:
++// "0" and "-1" are how some listings spell "not applicable", and adopting them
++// would either disable compaction or claim a ceiling nobody stated.
++func firstPositiveInt(entry map[string]json.RawMessage, keys []string) int {
++	for _, key := range keys {
++		raw, present := entry[key]
++		if !present {
++			continue
++		}
++		var value int
++		if json.Unmarshal(raw, &value) == nil && value > 0 {
++			return value
++		}
++	}
++	return 0
++}
++
++// mergeModelCapacity folds a duplicate row for the same model id into what is
++// already known. The smaller positive window wins: overstating a window makes
++// the provider reject a request, while understating it only compacts earlier,
++// and a listing that repeats an id is usually two routes onto the same model
++// with different headroom.
++func mergeModelCapacity(previous, next modelCapacity) modelCapacity {
++	out := previous
++	if next.ContextWindow > 0 && (out.ContextWindow <= 0 || next.ContextWindow < out.ContextWindow) {
++		out.ContextWindow = next.ContextWindow
++	}
++	if next.MaxOutputTokens > 0 && (out.MaxOutputTokens <= 0 || next.MaxOutputTokens < out.MaxOutputTokens) {
++		out.MaxOutputTokens = next.MaxOutputTokens
++	}
++	return out
++}
+diff --git a/internal/provider/openai/context_metadata_test.go b/internal/provider/openai/context_metadata_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..6dbc7b35a52352fdb56aaa6d26befd69c61cbada
+--- /dev/null
++++ b/internal/provider/openai/context_metadata_test.go
+@@ -0,0 +1,78 @@
++package openai
++
++import (
++	"encoding/json"
++	"testing"
++)
++
++// A listing that states capacity is the only free source of truth about it.
++// The window is read from whichever spelling the endpoint chose, because
++// OpenAI-compatible gateways disagree on all of them.
++func TestParseModelCapacityReadsTheDeclaredWindow(t *testing.T) {
++	for _, tc := range []struct {
++		name string
++		row  string
++		want modelCapacity
++	}{
++		{"openrouter", `{"id":"m","context_length":1048576,"top_provider":{"max_completion_tokens":131072}}`,
++			modelCapacity{ContextWindow: 1048576, MaxOutputTokens: 131072}},
++		{"vllm", `{"id":"m","max_model_len":32768}`, modelCapacity{ContextWindow: 32768}},
++		{"nested only", `{"id":"m","top_provider":{"context_length":65536}}`, modelCapacity{ContextWindow: 65536}},
++		{"top level wins", `{"id":"m","context_length":8192,"top_provider":{"context_length":65536}}`,
++			modelCapacity{ContextWindow: 8192}},
++		{"output only", `{"id":"m","max_output_tokens":4096}`, modelCapacity{MaxOutputTokens: 4096}},
++		{"silent", `{"id":"m"}`, modelCapacity{}},
++		// "0" and "-1" are how some listings spell "not applicable". Adopting
++		// either would disable compaction or claim a ceiling nobody stated.
++		{"zero", `{"id":"m","context_length":0}`, modelCapacity{}},
++		{"negative", `{"id":"m","context_length":-1}`, modelCapacity{}},
++		{"wrong type", `{"id":"m","context_length":"1048576"}`, modelCapacity{}},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			var entry map[string]json.RawMessage
++			if err := json.Unmarshal([]byte(tc.row), &entry); err != nil {
++				t.Fatal(err)
++			}
++			if got := parseModelCapacity(entry); got != tc.want {
++				t.Fatalf("capacity = %+v, want %+v", got, tc.want)
++			}
++		})
++	}
++}
++
++// A window belongs to the model, so the metadata and the capacity travel
++// independently: either can be present without the other.
++func TestParseModelTupleKeepsMetadataAndCapacitySeparate(t *testing.T) {
++	info, capacity := parseModelTuple("https://relay.example.com/v1",
++		[]byte(`{"id":"m","context_length":1000,"input_modalities":["text"]}`))
++	if info.ID != "m" || len(info.InputModalities) != 1 {
++		t.Fatalf("info = %+v", info)
++	}
++	if capacity.ContextWindow != 1000 {
++		t.Fatalf("capacity = %+v", capacity)
++	}
++
++	info, capacity = parseModelTuple("https://relay.example.com/v1", []byte(`{"id":"m"}`))
++	if info.ID != "m" || info.InputModalities != nil {
++		t.Fatalf("info = %+v", info)
++	}
++	if capacity != (modelCapacity{}) {
++		t.Fatalf("capacity = %+v, want none", capacity)
++	}
++}
++
++// A listing that repeats an id is usually two routes onto the same model with
++// different headroom. Overstating the window makes the provider refuse a
++// request, understating it only compacts earlier, so the smaller one wins.
++func TestMergeModelCapacityPrefersTheSmallerBound(t *testing.T) {
++	merged := mergeModelCapacity(
++		modelCapacity{ContextWindow: 200_000, MaxOutputTokens: 8_000},
++		modelCapacity{ContextWindow: 128_000, MaxOutputTokens: 16_000},
++	)
++	if merged.ContextWindow != 128_000 || merged.MaxOutputTokens != 8_000 {
++		t.Fatalf("merged = %+v", merged)
++	}
++	if merged := mergeModelCapacity(modelCapacity{}, modelCapacity{}); merged.ContextWindow != 0 || merged.MaxOutputTokens != 0 {
++		t.Fatalf("merging two silent rows invented %+v", merged)
++	}
++}
+diff --git a/internal/provider/openai/fetch_models.go b/internal/provider/openai/fetch_models.go
+index abc9848f6551da68b3f7bce194832e5c0c18050d..dc07ed4d45f32a824e7e83b6c82dc2292e7fd2a4 100644
+--- a/internal/provider/openai/fetch_models.go
++++ b/internal/provider/openai/fetch_models.go
+@@ -134,7 +134,8 @@ func FetchModelCatalogWithOptions(ctx context.Context, baseURL, apiKey string, o
+ 	modelsByID := make(map[string]provider.ModelInfo, len(result.Data))
+ 	conflicts := make(map[string]bool)
+ 	for _, raw := range result.Data {
+-		model := parseModelInfo(baseURL, raw)
++		info, capacity := parseModelTuple(baseURL, raw)
++		model := info
+ 		if model.ID == "" {
+ 			continue
+ 		}
+@@ -150,7 +151,13 @@ func FetchModelCatalogWithOptions(ctx context.Context, baseURL, apiKey string, o
+ 				conflicts[model.ID] = true
+ 				model.InputModalities = nil
+ 			}
++			capacity = mergeModelCapacity(modelCapacity{
++				ContextWindow:   previous.ContextWindow,
++				MaxOutputTokens: previous.MaxOutputTokens,
++			}, capacity)
+ 		}
++		model.ContextWindow = capacity.ContextWindow
++		model.MaxOutputTokens = capacity.MaxOutputTokens
+ 		modelsByID[model.ID] = model
+ 	}
+ 	models := make([]provider.ModelInfo, 0, len(modelsByID))
+@@ -166,18 +173,27 @@ func sameModalities(a, b []provider.ModelModality) bool {
+ }
+ 
+ func parseModelInfo(baseURL string, raw json.RawMessage) provider.ModelInfo {
++	info, _ := parseModelTuple(baseURL, raw)
++	return info
++}
++
++// parseModelTuple is parseModelInfo keeping the capacity a row declares
++// alongside the metadata it states. Both are optional and independently
++// absent, so they travel separately: a listing may name modalities without a
++// window, or a window without modalities.
++func parseModelTuple(baseURL string, raw json.RawMessage) (provider.ModelInfo, modelCapacity) {
+ 	var entry map[string]json.RawMessage
+ 	if json.Unmarshal(raw, &entry) != nil {
+-		return provider.ModelInfo{}
++		return provider.ModelInfo{}, modelCapacity{}
+ 	}
+ 	var rawID string
+ 	_ = json.Unmarshal(entry["id"], &rawID)
+ 	id := normalizeModelID(baseURL, rawID)
+ 	if id == "" {
+-		return provider.ModelInfo{}
++		return provider.ModelInfo{}, modelCapacity{}
+ 	}
+ 	modalities, _ := parseModalities(entry)
+-	return provider.ModelInfo{ID: id, InputModalities: modalities}
++	return provider.ModelInfo{ID: id, InputModalities: modalities}, parseModelCapacity(entry)
+ }
+ 
+ func parseModalities(entry map[string]json.RawMessage) ([]provider.ModelModality, bool) {
+diff --git a/internal/provider/openai/live_capacity_probe_test.go b/internal/provider/openai/live_capacity_probe_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..2b9ec2b1ee24517373f4082b9f5a62f23f93d207
+--- /dev/null
++++ b/internal/provider/openai/live_capacity_probe_test.go
+@@ -0,0 +1,45 @@
++package openai
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++)
++
++// The listing this reads is the shape OpenRouter actually serves: a top-level
++// context_length and a top_provider block with the completion ceiling. The
++// fixture is inline so the test states exactly which fields it depends on.
++func TestFetchModelCatalogKeepsAnOpenRouterShapedWindow(t *testing.T) {
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.URL.Path != "/models" {
++			http.NotFound(w, r)
++			return
++		}
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = w.Write([]byte(`{"data":[
++			{"id":"particle-ai/particle-1","context_length":1048576,"top_provider":{"context_length":1048576,"max_completion_tokens":131072}},
++			{"id":"silent-model"},
++			{"id":"vllm-model","max_model_len":32768}
++		]}`))
++	}))
++	defer srv.Close()
++
++	catalog, err := FetchModelCatalogWithOptions(context.Background(), srv.URL, "", FetchModelsOptions{})
++	if err != nil {
++		t.Fatal(err)
++	}
++	byID := map[string]struct{ window, output int }{}
++	for _, info := range catalog {
++		byID[info.ID] = struct{ window, output int }{info.ContextWindow, info.MaxOutputTokens}
++	}
++	if got := byID["particle-ai/particle-1"]; got.window != 1048576 || got.output != 131072 {
++		t.Fatalf("openrouter row = %+v", got)
++	}
++	if got := byID["vllm-model"]; got.window != 32768 {
++		t.Fatalf("vllm row = %+v", got)
++	}
++	if got := byID["silent-model"]; got.window != 0 || got.output != 0 {
++		t.Fatalf("silent row gained a capacity it never declared: %+v", got)
++	}
++}
 diff --git a/internal/repair/process_other.go b/internal/repair/process_other.go
 index e99c554f72f557b6eb6aeed4313ab08ab47f96e4..9e74e4d01974134ec7cbc7d3a5da7830ccaadf9b 100644
 --- a/internal/repair/process_other.go
@@ -2451,6 +4561,22 @@ index 742d32926b186c31ed332c1a8b7fbe3c10fa17a6..425130d8d2633378a06b5d7690519bed
  		}
  	}
  	return ""
+diff --git a/reasonix.example.toml b/reasonix.example.toml
+index 71f12f4617ae408ea144d02d4dc7dbe9fed633d4..f537fdc0d91a7a5554c254ccaf6a0596de84cc0f 100644
+--- a/reasonix.example.toml
++++ b/reasonix.example.toml
+@@ -75,6 +75,11 @@ context_window = 1000000
+ # Optional per-model budgets. Omitted models inherit context_window and
+ # max_output_tokens from the provider above.
+ # model_overrides = { "deepseek-v4-flash" = { context_window = 1000000, max_output_tokens = 32768 } }
++# A provider with no context_window at all is not left without compaction: the
++# model's own published window is used when one is known, and a conservative
++# fallback (128000) applies otherwise. `reasonix setup` → provider → "Edit
++# per-model context windows" sets these without editing this file, and fills in
++# whatever the endpoint's own /models listing declares.
+ # Official list prices are frozen per provider (billing_currency). Display
+ # currency ([billing].display_currency) never rewrites these tables.
+ # billing_currency = "USD"   # frozen list-price currency: CNY|USD
 diff --git a/scripts/merge-makefile-conflict.py b/scripts/merge-makefile-conflict.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..401dddf98e69b7757d3c51c3174f50fd7c0f2ac9
