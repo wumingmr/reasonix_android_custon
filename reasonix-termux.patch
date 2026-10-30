@@ -48,10 +48,19 @@ index e25ef2dfd4c2bbc77486c86296e357fb2147f9c8..6d73bb1ebecc1c85caf4f6f5e17d23b0
  	go vet ./...
  
 diff --git a/README.md b/README.md
-index dd716e7b0733b560d576f02ef0ed9cdf84234a08..7153046fcf0c26322e139f48e9a6229c3d974779 100644
+index dd716e7b0733b560d576f02ef0ed9cdf84234a08..a9f4bc465336f57d7b644190f354af24bd33c34c 100644
 --- a/README.md
 +++ b/README.md
-@@ -89,6 +89,12 @@ brew install esengine/reasonix/reasonix   # macOS
+@@ -7,6 +7,8 @@
+   &nbsp;·&nbsp;
+   <a href="./README.zh-CN.md">简体中文</a>
+   &nbsp;·&nbsp;
++  <strong><a href="./docs/TERMUX.zh-CN.md">Termux / Android</a></strong>
++  &nbsp;·&nbsp;
+   <a href="./docs/GUIDE.md">Guide</a>
+   &nbsp;·&nbsp;
+   <a href="./docs/ACP.md">ACP</a>
+@@ -89,6 +91,12 @@ brew install esengine/reasonix/reasonix   # macOS
  Prebuilt archives (`darwin|linux|windows × amd64|arm64`) and `SHA256SUMS` are on
  every [GitHub release](https://github.com/esengine/DeepSeek-Reasonix/releases).
  
@@ -65,10 +74,19 @@ index dd716e7b0733b560d576f02ef0ed9cdf84234a08..7153046fcf0c26322e139f48e9a6229c
  
  Use the [official download page](https://reasonix.io/?download=desktop#start)
 diff --git a/README.zh-CN.md b/README.zh-CN.md
-index cbad5cf5d84d8787ab1e5209aa56b6d4a3003940..e0ae1f4006c4a4e4a68b6091fd504157fc851854 100644
+index cbad5cf5d84d8787ab1e5209aa56b6d4a3003940..10bdb4f498e673b8ec42455f49b479cf7b487a4a 100644
 --- a/README.zh-CN.md
 +++ b/README.zh-CN.md
-@@ -82,6 +82,13 @@ brew install esengine/reasonix/reasonix   # macOS
+@@ -7,6 +7,8 @@
+   &nbsp;·&nbsp;
+   <strong>简体中文</strong>
+   &nbsp;·&nbsp;
++  <strong><a href="./docs/TERMUX.zh-CN.md">Termux / Android</a></strong>
++  &nbsp;·&nbsp;
+   <a href="./docs/GUIDE.zh-CN.md">指南</a>
+   &nbsp;·&nbsp;
+   <a href="./docs/ACP.zh-CN.md">ACP</a>
+@@ -82,6 +84,13 @@ brew install esengine/reasonix/reasonix   # macOS
  预编译归档(`darwin|linux|windows × amd64|arm64`)和 `SHA256SUMS` 见每个
  [GitHub release](https://github.com/esengine/DeepSeek-Reasonix/releases)。
  
