@@ -94,6 +94,11 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			b.WriteString("# show_reasoning = true   # CLI: show thinking text by default; false = collapsed (toggle with Ctrl+O)\n")
 		}
 		fmt.Fprintf(&b, "show_turn_usage = %v   # CLI/TUI: show per-request token and cost receipts in the transcript\n", c.UI.ShowTurnUsage)
+		if limit := c.UI.ResumeListLimit; limit != 0 {
+			fmt.Fprintf(&b, "resume_list_limit = %d   # resume picker offers this many conversations; negative means no cap; 0/absent keeps the built-in default\n", limit)
+		} else {
+			b.WriteString("# resume_list_limit = 10   # resume picker offers this many conversations; negative means no cap; 0/absent keeps the built-in default\n")
+		}
 		b.WriteString("\n")
 	}
 
@@ -848,6 +853,9 @@ func RenderTOMLProjectDelta(c *Config) string {
 		}
 		if c.UI.ShowTurnUsage != d.UI.ShowTurnUsage {
 			fmt.Fprintf(&b, "show_turn_usage = %v\n", c.UI.ShowTurnUsage)
+		}
+		if c.UI.ResumeListLimit != d.UI.ResumeListLimit {
+			fmt.Fprintf(&b, "resume_list_limit = %d\n", c.UI.ResumeListLimit)
 		}
 		b.WriteString("\n")
 	}

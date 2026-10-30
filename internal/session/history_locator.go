@@ -532,11 +532,11 @@ func (q *Query) HistoryTail(ctx context.Context, ref SessionRef, maxMessages int
 	if total == 0 {
 		return []provider.Message{}, nil
 	}
-	boundary := int64(0)
-	if total > int64(maxMessages) {
-		boundary = total - int64(maxMessages)
-	}
-	rows, err := handle.DB.QueryContext(ctx, `SELECT inline,content_digest,content_bytes,content_index_digest FROM messages WHERE position>? AND event_sequence<=? AND (valid_to=0 OR valid_to>?) ORDER BY position`, boundary, snapshot, snapshot)
+	// Select the tail by ORDER BY position DESC + LIMIT rather than deriving a
+	// boundary from COUNT(*): position is assigned from a running counter that a
+	// retract-then-reinsert can leave non-contiguous, so count arithmetic could
+	// silently return fewer (or older) rows than asked for.
+	rows, err := handle.DB.QueryContext(ctx, `SELECT inline,content_digest,content_bytes,content_index_digest FROM messages WHERE event_sequence<=? AND (valid_to=0 OR valid_to>?) ORDER BY position DESC LIMIT ?`, snapshot, snapshot, maxMessages)
 	if err != nil {
 		return nil, err
 	}
@@ -566,6 +566,9 @@ func (q *Query) HistoryTail(ctx context.Context, ref SessionRef, maxMessages int
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	// Rows arrived newest-first; History and the TUI replay both expect the
+	// oldest-first order a session projection produces.
+	slices.Reverse(messages)
 	return messages, nil
 }
 

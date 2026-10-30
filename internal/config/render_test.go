@@ -1501,3 +1501,53 @@ func TestRenderTOMLPersistsSecretsSection(t *testing.T) {
 		t.Fatalf("user-scope render still exposes removed live-redaction setting:\n%s", out)
 	}
 }
+
+func TestResumeListLimitSurvivesConfigRender(t *testing.T) {
+	c := Default()
+	c.UI.ResumeListLimit = -1
+
+	out := RenderTOML(c)
+	if !strings.Contains(out, "resume_list_limit = -1") {
+		t.Fatalf("user-scope render dropped ui.resume_list_limit:\n%s", out)
+	}
+
+	got := Default()
+	if _, err := toml.Decode(out, got); err != nil {
+		t.Fatalf("decode rendered config: %v\n%s", err, out)
+	}
+	if got.UI.ResumeListLimit != -1 {
+		t.Fatalf("ui.resume_list_limit = %d after round-trip, want -1", got.UI.ResumeListLimit)
+	}
+
+	// A project delta must carry the override too, otherwise a project-scoped
+	// save would silently restore the built-in cap.
+	delta := RenderTOMLProjectDelta(c)
+	if !strings.Contains(delta, "resume_list_limit = -1") {
+		t.Fatalf("project delta dropped ui.resume_list_limit:\n%s", delta)
+	}
+
+	fromDelta := Default()
+	if _, err := toml.Decode(delta, fromDelta); err != nil {
+		t.Fatalf("decode project delta: %v\n%s", err, delta)
+	}
+	if fromDelta.UI.ResumeListLimit != -1 {
+		t.Fatalf("ui.resume_list_limit = %d after project-delta round-trip, want -1", fromDelta.UI.ResumeListLimit)
+	}
+}
+
+func TestResumeListLimitUnsetRendersCommentedHint(t *testing.T) {
+	out := RenderTOML(Default())
+	if strings.Contains(out, "\nresume_list_limit = ") {
+		t.Fatalf("unset ui.resume_list_limit rendered as an active value:\n%s", out)
+	}
+	if !strings.Contains(out, "# resume_list_limit = 10") {
+		t.Fatalf("unset ui.resume_list_limit lost its commented hint:\n%s", out)
+	}
+	got := Default()
+	if _, err := toml.Decode(out, got); err != nil {
+		t.Fatalf("decode default render: %v\n%s", err, out)
+	}
+	if got.UI.ResumeListLimit != 0 {
+		t.Fatalf("default render produced ui.resume_list_limit = %d, want 0 (absent)", got.UI.ResumeListLimit)
+	}
+}

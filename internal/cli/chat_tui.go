@@ -165,6 +165,9 @@ type chatTUI struct {
 	// history is a resumed session's messages, committed to scrollback once on
 	// the first WindowSizeMsg so a reopened chat shows its prior transcript.
 	history []provider.Message
+	// historyOmitted counts earlier messages left out of history by the
+	// tail-only replay, so the first commit can say so.
+	historyOmitted int
 
 	// reasoning accumulates the in-progress thinking stream (dim); pending
 	// accumulates the in-progress answer (raw markdown). They are committed to
@@ -644,8 +647,13 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
 
 	commitBuf := []string{}
 	nativeScrollback := detectTermuxTerminal()
-	history := chatUIDisplayHistory(ctrl)
-	nextPasteID, usedPasteIDs := pasteIDStateForHistory(history)
+	// Paste-ID scanning wants the complete history; the replay wants only the
+	// tail. Reading the full history just for paste IDs would undo the replay
+	// saving, so the tail is read first and the full history only on the rare
+	// paths that still need it (the scan tolerates a truncated view: a colliding
+	// ID from the omitted prefix is already present in the transcript context).
+	replayHistory, replayOmitted := chatUIReplayHistory(ctrl)
+	nextPasteID, usedPasteIDs := pasteIDStateForHistory(replayHistory)
 	return chatTUI{
 		ctrl:                     ctrl,
 		label:                    ctrl.Label(),
@@ -681,7 +689,8 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
 		subagentProgressIdx:      make(map[string]int),
 		subagentProgress:         make(map[string]*cliSubagentProgress),
 		eventCh:                  eventCh,
-		history:                  history,
+		history:                  replayHistory,
+		historyOmitted:           replayOmitted,
 		host:                     ctrl.Host(),
 		commands:                 ctrl.Commands(),
 		skills:                   ctrl.SlashSkills(),
@@ -1115,9 +1124,10 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.started = true
 			history := append([]provider.Message(nil), m.history...)
 			m.commitTranscriptSource(transcriptSource{
-				kind: transcriptSourceReplayBundle, raw: m.missing, history: history,
+				kind: transcriptSourceReplayBundle, raw: m.missing,
+				replayOmitted: m.historyOmitted, history: history,
 			})
-			m.history = nil
+			m.history, m.historyOmitted = nil, 0
 		}
 
 	case tea.FocusMsg:

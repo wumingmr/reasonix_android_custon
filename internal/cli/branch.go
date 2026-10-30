@@ -135,17 +135,13 @@ func (m *chatTUI) runSwitchCommand(input string) {
 // session service's display projection instead, the same view the desktop
 // renders through the transcript snapshot protocol.
 //
-// The interactive replay only renders the recent tail (cliReplayTailMessages),
-// so exclusive sessions read that tail through the locator index
-// (Query.HistoryTail) instead of replaying the entire event log. A failed or
-// not-yet-built index falls back to the full-history path unchanged.
+// This is the complete history: /copy, /export and the paste-ID scan all
+// depend on it. The replay path wants only a bounded tail and must call
+// chatUIReplayHistory instead.
 func chatUIDisplayHistory(ctrl control.SessionAPI) []provider.Message {
 	if identity, ok := ctrl.(control.IdentityLifecycle); ok && identity.UsesExclusiveSession() {
 		if service := identity.SessionService(); service != nil {
 			if ref, bound := identity.SessionRef(); bound {
-				if messages, err := service.Query().HistoryTail(context.Background(), ref, cliReplayTailMessages); err == nil {
-					return messages
-				}
 				if messages, err := service.Query().History(context.Background(), ref); err == nil {
 					return messages
 				}
@@ -153,6 +149,55 @@ func chatUIDisplayHistory(ctrl control.SessionAPI) []provider.Message {
 		}
 	}
 	return ctrl.History()
+}
+
+// chatUIReplayHistory returns the history a resumed session replays into the
+// transcript, plus how many earlier messages were left out. Rendering cost
+// grows with history length (goldmark + per-message wrapping) while only the
+// recent tail is useful on screen, so an exclusive session reads that tail
+// straight from the locator index (Query.HistoryTail) instead of replaying the
+// whole event log. A failed or not-yet-built index falls back to the
+// full-history path and truncates in memory instead.
+func chatUIReplayHistory(ctrl control.SessionAPI) ([]provider.Message, int) {
+	return clipReplayHistory(chatUIReplayHistoryTail(ctrl))
+}
+
+// clipReplayHistory bounds history to the replay tail. The truncation boundary
+// is kept at a user turn when possible so a replay never opens mid-turn; the
+// second result is how many earlier messages were omitted.
+//
+// A history with no user turn at all (assistant-only recovery records) must not
+// collapse to a single message, so the preference only applies when a user turn
+// actually exists at or below the nominal boundary.
+func clipReplayHistory(history []provider.Message) ([]provider.Message, int) {
+	if len(history) <= cliReplayTailMessages {
+		return history, 0
+	}
+	cut := cliReplayTailMessages
+	for cut > 1 && !agent.IsUserAuthoredTurnMessage(history[len(history)-cut]) {
+		cut--
+	}
+	if cut == 1 && !agent.IsUserAuthoredTurnMessage(history[len(history)-1]) {
+		// No user turn anywhere in the window: keep the full tail rather than
+		// truncating to one message.
+		cut = cliReplayTailMessages
+	}
+	return history[len(history)-cut:], len(history) - cut
+}
+
+// chatUIReplayHistoryTail prefers the index-backed tail for exclusive sessions
+// and otherwise returns whatever the full-history path produced.
+func chatUIReplayHistoryTail(ctrl control.SessionAPI) []provider.Message {
+	if identity, ok := ctrl.(control.IdentityLifecycle); ok && identity.UsesExclusiveSession() {
+		if service := identity.SessionService(); service != nil {
+			if ref, bound := identity.SessionRef(); bound {
+				if messages, err := service.Query().HistoryTail(context.Background(), ref, cliReplayTailMessages); err == nil {
+					return messages
+				}
+			}
+		}
+	}
+	return chatUIDisplayHistory(ctrl)
 }
 
 func (m *chatTUI) replayActiveBranch(title string) {
@@ -182,21 +227,7 @@ func (m *chatTUI) replayActiveBranch(title string) {
 	if title != "" {
 		m.commitLine(dim("  -- " + title + " --"))
 	}
-	history := chatUIDisplayHistory(m.ctrl)
-	omitted := 0
-	if len(history) > cliReplayTailMessages {
-		// Render only the recent tail. Rendering is quadratic in practice
-		// (goldmark + wrap over every message); the omitted prefix stays in
-		// the session context and /copy //export still see the full history.
-		omitted = len(history) - cliReplayTailMessages
-		// Keep the truncation boundary at a user turn when possible so the
-		// replay never opens mid-turn.
-		cut := cliReplayTailMessages
-		for cut > 1 && !agent.IsUserAuthoredTurnMessage(history[len(history)-cut]) {
-			cut--
-		}
-		history = history[len(history)-cut:]
-	}
+	history, omitted := chatUIReplayHistory(m.ctrl)
 	m.commitTranscriptSource(transcriptSource{
 		kind:          transcriptSourceReplayBundle,
 		replayOmitted: omitted,
