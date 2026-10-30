@@ -48,7 +48,7 @@ index e25ef2dfd4c2bbc77486c86296e357fb2147f9c8..6d73bb1ebecc1c85caf4f6f5e17d23b0
  	go vet ./...
  
 diff --git a/README.md b/README.md
-index dd716e7b0733b560d576f02ef0ed9cdf84234a08..a9f4bc465336f57d7b644190f354af24bd33c34c 100644
+index dd716e7b0733b560d576f02ef0ed9cdf84234a08..64c49d5761eb5a8dc7bfb0d70cc3c2f668484413 100644
 --- a/README.md
 +++ b/README.md
 @@ -7,6 +7,8 @@
@@ -60,7 +60,7 @@ index dd716e7b0733b560d576f02ef0ed9cdf84234a08..a9f4bc465336f57d7b644190f354af24
    <a href="./docs/GUIDE.md">Guide</a>
    &nbsp;·&nbsp;
    <a href="./docs/ACP.md">ACP</a>
-@@ -89,6 +91,12 @@ brew install esengine/reasonix/reasonix   # macOS
+@@ -89,6 +91,13 @@ brew install esengine/reasonix/reasonix   # macOS
  Prebuilt archives (`darwin|linux|windows × amd64|arm64`) and `SHA256SUMS` are on
  every [GitHub release](https://github.com/esengine/DeepSeek-Reasonix/releases).
  
@@ -68,13 +68,14 @@ index dd716e7b0733b560d576f02ef0ed9cdf84234a08..a9f4bc465336f57d7b644190f354af24
 +> **Termux / Android arm64:** use this fork's
 +> [releases](https://github.com/wumingmr/reasonix_android_custon/releases) and read
 +> the [Termux sandbox and wrapper guide](docs/TERMUX.zh-CN.md). Android currently
-+> lacks a usable bubblewrap backend, so restricted shell modes fail closed.
++> lacks a usable bubblewrap backend, so restricted shell modes fail closed; the
++> guide includes a one-command wrapper installer that does not require a clone.
 +
  ### Path B: Desktop app
  
  Use the [official download page](https://reasonix.io/?download=desktop#start)
 diff --git a/README.zh-CN.md b/README.zh-CN.md
-index cbad5cf5d84d8787ab1e5209aa56b6d4a3003940..10bdb4f498e673b8ec42455f49b479cf7b487a4a 100644
+index cbad5cf5d84d8787ab1e5209aa56b6d4a3003940..93934adf27c431452376b12a164985e5547d7101 100644
 --- a/README.zh-CN.md
 +++ b/README.zh-CN.md
 @@ -7,6 +7,8 @@
@@ -95,7 +96,7 @@ index cbad5cf5d84d8787ab1e5209aa56b6d4a3003940..10bdb4f498e673b8ec42455f49b479cf
 +> [Release](https://github.com/wumingmr/reasonix_android_custon/releases)，并先阅读
 +> [Termux 安装与沙箱限制说明](docs/TERMUX.zh-CN.md)。Android 当前没有可用的
 +> bubblewrap backend，默认 `workspace-write` 下 shell 会失败关闭；文档提供显式
-+> `danger-full-access` 用法及可选的 `reasonix` / `reasonix-raw` wrapper 模板。
++> `danger-full-access` 用法及无需 clone 仓库的一键 wrapper 安装器。
 +
  ### 路径 B：桌面端
  
@@ -119,10 +120,10 @@ index b653e8fae3caaf6c75e51b17f29843661a7a84a1..529cde815beb070f326093c43a53c5da
  // fakeAgent stands in for the reasonix binary: it records every invocation's
 diff --git a/docs/TERMUX.zh-CN.md b/docs/TERMUX.zh-CN.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..d8e841bb68837b19ff2faa021bffc82519c507a3
+index 0000000000000000000000000000000000000000..37768e40b55c890923ad7a8378214e904bbfc2f2
 --- /dev/null
 +++ b/docs/TERMUX.zh-CN.md
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,188 @@
 +# Reasonix Termux / Android 使用说明
 +
 +本文对应 [`reasonix_android_custon`](https://github.com/wumingmr/reasonix_android_custon)
@@ -208,22 +209,22 @@ index 0000000000000000000000000000000000000000..d8e841bb68837b19ff2faa021bffc825
 +> 所有内容。如果 Termux 环境里还可调用 `su`，风险范围会进一步扩大。只应对自己
 +> 信任的仓库、提示词和任务启用，不要把它当作普通桌面 Linux 的安全等价物。
 +
-+## 可选 wrapper
++## 可选 wrapper（一键安装）
 +
-+仓库提供两个模板：
++不需要 clone 仓库，也不需要知道 `scripts/termux/...` 在哪里。安装器会从 GitHub
++下载两个 wrapper 模板，并检查文件标记与 shell 语法：
 +
-+- `scripts/termux/reasonix-wrapper`：普通会话默认注入
-+  `--permission-mode danger-full-access`；显式传入 permission mode 时尊重用户选择。
-+- `scripts/termux/reasonix-raw`：直连真实二进制，不注入任何权限参数。
++- `reasonix-full`：普通会话默认注入 `--permission-mode danger-full-access`；显式
++  传入 permission mode 时尊重用户选择。
++- `reasonix-raw`：直连真实二进制，不注入任何权限参数。
 +
 +### 方案 A：保留显式命令（推荐）
 +
-+保留 `$PREFIX/bin/reasonix` 作为原始命令，把 wrapper 安装成 `reasonix-full`：
++默认安装不会覆盖 `reasonix`，而是在 Termux 自带 PATH 的 `$PREFIX/bin` 中新增
++`reasonix-full` 和 `reasonix-raw`：
 +
 +```sh
-+mkdir -p ~/bin
-+install -m 755 scripts/termux/reasonix-wrapper ~/bin/reasonix-full
-+install -m 755 scripts/termux/reasonix-raw ~/bin/reasonix-raw
++curl -fsSL https://raw.githubusercontent.com/wumingmr/reasonix_android_custon/master/scripts/termux/install-wrapper.sh | bash
 +
 +reasonix-full             # 默认 danger-full-access
 +reasonix-raw --version    # 原始二进制
@@ -233,30 +234,32 @@ index 0000000000000000000000000000000000000000..d8e841bb68837b19ff2faa021bffc825
 +
 +### 方案 B：让 `reasonix` 默认可用 shell
 +
-+如果这是个人设备且你明确接受上述风险，可以让 `~/bin/reasonix` 覆盖 PATH 中的真实
-+二进制名称：
++如果这是个人设备且你明确接受上述风险，可以一键安装 `~/bin/reasonix`。安装器会
++自动处理 PATH；若同名文件不是本安装器管理的 wrapper，会先备份而不是覆盖丢失：
 +
 +```sh
-+mkdir -p ~/bin
-+install -m 755 scripts/termux/reasonix-wrapper ~/bin/reasonix
-+install -m 755 scripts/termux/reasonix-raw ~/bin/reasonix-raw
-+
-+# 确保 ~/bin 排在 $PREFIX/bin 前；zsh 用户可写入 ~/.zshrc
-+export PATH="$HOME/bin:$PATH"
-+hash -r
-+
-+type -a reasonix
++curl -fsSL https://raw.githubusercontent.com/wumingmr/reasonix_android_custon/master/scripts/termux/install-wrapper.sh | bash -s -- --default-full
 +```
 +
-+正常结果应该先列出 wrapper，再列出真实二进制：
++重新打开终端后，正常结果应该先列出 wrapper，再列出真实二进制：
++
++```sh
++type -a reasonix
++```
 +
 +```text
 +reasonix is /data/data/com.termux/files/home/bin/reasonix
 +reasonix is /data/data/com.termux/files/usr/bin/reasonix
 +```
 +
-+wrapper 会直接放行 `--version`、`-v`、`--help`、`-h` 和配置/升级等非会话子命令，
-+避免向不接受该参数的命令注入 `--permission-mode`。
++wrapper 会直接放行 `--version`、`-v`、`--help`、`-h`、`--auto/-y` 和配置/升级等
++非普通会话参数，避免向不接受或会冲突的命令注入 `--permission-mode`。
++
++卸载只删除安装器自己管理的 wrapper，不会删除 `$PREFIX/bin/reasonix` 真二进制：
++
++```sh
++curl -fsSL https://raw.githubusercontent.com/wumingmr/reasonix_android_custon/master/scripts/termux/install-wrapper.sh | bash -s -- --uninstall
++```
 +
 +## 临时退出 full access
 +
@@ -298,7 +301,7 @@ index 0000000000000000000000000000000000000000..d8e841bb68837b19ff2faa021bffc825
 +```
 +
 +如果 `reasonix --version` 报 `unknown flag: --version`，说明使用的是早期 wrapper；
-+请用仓库当前的 `scripts/termux/reasonix-wrapper` 覆盖它。早期版本在 `--version`
++重新运行上面带 `--default-full` 的一键安装命令即可安全更新。早期版本在 `--version`
 +之前错误注入了 `--permission-mode`。
 +
 +## 升级后的关系
@@ -2527,6 +2530,177 @@ index 0000000000000000000000000000000000000000..401dddf98e69b7757d3c51c3174f50fd
 +
 +if __name__ == '__main__':
 +    main()
+diff --git a/scripts/termux/install-wrapper.sh b/scripts/termux/install-wrapper.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..93e5661aebfdc92675c1f00ae413875f788db44d
+--- /dev/null
++++ b/scripts/termux/install-wrapper.sh
+@@ -0,0 +1,165 @@
++#!/data/data/com.termux/files/usr/bin/bash
++# One-command installer for the Reasonix Termux permission wrappers.
++#
++# Default (safer): install reasonix-full + reasonix-raw beside the real binary.
++#   curl -fsSL https://raw.githubusercontent.com/wumingmr/reasonix_android_custon/master/scripts/termux/install-wrapper.sh | bash
++#
++# Make `reasonix` itself default to Full access:
++#   curl -fsSL URL | bash -s -- --default-full
++#
++# Remove only files managed by this installer:
++#   curl -fsSL URL | bash -s -- --uninstall
++set -euo pipefail
++
++REPO="${REASONIX_WRAPPER_REPO:-wumingmr/reasonix_android_custon}"
++REF="${REASONIX_WRAPPER_REF:-master}"
++BASE_URL="${REASONIX_WRAPPER_BASE_URL:-https://raw.githubusercontent.com/$REPO/$REF/scripts/termux}"
++PREFIX_DIR="${PREFIX:-/data/data/com.termux/files/usr}"
++REAL="$PREFIX_DIR/bin/reasonix"
++HELPER_DIR="$PREFIX_DIR/bin"
++HOME_BIN="$HOME/bin"
++MODE="safe"
++
++log() { printf '[reasonix-wrapper] %s\n' "$*"; }
++die() { printf '[reasonix-wrapper] 错误: %s\n' "$*" >&2; exit 1; }
++usage() {
++  cat <<'EOF'
++用法: install-wrapper.sh [--default-full|--uninstall]
++
++  无参数          安装 reasonix-full 和 reasonix-raw（不覆盖 reasonix）
++  --default-full  另装 ~/bin/reasonix，使 reasonix 默认 danger-full-access
++  --uninstall     仅删除本安装器管理的 wrapper，不删除真实二进制
++EOF
++}
++
++while [ $# -gt 0 ]; do
++  case "$1" in
++    --default-full) MODE="default-full" ;;
++    --uninstall) MODE="uninstall" ;;
++    -h|--help) usage; exit 0 ;;
++    *) usage >&2; die "未知参数: $1" ;;
++  esac
++  shift
++done
++
++is_managed() {
++  local path="$1"
++  [ -f "$path" ] || return 1
++  grep -qE '^(# Termux wrapper: interactive/run commands default to danger-full-access\.|# Invoke the real Termux Reasonix binary without injecting a permission mode\.)$' "$path"
++}
++
++remove_managed() {
++  local path="$1"
++  if is_managed "$path"; then
++    rm -f "$path"
++    log "已删除 $path"
++  elif [ -e "$path" ]; then
++    log "保留非本安装器管理的文件: $path"
++  fi
++}
++
++if [ "$MODE" = "uninstall" ]; then
++  remove_managed "$HELPER_DIR/reasonix-full"
++  remove_managed "$HELPER_DIR/reasonix-raw"
++  remove_managed "$HOME_BIN/reasonix"
++  log "卸载完成；真实二进制 $REAL 未改动"
++  exit 0
++fi
++
++[ -x "$REAL" ] || die "真实二进制不存在或不可执行: $REAL。请先安装 Reasonix Android 二进制。"
++command -v curl >/dev/null 2>&1 || die "需要 curl；请先运行: pkg install curl"
++
++TMP_ROOT="${REASONIX_TMPDIR:-$HOME/tmp}"
++mkdir -p "$TMP_ROOT"
++WORK="$(mktemp -d "$TMP_ROOT/reasonix-wrapper-XXXXXX")"
++cleanup() { rm -rf "$WORK"; }
++trap cleanup EXIT
++
++fetch() {
++  local name="$1" out="$2"
++  curl -fsSL --retry 3 --connect-timeout 15 "$BASE_URL/$name" -o "$out" || \
++    die "下载失败: $BASE_URL/$name"
++}
++
++fetch reasonix-wrapper "$WORK/reasonix-wrapper"
++fetch reasonix-raw "$WORK/reasonix-raw"
++
++grep -q '^# Termux wrapper: interactive/run commands default to danger-full-access\.$' "$WORK/reasonix-wrapper" || \
++  die "下载的 reasonix-wrapper 格式异常"
++grep -q '^# Invoke the real Termux Reasonix binary without injecting a permission mode\.$' "$WORK/reasonix-raw" || \
++  die "下载的 reasonix-raw 格式异常"
++bash -n "$WORK/reasonix-wrapper"
++bash -n "$WORK/reasonix-raw"
++
++backup_unmanaged() {
++  local path="$1" backup stamp n
++  [ -e "$path" ] || return 0
++  is_managed "$path" && return 0
++  stamp="$(date +%Y%m%d-%H%M%S)"
++  backup="$path.backup-$stamp"
++  n=1
++  while [ -e "$backup" ]; do
++    backup="$path.backup-$stamp-$n"
++    n=$((n + 1))
++  done
++  mv "$path" "$backup"
++  log "原文件不是本安装器管理的 wrapper，已备份到 $backup"
++}
++
++install_atomic() {
++  local source="$1" target="$2" temp
++  mkdir -p "$(dirname "$target")"
++  backup_unmanaged "$target"
++  temp="$(dirname "$target")/.${target##*/}.new.$$"
++  install -m 755 "$source" "$temp"
++  mv -f "$temp" "$target"
++  log "已安装 $target"
++}
++
++# Safe aliases live beside the real binary and are immediately on Termux PATH.
++install_atomic "$WORK/reasonix-wrapper" "$HELPER_DIR/reasonix-full"
++install_atomic "$WORK/reasonix-raw" "$HELPER_DIR/reasonix-raw"
++
++if [ "$MODE" = "default-full" ]; then
++  install_atomic "$WORK/reasonix-wrapper" "$HOME_BIN/reasonix"
++
++  case ":$PATH:" in
++    *":$HOME_BIN:"*) ;;
++    *)
++      shell_name="${SHELL##*/}"
++      case "$shell_name" in
++        zsh) rc="$HOME/.zshrc" ;;
++        bash) rc="$HOME/.bashrc" ;;
++        *) rc="$HOME/.profile" ;;
++      esac
++      marker='# Reasonix Termux wrapper PATH'
++      if ! grep -Fq "$marker" "$rc" 2>/dev/null; then
++        printf '\n%s\nexport PATH="$HOME/bin:$PATH"\n' "$marker" >> "$rc"
++        log "已将 ~/bin PATH 写入 $rc（重新打开终端后生效）"
++      fi
++      ;;
++  esac
++
++  cat <<'EOF'
++
++已启用默认 Full access：新终端中的 `reasonix` 会注入 danger-full-access。
++当前终端若尚未找到 ~/bin/reasonix，请执行：
++  export PATH="$HOME/bin:$PATH"; hash -r
++
++恢复原始权限行为：
++  reasonix-raw ...
++  REASONIX_FULL_ACCESS=0 reasonix ...
++EOF
++else
++  cat <<'EOF'
++
++已完成安全默认安装（没有覆盖 `reasonix`）：
++  reasonix-full ...  # 默认 danger-full-access
++  reasonix-raw ...   # 不注入权限模式
++
++若明确希望 `reasonix` 本身默认 Full access，请重新运行一键命令并加：
++  --default-full
++EOF
++fi
++
++log "警告: danger-full-access 关闭 Reasonix OS 沙箱；只用于可信任务。"
 diff --git a/scripts/termux/reasonix-raw b/scripts/termux/reasonix-raw
 new file mode 100755
 index 0000000000000000000000000000000000000000..76a566e0a72ff16c1632a2352ac5cc76e314e922
