@@ -187,14 +187,25 @@ else
   die "$(rollback_hint)"
 fi
 
-# 8. 恢复未跟踪的本地脚本
+# 8. 上游基线已经变成 $TAG；立即重建累积 patch 并提交。否则仓库里的 patch
+#    仍以旧 tag 为基线，release-termux.sh 的一致性检查会拒绝发版。必须在恢复
+#    用户的未跟踪 scripts 之前运行，否则干净工作区检查会把它们误判成未提交改动。
+[ -x "$SCRIPT_DIR/rebuild-termux-patch.sh" ] || die "缺少可执行的 rebuild-termux-patch.sh"
+"$SCRIPT_DIR/rebuild-termux-patch.sh"
+git add reasonix-termux.patch
+if ! git diff --cached --quiet -- reasonix-termux.patch; then
+  git commit -m "chore(termux): rebuild cumulative patch for $TAG" >/dev/null
+  log "已按 $TAG 重建并提交累积补丁"
+fi
+
+# 9. 恢复未跟踪的本地脚本
 if [ -s "$LOCAL_BACKUP/untracked.tar" ]; then
   log "恢复本地未跟踪文件"
   tar -xf "$LOCAL_BACKUP/untracked.tar" || die "恢复本地脚本失败"
 fi
 rm -rf "$LOCAL_BACKUP"
 
-# 9. 编译验证
+# 10. 编译验证
 #    不传 VERSION:Makefile 会用 release-notes/releases.json 里的真实上游版本
 #    拼出 <upstream>-termux.<sha>。早先这里传的是裸 $TAG,装上去后
 #    `reasonix --version` 显示 v1.39.8,与官方版无法区分;而且 Makefile 曾用
