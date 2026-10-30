@@ -83,22 +83,22 @@ bash = "off"
 > 所有内容。如果 Termux 环境里还可调用 `su`，风险范围会进一步扩大。只应对自己
 > 信任的仓库、提示词和任务启用，不要把它当作普通桌面 Linux 的安全等价物。
 
-## 可选 wrapper
+## 可选 wrapper（一键安装）
 
-仓库提供两个模板：
+不需要 clone 仓库，也不需要知道 `scripts/termux/...` 在哪里。安装器会从 GitHub
+下载两个 wrapper 模板，并检查文件标记与 shell 语法：
 
-- `scripts/termux/reasonix-wrapper`：普通会话默认注入
-  `--permission-mode danger-full-access`；显式传入 permission mode 时尊重用户选择。
-- `scripts/termux/reasonix-raw`：直连真实二进制，不注入任何权限参数。
+- `reasonix-full`：普通会话默认注入 `--permission-mode danger-full-access`；显式
+  传入 permission mode 时尊重用户选择。
+- `reasonix-raw`：直连真实二进制，不注入任何权限参数。
 
 ### 方案 A：保留显式命令（推荐）
 
-保留 `$PREFIX/bin/reasonix` 作为原始命令，把 wrapper 安装成 `reasonix-full`：
+默认安装不会覆盖 `reasonix`，而是在 Termux 自带 PATH 的 `$PREFIX/bin` 中新增
+`reasonix-full` 和 `reasonix-raw`：
 
 ```sh
-mkdir -p ~/bin
-install -m 755 scripts/termux/reasonix-wrapper ~/bin/reasonix-full
-install -m 755 scripts/termux/reasonix-raw ~/bin/reasonix-raw
+curl -fsSL https://raw.githubusercontent.com/wumingmr/reasonix_android_custon/master/scripts/termux/install-wrapper.sh | bash
 
 reasonix-full             # 默认 danger-full-access
 reasonix-raw --version    # 原始二进制
@@ -108,30 +108,32 @@ reasonix-raw --version    # 原始二进制
 
 ### 方案 B：让 `reasonix` 默认可用 shell
 
-如果这是个人设备且你明确接受上述风险，可以让 `~/bin/reasonix` 覆盖 PATH 中的真实
-二进制名称：
+如果这是个人设备且你明确接受上述风险，可以一键安装 `~/bin/reasonix`。安装器会
+自动处理 PATH；若同名文件不是本安装器管理的 wrapper，会先备份而不是覆盖丢失：
 
 ```sh
-mkdir -p ~/bin
-install -m 755 scripts/termux/reasonix-wrapper ~/bin/reasonix
-install -m 755 scripts/termux/reasonix-raw ~/bin/reasonix-raw
-
-# 确保 ~/bin 排在 $PREFIX/bin 前；zsh 用户可写入 ~/.zshrc
-export PATH="$HOME/bin:$PATH"
-hash -r
-
-type -a reasonix
+curl -fsSL https://raw.githubusercontent.com/wumingmr/reasonix_android_custon/master/scripts/termux/install-wrapper.sh | bash -s -- --default-full
 ```
 
-正常结果应该先列出 wrapper，再列出真实二进制：
+重新打开终端后，正常结果应该先列出 wrapper，再列出真实二进制：
+
+```sh
+type -a reasonix
+```
 
 ```text
 reasonix is /data/data/com.termux/files/home/bin/reasonix
 reasonix is /data/data/com.termux/files/usr/bin/reasonix
 ```
 
-wrapper 会直接放行 `--version`、`-v`、`--help`、`-h` 和配置/升级等非会话子命令，
-避免向不接受该参数的命令注入 `--permission-mode`。
+wrapper 会直接放行 `--version`、`-v`、`--help`、`-h`、`--auto/-y` 和配置/升级等
+非普通会话参数，避免向不接受或会冲突的命令注入 `--permission-mode`。
+
+卸载只删除安装器自己管理的 wrapper，不会删除 `$PREFIX/bin/reasonix` 真二进制：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/wumingmr/reasonix_android_custon/master/scripts/termux/install-wrapper.sh | bash -s -- --uninstall
+```
 
 ## 临时退出 full access
 
@@ -173,7 +175,7 @@ REASONIX_REAL="$PREFIX/bin/reasonix" reasonix-raw --version
 ```
 
 如果 `reasonix --version` 报 `unknown flag: --version`，说明使用的是早期 wrapper；
-请用仓库当前的 `scripts/termux/reasonix-wrapper` 覆盖它。早期版本在 `--version`
+重新运行上面带 `--default-full` 的一键安装命令即可安全更新。早期版本在 `--version`
 之前错误注入了 `--permission-mode`。
 
 ## 升级后的关系

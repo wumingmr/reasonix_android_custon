@@ -108,23 +108,21 @@ shell sandbox requested but unavailable on this host; refusing to run unconfined
 > 但命令可以访问当前 Termux 用户（以及可用 `su`）本来能访问的一切。仅用于自己
 > 信任的仓库、提示词和任务。
 
-仓库附带修正版 wrapper 模板：
+一键安装 wrapper（无需 clone 仓库，安全默认：新增 `reasonix-full` / `reasonix-raw`，
+不覆盖普通 `reasonix`）：
 
 ```sh
-mkdir -p ~/bin
-curl -fL "https://raw.githubusercontent.com/$REPO/master/scripts/termux/reasonix-wrapper" \
-  -o ~/bin/reasonix
-curl -fL "https://raw.githubusercontent.com/$REPO/master/scripts/termux/reasonix-raw" \
-  -o ~/bin/reasonix-raw
-chmod 755 ~/bin/reasonix ~/bin/reasonix-raw
-export PATH="$HOME/bin:$PATH"
-hash -r
-
-reasonix --version       # wrapper，普通会话默认 danger-full-access
-reasonix-raw --version   # 直连 $PREFIX/bin/reasonix，不注入权限参数
+curl -fsSL "https://raw.githubusercontent.com/$REPO/master/scripts/termux/install-wrapper.sh" | bash
 ```
 
-如不想让 `reasonix` 默认 full access，可把 wrapper 安装成 `~/bin/reasonix-full`。
+若明确希望 `reasonix` 本身默认 Full access：
+
+```sh
+curl -fsSL "https://raw.githubusercontent.com/$REPO/master/scripts/termux/install-wrapper.sh" | bash -s -- --default-full
+```
+
+安装器会检查下载脚本的标记与 shell 语法、备份非本安装器管理的同名文件，并支持
+`--uninstall`。
 完整说明、风险边界、临时退出 full access 与排错方法见
 [`docs/TERMUX.zh-CN.md`](https://github.com/$REPO/blob/master/docs/TERMUX.zh-CN.md)。
 
