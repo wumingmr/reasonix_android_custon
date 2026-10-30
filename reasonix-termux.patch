@@ -1,8 +1,30 @@
 diff --git a/Makefile b/Makefile
-index e25ef2df..bdc2db5d 100644
+index e25ef2dfd4c2bbc77486c86296e357fb2147f9c8..6d73bb1ebecc1c85caf4f6f5e17d23b01f0fff0c 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -6,15 +6,21 @@ LDFLAGS := -s -w \
+@@ -1,4 +1,20 @@
+-VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
++# 版本号优先用显式传入的 VERSION(命令行 `make android VERSION=...` 会覆盖)。
++#
++# 不要用 `git describe --tags`:上游 tag(v1.39.8 等)在本仓库不可达,因为
++# update-reasonix.sh 只做 `git checkout <tag> -- .`(只取文件内容,从不把上游
++# commit 拉进本仓库历史)。describe 于是退回到 Termux 打包时留下的
++# termux-v1.25.0 tag,算出 termux-v1.25.0-9-gXXXX 这类看着像版本大倒退的
++# 字符串。真实基线以 release-notes/releases.json 为准(与该脚本一致)。
++#
++# 形如 v1.39.8-termux.4+input+cap.cfeb8193:上游版本 + Termux 定制标记 + 短 sha。
++UPSTREAM_VERSION := $(shell python3 -c "import json;print(json.load(open('release-notes/releases.json'))['releases'][0]['version'])" 2>/dev/null)
++ifeq ($(strip $(UPSTREAM_VERSION)),)
++  # 无 releases.json(非官方源码树)时退回 describe,但只认 termux-v* 避免撞上上游 tag。
++  UPSTREAM_VERSION := $(shell git describe --tags --match 'termux-v*' --always 2>/dev/null || echo dev)
++endif
++TERMUX_REVISION := $(shell git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)
++
++VERSION ?= $(UPSTREAM_VERSION)-termux.$(TERMUX_REVISION)
+ BUILD_TIME_UTC := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+ GIT_COMMIT := $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+ LDFLAGS := -s -w \
+@@ -6,15 +22,21 @@ LDFLAGS := -s -w \
  	-X main.gitCommit=$(GIT_COMMIT) \
  	-X main.buildTimeUTC=$(BUILD_TIME_UTC)
  GOEXE := $(shell go env GOEXE)
@@ -26,7 +48,7 @@ index e25ef2df..bdc2db5d 100644
  	go vet ./...
  
 diff --git a/cmd/e2ebench/segmentrun_test.go b/cmd/e2ebench/segmentrun_test.go
-index b653e8fa..529cde81 100644
+index b653e8fae3caaf6c75e51b17f29843661a7a84a1..529cde815beb070f326093c43a53c5dac949819e 100644
 --- a/cmd/e2ebench/segmentrun_test.go
 +++ b/cmd/e2ebench/segmentrun_test.go
 @@ -17,6 +17,12 @@ func requireShellStub(t *testing.T) {
@@ -42,8 +64,198 @@ index b653e8fa..529cde81 100644
  }
  
  // fakeAgent stands in for the reasonix binary: it records every invocation's
+diff --git a/docs/TUI_RESUME_PERF_AND_RESUME_LIMIT_FIX.zh-CN.md b/docs/TUI_RESUME_PERF_AND_RESUME_LIMIT_FIX.zh-CN.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..2166e748040f3eac8517f0c9c1fb35562d19aff5
+--- /dev/null
++++ b/docs/TUI_RESUME_PERF_AND_RESUME_LIMIT_FIX.zh-CN.md
+@@ -0,0 +1,184 @@
++# TUI resume 性能与配置回归修复
++
++本文记录两处改动：一是 TUI 恢复长会话时的加载性能优化，二是 `ui.resume_list_limit`
++在配置重写时被静默抹掉的回归修复。
++
++## 背景：resume 长会话为什么慢
++
++通过在 Termux 上对一个真实长会话（`events.frames` 49 MB、5486 条消息、68594 个
++zstd 帧）逐层计时，确认瓶颈不在功能多少，而在加载路径：
++
++- `chatUIDisplayHistory` 对 final-format 会话调用 `Query().History()`，进而走到
++  `Query.Snapshot()`：**从 offset 0 开始把整个 `events.frames` 全部解压、逐帧 JSON
++  解析、再整体重放 projection**。实测仅这一条路径就要 ~9.2 秒。
++- 拿到消息后，`replaySectionsForWithRenderers` 对每条消息做 goldmark markdown 渲染
++  和折行，再把整段历史拼成一个巨型 transcript block；`transcriptBlockLineCount`
++  又会为计算行数整体重排一次。渲染成本随历史长度线性增长。
++- 代码库里**本来就有增量索引**（`.query-cache/<id>/history-locator-v2.sqlite`，
++  desktop 端用的就是它的分页 `HistoryPage`／`HistoryWindow`），但 TUI 恢复路径没用。
++
++因此编译期裁功能（去掉 desktop/bot/飞书等）对长会话 resume 几乎无收益：慢的是
++I/O、解压和渲染，不是功能开关。
++
++## 改动一：TUI 回放改走 locator 索引的尾部读取
++
++### `internal/session/history_locator.go` — 新增 `Query.HistoryTail`
++
++```go
++func (q *Query) HistoryTail(ctx context.Context, ref SessionRef, maxMessages int) ([]provider.Message, error)
++```
++
++从 history-locator 索引读取最近 `maxMessages` 条消息，按 oldest-first 返回，
++语义与 `History()` 的尾部完全一致（有单测逐字对比）。
++
++两个实现细节值得记录：
++
++- **优先同步建索引**：走 `prepareHistoryIndex`，索引缺失或过期时就地构建/增量更新。
++  首次对某个长会话 resume 会有一次性成本，之后走增量。
++- **不用 `COUNT(*)` 推算边界**：`position` 来自一个只增计数器，retract 之后的
++  重新 upsert 会拿到新的 position 而旧 position 不被回收，理论上存在空洞。
++  所以查询是 `ORDER BY position DESC LIMIT ?` 再反转，而不是
++  `WHERE position > count-N`。前一种写法在空洞场景下会少读或多读。
++
++### `internal/cli/branch.go` — 拆分回放与全量用途
++
++关键点是**回放只想要尾部，但 `chatUIDisplayHistory` 还被 `/copy N` 和 `/export`
++复用**。如果直接在 `chatUIDisplayHistory` 里截断，这两个功能会静默丢失早期历史。
++因此拆成三个函数：
++
++- `chatUIDisplayHistory` —— 语义不变，返回**完整**历史。`/copy`、`/export` 继续用它。
++- `chatUIReplayHistoryTail` —— 内部用：exclusive 会话优先 `HistoryTail(200)`，
++  索引不可用则回退全量路径。
++- `chatUIReplayHistory` —— 回放入口：拿尾部后交给 `clipReplayHistory`，把截断边界
++  **对齐到用户轮次**（`agent.IsUserAuthoredTurnMessage`），避免回放从一轮对话中间
++  开始；返回截断后的切片和省略条数。
++
++`replayActiveBranch` 改用 `chatUIReplayHistory`。
++
++### `internal/cli/transcript.go` — 省略提示
++
++`transcriptSource` 增加 `replayOmitted int`；`renderReplayBundleWithRenderers`
++在 banner 之后输出一行 dim 提示（`replayOmittedNotice`），文案走 i18n 的
++`ReplayOmittedLabel`，已补 en / zh / zh-TW 三种语言。为 0 时不输出任何内容，
++所以短会话的表现与改动前一致。
++
++## 改动二：`ui.resume_list_limit` 被配置重写抹掉
++
++### 根因
++
++`internal/config/render.go` 的 `[ui]` 段渲染**漏掉了 `resume_list_limit`**。
++同段的 `theme`、`termux_width_offset`、`show_turn_usage` 等都有输出，唯独这个
++字段没有。后果是：任何一次走 `RenderTOMLForScope` 的配置保存（`/model` 切换、
++设置项修改等）都会把它从文件里删掉，用户看到的就是"自己写的被抹掉了"。
++
++升级路径本身是安全的：`config_version` 迁移用的是 `rawTOMLSet`（字符串级编辑，
++不重排整个文件），所以升级不会直接删字段；真正丢字段的是之后的任何一次全量重写。
++
++### 修复
++
++- `RenderTOMLForScope` 的 `[ui]` 段：值非 0 时输出
++  `resume_list_limit = <值>`；为 0（未设置）时输出注释掉的行，保持与
++  `termux_width_offset` 等字段一致的可发现性风格。
++- `RenderTOMLProjectDelta` 的 `[ui]` 段：补上 `c.UI.ResumeListLimit != d.UI.ResumeListLimit`
++  的分支，否则项目级保存会丢掉这个覆盖。
++
++### 测试
++
++`internal/config/render_test.go` 新增两个用例：
++
++- `TestResumeListLimitSurvivesConfigRender` —— 用户级 render 和项目 delta 都必须
++  带上 `resume_list_limit = -1`，且能 round-trip 回 `-1`。
++- `TestResumeListLimitUnsetRendersCommentedHint` —— 未设置时不得渲染成生效值，
++  且要保留注释提示。
++
++已验证这两个测试在**未修复**的 `render.go` 上会失败，修复后通过。
++
++## 审查中发现并修复的两个问题
++
++初版改动在自查时发现两处真实缺陷，已一并修复：
++
++### 1. `/copy N` 与 `/export` 被 tail 截断污染
++
++第一版直接在 `chatUIDisplayHistory` 里改用 `HistoryTail`，但这个函数的调用者不只是
++回放：
++
++- `chat_tui.go` 的 `runCopyCommand`（`/copy N` 按序号取消息）
++- `runExportCommand`（`/export` 导出整段会话）
++- `newChatTUI` 里的 `pasteIDStateForHistory` 粘贴编号扫描
++
++直连会导致这些功能只看到最近 200 条，属于静默功能回归。已改为：`chatUIDisplayHistory`
++保持返回完整历史，新增 `chatUIReplayHistory` / `chatUIReplayHistoryTail` /
++`clipReplayHistory` 只服务回放入口。
++
++### 2. 无 user turn 的历史被截到只剩 1 条
++
++`clipReplayHistory` 为"边界对齐用户轮次"写的循环是
++`for cut > 1 && !IsUserAuthoredTurnMessage(...)`。当整段历史里没有任何用户轮次
++（纯 assistant 的恢复记录等场景）时，循环会一路退到 `cut == 1`，回放只剩最后一条
++消息。已加兜底：找不到用户轮次时保留完整的 200 条尾部。单测
++`TestClipReplayHistoryWithoutUserTurns` 覆盖了这个场景。
++
++顺带补齐：`reasonix --resume <id>` 直接启动走的是 `chat_tui.go` 里首次
++`WindowSizeMsg` 的独立 commit 路径，原先拿的是 `m.history`（全量历史），因此
++这条启动路径享受不到索引带来的提速。现在构造 `chatTUI` 时就调用
++`chatUIReplayHistory`（索引优先），把省略条数存进新的 `historyOmitted` 字段，
++首次 commit 同样会显示省略提示。
++
++粘贴编号扫描（`pasteIDStateForHistory`）现在也基于这个尾部切片工作。这是可接受
++的：它只用于避免新粘贴编号碰撞，而被省略的那段前缀本来就已经在会话里，不会带来
++新的碰撞风险；反过来为了它去读全量历史，会把启动路径的提速完全抵消。
++
++## 实测数据
++
++真实长会话（49 MB `events.frames`，5486 条消息，Android arm64）：
++
++- 全量重放：~9.2 s
++- `HistoryTail(200)`：~2.7 s（其中大头是 `prepareHistoryIndex` 的增量校验；
++  索引完全命中时数据见下方阶段计时）
++- 阶段拆分：`prepareHistoryIndex` ~590 ms，sqlite open ~563 ms，
++  metadata+count ~3 ms，200 行读取+解压+JSON 解码 ~302 ms
++- 正确性：tail 与 full 的尾部逐字一致（ID + Content）
++
++注意 `prepareHistoryIndex` 的成本与会话是否刚追加过有关：会话每追加一次，增量
++索引就要重新扫过新增部分，所以"刚用过这个会话"时首次 resume 仍会付出这段成本。
++
++## 未做/后续可选
++
++- 回放渲染本身仍是"整段拼接 + 整体重排"，本次只是限制条数。若要让超长历史滚动
++  到底部再按需加载，需要改 viewport 的 scroll 与 `transcriptSources` 索引语义，
++  回归风险集中在滚动定位和选择复制，留作后续。
++- `/resume` picker 打开时会遍历全部会话（当前配置 `resume_list_limit = -1`
++  等于不限量）。这影响 picker 打开速度，不影响选定后的加载；如需加速可把该值
++  调小。
++
++## 升级与发版脚本维护
++
++这次检查还发现：旧 `update-reasonix.sh` 只会 cherry-pick 单个历史适配 commit，
++因此本文所述两个后续 commit 在下一次升级时都会被清空；GitHub 的同步 workflow
++虽然应用 patch，却会选到不支持的 2.x，并可能删除 `.gitattributes`、发版脚本和
++release notes。
++
++现统一约定：
++
++1. `reasonix-termux.patch` 是本地升级脚本和 GitHub 同步 workflow 的唯一累积补丁源。
++2. 修改并提交 Termux 专属源码后运行 `./rebuild-termux-patch.sh`，再提交更新后的 patch。
++3. `./rebuild-termux-patch.sh --check` 会从当前上游 1.x tag 重新生成临时 patch、
++   在干净 worktree 中做 `git apply --check`，并逐字比较仓库中的 patch。
++4. `release-termux.sh` 发版前强制运行上述检查；patch 过期就拒绝发布。
++5. GitHub 同步 workflow 固定最新 1.x，并显式保留 `.github`、`.gitattributes`、
++   `artifacts`、补丁和所有本地发版脚本。
++
++## 验证记录
++
++- `go build ./...` 通过
++- `internal/session`：新增 `TestHistoryTailMatchesFullHistorySuffix`、
++  `TestHistoryTailToleratesPositionGaps`（后者覆盖 position 空洞）通过
++- `internal/cli`：新增 `TestClipReplayHistoryKeepsShortHistoryIntact`、
++  `TestClipReplayHistoryBoundsLongHistory`、`TestClipReplayHistoryWithoutUserTurns` 通过
++- `internal/i18n` 全量通过（含多语言字段完整性检查）
++- `internal/cli`、`internal/config` 的 5 个失败（WSL 剪贴板、
++  `TestReadServeTokenFileRejectsLoosePermissions`、
++  `TestDeepSeekCatalogUpgradeAtomicRetryAndUnknownInlineFields`、
++  `TestCurrentConfigRepairsExactProviderEndpointContract`、
++  `TestUpgradeDeepSeekProviderProtocolWritesThroughSymlinkAndPreservesMode`）
++  在未改动的 master 上同样失败，属预存的环境性失败，与本次改动无关
 diff --git a/internal/agent/migrate.go b/internal/agent/migrate.go
-index 0dcb8408..27621429 100644
+index 0dcb8408353d987ff8c0d936cf7c382470e6e390..276214297d22b7e279aebd513279e887e8575731 100644
 --- a/internal/agent/migrate.go
 +++ b/internal/agent/migrate.go
 @@ -9,6 +9,7 @@ import (
@@ -93,11 +305,150 @@ index 0dcb8408..27621429 100644
  		return err
  	}
  	return nil
+diff --git a/internal/cli/branch.go b/internal/cli/branch.go
+index 806644db6edbad38f1d7be69a2de9b6709c1d9a6..28c52b8462af60fbedcdc882598187e3edf5bd1b 100644
+--- a/internal/cli/branch.go
++++ b/internal/cli/branch.go
+@@ -7,10 +7,18 @@ import (
+ 
+ 	"github.com/charmbracelet/x/ansi"
+ 
++	"reasonix/internal/agent"
+ 	"reasonix/internal/control"
+ 	"reasonix/internal/provider"
+ )
+ 
++// cliReplayTailMessages bounds how many trailing messages the TUI renders when
++// replaying a resumed session. Rendering cost grows with history length
++// (goldmark + per-message wrapping), while only the recent tail is useful on
++// screen; the omitted prefix remains in the session context and full-history
++// commands (/copy, /export) are unaffected.
++const cliReplayTailMessages = 200
++
+ func (m *chatTUI) showBranchTree() {
+ 	branches, err := m.ctrl.Branches()
+ 	m.followSessionLease()
+@@ -126,6 +134,10 @@ func (m *chatTUI) runSwitchCommand(input string) {
+ // host wrappers and lose the raw user text. Exclusive sessions read the
+ // session service's display projection instead, the same view the desktop
+ // renders through the transcript snapshot protocol.
++//
++// This is the complete history: /copy, /export and the paste-ID scan all
++// depend on it. The replay path wants only a bounded tail and must call
++// chatUIReplayHistory instead.
+ func chatUIDisplayHistory(ctrl control.SessionAPI) []provider.Message {
+ 	if identity, ok := ctrl.(control.IdentityLifecycle); ok && identity.UsesExclusiveSession() {
+ 		if service := identity.SessionService(); service != nil {
+@@ -139,6 +151,55 @@ func chatUIDisplayHistory(ctrl control.SessionAPI) []provider.Message {
+ 	return ctrl.History()
+ }
+ 
++// chatUIReplayHistory returns the history a resumed session replays into the
++// transcript, plus how many earlier messages were left out. Rendering cost
++// grows with history length (goldmark + per-message wrapping) while only the
++// recent tail is useful on screen, so an exclusive session reads that tail
++// straight from the locator index (Query.HistoryTail) instead of replaying the
++// whole event log. A failed or not-yet-built index falls back to the
++// full-history path and truncates in memory instead.
++func chatUIReplayHistory(ctrl control.SessionAPI) ([]provider.Message, int) {
++	return clipReplayHistory(chatUIReplayHistoryTail(ctrl))
++}
++
++// clipReplayHistory bounds history to the replay tail. The truncation boundary
++// is kept at a user turn when possible so a replay never opens mid-turn; the
++// second result is how many earlier messages were omitted.
++//
++// A history with no user turn at all (assistant-only recovery records) must not
++// collapse to a single message, so the preference only applies when a user turn
++// actually exists at or below the nominal boundary.
++func clipReplayHistory(history []provider.Message) ([]provider.Message, int) {
++	if len(history) <= cliReplayTailMessages {
++		return history, 0
++	}
++	cut := cliReplayTailMessages
++	for cut > 1 && !agent.IsUserAuthoredTurnMessage(history[len(history)-cut]) {
++		cut--
++	}
++	if cut == 1 && !agent.IsUserAuthoredTurnMessage(history[len(history)-1]) {
++		// No user turn anywhere in the window: keep the full tail rather than
++		// truncating to one message.
++		cut = cliReplayTailMessages
++	}
++	return history[len(history)-cut:], len(history) - cut
++}
++
++// chatUIReplayHistoryTail prefers the index-backed tail for exclusive sessions
++// and otherwise returns whatever the full-history path produced.
++func chatUIReplayHistoryTail(ctrl control.SessionAPI) []provider.Message {
++	if identity, ok := ctrl.(control.IdentityLifecycle); ok && identity.UsesExclusiveSession() {
++		if service := identity.SessionService(); service != nil {
++			if ref, bound := identity.SessionRef(); bound {
++				if messages, err := service.Query().HistoryTail(context.Background(), ref, cliReplayTailMessages); err == nil {
++					return messages
++				}
++			}
++		}
++	}
++	return chatUIDisplayHistory(ctrl)
++}
++
+ func (m *chatTUI) replayActiveBranch(title string) {
+ 	m.finalizeStreamed()
+ 	m.pending.Reset()
+@@ -166,8 +227,10 @@ func (m *chatTUI) replayActiveBranch(title string) {
+ 	if title != "" {
+ 		m.commitLine(dim("  -- " + title + " --"))
+ 	}
++	history, omitted := chatUIReplayHistory(m.ctrl)
+ 	m.commitTranscriptSource(transcriptSource{
+-		kind:    transcriptSourceReplayBundle,
+-		history: append([]provider.Message(nil), chatUIDisplayHistory(m.ctrl)...),
++		kind:          transcriptSourceReplayBundle,
++		replayOmitted: omitted,
++		history:       append([]provider.Message(nil), history...),
+ 	})
+ }
 diff --git a/internal/cli/chat_tui.go b/internal/cli/chat_tui.go
-index a40d0977..a0cf481d 100644
+index a40d0977a99b17198e5c47a762aff5383a132bcf..855b9e120af2a5aba0f7c0fbc76c6e96cd38b57d 100644
 --- a/internal/cli/chat_tui.go
 +++ b/internal/cli/chat_tui.go
-@@ -697,6 +697,27 @@ func transcriptContentWidth(termW int, nativeScrollback bool) int {
+@@ -165,6 +165,9 @@ type chatTUI struct {
+ 	// history is a resumed session's messages, committed to scrollback once on
+ 	// the first WindowSizeMsg so a reopened chat shows its prior transcript.
+ 	history []provider.Message
++	// historyOmitted counts earlier messages left out of history by the
++	// tail-only replay, so the first commit can say so.
++	historyOmitted int
+ 
+ 	// reasoning accumulates the in-progress thinking stream (dim); pending
+ 	// accumulates the in-progress answer (raw markdown). They are committed to
+@@ -644,8 +647,13 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
+ 
+ 	commitBuf := []string{}
+ 	nativeScrollback := detectTermuxTerminal()
+-	history := chatUIDisplayHistory(ctrl)
+-	nextPasteID, usedPasteIDs := pasteIDStateForHistory(history)
++	// Paste-ID scanning wants the complete history; the replay wants only the
++	// tail. Reading the full history just for paste IDs would undo the replay
++	// saving, so the tail is read first and the full history only on the rare
++	// paths that still need it (the scan tolerates a truncated view: a colliding
++	// ID from the omitted prefix is already present in the transcript context).
++	replayHistory, replayOmitted := chatUIReplayHistory(ctrl)
++	nextPasteID, usedPasteIDs := pasteIDStateForHistory(replayHistory)
+ 	return chatTUI{
+ 		ctrl:                     ctrl,
+ 		label:                    ctrl.Label(),
+@@ -681,7 +689,8 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
+ 		subagentProgressIdx:      make(map[string]int),
+ 		subagentProgress:         make(map[string]*cliSubagentProgress),
+ 		eventCh:                  eventCh,
+-		history:                  history,
++		history:                  replayHistory,
++		historyOmitted:           replayOmitted,
+ 		host:                     ctrl.Host(),
+ 		commands:                 ctrl.Commands(),
+ 		skills:                   ctrl.SlashSkills(),
+@@ -697,6 +706,27 @@ func transcriptContentWidth(termW int, nativeScrollback bool) int {
  	return max(termW, 1)
  }
  
@@ -125,7 +476,7 @@ index a40d0977..a0cf481d 100644
  func configureChatTextarea(ti *textarea.Model) {
  	// Keep a stable two-cell input affordance, matching the prompt treatment in
  	// other coding TUIs. Continuation rows receive two spaces so text and the
-@@ -754,6 +775,18 @@ func isTermuxTerminal() bool {
+@@ -754,6 +784,18 @@ func isTermuxTerminal() bool {
  
  var detectTermuxTerminal = isTermuxTerminal
  
@@ -144,7 +495,7 @@ index a40d0977..a0cf481d 100644
  func (m *chatTUI) rememberSubmittedInput(input string) {
  	if strings.TrimSpace(input) == "" {
  		return
-@@ -1073,7 +1106,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+@@ -1073,7 +1115,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
  	switch msg := msg.(type) {
  	case tea.WindowSizeMsg:
  		m.followComposerCursor()
@@ -153,8 +504,21 @@ index a40d0977..a0cf481d 100644
  		m.height = msg.Height
  		m.input.SetWidth(max(msg.Width-4, 1))
  		// Commit the banner — and a resumed session's transcript — once, now
+@@ -1082,9 +1124,10 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+ 			m.started = true
+ 			history := append([]provider.Message(nil), m.history...)
+ 			m.commitTranscriptSource(transcriptSource{
+-				kind: transcriptSourceReplayBundle, raw: m.missing, history: history,
++				kind: transcriptSourceReplayBundle, raw: m.missing,
++				replayOmitted: m.historyOmitted, history: history,
+ 			})
+-			m.history = nil
++			m.history, m.historyOmitted = nil, 0
+ 		}
+ 
+ 	case tea.FocusMsg:
 diff --git a/internal/cli/chat_tui_test.go b/internal/cli/chat_tui_test.go
-index a9c5c604..3a42c168 100644
+index a9c5c6048b355f7e1f58234f379ec3c9bfd24f6a..3a42c1686a58056ef94896028a2b5310a62c045f 100644
 --- a/internal/cli/chat_tui_test.go
 +++ b/internal/cli/chat_tui_test.go
 @@ -951,6 +951,61 @@ func TestTranscriptContentWidthReservesScrollbarColumn(t *testing.T) {
@@ -219,8 +583,45 @@ index a9c5c604..3a42c168 100644
  func TestModalPanelsHideComposerBox(t *testing.T) {
  	ask := event.Ask{
  		ID: "ask-1",
+diff --git a/internal/cli/cli.go b/internal/cli/cli.go
+index 049f471f35acfa5cf5bd8d6248c09cf37772950a..3190244268cc975d4844e76603abcab954d02d45 100644
+--- a/internal/cli/cli.go
++++ b/internal/cli/cli.go
+@@ -1584,7 +1584,7 @@ func interactiveSetup(configPath, envPath string) int {
+ func pickSessionToResume() (cliResumeTarget, int) {
+ 	sessionDir := resolveCLISessionDir()
+ 	reclaimCLIRecoveryBranches(sessionDir)
+-	entries := mergedResumeEntries(sessionDir, resumeListCap)
++	entries := mergedResumeEntries(sessionDir, resumeListCapFor())
+ 	if len(entries) == 0 {
+ 		fmt.Fprintln(os.Stderr, i18n.M.NoSessionToResume)
+ 		return cliResumeTarget{}, 1
+diff --git a/internal/cli/connection_setup.go b/internal/cli/connection_setup.go
+index ff7860101183c2a3a9660c3b8f4d01d486f6dce5..8221f5eb79e52aaac06d709edf7cb3c80cc9c78f 100644
+--- a/internal/cli/connection_setup.go
++++ b/internal/cli/connection_setup.go
+@@ -156,14 +156,11 @@ func (m chatTUI) handleConnectionSetupKey(msg tea.KeyPressMsg) (tea.Model, tea.C
+ 			return connectionCredentialSavedMsg{providerName: setup.providerName, result: result, err: err}
+ 		}
+ 	default:
+-		text := msg.Text
+-		if text == "" {
+-			s := msg.String()
+-			if len(s) == 1 && s[0] >= 32 && s[0] < 127 {
+-				text = s
+-			}
+-		}
+-		if text != "" && !strings.ContainsAny(text, "\r\n") {
++		// A key press with no Text is not user input (see quick_picker). The
++		// previous String() fallback turned IME composition keys into literal
++		// text and rejected the composed text's trailing space, because a
++		// space key reports "space" rather than " ".
++		if text := msg.Text; text != "" && !strings.ContainsAny(text, "\r\n") {
+ 			setup.invalidateTest()
+ 			setup.key += text
+ 		}
 diff --git a/internal/cli/mcp_manager_actions.go b/internal/cli/mcp_manager_actions.go
-index 3a366c32..a6ce7fc3 100644
+index 3a366c322f386cee1d3c135d51ecabd907ce3a90..a6ce7fc349c9ea8c4040b59947ad63d6b51b2b5e 100644
 --- a/internal/cli/mcp_manager_actions.go
 +++ b/internal/cli/mcp_manager_actions.go
 @@ -452,6 +452,11 @@ func mcpOpenCommand(target string) (*exec.Cmd, error) {
@@ -235,8 +636,112 @@ index 3a366c32..a6ce7fc3 100644
  	default:
  		return exec.Command("xdg-open", target), nil
  	}
+diff --git a/internal/cli/quick_picker.go b/internal/cli/quick_picker.go
+index 5ace5dd18a9df3b186fecfdc323daa9dbac1850b..9ca8af4390c5f7038eebb009615d816032a0fd23 100644
+--- a/internal/cli/quick_picker.go
++++ b/internal/cli/quick_picker.go
+@@ -101,15 +101,12 @@ func (p *quickPicker) handleKey(msg tea.KeyPressMsg) quickPickerResult {
+ 			p.selected = 0
+ 		}
+ 	default:
+-		text := msg.Text
+-		if text == "" {
+-			s := msg.String()
+-			if len(s) == 1 && s[0] >= 32 && s[0] < 127 {
+-				text = s
+-			}
+-		}
+-		if text != "" {
+-			p.query += text
++		// Mirror the textarea input contract: a key press with no Text is not
++		// user input. Termux IMEs emit those while composing, so falling back
++		// to String() here inserted composition leftovers and dropped the
++		// composed text's trailing space (KeySpace reports "space").
++		if msg.Text != "" {
++			p.query += msg.Text
+ 			p.selected = 0
+ 		}
+ 	}
+diff --git a/internal/cli/quick_picker_input_test.go b/internal/cli/quick_picker_input_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..bbfc21213f9e0aa5c11bac5402aa83ce6cd0105a
+--- /dev/null
++++ b/internal/cli/quick_picker_input_test.go
+@@ -0,0 +1,72 @@
++package cli
++
++import (
++	"testing"
++	"unicode/utf8"
++
++	tea "charm.land/bubbletea/v2"
++)
++
++// Text is populated only for printable keys, so a key press that arrives with
++// an empty Text is not user input: Termux IMEs emit those while composing.
++// Treating String() as a fallback inserted composition leftovers and dropped
++// the composed text's trailing space, because a space key reports "space".
++func TestQuickPickerIgnoresKeyPressWithoutText(t *testing.T) {
++	p := &quickPicker{}
++	p.handleKey(tea.KeyPressMsg{Code: 'x', Text: "鹈"})
++	p.handleKey(tea.KeyPressMsg{Code: 'x', Text: ""})
++
++	if p.query != "鹈" {
++		t.Fatalf("query = %q, want %q: an IME composition key must not become text", p.query, "鹈")
++	}
++}
++
++func TestQuickPickerAcceptsSpaceInQuery(t *testing.T) {
++	p := &quickPicker{
++		items: []quickPickerItem{
++			{ID: "one", Label: "hello world"},
++			{ID: "two", Label: "hello there"},
++			{ID: "three", Label: "goodbye"},
++		},
++	}
++	for _, r := range "hello world" {
++		p.handleKey(tea.KeyPressMsg{Code: r, Text: string(r)})
++	}
++
++	if p.query != "hello world" {
++		t.Fatalf("query = %q, want %q: every typed character must be kept", p.query, "hello world")
++	}
++	items := p.filteredItems()
++	if len(items) != 1 || items[0].ID != "one" {
++		t.Fatalf("filtered items = %+v, want the multi-word match only", items)
++	}
++}
++
++func TestQuickPickerBackspaceRemovesOneRune(t *testing.T) {
++	p := &quickPicker{}
++	for _, r := range "鹈鹕" {
++		p.handleKey(tea.KeyPressMsg{Code: r, Text: string(r)})
++	}
++	p.handleKey(tea.KeyPressMsg{Code: tea.KeyBackspace})
++
++	if p.query != "鹈" {
++		t.Fatalf("query = %q, want %q: backspace must drop one rune", p.query, "鹈")
++	}
++	if !utf8.ValidString(p.query) {
++		t.Fatalf("query is not valid UTF-8: %q", p.query)
++	}
++}
++
++func TestQuickPickerComposedTextKeepsTrailingSpace(t *testing.T) {
++	p := &quickPicker{
++		items: []quickPickerItem{{ID: "one", Label: "鹈鹕 骑车"}},
++	}
++	p.handleKey(tea.KeyPressMsg{Code: 'x', Text: "鹈鹕 "})
++
++	if p.query != "鹈鹕 " {
++		t.Fatalf("query = %q, want %q: a composed string arrives whole", p.query, "鹈鹕 ")
++	}
++	if items := p.filteredItems(); len(items) != 1 {
++		t.Fatalf("filtered items = %+v, want one match", items)
++	}
++}
 diff --git a/internal/cli/remote_connect.go b/internal/cli/remote_connect.go
-index 0507ad04..cb65de2d 100644
+index 0507ad04a66d49547ca110c93df6f5b40cb3ca26..cb65de2d01753d99d51cff6453f45b333a87cfda 100644
 --- a/internal/cli/remote_connect.go
 +++ b/internal/cli/remote_connect.go
 @@ -745,6 +745,13 @@ func openInBrowser(url string) error {
@@ -253,8 +758,658 @@ index 0507ad04..cb65de2d 100644
  	default:
  		cmd, args = "xdg-open", []string{url}
  	}
+diff --git a/internal/cli/rename.go b/internal/cli/rename.go
+index c6817dd36616bc83dbab7d98606c0b264c882894..35ee22c5324f67f44b5f3adcbfdad66fdd641e49 100644
+--- a/internal/cli/rename.go
++++ b/internal/cli/rename.go
+@@ -36,7 +36,7 @@ func (m *chatTUI) runRenameCommand(input string) {
+ 	idx, err := strconv.Atoi(args[1])
+ 	if err == nil && len(args) >= 3 {
+ 		// "/rename <n> <new title>"
+-		sessions := mergedResumeEntries(m.ctrl.SessionDir(), resumeListCap)
++		sessions := mergedResumeEntries(m.ctrl.SessionDir(), resumeListCapFor())
+ 		if idx < 1 || idx > len(sessions) {
+ 			m.notice(fmt.Sprintf(i18n.M.ResumeBadIndexFmt, len(sessions)))
+ 			return
+diff --git a/internal/cli/replay_tail_test.go b/internal/cli/replay_tail_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..ed9a8b88a67715cea2635d92e58199a28f86eb82
+--- /dev/null
++++ b/internal/cli/replay_tail_test.go
+@@ -0,0 +1,74 @@
++package cli
++
++import (
++	"fmt"
++	"testing"
++
++	"reasonix/internal/agent"
++	"reasonix/internal/provider"
++)
++
++func replayTestMessages(n int) []provider.Message {
++	messages := make([]provider.Message, 0, n)
++	for i := range n {
++		messages = append(messages, provider.Message{
++			ID:      fmt.Sprintf("m%d", i),
++			Role:    provider.RoleUser,
++			Content: fmt.Sprintf("body-%d", i),
++		})
++	}
++	return messages
++}
++
++func TestClipReplayHistoryKeepsShortHistoryIntact(t *testing.T) {
++	messages := replayTestMessages(cliReplayTailMessages)
++	got, omitted := clipReplayHistory(messages)
++	if omitted != 0 {
++		t.Fatalf("omitted = %d, want 0 at exactly the tail limit", omitted)
++	}
++	if len(got) != len(messages) {
++		t.Fatalf("kept %d messages, want %d", len(got), len(messages))
++	}
++
++	got, omitted = clipReplayHistory(nil)
++	if len(got) != 0 || omitted != 0 {
++		t.Fatalf("empty history -> %d messages, omitted %d", len(got), omitted)
++	}
++}
++
++func TestClipReplayHistoryBoundsLongHistory(t *testing.T) {
++	messages := replayTestMessages(cliReplayTailMessages * 3)
++	got, omitted := clipReplayHistory(messages)
++	if got == nil {
++		t.Fatal("clipReplayHistory returned nil for a long history")
++	}
++	if got[len(got)-1].ID != messages[len(messages)-1].ID {
++		t.Fatalf("tail does not end at the newest message: %q", got[len(got)-1].ID)
++	}
++	if omitted+len(got) != len(messages) {
++		t.Fatalf("omitted %d + kept %d != %d", omitted, len(got), len(messages))
++	}
++	if len(got) > cliReplayTailMessages {
++		t.Fatalf("kept %d messages, want at most %d", len(got), cliReplayTailMessages)
++	}
++	// The boundary must land on a user turn, so the replay never opens mid-turn.
++	if !agent.IsUserAuthoredTurnMessage(got[0]) {
++		t.Fatalf("truncation boundary is not a user turn: %+v", got[0])
++	}
++}
++
++// When no user turn exists at or below the boundary, clipping must still return
++// a bounded slice rather than looping or panicking.
++func TestClipReplayHistoryWithoutUserTurns(t *testing.T) {
++	messages := make([]provider.Message, cliReplayTailMessages*2)
++	for i := range messages {
++		messages[i] = provider.Message{ID: fmt.Sprintf("a%d", i), Role: provider.RoleAssistant, Content: "prose"}
++	}
++	got, omitted := clipReplayHistory(messages)
++	if len(got) != cliReplayTailMessages {
++		t.Fatalf("kept %d messages, want %d", len(got), cliReplayTailMessages)
++	}
++	if omitted+len(got) != len(messages) {
++		t.Fatalf("omitted %d + kept %d != %d", omitted, len(got), len(messages))
++	}
++}
+diff --git a/internal/cli/resume.go b/internal/cli/resume.go
+index c84133be0be21ab7fa1f5285106ade58955a26e7..c21bff49265956a8e8f0b5ef03bf02eeeb91d7de 100644
+--- a/internal/cli/resume.go
++++ b/internal/cli/resume.go
+@@ -10,13 +10,29 @@ import (
+ 	"strings"
+ 
+ 	"reasonix/internal/agent"
++	"reasonix/internal/config"
+ 	"reasonix/internal/control"
+ 	"reasonix/internal/i18n"
+ 	"reasonix/internal/session"
+ )
+ 
++// resumeListCap is the built-in default for the resume surfaces. It is a
++// fallback only: ui.resume_list_limit overrides it per install.
+ const resumeListCap = 10
+ 
++// resumeListCapFor resolves the effective cap from the user configuration.
++// Read-only and silent: a missing or unreadable config keeps the built-in
++// default rather than failing a resume. The credential-free loader is the right
++// one here — the cap is a display setting and must not pull provider keys into
++// the process while a picker is being drawn.
++func resumeListCapFor() int {
++	cfg, err := config.LoadForRootWithoutCredentialsReadOnly(".")
++	if err != nil || cfg == nil {
++		return resumeListCap
++	}
++	return cfg.UI.ResumeLimit(resumeListCap)
++}
++
+ // resumeEntry is one picker row: a session plus, for cross-project rows, the
+ // project it belongs to. The current directory's sessions keep project empty
+ // so existing labels are unchanged. The target carries whether the row is a
+@@ -35,7 +51,7 @@ const resumeOtherProjectsCap = 5
+ // from any directory, not only the workspace root (#9477), and must see the
+ // same conversations the desktop tree shows after a migration.
+ func resumeEntries(dir string) []resumeEntry {
+-	base := mergedResumeEntries(dir, resumeListCap)
++	base := mergedResumeEntries(dir, resumeListCapFor())
+ 	out := make([]resumeEntry, 0, len(base)+resumeOtherProjectsCap)
+ 	out = append(out, base...)
+ 	out = append(out, otherProjectResumeEntries(dir)...)
+diff --git a/internal/cli/resume_catalog.go b/internal/cli/resume_catalog.go
+index 061724d00e8d363ed20520ea65ec8912ce2ee7ad..2c6bfd66df3b9ffbe75b589248a2c66895afe4b2 100644
+--- a/internal/cli/resume_catalog.go
++++ b/internal/cli/resume_catalog.go
+@@ -53,14 +53,20 @@ func canonicalResumeEntries(ctx context.Context, sessionDir string) []resumeEntr
+ 	if service == nil {
+ 		return nil
+ 	}
+-	return canonicalResumeEntriesFrom(ctx, service.Query())
++	return canonicalResumeEntriesFrom(ctx, service.Query(), resumeListCapFor())
+ }
+ 
+ // canonicalResumeEntriesFrom walks the whole catalog (up to
+ // canonicalResumeWalkCap rows) before sorting by recency and applying the
+ // display cap, so the newest conversation is offered regardless of where its
+ // id sorts.
+-func canonicalResumeEntriesFrom(ctx context.Context, catalog canonicalCatalogLister) []resumeEntry {
++//
++// displayCap is the caller's resolved ui.resume_list_limit. It used to be an
++// unconditional canonicalResumeScanCap, which silently hid everything past the
++// 100th-newest conversation from a picker configured to show more — searching
++// for an older conversation then matched nothing at all. A non-positive value
++// keeps every row.
++func canonicalResumeEntriesFrom(ctx context.Context, catalog canonicalCatalogLister, displayCap int) []resumeEntry {
+ 	var out []resumeEntry
+ 	cursor := ""
+ 	for walked := 0; walked < canonicalResumeWalkCap; {
+@@ -84,8 +90,8 @@ func canonicalResumeEntriesFrom(ctx context.Context, catalog canonicalCatalogLis
+ 		cursor = page.NextCursor
+ 	}
+ 	sort.SliceStable(out, func(i, j int) bool { return out[i].session.ModTime.After(out[j].session.ModTime) })
+-	if len(out) > canonicalResumeScanCap {
+-		out = out[:canonicalResumeScanCap]
++	if displayCap > 0 && len(out) > displayCap {
++		out = out[:displayCap]
+ 	}
+ 	return out
+ }
+diff --git a/internal/cli/resume_catalog_cap_test.go b/internal/cli/resume_catalog_cap_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..e0fb401e73f773f8a4be723b433e37e250a57a55
+--- /dev/null
++++ b/internal/cli/resume_catalog_cap_test.go
+@@ -0,0 +1,64 @@
++package cli
++
++import (
++	"context"
++	"testing"
++	"time"
++)
++
++// The catalog listing used to end in an unconditional 100-row cap, so a picker
++// configured to show more than 100 conversations still stopped at the 100th
++// newest — and because the resume search filters this same list, searching for
++// anything older matched nothing at all.
++func TestCanonicalResumeEntriesFromHonorsDisplayCap(t *testing.T) {
++	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
++	catalog := newFakeSessionCatalog(250, func(i int) time.Time {
++		return base.Add(time.Duration(i) * time.Minute)
++	})
++
++	cases := []struct {
++		name string
++		cap  int
++		want int
++	}{
++		{"默认内置上限行为", canonicalResumeScanCap, canonicalResumeScanCap},
++		{"配置放大到200", 200, 200},
++		{"配置缩小到5", 5, 5},
++		{"负值不限制", -1, 250},
++		{"零值不限制", 0, 250},
++	}
++	for _, tc := range cases {
++		entries := canonicalResumeEntriesFrom(context.Background(), catalog, tc.cap)
++		if len(entries) != tc.want {
++			t.Fatalf("%s: listed %d rows, want %d", tc.name, len(entries), tc.want)
++		}
++		if len(entries) == 0 {
++			continue
++		}
++		// Newest first, whatever the cap is.
++		for i := 1; i < len(entries); i++ {
++			if entries[i].session.ModTime.After(entries[i-1].session.ModTime) {
++				t.Fatalf("%s: rows not newest-first at %d", tc.name, i)
++			}
++		}
++	}
++}
++
++// A cap larger than the walk budget still yields every row the walk reached, so
++// a user asking for "no limit" is bounded by the catalog walk rather than
++// silently losing the tail.
++func TestCanonicalResumeEntriesFromCapBeyondCatalogKeepsAllWalked(t *testing.T) {
++	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
++	total := 150
++	catalog := newFakeSessionCatalog(total, func(i int) time.Time {
++		return base.Add(time.Duration(i) * time.Minute)
++	})
++
++	entries := canonicalResumeEntriesFrom(context.Background(), catalog, -1)
++	if len(entries) != total {
++		t.Fatalf("listed %d rows, want all %d", len(entries), total)
++	}
++	if got := entries[0].target.ref.SessionID; got != "s00149" {
++		t.Fatalf("newest row = %q, want s00149", got)
++	}
++}
+diff --git a/internal/cli/resume_catalog_test.go b/internal/cli/resume_catalog_test.go
+index ee151a3b76ced15ecb64a2278ae0b02b5e062571..403bf717dd2169754070cb2e79ebca0affb3f8f1 100644
+--- a/internal/cli/resume_catalog_test.go
++++ b/internal/cli/resume_catalog_test.go
+@@ -318,7 +318,7 @@ func TestCanonicalResumeEntriesRankNewestAcrossCatalogPages(t *testing.T) {
+ 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+ 	catalog := newFakeSessionCatalog(250, func(i int) time.Time { return base.Add(time.Duration(i) * time.Minute) })
+ 
+-	entries := canonicalResumeEntriesFrom(context.Background(), catalog)
++	entries := canonicalResumeEntriesFrom(context.Background(), catalog, canonicalResumeScanCap)
+ 
+ 	if len(entries) != canonicalResumeScanCap {
+ 		t.Fatalf("listed %d rows, want the display cap of %d", len(entries), canonicalResumeScanCap)
+@@ -346,7 +346,7 @@ func TestCanonicalResumeEntriesBoundTheCatalogWalk(t *testing.T) {
+ 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+ 	catalog := newFakeSessionCatalog(canonicalResumeWalkCap+canonicalResumeScanCap, func(int) time.Time { return base })
+ 
+-	entries := canonicalResumeEntriesFrom(context.Background(), catalog)
++	entries := canonicalResumeEntriesFrom(context.Background(), catalog, canonicalResumeScanCap)
+ 
+ 	if want := canonicalResumeWalkCap / canonicalResumeScanCap; catalog.calls != want {
+ 		t.Fatalf("catalog pages walked = %d, want %d (walk cap %d)", catalog.calls, want, canonicalResumeWalkCap)
+diff --git a/internal/cli/select.go b/internal/cli/select.go
+index fa34d2d877bfd88816ad1350c7adfaba9c824512..e71f886715651e554a161ffab95769a8ba23a9d9 100644
+--- a/internal/cli/select.go
++++ b/internal/cli/select.go
+@@ -6,6 +6,7 @@ import (
+ 	"io"
+ 	"os"
+ 	"strings"
++	"unicode/utf8"
+ 
+ 	"github.com/charmbracelet/x/ansi"
+ 	"golang.org/x/term"
+@@ -112,6 +113,52 @@ func filterMenuItems(items []menuItem, query string) []menuItem {
+ 	return out
+ }
+ 
++// searchInputBuf sizes a stdin read so a burst of typed text — several
++// multi-byte characters plus spaces from an IME — arrives whole. The previous
++// 8-byte buffer truncated longer input mid-character, leaving the query with a
++// partial UTF-8 sequence that no longer matched anything.
++const searchInputBuf = 256
++
++// searchText folds one raw stdin chunk into the search query. k may hold several
++// characters at once (a paste, or one read catching a fast typist), so the whole
++// chunk is decoded rather than only its first byte.
++//
++// pending carries the bytes of a multi-byte character that the previous read cut
++// in half. Such a character is not lost: the fragment is prepended to the next
++// chunk and decoded then, which is why the caller keeps pending across reads.
++// Control bytes are dropped so a chunk never injects an Enter or an arrow
++// sequence into the query text.
++func searchText(query string, pending, k []byte) (string, []byte) {
++	buf := k
++	if len(pending) > 0 {
++		buf = append(append(make([]byte, 0, len(pending)+len(k)), pending...), k...)
++	}
++	for i := 0; i < len(buf); {
++		r, size := utf8.DecodeRune(buf[i:])
++		if r == utf8.RuneError && size <= 1 {
++			// A trailing partial sequence is held back for the next read instead
++			// of being committed as invalid UTF-8, which could never match again.
++			return query, append([]byte(nil), buf[i:]...)
++		}
++		if r >= 32 && r != 127 {
++			query += string(r)
++		}
++		i += size
++	}
++	return query, nil
++}
++
++// trimSearchRune removes the last character from the query by rune, not by
++// byte: deleting one byte from a multi-byte character leaves invalid UTF-8 that
++// can never match any label again.
++func trimSearchRune(query string) string {
++	if query == "" {
++		return query
++	}
++	_, size := utf8.DecodeLastRuneInString(query)
++	return query[:len(query)-size]
++}
++
+ // selectOne renders an interactive single-choice menu navigated with the arrow
+ // keys (or j/k), confirmed with Enter, aborted with q or Ctrl-C. It puts the
+ // terminal in raw mode, so it requires a TTY (callers gate on isInteractive).
+@@ -133,6 +180,9 @@ func selectOne(label string, items []menuItem) (int, error) {
+ 	// search state
+ 	searching := false
+ 	searchQuery := ""
++	// searchPending holds the bytes of a multi-byte character that a read cut in
++	// half, so the next read can complete it instead of losing it.
++	var searchPending []byte
+ 	filtered := items
+ 	filterIdx := make([]int, len(items))
+ 	for i := range items {
+@@ -207,19 +257,23 @@ func selectOne(label string, items []menuItem) (int, error) {
+ 
+ 	redraw() // initial draw
+ 
+-	buf := make([]byte, 8)
++	buf := make([]byte, searchInputBuf)
+ 	for {
+ 		n, err := os.Stdin.Read(buf)
+ 		if err != nil {
+ 			return 0, err
+ 		}
+ 		k := buf[:n]
++		if len(k) == 0 {
++			continue
++		}
+ 
+ 		if searching {
+ 			switch {
+ 			case k[0] == 27: // Esc — exit search
+ 				searching = false
+ 				searchQuery = ""
++				searchPending = nil
+ 				filtered = items
+ 				filterIdx = make([]int, len(items))
+ 				for i := range items {
+@@ -235,7 +289,7 @@ func selectOne(label string, items []menuItem) (int, error) {
+ 				}
+ 			case k[0] == 127 || k[0] == 8: // backspace
+ 				if len(searchQuery) > 0 {
+-					searchQuery = searchQuery[:len(searchQuery)-1]
++					searchQuery = trimSearchRune(searchQuery)
+ 					filtered = filterMenuItems(items, searchQuery)
+ 					filterIdx = filterIndices(items, searchQuery)
+ 					sel = 0
+@@ -245,15 +299,17 @@ func selectOne(label string, items []menuItem) (int, error) {
+ 			case k[0] == 3: // Ctrl-C
+ 				fmt.Fprint(w, "\r\n")
+ 				return 0, errCancelled
+-			case k[0] >= 32 && k[0] < 127: // printable
+-				searchQuery += string(k[0])
+-				filtered = filterMenuItems(items, searchQuery)
+-				filterIdx = filterIndices(items, searchQuery)
+-				sel = 0
+-				scroll = 0
+-				redraw()
+ 			default:
+-				continue
++				// Printable text, including multi-byte characters typed by a
++				// terminal IME and any spaces the chunk carries.
++				if next, rest := searchText(searchQuery, searchPending, k); next != searchQuery {
++					searchQuery, searchPending = next, rest
++					filtered = filterMenuItems(items, searchQuery)
++					filterIdx = filterIndices(items, searchQuery)
++					sel = 0
++					scroll = 0
++					redraw()
++				}
+ 			}
+ 			continue
+ 		}
+@@ -312,6 +368,9 @@ func selectMany(label string, items []menuItem) ([]int, error) {
+ 	// search state
+ 	searching := false
+ 	searchQuery := ""
++	// searchPending holds the bytes of a multi-byte character that a read cut in
++	// half, so the next read can complete it instead of losing it.
++	var searchPending []byte
+ 	filtered := items
+ 	filterIdx := make([]int, len(items))
+ 	for i := range items {
+@@ -384,19 +443,23 @@ func selectMany(label string, items []menuItem) ([]int, error) {
+ 
+ 	redraw()
+ 
+-	buf := make([]byte, 8)
++	buf := make([]byte, searchInputBuf)
+ 	for {
+ 		n, err := os.Stdin.Read(buf)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+ 		k := buf[:n]
++		if len(k) == 0 {
++			continue
++		}
+ 
+ 		if searching {
+ 			switch {
+ 			case k[0] == 27: // Esc — exit search
+ 				searching = false
+ 				searchQuery = ""
++				searchPending = nil
+ 				filtered = items
+ 				filterIdx = make([]int, len(items))
+ 				for i := range items {
+@@ -424,7 +487,7 @@ func selectMany(label string, items []menuItem) ([]int, error) {
+ 				}
+ 			case k[0] == 127 || k[0] == 8: // backspace
+ 				if len(searchQuery) > 0 {
+-					searchQuery = searchQuery[:len(searchQuery)-1]
++					searchQuery = trimSearchRune(searchQuery)
+ 					filtered = filterMenuItems(items, searchQuery)
+ 					filterIdx = filterIndices(items, searchQuery)
+ 					cur = 0
+@@ -434,31 +497,17 @@ func selectMany(label string, items []menuItem) ([]int, error) {
+ 			case k[0] == 3: // Ctrl-C
+ 				fmt.Fprint(w, "\r\n")
+ 				return nil, errCancelled
+-			case k[0] >= 32 && k[0] < 127:
+-				searchQuery += string(k[0])
+-				filtered = filterMenuItems(items, searchQuery)
+-				filterIdx = filterIndices(items, searchQuery)
+-				cur = 0
+-				scroll = 0
+-				redraw()
+-			case len(k) >= 3 && k[0] == 27 && k[1] == '[' && k[2] == 'A':
+-				if cur > 0 {
+-					cur--
+-				}
+-			case len(k) >= 3 && k[0] == 27 && k[1] == '[' && k[2] == 'B':
+-				if cur < len(filtered)-1 {
+-					cur++
+-				}
+-			case k[0] == 'k':
+-				if cur > 0 {
+-					cur--
+-				}
+-			case k[0] == 'j':
+-				if cur < len(filtered)-1 {
+-					cur++
+-				}
+ 			default:
+-				continue
++				// Printable text, including multi-byte characters typed by a
++				// terminal IME and any spaces the chunk carries.
++				if next, rest := searchText(searchQuery, searchPending, k); next != searchQuery {
++					searchQuery, searchPending = next, rest
++					filtered = filterMenuItems(items, searchQuery)
++					filterIdx = filterIndices(items, searchQuery)
++					cur = 0
++					scroll = 0
++					redraw()
++				}
+ 			}
+ 			redraw()
+ 			continue
+diff --git a/internal/cli/select_search_input_test.go b/internal/cli/select_search_input_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..da3ae31ea99d1cfbb07954354ee1acf5d578e13e
+--- /dev/null
++++ b/internal/cli/select_search_input_test.go
+@@ -0,0 +1,117 @@
++package cli
++
++import (
++	"testing"
++	"unicode/utf8"
++)
++
++// The search menus read raw bytes from a raw-mode stdin. A single Chinese
++// character is three bytes whose lead byte (0xE9-0xEF) fails every ASCII
++// printable test, so the old `k[0] >= 32 && k[0] < 127` guard dropped the whole
++// character into the ignored default branch.
++func TestSearchTextAcceptsMultiByteRunes(t *testing.T) {
++	items := []menuItem{
++		{name: "获取一下 github KeyAttestation 检测原理", desc: "2026-10-05 21:51"},
++		{name: "不用搜索帮我写一个鹈鹕骑自行车的动画", desc: "2026-10-05 19:48"},
++		{name: "hello world test", desc: "2026-10-04 10:00"},
++	}
++
++	cases := []struct {
++		name  string
++		chunk string
++		want  string
++	}{
++		{"单个汉字", "鹈", "鹈"},
++		{"一次读入多个汉字", "鹈鹕骑", "鹈鹕骑"},
++		{"汉字间含空格", "鹈鹕 骑", "鹈鹕 骑"},
++		{"英文单词", "hello world", "hello world"},
++		{"中英混合", "鹈 test", "鹈 test"},
++	}
++	for _, tc := range cases {
++		got, rest := searchText("", nil, []byte(tc.chunk))
++		if got != tc.want {
++			t.Fatalf("%s: searchText(%q) = %q, want %q", tc.name, tc.chunk, got, tc.want)
++		}
++		if len(rest) != 0 {
++			t.Fatalf("%s: left over bytes %v, want none", tc.name, rest)
++		}
++		if !utf8.ValidString(got) {
++			t.Fatalf("%s: result %q is not valid UTF-8", tc.name, got)
++		}
++	}
++
++	// The whole point: a Chinese query must actually match a Chinese label.
++	if n := len(filterMenuItems(items, "鹈鹕")); n != 1 {
++		t.Fatalf("filterMenuItems(%q) matched %d items, want 1", "鹈鹕", n)
++	}
++	if n := len(filterMenuItems(items, "hello world")); n != 1 {
++		t.Fatalf("filterMenuItems(%q) matched %d items, want 1", "hello world", n)
++	}
++}
++
++func TestSearchTextDropsControlBytes(t *testing.T) {
++	// A chunk can carry more than the character it represents; control bytes
++	// must not end up inside the query text.
++	got, _ := searchText("", nil, []byte{'a', 3, 'b'})
++	if got != "ab" {
++		t.Fatalf("searchText with Ctrl-C = %q, want %q", got, "ab")
++	}
++	if got, _ = searchText("", nil, []byte("a\x7fb")); got != "ab" {
++		t.Fatalf("searchText with DEL = %q, want %q", got, "ab")
++	}
++}
++
++func TestSearchTextCompletesCharacterSplitAcrossReads(t *testing.T) {
++	// A read can stop mid-character. The fragment must be held for the next read
++	// rather than committed as invalid UTF-8 or dropped outright.
++	got, pending := searchText("", nil, []byte{0xe9, 0xb9})
++	if got != "" {
++		t.Fatalf("searchText(partial) = %q, want empty", got)
++	}
++	if len(pending) != 2 {
++		t.Fatalf("pending = %v, want the 2 held-back bytes", pending)
++	}
++	// The rest of the character arrives on the next read and completes it.
++	got, pending = searchText(got, pending, []byte{0x88})
++	if got != "鹈" {
++		t.Fatalf("searchText(remainder) = %q, want %q", got, "鹈")
++	}
++	if len(pending) != 0 {
++		t.Fatalf("pending = %v, want empty after completion", pending)
++	}
++}
++
++func TestSearchInputBufHoldsABurst(t *testing.T) {
++	// The old 8-byte buffer truncated a longer burst mid-character.
++	burst := []byte("鹈鹕骑自行车的动画效果")
++	if len(burst) > searchInputBuf {
++		t.Fatalf("test burst (%d bytes) exceeds searchInputBuf (%d)", len(burst), searchInputBuf)
++	}
++	got, pending := searchText("", nil, burst)
++	if pending != nil {
++		t.Fatalf("pending = %v, want nil for a complete burst", pending)
++	}
++	if !utf8.ValidString(got) || got != string(burst) {
++		t.Fatalf("searchText(burst) = %q, want %q", got, string(burst))
++	}
++}
++
++func TestTrimSearchRuneRemovesOneCharacter(t *testing.T) {
++	if got := trimSearchRune("鹈鹕"); got != "鹈" {
++		t.Fatalf("trimSearchRune(%q) = %q, want %q", "鹈鹕", got, "鹈")
++	}
++	if got := trimSearchRune("鹈"); got != "" {
++		t.Fatalf("trimSearchRune(%q) = %q, want empty", "鹈", got)
++	}
++	if got := trimSearchRune("hello world"); got != "hello worl" {
++		t.Fatalf("trimSearchRune(%q) = %q, want %q", "hello world", got, "hello worl")
++	}
++	if got := trimSearchRune(""); got != "" {
++		t.Fatalf("trimSearchRune(%q) = %q, want empty", "", got)
++	}
++	// Deleting a multi-byte character must never leave a broken rune behind.
++	trimmed := trimSearchRune("鹈鹕骑")
++	if !utf8.ValidString(trimmed) {
++		t.Fatalf("trimSearchRune left invalid UTF-8: %q", trimmed)
++	}
++}
+diff --git a/internal/cli/skill_picker.go b/internal/cli/skill_picker.go
+index 19ba3aa3aea51976c43acd8f2800ec4e5dd4ef54..b2554e10f2294c75fc22ecfa95670a01d5eabe08 100644
+--- a/internal/cli/skill_picker.go
++++ b/internal/cli/skill_picker.go
+@@ -6,6 +6,7 @@ import (
+ 	"path/filepath"
+ 	"sort"
+ 	"strings"
++	"unicode/utf8"
+ 
+ 	tea "charm.land/bubbletea/v2"
+ 
+@@ -101,7 +102,10 @@ func (m chatTUI) handleSkillPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
+ 			return m.saveSkillPick()
+ 		case "backspace":
+ 			if len(p.query) > 0 {
+-				p.query = p.query[:len(p.query)-1]
++				// Drop one rune, not one byte: a byte slice would split a
++				// multi-byte character and leave invalid UTF-8 in the query.
++				_, n := utf8.DecodeLastRuneInString(p.query)
++				p.query = p.query[:len(p.query)-n]
+ 				p.sel = clampSel(p.sel, p.filteredSkills())
+ 			}
+ 			return m, nil
+@@ -117,10 +121,11 @@ func (m chatTUI) handleSkillPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
+ 			}
+ 			return m, nil
+ 		default:
+-			if t := msg.Text; t != "" {
+-				p.query += t
+-			} else if s := msg.String(); len(s) == 1 && s[0] >= 32 && s[0] < 127 {
+-				p.query += s
++			// Same contract as quick_picker: only printable input carries Text,
++			// so an IME composition key (empty Text) must not be turned into
++			// text via String().
++			if msg.Text != "" {
++				p.query += msg.Text
+ 			}
+ 			p.sel = clampSel(p.sel, p.filteredSkills())
+ 			return m, nil
 diff --git a/internal/cli/theme_osc_other.go b/internal/cli/theme_osc_other.go
-index 713dc8ee..e2c60692 100644
+index 713dc8eeb19e9e1c0114f22dbb48f2bb02b26277..e2c606924df5b0f25f63199e66f1c5741ea28a3d 100644
 --- a/internal/cli/theme_osc_other.go
 +++ b/internal/cli/theme_osc_other.go
 @@ -1,4 +1,4 @@
@@ -264,7 +1419,7 @@ index 713dc8ee..e2c60692 100644
  package cli
  
 diff --git a/internal/cli/theme_osc_unix.go b/internal/cli/theme_osc_unix.go
-index e0c89e34..3c41ed40 100644
+index e0c89e34a7da52e8be6a00c1298509517d9c4fb4..3c41ed40dddf1269ea91bc3d593800c9bbd5048f 100644
 --- a/internal/cli/theme_osc_unix.go
 +++ b/internal/cli/theme_osc_unix.go
 @@ -1,4 +1,4 @@
@@ -273,11 +1428,73 @@ index e0c89e34..3c41ed40 100644
  
  package cli
  
+diff --git a/internal/cli/transcript.go b/internal/cli/transcript.go
+index bff1d79c3a7a327b1249e175e9fae4f991f078f7..3785f228dbdec186e27b385851347bdde5e8228d 100644
+--- a/internal/cli/transcript.go
++++ b/internal/cli/transcript.go
+@@ -1,6 +1,7 @@
+ package cli
+ 
+ import (
++	"fmt"
+ 	"math"
+ 	"os"
+ 	"strconv"
+@@ -11,6 +12,7 @@ import (
+ 	"charm.land/lipgloss/v2"
+ 	"github.com/charmbracelet/x/ansi"
+ 
++	"reasonix/internal/i18n"
+ 	"reasonix/internal/provider"
+ )
+ 
+@@ -42,7 +44,11 @@ type transcriptSource struct {
+ 	copyRendered string
+ 	planMode     bool
+ 	maxLines     int
+-	history      []provider.Message
++	// replayOmitted counts earlier history messages that a replay bundle
++	// deliberately does not render (tail truncation). It feeds the
++	// "earlier history omitted" notice line; 0 renders nothing.
++	replayOmitted int
++	history       []provider.Message
+ }
+ 
+ func (m *chatTUI) ensureTranscriptSources() {
+@@ -134,6 +140,9 @@ func (m chatTUI) renderReplayBundleWithRenderers(
+ ) string {
+ 	var b strings.Builder
+ 	b.WriteString(renderTUIBanner(m.label, source.raw, contentWidth))
++	if source.replayOmitted > 0 {
++		b.WriteString(replayOmittedNotice(source.replayOmitted, contentWidth) + "\n\n")
++	}
+ 	for _, section := range replaySectionsForWithRenderers(
+ 		source.history,
+ 		contentWidth,
+@@ -145,6 +154,18 @@ func (m chatTUI) renderReplayBundleWithRenderers(
+ 	return strings.TrimRight(b.String(), "\n")
+ }
+ 
++// replayOmittedNotice is the dim separator line shown when a replay bundle
++// deliberately renders only the recent tail of a long session.
++func replayOmittedNotice(omitted int, width int) string {
++	var text string
++	if omitted > 0 {
++		text = fmt.Sprintf("  · -- %s (%d) --", i18n.M.ReplayOmittedLabel, omitted)
++	} else {
++		text = fmt.Sprintf("  · -- %s --", i18n.M.ReplayOmittedLabel)
++	}
++	return wrapForViewport(text, width, activeCLITheme.faint)
++}
++
+ func (m chatTUI) renderReplayBundleCopy(
+ 	source transcriptSource,
+ 	contentWidth int,
 diff --git a/internal/config/config.go b/internal/config/config.go
-index 60ed34dd..3ca9fab0 100644
+index a2e1c1ae9bd7b3bb4bd755a7e73086e10001c4e3..cdf40a33d26079b7a207fd01c01b52df8bf76d8d 100644
 --- a/internal/config/config.go
 +++ b/internal/config/config.go
-@@ -270,6 +270,13 @@ type UIConfig struct {
+@@ -271,6 +271,28 @@ type UIConfig struct {
  	ShowReasoning  bool   `toml:"show_reasoning"`  // Ctrl+O / /verbose: show thinking text in CLI; false = collapsed
  	ShowTurnUsage  bool   `toml:"show_turn_usage"` // show per-request token/cost receipts in the CLI/TUI transcript
  	CursorShape    string `toml:"cursor_shape"`    // block|underline|bar; empty defaults to bar
@@ -288,11 +1505,26 @@ index 60ed34dd..3ca9fab0 100644
 +	// nil selects the CLI's default reserve on Termux; an explicit 0 disables
 +	// the reserve for a device whose reported size it draws exactly.
 +	TermuxWidthOffset *int `toml:"termux_width_offset"`
++	// ResumeListLimit caps how many conversations the resume surfaces offer:
++	// `reasonix --resume`'s picker, its `/` search over that picker, and the
++	// TUI /resume picker. That search filters this same capped list, so a
++	// conversation older than the limit is unreachable by typing keywords too.
++	// 0 (or absent) keeps the built-in default; a negative value drops the cap.
++	ResumeListLimit int `toml:"resume_list_limit"`
++}
++
++// ResumeLimit resolves ui.resume_list_limit against fallback. A negative value
++// is meaningful: it asks for the whole conversation history with no cap.
++func (c UIConfig) ResumeLimit(fallback int) int {
++	if c.ResumeListLimit == 0 {
++		return fallback
++	}
++	return c.ResumeListLimit
  }
  
  // CLIConfig controls user-global native CLI behavior. It is separate from
 diff --git a/internal/config/mutate.go b/internal/config/mutate.go
-index 7c33fea5..8202561c 100644
+index 7c33fea5dd5ac141ea79bf8248988eda3d0414ec..8202561cb4133e7b16f68e14b046f9beddcaa903 100644
 --- a/internal/config/mutate.go
 +++ b/internal/config/mutate.go
 @@ -290,10 +290,18 @@ func configEditLockRegistryDir() (string, error) {
@@ -339,7 +1571,7 @@ index 7c33fea5..8202561c 100644
  	path = strings.TrimSpace(path)
  	if path == "" {
 diff --git a/internal/config/render.go b/internal/config/render.go
-index 4e1c9cc1..c0240ace 100644
+index 537f1747868eabc7c0912dc4014fb3bf7a9eeb3a..0daecd7ff0ee7f83f2b8393f3ea48a5752b1da92 100644
 --- a/internal/config/render.go
 +++ b/internal/config/render.go
 @@ -80,6 +80,11 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
@@ -354,7 +1586,19 @@ index 4e1c9cc1..c0240ace 100644
  		if strings.TrimSpace(c.UI.CloseBehavior) != "" && scope == RenderScopeProject {
  			fmt.Fprintf(&b, "close_behavior = %q   # legacy desktop close behavior; prefer [desktop].close_behavior in user config\n", c.DesktopCloseBehavior())
  		}
-@@ -828,6 +833,9 @@ func RenderTOMLProjectDelta(c *Config) string {
+@@ -89,6 +94,11 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
+ 			b.WriteString("# show_reasoning = true   # CLI: show thinking text by default; false = collapsed (toggle with Ctrl+O)\n")
+ 		}
+ 		fmt.Fprintf(&b, "show_turn_usage = %v   # CLI/TUI: show per-request token and cost receipts in the transcript\n", c.UI.ShowTurnUsage)
++		if limit := c.UI.ResumeListLimit; limit != 0 {
++			fmt.Fprintf(&b, "resume_list_limit = %d   # resume picker offers this many conversations; negative means no cap; 0/absent keeps the built-in default\n", limit)
++		} else {
++			b.WriteString("# resume_list_limit = 10   # resume picker offers this many conversations; negative means no cap; 0/absent keeps the built-in default\n")
++		}
+ 		b.WriteString("\n")
+ 	}
+ 
+@@ -832,6 +842,9 @@ func RenderTOMLProjectDelta(c *Config) string {
  		if strings.TrimSpace(c.UI.CursorShape) != "" {
  			fmt.Fprintf(&b, "cursor_shape = %q\n", c.UICursorShape())
  		}
@@ -364,8 +1608,128 @@ index 4e1c9cc1..c0240ace 100644
  		if c.UI.CloseBehavior != d.UI.CloseBehavior {
  			fmt.Fprintf(&b, "close_behavior = %q\n", c.DesktopCloseBehavior())
  		}
+@@ -841,6 +854,9 @@ func RenderTOMLProjectDelta(c *Config) string {
+ 		if c.UI.ShowTurnUsage != d.UI.ShowTurnUsage {
+ 			fmt.Fprintf(&b, "show_turn_usage = %v\n", c.UI.ShowTurnUsage)
+ 		}
++		if c.UI.ResumeListLimit != d.UI.ResumeListLimit {
++			fmt.Fprintf(&b, "resume_list_limit = %d\n", c.UI.ResumeListLimit)
++		}
+ 		b.WriteString("\n")
+ 	}
+ 
+diff --git a/internal/config/render_test.go b/internal/config/render_test.go
+index d9dd3194ebbdfef5d2a8a67b75cf202b61e71da0..925af1c76713bbbfcf1a4126c48922a393c431ca 100644
+--- a/internal/config/render_test.go
++++ b/internal/config/render_test.go
+@@ -1501,3 +1501,53 @@ func TestRenderTOMLPersistsSecretsSection(t *testing.T) {
+ 		t.Fatalf("user-scope render still exposes removed live-redaction setting:\n%s", out)
+ 	}
+ }
++
++func TestResumeListLimitSurvivesConfigRender(t *testing.T) {
++	c := Default()
++	c.UI.ResumeListLimit = -1
++
++	out := RenderTOML(c)
++	if !strings.Contains(out, "resume_list_limit = -1") {
++		t.Fatalf("user-scope render dropped ui.resume_list_limit:\n%s", out)
++	}
++
++	got := Default()
++	if _, err := toml.Decode(out, got); err != nil {
++		t.Fatalf("decode rendered config: %v\n%s", err, out)
++	}
++	if got.UI.ResumeListLimit != -1 {
++		t.Fatalf("ui.resume_list_limit = %d after round-trip, want -1", got.UI.ResumeListLimit)
++	}
++
++	// A project delta must carry the override too, otherwise a project-scoped
++	// save would silently restore the built-in cap.
++	delta := RenderTOMLProjectDelta(c)
++	if !strings.Contains(delta, "resume_list_limit = -1") {
++		t.Fatalf("project delta dropped ui.resume_list_limit:\n%s", delta)
++	}
++
++	fromDelta := Default()
++	if _, err := toml.Decode(delta, fromDelta); err != nil {
++		t.Fatalf("decode project delta: %v\n%s", err, delta)
++	}
++	if fromDelta.UI.ResumeListLimit != -1 {
++		t.Fatalf("ui.resume_list_limit = %d after project-delta round-trip, want -1", fromDelta.UI.ResumeListLimit)
++	}
++}
++
++func TestResumeListLimitUnsetRendersCommentedHint(t *testing.T) {
++	out := RenderTOML(Default())
++	if strings.Contains(out, "\nresume_list_limit = ") {
++		t.Fatalf("unset ui.resume_list_limit rendered as an active value:\n%s", out)
++	}
++	if !strings.Contains(out, "# resume_list_limit = 10") {
++		t.Fatalf("unset ui.resume_list_limit lost its commented hint:\n%s", out)
++	}
++	got := Default()
++	if _, err := toml.Decode(out, got); err != nil {
++		t.Fatalf("decode default render: %v\n%s", err, out)
++	}
++	if got.UI.ResumeListLimit != 0 {
++		t.Fatalf("default render produced ui.resume_list_limit = %d, want 0 (absent)", got.UI.ResumeListLimit)
++	}
++}
+diff --git a/internal/config/resume_limit_test.go b/internal/config/resume_limit_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..a27e99fa3956ba370e6beefc23e4cbb80b6b3e57
+--- /dev/null
++++ b/internal/config/resume_limit_test.go
+@@ -0,0 +1,46 @@
++package config
++
++import "testing"
++
++func TestUIConfigResumeLimit(t *testing.T) {
++	const fallback = 10
++	cases := []struct {
++		name string
++		set  int
++		want int
++	}{
++		{"未配置沿用内置默认", 0, fallback},
++		{"显式设置为更大值", 50, 50},
++		{"显式设置为更小值", 3, 3},
++		{"负值表示不限制", -1, -1},
++		{"较大的负值同样不限制", -100, -100},
++	}
++	for _, tc := range cases {
++		got := UIConfig{ResumeListLimit: tc.set}.ResumeLimit(fallback)
++		if got != tc.want {
++			t.Fatalf("%s: ResumeLimit(%d) with resume_list_limit=%d = %d, want %d",
++				tc.name, fallback, tc.set, got, tc.want)
++		}
++	}
++}
++
++func TestUIConfigResumeLimitTOMLKey(t *testing.T) {
++	// The key must round-trip through the user's config.toml under [ui].
++	var cfg Config
++	if _, err := decodeTOMLBytes([]byte("[ui]\nresume_list_limit = 42\n"), &cfg); err != nil {
++		t.Fatalf("decode config: %v", err)
++	}
++	if got := cfg.UI.ResumeLimit(10); got != 42 {
++		t.Fatalf("resume_list_limit from TOML = %d, want 42", got)
++	}
++}
++
++func TestUIConfigResumeLimitAbsentKeepsDefault(t *testing.T) {
++	var cfg Config
++	if _, err := decodeTOMLBytes([]byte("[ui]\ntheme = \"auto\"\n"), &cfg); err != nil {
++		t.Fatalf("decode config: %v", err)
++	}
++	if got := cfg.UI.ResumeLimit(10); got != 10 {
++		t.Fatalf("resume_list_limit absent = %d, want the built-in 10", got)
++	}
++}
 diff --git a/internal/fileutil/atomicwrite.go b/internal/fileutil/atomicwrite.go
-index 04355164..8dc3b334 100644
+index 0435516486e41eb6227eed1dd9a9903709d22242..8dc3b3340389022e5739cbc088e3d3262de4bf69 100644
 --- a/internal/fileutil/atomicwrite.go
 +++ b/internal/fileutil/atomicwrite.go
 @@ -3,6 +3,7 @@ package fileutil
@@ -421,8 +1785,56 @@ index 04355164..8dc3b334 100644
  // AtomicOverwriteFile replaces an existing file's contents atomically while
  // keeping the two properties a bare rename drops: the file's current permission
  // bits (an executable script must not come back 0644) and the symlink target
+diff --git a/internal/i18n/i18n.go b/internal/i18n/i18n.go
+index 0255e3f278384846a84848c4eecbf848f144cc33..fd4b87aa2ef7055a53e18ac6ddd8bc9c38bb479a 100644
+--- a/internal/i18n/i18n.go
++++ b/internal/i18n/i18n.go
+@@ -36,6 +36,7 @@ type Messages struct {
+ 	TurnCancelled            string // shown when Ctrl-C aborts the in-flight turn but the chat keeps running
+ 	InterruptedRecovery      string // replay notice for a durable interrupted turn
+ 	FinalReadinessRecovery   string // replay hint for a durable final-readiness pause
++	ReplayOmittedLabel       string // replay notice: earlier history not rendered by the tail-only replay
+ 	ReadinessContinuing      string // host is automatically finishing known readiness gaps
+ 	RecoveryPaused           string // controlled Auto retry pause; user can continue in the next message
+ 	CompletionUncertain      string // completion validator could not confirm the result; work is kept
+diff --git a/internal/i18n/messages_en.go b/internal/i18n/messages_en.go
+index 89b8c55e90f1ed284c0902140c4320a4fa695535..5891d60c9e53eac7c67b7f111a67f3889a6ff90e 100644
+--- a/internal/i18n/messages_en.go
++++ b/internal/i18n/messages_en.go
+@@ -12,6 +12,7 @@ var English = Messages{
+ 	TurnCancelled:                    "cancelled — back to prompt",
+ 	InterruptedRecovery:              "This turn was interrupted. Partial output is kept for reference; only completed tool pairs and a bounded recovery summary enter the next model turn. Inspect the workspace before continuing or reverting changes.",
+ 	FinalReadinessRecovery:           "Task work or completion checks are paused. Run /continue-checks to preserve completed evidence and finish the remaining work.",
++	ReplayOmittedLabel:               "earlier history not shown — %d earlier messages stay in the session context",
+ 	ReadinessContinuing:              "Reasonix is finishing the remaining task work or checks automatically.",
+ 	RecoveryPaused:                   "Automatic retries paused. Reasonix stopped repeated attempts and kept completed work. Send “Continue” to start a fresh attempt, or add instructions to change direction.",
+ 	CompletionUncertain:              "Completion could not be confirmed. The current result and completed work are kept. Send \"continue\" to resume, or restate what should change.",
+diff --git a/internal/i18n/messages_zh.go b/internal/i18n/messages_zh.go
+index b2803934e39168a3689775d1ee748a7cde3002c2..4d7f8938763d621949bf13343931548006400e01 100644
+--- a/internal/i18n/messages_zh.go
++++ b/internal/i18n/messages_zh.go
+@@ -13,6 +13,7 @@ var Chinese = Messages{
+ 	TurnCancelled:                    "已取消 — 回到提示符",
+ 	InterruptedRecovery:              "本轮已中断。部分输出会永久保留供查看；只有完整工具调用及结果和有界恢复摘要会进入模型下一轮。继续或回滚前请先检查当前工作区。",
+ 	FinalReadinessRecovery:           "剩余任务或收尾检查已暂停。运行 /continue-checks 可保留已完成证据并继续剩余工作。",
++	ReplayOmittedLabel:               "已省略更早的历史回放 — 前面还有 %d 条消息保留在会话上下文中",
+ 	ReadinessContinuing:              "Reasonix 正在自动完成剩余任务或检查。",
+ 	RecoveryPaused:                   "已暂停自动重试。Reasonix 已停止重复尝试，并保留已完成的工作。发送“继续”即可开始新一轮，也可以补充要求来调整方向。",
+ 	CompletionUncertain:              "完成状态未确认。当前结果和已完成工作均已保留。发送“继续”可接着完成，也可以补充说明需要调整的内容。",
+diff --git a/internal/i18n/messages_zh_tw.go b/internal/i18n/messages_zh_tw.go
+index 55f9f624cfe80b4bd9ca2b89cf54d8092312bcc4..e2037a305c961b221557c5a95d4c69f58c33eb5a 100644
+--- a/internal/i18n/messages_zh_tw.go
++++ b/internal/i18n/messages_zh_tw.go
+@@ -13,6 +13,7 @@ var ChineseTraditional = Messages{
+ 	TurnCancelled:                    "已取消 — 回到提示符",
+ 	InterruptedRecovery:              "本輪已中斷。部分輸出會永久保留供查看；只有完整工具呼叫及結果和有界恢復摘要會進入模型下一輪。繼續或回復前請先檢查目前工作區。",
+ 	FinalReadinessRecovery:           "剩餘任務或收尾檢查已暫停。執行 /continue-checks 可保留已完成證據並繼續剩餘工作。",
++	ReplayOmittedLabel:               "已省略更早的歷史回放 — 前面還有 %d 條訊息保留在會話上下文中",
+ 	ReadinessContinuing:              "Reasonix 正在自動完成剩餘任務或檢查。",
+ 	RecoveryPaused:                   "已暫停自動重試。Reasonix 已停止重複嘗試，並保留已完成的工作。傳送「繼續」即可開始新一輪，也可以補充要求來調整方向。",
+ 	CompletionUncertain:              "完成狀態未確認。目前結果與已完成工作均已保留。傳送「繼續」可接著完成，也可以補充說明需要調整的內容。",
 diff --git a/internal/mcplaunch/process_other.go b/internal/mcplaunch/process_other.go
-index fb59685c..4973ace1 100644
+index fb59685cf8052330a2bc1653bf3ea64c726840d5..4973ace1dff6625b5b20bb4b2c1eb1aea7133251 100644
 --- a/internal/mcplaunch/process_other.go
 +++ b/internal/mcplaunch/process_other.go
 @@ -1,4 +1,4 @@
@@ -432,7 +1844,7 @@ index fb59685c..4973ace1 100644
  package mcplaunch
  
 diff --git a/internal/mcplaunch/process_unix.go b/internal/mcplaunch/process_unix.go
-index 91859281..46df723e 100644
+index 91859281a9dc8b3dcfdd5f315c2a657dc45cb8bf..46df723e52130cf816d84246a5cec8e5fd3067b5 100644
 --- a/internal/mcplaunch/process_unix.go
 +++ b/internal/mcplaunch/process_unix.go
 @@ -1,4 +1,4 @@
@@ -442,7 +1854,7 @@ index 91859281..46df723e 100644
  package mcplaunch
  
 diff --git a/internal/memory/memory_test.go b/internal/memory/memory_test.go
-index 3a77c5ac..9d350059 100644
+index 3a77c5accad9b75f3f5eb7de5d0c200bf0b4bc7a..9d35005933bbb44fdcb6c1484f13b7334be14972 100644
 --- a/internal/memory/memory_test.go
 +++ b/internal/memory/memory_test.go
 @@ -5,6 +5,7 @@ import (
@@ -466,7 +1878,7 @@ index 3a77c5ac..9d350059 100644
  		t.Fatal(err)
 diff --git a/internal/notify/sender_android.go b/internal/notify/sender_android.go
 new file mode 100644
-index 00000000..07c0d5d2
+index 0000000000000000000000000000000000000000..07c0d5d233a881a8f65f104ce0f658587a17ce74
 --- /dev/null
 +++ b/internal/notify/sender_android.go
 @@ -0,0 +1,26 @@
@@ -497,7 +1909,7 @@ index 00000000..07c0d5d2
 +	return nil
 +}
 diff --git a/internal/notify/sender_linux.go b/internal/notify/sender_linux.go
-index bdbe6958..fcb62d82 100644
+index bdbe69582099a659b882bc35489b7cc42781b6f5..fcb62d82d2f6c5047a38d791a0b1f8de559ef2bb 100644
 --- a/internal/notify/sender_linux.go
 +++ b/internal/notify/sender_linux.go
 @@ -1,4 +1,4 @@
@@ -507,7 +1919,7 @@ index bdbe6958..fcb62d82 100644
  package notify
  
 diff --git a/internal/notify/sender_other.go b/internal/notify/sender_other.go
-index 11fa267d..579ee2a5 100644
+index 11fa267d0b6d104d894f84126b6c6c18b24d82af..579ee2a5dec71f08ae2313574159fce7e17279f4 100644
 --- a/internal/notify/sender_other.go
 +++ b/internal/notify/sender_other.go
 @@ -1,4 +1,4 @@
@@ -517,7 +1929,7 @@ index 11fa267d..579ee2a5 100644
  package notify
  
 diff --git a/internal/plugin/transport_stdio.go b/internal/plugin/transport_stdio.go
-index ad7d6fef..37f7de47 100644
+index ad7d6fef52aab5f614f61d96d4405305aaab14a8..37f7de4768685b16b945e0b344d13615d66b55a7 100644
 --- a/internal/plugin/transport_stdio.go
 +++ b/internal/plugin/transport_stdio.go
 @@ -431,9 +431,9 @@ func stdioShell() string {
@@ -534,7 +1946,7 @@ index ad7d6fef..37f7de47 100644
  	}
  	return ""
 diff --git a/internal/repair/process_other.go b/internal/repair/process_other.go
-index e99c554f..9e74e4d0 100644
+index e99c554f72f557b6eb6aeed4313ab08ab47f96e4..9e74e4d01974134ec7cbc7d3a5da7830ccaadf9b 100644
 --- a/internal/repair/process_other.go
 +++ b/internal/repair/process_other.go
 @@ -1,4 +1,4 @@
@@ -544,7 +1956,7 @@ index e99c554f..9e74e4d0 100644
  package repair
  
 diff --git a/internal/repair/process_unix.go b/internal/repair/process_unix.go
-index 671d86f4..38f8ee40 100644
+index 671d86f46d8c4321c334bd78cb09464304197314..38f8ee4040ffb21afc505d10fd83b4b784a701ac 100644
 --- a/internal/repair/process_unix.go
 +++ b/internal/repair/process_unix.go
 @@ -1,4 +1,4 @@
@@ -553,11 +1965,232 @@ index 671d86f4..38f8ee40 100644
  
  package repair
  
+diff --git a/internal/session/history_locator.go b/internal/session/history_locator.go
+index 76dc7c5a3aa0e568e18c89e1f5ddbc223db1bbed..a6137d97691b23d465819e7ebe4aeedb9a32b8e9 100644
+--- a/internal/session/history_locator.go
++++ b/internal/session/history_locator.go
+@@ -494,6 +494,84 @@ func (q *Query) HistoryShape(ctx context.Context, ref SessionRef) (HistoryShape,
+ 	return shape, nil
+ }
+ 
++// HistoryTail materializes the last min(maxMessages, total) messages of a
++// session from the locator index, oldest-first. Interactive TUI replay only
++// needs the recent tail; reading it through the index avoids replaying the
++// whole event log on every resume. maxMessages <= 0 is an error; callers
++// wanting full history should use History instead.
++func (q *Query) HistoryTail(ctx context.Context, ref SessionRef, maxMessages int) ([]provider.Message, error) {
++	if q == nil {
++		return nil, errors.New("session: nil query")
++	}
++	if maxMessages <= 0 {
++		return nil, errors.New("session: history tail size must be positive")
++	}
++	if err := ctx.Err(); err != nil {
++		return nil, err
++	}
++	if err := ref.validate(q.hostID); err != nil {
++		return nil, err
++	}
++	filesystem, path, err := q.prepareHistoryIndex(ctx, ref)
++	if err != nil {
++		return nil, err
++	}
++	handle, err := projectiondb.Open(ctx, projectiondb.OpenOptions{Path: path, Migrations: historyMigrations, RequireDisk: true, MaxOpenConns: 1})
++	if err != nil {
++		return nil, err
++	}
++	defer handle.DB.Close()
++	var snapshot uint64
++	if err := scanMetadataUint(handle.DB.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='durable_sequence'`), &snapshot); err != nil {
++		return nil, err
++	}
++	var total int64
++	if err := handle.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE event_sequence<=? AND (valid_to=0 OR valid_to>?)`, snapshot, snapshot).Scan(&total); err != nil {
++		return nil, err
++	}
++	if total == 0 {
++		return []provider.Message{}, nil
++	}
++	// Select the tail by ORDER BY position DESC + LIMIT rather than deriving a
++	// boundary from COUNT(*): position is assigned from a running counter that a
++	// retract-then-reinsert can leave non-contiguous, so count arithmetic could
++	// silently return fewer (or older) rows than asked for.
++	rows, err := handle.DB.QueryContext(ctx, `SELECT inline,content_digest,content_bytes,content_index_digest FROM messages WHERE event_sequence<=? AND (valid_to=0 OR valid_to>?) ORDER BY position DESC LIMIT ?`, snapshot, snapshot, maxMessages)
++	if err != nil {
++		return nil, err
++	}
++	defer rows.Close()
++	content := contentStoreForSessionDir(filepath.Join(filesystem.Root, ref.SessionID))
++	messages := make([]provider.Message, 0, min(total, int64(maxMessages)))
++	for rows.Next() {
++		var inline []byte
++		var digest, indexDigest string
++		var contentBytes int64
++		if err := rows.Scan(&inline, &digest, &contentBytes, &indexDigest); err != nil {
++			return nil, err
++		}
++		body := json.RawMessage(inline)
++		if digest != "" {
++			body, err = resolveContentPayload(ctx, content, sessioncontent.Ref{Digest: digest, Bytes: contentBytes, IndexDigest: indexDigest, IntegrityBlock: sessioncontent.IntegrityBlockBytes, MediaType: "application/json"})
++			if err != nil {
++				return nil, err
++			}
++		}
++		var message provider.Message
++		if err := json.Unmarshal(body, &message); err != nil {
++			return nil, fmt.Errorf("session: decode indexed message: %w", err)
++		}
++		messages = append(messages, message)
++	}
++	if err := rows.Err(); err != nil {
++		return nil, err
++	}
++	// Rows arrived newest-first; History and the TUI replay both expect the
++	// oldest-first order a session projection produces.
++	slices.Reverse(messages)
++	return messages, nil
++}
++
+ // HistoryWindow materializes exactly [start,end) from a previously obtained
+ // durable snapshot. The snapshot must still be representable by the current
+ // projection; an append is allowed because version intervals retain the old
+diff --git a/internal/session/history_tail_test.go b/internal/session/history_tail_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..c9bbbf6fbf8fe0395b942b29550494d2d7e75bf6
+--- /dev/null
++++ b/internal/session/history_tail_test.go
+@@ -0,0 +1,126 @@
++package session
++
++import (
++	"context"
++	"encoding/json"
++	"path/filepath"
++	"testing"
++
++	"reasonix/internal/provider"
++)
++
++// HistoryTail must return the newest maxMessages entries in oldest-first order,
++// and it must agree exactly with the suffix of full History(). Reading the tail
++// through the locator index is what lets a TUI resume skip a whole-log replay,
++// so a divergence here would silently corrupt the resumed transcript.
++func TestHistoryTailMatchesFullHistorySuffix(t *testing.T) {
++	root := filepath.Join(t.TempDir(), "sessions-v4")
++	service, err := NewService("local", NewFilesystemPersistence(root))
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = service.CloseAll(context.Background()) })
++	runtime, err := service.Create(t.Context(), CreateOptions{SessionID: "tailed"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = service.Close(context.Background(), runtime.Ref()) })
++	appendWindowMessages(t, runtime, "m1", "m2", "m3", "m4", "m5")
++	ref := runtime.Ref()
++	query := service.Query()
++
++	full, err := query.History(t.Context(), ref)
++	if err != nil {
++		t.Fatalf("History: %v", err)
++	}
++	if len(full) != 5 {
++		t.Fatalf("full history = %d messages, want 5", len(full))
++	}
++
++	tail, err := query.HistoryTail(t.Context(), ref, 2)
++	if err != nil {
++		t.Fatalf("HistoryTail: %v", err)
++	}
++	want := full[len(full)-2:]
++	if len(tail) != len(want) {
++		t.Fatalf("tail = %d messages, want %d", len(tail), len(want))
++	}
++	for i := range want {
++		if tail[i].ID != want[i].ID || tail[i].Content != want[i].Content {
++			t.Fatalf("tail[%d] = %+v, want %+v", i, tail[i], want[i])
++		}
++	}
++
++	// A limit at or above the message count returns everything, still oldest-first.
++	all, err := query.HistoryTail(t.Context(), ref, 50)
++	if err != nil {
++		t.Fatalf("HistoryTail(all): %v", err)
++	}
++	if len(all) != len(full) {
++		t.Fatalf("tail(all) = %d messages, want %d", len(all), len(full))
++	}
++	for i := range full {
++		if all[i].ID != full[i].ID {
++			t.Fatalf("tail(all)[%d] = %q, want %q", i, all[i].ID, full[i].ID)
++		}
++	}
++
++	if _, err := query.HistoryTail(t.Context(), ref, 0); err == nil {
++		t.Fatal("HistoryTail accepted a non-positive limit")
++	}
++}
++
++// A retracted message frees its position without renumbering, so positions can
++// be non-contiguous. The tail must still return exactly maxMessages newest rows
++// instead of deriving a cutoff from COUNT(*).
++func TestHistoryTailToleratesPositionGaps(t *testing.T) {
++	root := filepath.Join(t.TempDir(), "sessions-v4")
++	service, err := NewService("local", NewFilesystemPersistence(root))
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = service.CloseAll(context.Background()) })
++	runtime, err := service.Create(t.Context(), CreateOptions{SessionID: "gapped"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = service.Close(context.Background(), runtime.Ref()) })
++	appendWindowMessages(t, runtime, "m1", "m2", "m3", "m4", "m5")
++
++	// Retract the middle message, then append a new one: position 3 is retired
++	// and the new message takes the next counter value, leaving a hole.
++	retract, err := json.Marshal(map[string]any{"messageIds": []string{"m3"}})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, err := runtime.Session().Append(t.Context(), Batch{
++		OperationID: "retract-m3",
++		Events:      []Event{{Kind: "message/retract", Payload: retract}},
++	}); err != nil {
++		t.Fatalf("retract: %v", err)
++	}
++	appendWindowMessages(t, runtime, "m6")
++
++	ref := runtime.Ref()
++	query := service.Query()
++	full, err := query.History(t.Context(), ref)
++	if err != nil {
++		t.Fatalf("History: %v", err)
++	}
++	tail, err := query.HistoryTail(t.Context(), ref, 3)
++	if err != nil {
++		t.Fatalf("HistoryTail: %v", err)
++	}
++	want := full[len(full)-3:]
++	if len(tail) != len(want) {
++		t.Fatalf("tail = %d messages, want %d (full=%d)", len(tail), len(want), len(full))
++	}
++	for i := range want {
++		if tail[i].ID != want[i].ID {
++			t.Fatalf("tail[%d] = %q, want %q", i, tail[i].ID, want[i].ID)
++		}
++	}
++	if tail[len(tail)-1].Role != provider.RoleUser {
++		t.Fatalf("tail tail role = %q", tail[len(tail)-1].Role)
++	}
++}
 diff --git a/internal/tool/builtin/bash.go b/internal/tool/builtin/bash.go
-index 4897db6b..2ebe2039 100644
+index 742d32926b186c31ed332c1a8b7fbe3c10fa17a6..425130d8d2633378a06b5d7690519bed8e166eda 100644
 --- a/internal/tool/builtin/bash.go
 +++ b/internal/tool/builtin/bash.go
-@@ -655,9 +655,9 @@ func loginShell() string {
+@@ -603,9 +603,9 @@ func loginShell() string {
  			return p
  		}
  	}
@@ -570,273 +2203,82 @@ index 4897db6b..2ebe2039 100644
  		}
  	}
  	return ""
-diff --git a/release-termux.sh b/release-termux.sh
-new file mode 100755
-index 00000000..625f5b6c
+diff --git a/scripts/merge-makefile-conflict.py b/scripts/merge-makefile-conflict.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..401dddf98e69b7757d3c51c3174f50fd7c0f2ac9
 --- /dev/null
-+++ b/release-termux.sh
-@@ -0,0 +1,90 @@
-+#!/usr/bin/env bash
-+# release-termux.sh — 在本仓库(Termux)直接编译、测试 Reasonix,并把编译好的
-+# 二进制上传到 artifacts/(GitHub Action verify-and-release.yml 校验版本与
-+# 上游最新 tag 一致后自动创建 release)。
-+#
-+# 前置:仓库 master 已是最新源码+补丁(运行 ./update-reasonix.sh 升级),
-+#       本仓库可 push(SSH key)。
-+#
-+# 用法:
-+#   ./release-termux.sh
-+# 环境变量:
-+#   RELEASE_TAG       指定版本号(默认从 release-notes/releases.json 提取)
-+#   SKIP_TESTS=1      跳过测试
-+#   FAIL_ON_TEST=1    测试失败时中止(默认仅报告,Termux 已知环境性失败不阻塞)
-+set -euo pipefail
++++ b/scripts/merge-makefile-conflict.py
+@@ -0,0 +1,73 @@
++#!/usr/bin/env python3
++"""Auto-merge Makefile conflicts for update-reasonix.sh.
 +
-+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-+REPO="${RELEASE_REPO:-lengxiaohua123/reasonix_android_custon}"
-+umask 022
++When cherry-picking the termux-patch branch onto a newer upstream tag, the
++Makefile often conflicts because upstream changed .PHONY / removed wails.
++Strategy: take the upstream (HEAD) version as base, then re-apply only the
++android-related bits that the patch adds:
++  - ANDROID_ARCH ?= arm64  (after GOEXE line, if missing)
++  - android: target        (after build target, if missing)
++  - 'android' in .PHONY line (add if missing)
++Drop everything wails-related (upstream removed it).
++"""
++import re
++import sys
 +
-+log() { printf '[release] %s\n' "$*"; }
 +
-+# Android 长任务防护:防止系统杀后台进程 / Doze 挂起网络。
-+if command -v termux-wake-lock >/dev/null 2>&1; then
-+  termux-wake-lock || true
-+  trap 'termux-wake-unlock >/dev/null 2>&1 || true' EXIT
-+fi
-+# 8 核手机全核编译/测试会过热降频,反而更慢且易触发并发 flaky;
-+# GOMAXPROCS 默认限 4 核,可用环境变量覆盖。
-+export GOMAXPROCS="${GOMAXPROCS:-4}"
++def merge(base: str, patch: str) -> str:
++    # 1. Ensure ANDROID_ARCH variable after GOEXE line
++    if 'ANDROID_ARCH ?= arm64' not in base:
++        patch_arch = re.search(r'^ANDROID_ARCH \?= arm64$', patch, re.M)
++        if patch_arch:
++            base = re.sub(
++                r'^(GOEXE := .*)$',
++                r'\1\nANDROID_ARCH ?= arm64',
++                base,
++                count=1,
++                flags=re.M,
++            )
 +
-+# 1. 解析版本:仓库源码即该版本+补丁(releases.json 随上游源码同步)
-+TAG="${RELEASE_TAG:-v$(python3 -c "import json;print(json.load(open('$SCRIPT_DIR/release-notes/releases.json'))['releases'][0]['version'])" 2>/dev/null || echo 0)}"
-+REL_TAG="termux-$TAG"
-+log "版本: $TAG → release: $REL_TAG"
++    # 2. Ensure android: target after build target
++    if re.search(r'^android:\n', base, re.M) is None:
++        patch_android = re.search(
++            r'^android:\n(\t[^\n]*\n?)+', patch, re.M
++        )
++        if patch_android:
++            base = re.sub(
++                r'^(\tCGO_ENABLED=0 go build .*cmd/reasonix-plugin-example.*)$',
++                r'\1\n\n' + patch_android.group(0).rstrip('\n'),
++                base,
++                count=1,
++                flags=re.M,
++            )
 +
-+# 2. 编译(源码就在本仓库,已含 Termux 补丁)
-+log "编译 android 二进制"
-+cd "$SCRIPT_DIR"
-+make android VERSION="$TAG"
-+BIN="$SCRIPT_DIR/bin/reasonix-android-arm64"
-+[ -f "$BIN" ] || { echo "[release] 编译产物缺失: $BIN" >&2; exit 1; }
-+log "产物: $BIN ($(stat -c%s "$BIN") bytes)"
++    # 3. Ensure 'android' in .PHONY (patch line, minus wails-install)
++    def phony_repl(m):
++        words = m.group(1).split()
++        if 'android' not in words:
++            words.insert(1, 'android')
++        return '.PHONY: ' + ' '.join(words)
 +
-+# 4. 测试
-+if [ "${SKIP_TESTS:-0}" != "1" ]; then
-+  log "运行测试(日志: $SCRIPT_DIR/test-result.log)"
-+  set +e
-+  go test -count=1 ./... 2>&1 | tee "$SCRIPT_DIR/test-result.log"
-+  TEST_EXIT=${PIPESTATUS[0]}
-+  set -e
-+  # 全量并行下 Termux 资源有限,已知测试会偶发超时/排序 flaky;
-+  # 对失败包单独重跑一次,仍失败才算真失败。
-+  if [ "$TEST_EXIT" -ne 0 ]; then
-+    FAIL_PKGS="$(grep -E '^FAIL\s' "$SCRIPT_DIR/test-result.log" | awk '{print $2}' | sort -u)"
-+    RETEST_OK=1
-+    for p in $FAIL_PKGS; do
-+      if go test -count=1 "$p" >/dev/null 2>&1; then
-+        log "重跑通过(并发 flaky): $p"
-+      else
-+        log "重跑仍失败: $p"
-+        RETEST_OK=0
-+      fi
-+    done
-+    if [ "$RETEST_OK" = "1" ]; then
-+      log "所有失败均为并发 flaky,单独重跑全部通过"
-+      TEST_EXIT=0
-+    fi
-+  fi
-+  PASS="$(grep -cE '^ok\s' "$SCRIPT_DIR/test-result.log" || true)"
-+  FAIL="$(grep -cE '^--- FAIL' "$SCRIPT_DIR/test-result.log" || true)"
-+  log "测试结果: $PASS 包通过, $FAIL 处失败(go test 退出码 $TEST_EXIT)"
-+  if [ "${FAIL_ON_TEST:-0}" = "1" ] && [ "$TEST_EXIT" -ne 0 ]; then
-+    echo "[release] 测试失败且 FAIL_ON_TEST=1,中止" >&2
-+    exit 1
-+  fi
-+fi
-+# 5. 上传二进制到仓库(发布由 GitHub Action 校验版本/hash 后完成)
-+log "上传二进制到仓库 artifacts/"
-+ART_DIR="$SCRIPT_DIR/artifacts"
-+mkdir -p "$ART_DIR"
-+cp "$BIN" "$ART_DIR/reasonix-android-arm64"
-+cd "$SCRIPT_DIR"
-+git add artifacts/reasonix-android-arm64
-+if git commit -m "upload reasonix-android-arm64 $TAG" >/dev/null 2>&1; then
-+  git push origin master
-+  log "已上传 $TAG 二进制,等待 Action 校验并发布: https://github.com/$REPO/actions"
-+else
-+  log "二进制内容无变化,无需重新上传(最近提交: $(git log -1 --format=%s))"
-+fi
-diff --git a/update-reasonix.sh b/update-reasonix.sh
-new file mode 100755
-index 00000000..f8304b0b
---- /dev/null
-+++ b/update-reasonix.sh
-@@ -0,0 +1,168 @@
-+#!/usr/bin/env bash
-+# update-reasonix.sh — 升级本仓库源码到上游最新 tag,并重新应用 Termux 适配
-+# 补丁,最后编译验证。
-+#
-+# 不再使用独立源码目录(reasonix-src):源码直接更新到本仓库 master。
-+#
-+# 补丁来源是本仓库 master 上最后一个 termux 适配 commit(见 TERMUX_PATCH_REF),
-+# 而不是 termux-patch 分支 —— 该分支基线早已停留在 v1.25.0,cherry-pick 到任何
-+# 更新的 tag 都会冲突,而 Termux 适配是跟着 master 一起手工演进到当前版本的。
-+#
-+# 用法:
-+#   ./update-reasonix.sh
-+# 环境变量:
-+#   REASONIX_REPO_URL   上游仓库(默认 https://github.com/esengine/DeepSeek-Reasonix.git)
-+#   REASONIX_TAG        指定 tag(默认取最新正式版 tag)
-+#   TERMUX_PATCH_REF    Termux 适配 commit(默认自动探测 master 上最后一个 termux
-+#                       适配提交;显式给值可手动覆盖)
-+#   KEEP_CHANGES=1      失败时不回滚,保留现场供手工处理
-+set -euo pipefail
++    base = re.sub(
++        r'^\.PHONY: (.*)$',
++        phony_repl,
++        base,
++        count=1,
++        flags=re.M,
++    )
++    return base
 +
-+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-+REPO_URL="${REASONIX_REPO_URL:-https://github.com/esengine/DeepSeek-Reasonix.git}"
-+umask 022
 +
-+log() { printf '[update] %s\n' "$*"; }
-+die() { printf '[update] 错误: %s\n' "$*" >&2; exit 1; }
++def main():
++    base_path, patch_path, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
++    with open(base_path) as f:
++        base = f.read()
++    with open(patch_path) as f:
++        patch = f.read()
++    merged = merge(base, patch)
++    with open(out_path, 'w') as f:
++        f.write(merged)
 +
-+cd "$SCRIPT_DIR"
-+[ -d .git ] || die "必须在仓库内运行"
 +
-+# 0. 探测 Termux 适配 commit。master 上的形态是
-+#    <上游快照 commit> → <termux 适配 commit>,后者即补丁真身。
-+resolve_patch_ref() {
-+  if [ -n "${TERMUX_PATCH_REF:-}" ]; then
-+    git rev-parse --verify -q "$TERMUX_PATCH_REF^{commit}" >/dev/null || \
-+      die "TERMUX_PATCH_REF=$TERMUX_PATCH_REF 不是有效 commit"
-+    printf '%s\n' "$TERMUX_PATCH_REF"
-+    return
-+  fi
-+  git log --format='%H %s' master | grep -E '^[0-9a-f]+ termux:' | head -1 | cut -d' ' -f1
-+}
-+
-+PATCH_REF="$(resolve_patch_ref)"
-+[ -n "$PATCH_REF" ] || die "未找到 termux 适配 commit;可用 TERMUX_PATCH_REF=<sha> 指定"
-+log "Termux 适配补丁: $(git log -1 --format='%h %s' "$PATCH_REF")"
-+
-+# 回滚锚点:升级前的 HEAD 与分支,任何失败都整体恢复。
-+ORIG_HEAD_REF="$(git rev-parse HEAD)"
-+log "回滚锚点: $ORIG_HEAD_REF"
-+
-+rollback() {
-+  rc=$?
-+  if [ "${KEEP_CHANGES:-0}" = "1" ]; then
-+    printf '[update] 失败(rc=%s),KEEP_CHANGES=1 保留现场\n' "$rc" >&2
-+  else
-+    printf '[update] 失败(rc=%s),回滚到 %s\n' "$rc" "$ORIG_HEAD_REF" >&2
-+    git cherry-pick --abort >/dev/null 2>&1 || true
-+    git cherry-pick --quit  >/dev/null 2>&1 || true
-+    git reset --hard "$ORIG_HEAD_REF" >/dev/null 2>&1 || true
-+    git clean -fdq -e '*.bak' >/dev/null 2>&1 || true
-+    # git clean 会连未跟踪的本地脚本一起删,而它们的备份在仓库外的
-+    # LOCAL_BACKUP 里,必须在此恢复,否则一次失败的升级就丢了本地文件。
-+    # LOCAL_BACKUP 到第 4 步才创建,此前任何失败也会走到这里,所以要容忍
-+    # 它尚未定义 —— set -u 下未定义变量会直接终止脚本。
-+    if [ -n "${LOCAL_BACKUP:-}" ] && [ -f "$LOCAL_BACKUP/untracked.tar" ]; then
-+      (cd "$SCRIPT_DIR" && tar -xf "$LOCAL_BACKUP/untracked.tar") >/dev/null 2>&1 || true
-+      log "已恢复 $(wc -l <"$LOCAL_BACKUP/untracked.txt" 2>/dev/null || echo 0) 个本地未跟踪文件"
-+    fi
-+    if [ -n "${LOCAL_BACKUP:-}" ]; then rm -rf "$LOCAL_BACKUP"; fi
-+    log "已回滚;KEEP_CHANGES=1 可保留现场手工处理"
-+  fi
-+  exit "$rc"
-+}
-+trap rollback EXIT
-+
-+# 1. 解析上游最新 tag
-+TAG="${REASONIX_TAG:-$(git ls-remote --tags --refs "$REPO_URL" \
-+    | awk -F/ '{print $NF}' | grep -E '^v[0-9]+\.' | grep -v -- '-rc' | sort -V | tail -1)}"
-+[ -n "$TAG" ] || { echo "[update] 无法解析上游 tag" >&2; exit 1; }
-+log "上游最新 tag: $TAG"
-+
-+# 当前源码版本(releases.json 随上游源码同步)
-+CUR="$(python3 -c "import json;print(json.load(open('$SCRIPT_DIR/release-notes/releases.json'))['releases'][0]['version'])" 2>/dev/null || echo unknown)"
-+log "当前源码版本: $CUR"
-+if [ "$CUR" = "${TAG#v}" ]; then
-+  log "已是最新,无需更新"
-+  trap - EXIT
-+  exit 0
-+fi
-+
-+# 2. fetch 上游 tag(对象用于 checkout 源码;浅获取即可)
-+git fetch --depth=1 "$REPO_URL" tag "$TAG" || { echo "[update] fetch $TAG 失败" >&2; exit 1; }
-+
-+# 3. 备份专属文件(.gitignore/.gitattributes 含 LFS 配置)
-+cp .gitignore "$SCRIPT_DIR/.gitignore.bak"
-+cp .gitattributes "$SCRIPT_DIR/.gitattributes.bak"
-+
-+# 4. 清空旧源码。仓库自身文件、Termux 产物与脚本需要保留;bin/ 不在其中 ——
-+#    旧二进制会被第 9 步的新构建覆盖,留着只会混淆"已安装的是哪一版"。
-+#    scripts/ 里有上游自带的数百个文件,也有本地新增的工具脚本(如
-+#    merge-makefile-conflict.py);整目录删掉再 checkout 恢复会连带丢掉未跟踪
-+#    的本地脚本,所以先把未跟踪文件备份到仓库之外再删。备份必须放在仓库外:
-+#    回滚路径会跑 git clean,放在仓库内的备份会被连坐删除。
-+LOCAL_BACKUP="$(mktemp -d "${TMPDIR:-/tmp}/reasonix-update-XXXXXX")"
-+UNTRACKED_LIST="$LOCAL_BACKUP/untracked.txt"
-+git ls-files --others --exclude-standard -- scripts release-termux.sh >"$UNTRACKED_LIST" || true
-+if [ -s "$UNTRACKED_LIST" ]; then
-+  log "备份 $(wc -l <"$UNTRACKED_LIST") 个未跟踪本地文件"
-+  tar -cf "$LOCAL_BACKUP/untracked.tar" -T "$UNTRACKED_LIST"
-+fi
-+
-+find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github ! -name .reasonix \
-+  ! -name artifacts ! -name reasonix-termux.patch \
-+  ! -name update-reasonix.sh \
-+  ! -name release-termux.sh ! -name action.log ! -name '*.bak' -exec rm -rf {} +
-+
-+# 5. 填入上游源码(排除 .github 与专属文件,稍后恢复)
-+git checkout "$TAG" -- . ':(exclude).github' || true
-+mv .gitignore.bak .gitignore
-+mv .gitattributes.bak .gitattributes
-+
-+# 6. 提交上游源码快照
-+git add -A
-+if git diff --cached --quiet; then
-+  log "上游源码无变化(异常,请检查)"
-+else
-+  git commit -m "sync upstream $TAG source" >/dev/null
-+  log "已提交上游 $TAG 源码快照"
-+fi
-+
-+rollback_hint() {
-+  if [ "${KEEP_CHANGES:-0}" = "1" ]; then
-+    printf '补丁与 %s 冲突;已保留现场,可 git cherry-pick --continue 继续' "$TAG"
-+  else
-+    printf '补丁与 %s 冲突;将自动回滚到升级前状态' "$TAG"
-+  fi
-+}
-+
-+# 7. 重新应用 Termux 适配补丁。
-+#    补丁取自已解析出的 PATCH_REF(master 上最后一个 termux 适配 commit),
-+#    而不是 termux-patch 分支 —— 后者基线停留在 v1.25.0,cherry-pick 到任何更新
-+#    的 tag 都会大面积冲突。PATCH_REF 的适配是随 master 手工演进到当前版本的,
-+#    对更新的上游 tag 重放才是正确路径。
-+if git cherry-pick "$PATCH_REF" >/dev/null 2>&1; then
-+  log "补丁干净应用 ✓"
-+else
-+  if git status --porcelain | grep -qE '^(UU|AA|DD|AU|UA|DU|UD)'; then
-+    conflicted="$(git status --porcelain | grep -E '^(UU|AA|DD|AU|UA|DU|UD)' | awk '{print $NF}')"
-+    log "以下文件与 $TAG 冲突:"
-+    printf '  %s\n' $conflicted >&2
-+    die "$(rollback_hint)"
-+  fi
-+  die "cherry-pick 失败(非冲突);$(rollback_hint)"
-+fi
-+
-+# 8. 恢复未跟踪的本地脚本
-+if [ -s "$LOCAL_BACKUP/untracked.tar" ]; then
-+  log "恢复本地未跟踪文件"
-+  tar -xf "$LOCAL_BACKUP/untracked.tar" || die "恢复本地脚本失败"
-+fi
-+rm -rf "$LOCAL_BACKUP"
-+
-+# 9. 编译验证
-+log "编译验证..."
-+make android VERSION="$TAG"
-+
-+log "完成: 源码=$TAG + 补丁($(git log -1 --format='%h' "$PATCH_REF")) → bin/reasonix-android-arm64"
-+trap - EXIT
++if __name__ == '__main__':
++    main()
