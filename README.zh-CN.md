@@ -82,6 +82,13 @@ brew install esengine/reasonix/reasonix   # macOS
 预编译归档(`darwin|linux|windows × amd64|arm64`)和 `SHA256SUMS` 见每个
 [GitHub release](https://github.com/esengine/DeepSeek-Reasonix/releases)。
 
+> [!IMPORTANT]
+> **Termux / Android arm64：** 请使用本定制仓库的
+> [Release](https://github.com/wumingmr/reasonix_android_custon/releases)，并先阅读
+> [Termux 安装与沙箱限制说明](docs/TERMUX.zh-CN.md)。Android 当前没有可用的
+> bubblewrap backend，默认 `workspace-write` 下 shell 会失败关闭；文档提供显式
+> `danger-full-access` 用法及可选的 `reasonix` / `reasonix-raw` wrapper 模板。
+
 ### 路径 B：桌面端
 
 前往[官方下载页](https://reasonix.io/?download=desktop#start)获取最新桌面版本。

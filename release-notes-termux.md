@@ -81,6 +81,47 @@ resume_list_limit = -1     # 负数 = 不限制；0/缺省 = 内置默认 10
 （上游行为一致，也没有"显示/隐藏"开关）。输入一直正常接收：空格、中文、IME 一次
 提交多字符、backspace 按 rune 删除均正确。
 
+## 重要：Termux shell 沙箱限制
+
+Reasonix CLI/TUI 默认是 `workspace-write`。该模式要求 OS 级 shell sandbox；但
+Android/Termux 当前没有可用的 bubblewrap backend，因此 Bash 会失败关闭：
+
+```text
+shell sandbox requested but unavailable on this host; refusing to run unconfined.
+```
+
+这不是 API key 或目录权限错误，`[sandbox] bash = "off"`、`--add-dir` 也不能提供
+缺失的 sandbox。可信任务可以显式运行：
+
+```sh
+"$PREFIX/bin/reasonix" --permission-mode danger-full-access
+```
+
+> [!WARNING]
+> `danger-full-access` 会关闭 Reasonix 的 OS 沙箱。它不会自行授予 Android root，
+> 但命令可以访问当前 Termux 用户（以及可用 `su`）本来能访问的一切。仅用于自己
+> 信任的仓库、提示词和任务。
+
+仓库附带修正版 wrapper 模板：
+
+```sh
+mkdir -p ~/bin
+curl -fL "https://raw.githubusercontent.com/$REPO/master/scripts/termux/reasonix-wrapper" \
+  -o ~/bin/reasonix
+curl -fL "https://raw.githubusercontent.com/$REPO/master/scripts/termux/reasonix-raw" \
+  -o ~/bin/reasonix-raw
+chmod 755 ~/bin/reasonix ~/bin/reasonix-raw
+export PATH="$HOME/bin:$PATH"
+hash -r
+
+reasonix --version       # wrapper，普通会话默认 danger-full-access
+reasonix-raw --version   # 直连 $PREFIX/bin/reasonix，不注入权限参数
+```
+
+如不想让 `reasonix` 默认 full access，可把 wrapper 安装成 `~/bin/reasonix-full`。
+完整说明、风险边界、临时退出 full access 与排错方法见
+[`docs/TERMUX.zh-CN.md`](https://github.com/$REPO/blob/master/docs/TERMUX.zh-CN.md)。
+
 ## 已知限制
 
 - 上游 2.x 暂不适用：重构了 `internal/` 目录结构且不含任何 Android 支持，

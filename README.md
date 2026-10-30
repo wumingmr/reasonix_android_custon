@@ -89,6 +89,12 @@ brew install esengine/reasonix/reasonix   # macOS
 Prebuilt archives (`darwin|linux|windows × amd64|arm64`) and `SHA256SUMS` are on
 every [GitHub release](https://github.com/esengine/DeepSeek-Reasonix/releases).
 
+> [!IMPORTANT]
+> **Termux / Android arm64:** use this fork's
+> [releases](https://github.com/wumingmr/reasonix_android_custon/releases) and read
+> the [Termux sandbox and wrapper guide](docs/TERMUX.zh-CN.md). Android currently
+> lacks a usable bubblewrap backend, so restricted shell modes fail closed.
+
 ### Path B: Desktop app
 
 Use the [official download page](https://reasonix.io/?download=desktop#start)

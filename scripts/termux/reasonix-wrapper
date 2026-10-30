@@ -1,0 +1,64 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Termux wrapper: interactive/run commands default to danger-full-access.
+#
+# Why: Reasonix defaults to workspace-write. Restricted modes require an OS
+# sandbox; Android/Termux currently has no usable bubblewrap backend, so shell
+# execution fails closed instead of running unconfined.
+#
+# WARNING: danger-full-access disables Reasonix's OS sandbox for this session.
+# Commands still run as the current Termux user (it does not grant Android root
+# by itself), but they can access everything that user — or an available `su` —
+# can access. Use only for trusted tasks.
+
+set -uo pipefail
+
+REAL="${REASONIX_REAL:-${PREFIX:-/data/data/com.termux/files/usr}/bin/reasonix}"
+DEFAULT_MODE="${REASONIX_PERMISSION_MODE:-danger-full-access}"
+
+if [ ! -x "$REAL" ]; then
+  printf 'reasonix wrapper: real binary missing at %s\n' "$REAL" >&2
+  exit 127
+fi
+
+# State/config/server subcommands do not create an ordinary agent session and
+# may reject a session permission flag. Keep this list in step with the CLI.
+passthrough_subcommand() {
+  case "${1-}" in
+    acp|bot|completion|config|doctor|help|hook|init|mcp|report|serve|setup|subagent|task|trust|upgrade|version|web)
+      return 0 ;;
+  esac
+  return 1
+}
+
+has_explicit_mode() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --permission-mode|--permission-mode=*|--auto|-y|--yolo|--dangerously-skip-permissions)
+        return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# These root flags must remain adjacent to the real binary. In particular,
+# injecting --permission-mode before --version makes pflag report unknown flag.
+case "${1-}" in
+  --version|-v|--help|-h) exec "$REAL" "$@" ;;
+esac
+
+# Explicit opt-out/bypass. REASONIX_FULL_ACCESS=0 still uses Reasonix's default
+# workspace-write mode, which means shell may be unavailable on Termux.
+if [ "${REASONIX_FULL_ACCESS-1}" = "0" ] || [ "${1-}" = "--" ]; then
+  exec "$REAL" "$@"
+fi
+
+if [ $# -eq 0 ]; then
+  exec "$REAL" --permission-mode "$DEFAULT_MODE"
+fi
+
+if passthrough_subcommand "$1" || has_explicit_mode "$@"; then
+  exec "$REAL" "$@"
+fi
+
+exec "$REAL" --permission-mode "$DEFAULT_MODE" "$@"
