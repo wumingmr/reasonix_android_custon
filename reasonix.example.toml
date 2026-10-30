@@ -75,6 +75,11 @@ context_window = 1000000
 # Optional per-model budgets. Omitted models inherit context_window and
 # max_output_tokens from the provider above.
 # model_overrides = { "deepseek-v4-flash" = { context_window = 1000000, max_output_tokens = 32768 } }
+# A provider with no context_window at all is not left without compaction: the
+# model's own published window is used when one is known, and a conservative
+# fallback (128000) applies otherwise. `reasonix setup` → provider → "Edit
+# per-model context windows" sets these without editing this file, and fills in
+# whatever the endpoint's own /models listing declares.
 # Official list prices are frozen per provider (billing_currency). Display
 # currency ([billing].display_currency) never rewrites these tables.
 # billing_currency = "USD"   # frozen list-price currency: CNY|USD

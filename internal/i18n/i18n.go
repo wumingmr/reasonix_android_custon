@@ -484,52 +484,57 @@ type Messages struct {
 	SkillPickerStatusUnreadable  string // "unreadable" path status label
 
 	// init wizard
-	EnterAPIKeysHeader       string // header before the per-env-var prompts
-	WroteFileFmt             string // "Wrote %s" — used for reasonix.toml and .env both
-	SetupComplete            string // success line at end of init
-	SetupCancelled           string // shown when the user aborts the wizard
-	TryHintFmt               string // "Try: %s" — %s = command to try (styled)
-	NextHint                 string // non-interactive post-write hint
-	ConfirmReconfigureFmt    string // "%s already exists. Reconfigure and overwrite?"
-	NotOverwritingFmt        string // non-interactive overwrite refusal
-	SetupManagerTitle        string
-	SetupAddOpenAI           string
-	SetupAddAnthropic        string
-	SetupProviderExistsFmt   string
-	SetupSaveExit            string
-	SetupSaveExitDesc        string
-	SetupCancel              string
-	SetupCancelDesc          string
-	SetupModelsUnit          string
-	SetupKeySet              string
-	SetupKeyMissing          string
-	SetupDefaultBadge        string
-	SetupProviderActionsFmt  string
-	SetupEditProvider        string
-	SetupUpdateKey           string
-	SetupTestRefresh         string
-	SetupSetDefault          string
-	SetupRemoveProvider      string
-	SetupBack                string
-	SetupPromptModels        string
-	SetupSharedKeyWarningFmt string
-	SetupKeyEnvTakenFmt      string
-	SetupKeyEnvStoredFmt     string
-	SetupKeyEnvSettingFmt    string
-	SetupKeyEnvShellFmt      string
-	SetupKeyEnvRetry         string
-	SetupPromptAPIKeyFmt     string
-	SetupSelectDefaultModel  string
-	SetupConfirmRemoveFmt    string
-	SetupSummaryTitle        string
-	SetupSummaryAddedFmt     string
-	SetupSummaryEditedFmt    string
-	SetupSummaryRemovedFmt   string
-	SetupSummaryDefaultFmt   string
-	SetupSummaryKeysFmt      string
-	SetupSummaryNoChanges    string
-	SetupConfirmSave         string
-	SetupConcurrentChangeFmt string
+	EnterAPIKeysHeader            string // header before the per-env-var prompts
+	WroteFileFmt                  string // "Wrote %s" — used for reasonix.toml and .env both
+	SetupComplete                 string // success line at end of init
+	SetupCancelled                string // shown when the user aborts the wizard
+	TryHintFmt                    string // "Try: %s" — %s = command to try (styled)
+	NextHint                      string // non-interactive post-write hint
+	ConfirmReconfigureFmt         string // "%s already exists. Reconfigure and overwrite?"
+	NotOverwritingFmt             string // non-interactive overwrite refusal
+	SetupManagerTitle             string
+	SetupAddOpenAI                string
+	SetupAddAnthropic             string
+	SetupProviderExistsFmt        string
+	SetupSaveExit                 string
+	SetupSaveExitDesc             string
+	SetupCancel                   string
+	SetupCancelDesc               string
+	SetupModelsUnit               string
+	SetupKeySet                   string
+	SetupKeyMissing               string
+	SetupDefaultBadge             string
+	SetupProviderActionsFmt       string
+	SetupEditProvider             string
+	SetupUpdateKey                string
+	SetupTestRefresh              string
+	SetupSetDefault               string
+	SetupRemoveProvider           string
+	SetupBack                     string
+	SetupPromptModels             string
+	SetupModelWindows             string
+	SetupModelWindowPromptFmt     string
+	SetupModelWindowHintFmt       string
+	SetupModelWindowNone          string
+	SetupModelWindowDiscoveredFmt string
+	SetupSharedKeyWarningFmt      string
+	SetupKeyEnvTakenFmt           string
+	SetupKeyEnvStoredFmt          string
+	SetupKeyEnvSettingFmt         string
+	SetupKeyEnvShellFmt           string
+	SetupKeyEnvRetry              string
+	SetupPromptAPIKeyFmt          string
+	SetupSelectDefaultModel       string
+	SetupConfirmRemoveFmt         string
+	SetupSummaryTitle             string
+	SetupSummaryAddedFmt          string
+	SetupSummaryEditedFmt         string
+	SetupSummaryRemovedFmt        string
+	SetupSummaryDefaultFmt        string
+	SetupSummaryKeysFmt           string
+	SetupSummaryNoChanges         string
+	SetupConfirmSave              string
+	SetupConcurrentChangeFmt      string
 
 	// model fetching
 	FetchingModelsFmt          string // "Fetching models for %s..."

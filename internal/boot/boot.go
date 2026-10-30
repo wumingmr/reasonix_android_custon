@@ -1138,7 +1138,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			HooksForSession:     func(id string) agent.ToolHooks { return hookRunner.ForSession(id) },
 			ParentRegistry:      reg,
 			MaxSteps:            maxSteps,
-			ContextWindow:       entry.ContextWindow,
+			ContextWindow:       config.EffectiveContextWindow(entry),
 			RecentKeep:          cfg.Agent.RecentKeep,
 			SoftCompactRatio:    cfg.Agent.SoftCompactRatio,
 			ToolResultSnipRatio: cfg.Agent.ToolResultSnipRatio,
@@ -1283,7 +1283,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		}
 		defer releaseSlot()
 		sk = skill.WithCodeGraphTools(sk, skill.CodeGraphReadTools(reg))
-		prov, price, ctxWin := execProv, entry.Price, entry.ContextWindow
+		prov, price, ctxWin := execProv, entry.Price, config.EffectiveContextWindow(entry)
 		modelRef := subagentModelRef(cfg, sk)
 		effortRef := subagentEffortRef(cfg, sk, subagentEffort)
 		if modelRef != "" || effortRef != "" {
@@ -1352,7 +1352,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		}
 		defer releaseSlot()
 		sk = skill.WithCodeGraphTools(sk, skill.CodeGraphReadTools(reg))
-		prov, price, ctxWin := execProv, entry.Price, entry.ContextWindow
+		prov, price, ctxWin := execProv, entry.Price, config.EffectiveContextWindow(entry)
 		modelRef := subagentModelRef(cfg, sk)
 		effortRef := subagentEffortRef(cfg, sk, subagentEffort)
 		if modelRef != "" || effortRef != "" {
@@ -1715,7 +1715,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		WorkspaceLease:               workspaceLease,
 		CapabilityLedger:             capLedger,
 		CapabilityAudit:              capAudit,
-		ContextWindow:                entry.ContextWindow,
+		ContextWindow:                config.EffectiveContextWindow(entry),
 		MaxOutputTokens:              entry.MaxOutputTokens,
 		SoftCompactRatio:             cfg.Agent.SoftCompactRatio,
 		ToolResultSnipRatio:          cfg.Agent.ToolResultSnipRatio,
@@ -1797,7 +1797,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			Hooks:                        hookRunner.ForRole("planner"),
 			ModelRef:                     modelRefFromEntry(pe),
 			QuoteContext:                 quoteCtx,
-			ContextWindow:                pe.ContextWindow,
+			ContextWindow:                config.EffectiveContextWindow(pe),
 			SoftCompactRatio:             cfg.Agent.SoftCompactRatio,
 			ToolResultSnipRatio:          cfg.Agent.ToolResultSnipRatio,
 			CompactRatio:                 cfg.Agent.CompactRatio,
