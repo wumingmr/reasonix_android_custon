@@ -151,6 +151,23 @@ func (q *Query) HistoryTail(ctx context.Context, ref SessionRef, maxMessages int
   等于不限量）。这影响 picker 打开速度，不影响选定后的加载；如需加速可把该值
   调小。
 
+## 升级与发版脚本维护
+
+这次检查还发现：旧 `update-reasonix.sh` 只会 cherry-pick 单个历史适配 commit，
+因此本文所述两个后续 commit 在下一次升级时都会被清空；GitHub 的同步 workflow
+虽然应用 patch，却会选到不支持的 2.x，并可能删除 `.gitattributes`、发版脚本和
+release notes。
+
+现统一约定：
+
+1. `reasonix-termux.patch` 是本地升级脚本和 GitHub 同步 workflow 的唯一累积补丁源。
+2. 修改并提交 Termux 专属源码后运行 `./rebuild-termux-patch.sh`，再提交更新后的 patch。
+3. `./rebuild-termux-patch.sh --check` 会从当前上游 1.x tag 重新生成临时 patch、
+   在干净 worktree 中做 `git apply --check`，并逐字比较仓库中的 patch。
+4. `release-termux.sh` 发版前强制运行上述检查；patch 过期就拒绝发布。
+5. GitHub 同步 workflow 固定最新 1.x，并显式保留 `.github`、`.gitattributes`、
+   `artifacts`、补丁和所有本地发版脚本。
+
 ## 验证记录
 
 - `go build ./...` 通过

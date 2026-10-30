@@ -25,13 +25,17 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Resolve latest upstream tag
+      - name: Resolve latest supported upstream tag
         id: upstream
         run: |
+          # Termux adaptation is pinned to 1.x. 2.x reorganized internal/ and
+          # the cumulative patch cannot apply there; use the same rule as
+          # update-reasonix.sh and verify-and-release.yml.
           TAG="$(git ls-remote --tags --refs https://github.com/esengine/DeepSeek-Reasonix.git \
-            | awk -F/ '{print $NF}' | grep -E '^v[0-9]+\.' | grep -v -- '-rc' | sort -V | tail -1)"
+            | awk -F/ '{print $NF}' | grep -E '^v1\.[0-9]+\.' | grep -v -- '-rc' | sort -V | tail -1)"
+          test -n "$TAG"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Latest upstream tag: $TAG"
+          echo "Latest supported upstream tag: $TAG"
 
       - name: Skip if already released
         id: check
@@ -60,14 +64,23 @@ jobs:
         if: steps.check.outputs.skip == 'false'
         run: |
           cd "$GITHUB_WORKSPACE"
-          # Replace everything except repo-specific files with upstream+patch.
-          find . -mindepth 1 -maxdepth 1 \
-            ! -name .git ! -name .github ! -name .gitignore ! -name upstream \
-            ! -name artifacts \
-            ! -name reasonix-termux.patch ! -name update-reasonix.sh \
-            -exec rm -rf {} +
-          rsync -a --exclude='.git' --exclude='.github' --exclude='.gitignore' \
+          # Replace everything except repository infrastructure. These files
+          # are not part of upstream and must survive the source sync; deleting
+          # .gitattributes would also remove the artifacts/* LFS rule.
+          KEEP=(
+            .git .github .gitignore .gitattributes upstream artifacts
+            reasonix-termux.patch update-reasonix.sh rebuild-termux-patch.sh
+            release-termux.sh release-notes-termux.md
+          )
+          find_args=(. -mindepth 1 -maxdepth 1)
+          for name in "${KEEP[@]}"; do find_args+=(! -name "$name"); done
+          find "${find_args[@]}" -exec rm -rf {} +
+          rsync -a \
+            --exclude='.git' --exclude='.github' --exclude='.gitignore' \
+            --exclude='.gitattributes' --exclude='artifacts' \
             --exclude='reasonix-termux.patch' --exclude='update-reasonix.sh' \
+            --exclude='rebuild-termux-patch.sh' --exclude='release-termux.sh' \
+            --exclude='release-notes-termux.md' \
             "$GITHUB_WORKSPACE/upstream/" "$GITHUB_WORKSPACE/"
           git add -A
           git -c user.name="reasonix-termux-bot" \

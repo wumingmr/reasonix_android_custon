@@ -48,13 +48,22 @@ Esc 完全相同，而搜索态分支表的第一个 case 就是 `k[0] == 27`。
 同样识别。同时修复了两个连带问题：跨 read 的半个汉字曾被丢弃（`searchPending`
 只在查询变化时才写回），以及方向键移动后必须重绘。
 
-### 更新脚本不再选错补丁源
+### 更新脚本统一使用累积补丁
 
-`update-reasonix.sh` 原本用"最后一个 `termux:` 开头的 commit"定位补丁源，
-`termux: 修正版本号推导`这个只改 Makefile 和脚本的提交因此顶替了真正的适配
-commit，升级后 Android 通知、中文输入修复、`resume_list_limit` 会全部消失。现改
-为校验 commit 是否真的改到适配文件。实测该静默降级**编译验证挡不住** ——
-`GOOS=android` 满足 `linux` build tag，`sender_linux.go` 会接手编译。
+本地 `update-reasonix.sh` 和 GitHub 同步 workflow 现在统一应用
+`reasonix-termux.patch`，不再从历史里只挑一个旧适配 commit。每次本地定制改动后
+用 `./rebuild-termux-patch.sh` 从当前上游 tag 到 HEAD 重建补丁；
+`release-termux.sh` 在发版前强制校验补丁与源码一致，避免下一次升级静默丢修复。
+
+同步 workflow 同时固定在受支持的 1.x 线，并显式保留 `.gitattributes`（LFS）、
+发版脚本与 release notes 等仓库基础设施，不再可能因同步上游而删除这些文件。
+
+### TUI resume 长会话提速
+
+final-format 长会话恢复不再全量解压并重放整个 `events.frames`，而是通过已有的
+history-locator sqlite 索引读取最近 200 条消息；回放顶部会提示省略了多少更早消息。
+`/copy` 与 `/export` 仍读取完整历史，不受截断影响。真实 49 MB / 5486 条消息会话：
+全量读取约 9.2 秒，索引尾读约 2.7 秒。
 
 ### 新增 `[ui] resume_list_limit`
 

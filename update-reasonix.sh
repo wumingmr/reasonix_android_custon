@@ -4,9 +4,9 @@
 #
 # 不再使用独立源码目录(reasonix-src):源码直接更新到本仓库 master。
 #
-# 补丁来源是本仓库 master 上最后一个 termux 适配 commit(见 TERMUX_PATCH_REF),
-# 而不是 termux-patch 分支 —— 该分支基线早已停留在 v1.25.0,cherry-pick 到任何
-# 更新的 tag 都会冲突,而 Termux 适配是跟着 master 一起手工演进到当前版本的。
+# reasonix-termux.patch 是唯一补丁源:本地升级脚本与 GitHub 同步 workflow 都应用
+# 它。每次本地定制源码提交后运行 ./rebuild-termux-patch.sh 重新生成,可避免过去
+# "只 cherry-pick 一个旧适配 commit"导致后续独立修复在升级时静默丢失的问题。
 #
 # 用法:
 #   ./update-reasonix.sh
@@ -15,9 +15,7 @@
 #   REASONIX_TAG        指定 tag(默认取**最新 1.x** tag;1.x 之外的版本需配
 #                       ALLOW_MAJOR=1 二次确认,见下)
 #   ALLOW_MAJOR=1       允许同步到 1.x 之外的版本(2.x 目前无法套用 Termux 补丁)
-#   TERMUX_PATCH_REF    Termux 适配 commit(默认自动探测 master 上最后一个改到全部
-#                       适配文件(哨兵)的 termux: 提交;显式给值可手动覆盖,但
-#                       非适配 commit 会被拒绝)
+#   TERMUX_PATCH_FILE   累积补丁路径(默认 ./reasonix-termux.patch)
 #   KEEP_CHANGES=1      失败时不回滚,保留现场供手工处理
 set -euo pipefail
 
@@ -31,63 +29,22 @@ die() { printf '[update] 错误: %s\n' "$*" >&2; exit 1; }
 cd "$SCRIPT_DIR"
 [ -d .git ] || die "必须在仓库内运行"
 
-# 0. 探测 Termux 适配 commit。master 上的形态是
-#    <上游快照 commit> → <termux 适配 commit>,后者即补丁真身。
-#
-#    ⚠️ 不能只用 "最后一个 termux: 开头的 commit" 来定位补丁源。
-#    e233da5(termux: 修正版本号推导)只改了 Makefile 和两个脚本,却是适配
-#    commit cfeb819 之后最新的 termux: 提交,于是被 head -1 选中。实测后果:
-#    cherry-pick 它会与上游 release-termux.sh 冲突;强行解冲突后,Android 通知、
-#    选择器中文输入修复、resume_list_limit 全部消失(回到"能编译但中文打不
-#    进去"),而第 9 步 make android 仍会通过 —— 因为 GOOS=android 满足 linux
-#    build tag,sender_linux.go 会接手编译。所以编译验证挡不住这种静默降级,
-#    只能在选源这一层挡。
-#
-#    判据:一个 commit 只有同时改到下面全部适配文件才算补丁真身。
-#    这份哨兵列表与"平台适配 + 本地改动必须合并为单一 commit"的约定对应:
-#    只改脚本的 termux: 提交不是适配源。
-#
-#    给后续维护者:termux: 前缀本身已不再是选源依据,哨兵校验才是,所以给
-#    纯脚本/Makefile 改动用这个前缀不会再破坏升级 —— 它只会被跳过并打印
-#    提示。但若希望它被当作补丁源,就必须连同这些文件一起改。
-PATCH_SENTINELS="internal/notify/sender_android.go internal/cli/select.go internal/config/config.go"
-
-# is_patch_source 报告 commit c 是否改到了全部哨兵文件。
-is_patch_source() {
-  local c="$1" f
-  for f in $PATCH_SENTINELS; do
-    [ -n "$(git show --format= --name-only --diff-filter=ADMRT "$c" -- "$f" 2>/dev/null)" ] || return 1
-  done
-  return 0
-}
-
-resolve_patch_ref() {
-  if [ -n "${TERMUX_PATCH_REF:-}" ]; then
-    git rev-parse --verify -q "$TERMUX_PATCH_REF^{commit}" >/dev/null || \
-      die "TERMUX_PATCH_REF=$TERMUX_PATCH_REF 不是有效 commit"
-    is_patch_source "$TERMUX_PATCH_REF" || \
-      die "TERMUX_PATCH_REF=$TERMUX_PATCH_REF 不是 Termux 适配 commit:未同时改到($PATCH_SENTINELS)。
-       用它当补丁源会在升级后丢掉 Android 支持。请改用真正的适配 commit。"
-    printf '%s\n' "$TERMUX_PATCH_REF"
-    return
-  fi
-  # 从新到旧逐个筛查,取第一个改到全部哨兵文件的 termux: commit。
-  # 提示信息走 stderr:本函数的 stdout 会被下面的命令替换捕获成 PATCH_REF。
-  local c
-  while read -r c; do
-    if is_patch_source "$c"; then
-      printf '%s\n' "$c"
-      return 0
-    fi
-    printf '[update] 跳过 %s %s\n' "$(git rev-parse --short "$c")" "$(git log -1 --format='%s' "$c")" >&2
-    printf '        (未改到全部适配文件,不是补丁真身)\n' >&2
-  done < <(git log --format='%H %s' master | grep -E '^[0-9a-f]+ termux:' | cut -d' ' -f1 || true)
-  return 1
-}
-
-PATCH_REF="$(resolve_patch_ref)" || PATCH_REF=""
-[ -n "$PATCH_REF" ] || die "未找到 Termux 适配 commit(需同时改到:$PATCH_SENTINELS);可用 TERMUX_PATCH_REF=<sha> 指定"
-log "Termux 适配补丁: $(git log -1 --format='%h %s' "$PATCH_REF")"
+# 0. 校验唯一补丁源。过去这里从 commit 历史里探测一个"适配 commit"并只
+#    cherry-pick 它;后续独立提交的 TUI resume 优化和配置修复因此会在下一次
+#    上游同步时被清空。现在本地脚本与 GitHub workflow 统一应用同一个累积 patch。
+PATCH_FILE="${TERMUX_PATCH_FILE:-$SCRIPT_DIR/reasonix-termux.patch}"
+[ -s "$PATCH_FILE" ] || die "累积补丁不存在或为空:$PATCH_FILE。先运行 ./rebuild-termux-patch.sh"
+PATCH_FILES="$(grep -c '^diff --git ' "$PATCH_FILE" || true)"
+[ "${PATCH_FILES:-0}" -gt 0 ] || die "累积补丁没有 diff:$PATCH_FILE"
+for required in \
+  internal/notify/sender_android.go \
+  internal/cli/select.go \
+  internal/session/history_locator.go \
+  internal/config/render.go; do
+  grep -q "^diff --git a/$required b/$required$" "$PATCH_FILE" || \
+    die "累积补丁漏了关键文件:$required。先运行 ./rebuild-termux-patch.sh"
+done
+log "Termux 累积补丁:$PATCH_FILE ($PATCH_FILES files)"
 
 # 回滚锚点:升级前的 HEAD 与分支,任何失败都整体恢复。
 ORIG_HEAD_REF="$(git rev-parse HEAD)"
@@ -99,8 +56,6 @@ rollback() {
     printf '[update] 失败(rc=%s),KEEP_CHANGES=1 保留现场\n' "$rc" >&2
   else
     printf '[update] 失败(rc=%s),回滚到 %s\n' "$rc" "$ORIG_HEAD_REF" >&2
-    git cherry-pick --abort >/dev/null 2>&1 || true
-    git cherry-pick --quit  >/dev/null 2>&1 || true
     git reset --hard "$ORIG_HEAD_REF" >/dev/null 2>&1 || true
     git clean -fdq -e '*.bak' >/dev/null 2>&1 || true
     # git clean 会连未跟踪的本地脚本一起删,而它们的备份在仓库外的
@@ -187,7 +142,7 @@ cp .gitattributes "$SCRIPT_DIR/.gitattributes.bak"
 LOCAL_BACKUP="$(mktemp -d "${TMPDIR:-/tmp}/reasonix-update-XXXXXX")"
 UNTRACKED_LIST="$LOCAL_BACKUP/untracked.txt"
 git ls-files --others --exclude-standard -- scripts release-termux.sh \
-  release-notes-termux.md >"$UNTRACKED_LIST" || true
+  release-notes-termux.md rebuild-termux-patch.sh >"$UNTRACKED_LIST" || true
 if [ -s "$UNTRACKED_LIST" ]; then
   log "备份 $(wc -l <"$UNTRACKED_LIST") 个未跟踪本地文件"
   tar -cf "$LOCAL_BACKUP/untracked.tar" -T "$UNTRACKED_LIST"
@@ -195,8 +150,9 @@ fi
 
 find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github ! -name .reasonix \
   ! -name artifacts ! -name reasonix-termux.patch \
-  ! -name update-reasonix.sh ! -name release-notes-termux.md \
-  ! -name release-termux.sh ! -name action.log ! -name '*.bak' -exec rm -rf {} +
+  ! -name update-reasonix.sh ! -name rebuild-termux-patch.sh \
+  ! -name release-notes-termux.md ! -name release-termux.sh \
+  ! -name action.log ! -name '*.bak' -exec rm -rf {} +
 
 # 5. 填入上游源码(排除 .github 与专属文件,稍后恢复)
 git checkout "$TAG" -- . ':(exclude).github' || true
@@ -220,21 +176,15 @@ rollback_hint() {
   fi
 }
 
-# 7. 重新应用 Termux 适配补丁。
-#    补丁取自已解析出的 PATCH_REF(master 上最后一个 termux 适配 commit),
-#    而不是 termux-patch 分支 —— 后者基线停留在 v1.25.0,cherry-pick 到任何更新
-#    的 tag 都会大面积冲突。PATCH_REF 的适配是随 master 手工演进到当前版本的,
-#    对更新的上游 tag 重放才是正确路径。
-if git cherry-pick "$PATCH_REF" >/dev/null 2>&1; then
-  log "补丁干净应用 ✓"
+# 7. 重新应用累积 Termux 补丁。先 --check,失败时不留下半应用状态;KEEP_CHANGES
+#    只保留刚提交的上游快照,方便手工在其上解决 patch 冲突。
+if git apply --check "$PATCH_FILE"; then
+  git apply "$PATCH_FILE"
+  git add -A
+  git commit -m "termux: apply cumulative Android adaptation for $TAG" >/dev/null
+  log "累积补丁干净应用 ✓ ($PATCH_FILES files)"
 else
-  if git status --porcelain | grep -qE '^(UU|AA|DD|AU|UA|DU|UD)'; then
-    conflicted="$(git status --porcelain | grep -E '^(UU|AA|DD|AU|UA|DU|UD)' | awk '{print $NF}')"
-    log "以下文件与 $TAG 冲突:"
-    printf '  %s\n' $conflicted >&2
-    die "$(rollback_hint)"
-  fi
-  die "cherry-pick 失败(非冲突);$(rollback_hint)"
+  die "$(rollback_hint)"
 fi
 
 # 8. 恢复未跟踪的本地脚本
@@ -252,5 +202,5 @@ rm -rf "$LOCAL_BACKUP"
 log "编译验证...(版本号由 Makefile 推导)"
 make android
 
-log "完成: 源码=$TAG + 补丁($(git log -1 --format='%h' "$PATCH_REF")) → bin/reasonix-android-arm64"
+log "完成: 源码=$TAG + 累积补丁($PATCH_FILES files) → bin/reasonix-android-arm64"
 trap - EXIT

@@ -79,6 +79,12 @@ esac
 REL_TAG="termux-$TAG"
 log "版本: $TAG → release tag: $REL_TAG"
 
+# 发布源码与升级/CI 将来重放的补丁必须完全一致。漏跑补丁重建脚本会让本次
+# 二进制看似正常,但下一次上游同步静默丢掉刚发布的修复。
+[ -x "$SCRIPT_DIR/rebuild-termux-patch.sh" ] || die "缺少可执行的 rebuild-termux-patch.sh"
+"$SCRIPT_DIR/rebuild-termux-patch.sh" --check || \
+  die "reasonix-termux.patch 已过期;运行 ./rebuild-termux-patch.sh,提交后再发布"
+
 # 2. 编译(源码就在本仓库,已含 Termux 补丁)
 log "编译 android 二进制"
 ANDROID_ARCH="${ANDROID_ARCH:-arm64}"
