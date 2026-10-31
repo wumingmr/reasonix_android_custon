@@ -79,7 +79,8 @@ context_window = 1000000
 # model's own published window is used when one is known, and a conservative
 # fallback (128000) applies otherwise. `reasonix setup` → provider → "Edit
 # per-model context windows" sets these without editing this file, and fills in
-# whatever the endpoint's own /models listing declares.
+# what the endpoint's own /models listing declares for models that inherit
+# nothing. A window set here always wins over what a listing reports.
 # Official list prices are frozen per provider (billing_currency). Display
 # currency ([billing].display_currency) never rewrites these tables.
 # billing_currency = "USD"   # frozen list-price currency: CNY|USD
