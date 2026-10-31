@@ -44,7 +44,38 @@ for required in \
   grep -q "^diff --git a/$required b/$required$" "$PATCH_FILE" || \
     die "累积补丁漏了关键文件:$required。先运行 ./rebuild-termux-patch.sh"
 done
+# 文件在补丁里 ≠ 修复内容还在。历史上一次人工解决 cherry-pick 冲突时,
+# select.go 的方向键修复被静默丢掉,测试也随文件一起没了,丢失持续了四天、
+# 发了两版 Release 才被用户踩到。所以除了"文件存在",还要校验"修复符号存在"。
+# 这里看的是 HEAD 的源码,不是补丁文本:文件在补丁里只说明补丁覆盖过它。
+for required in \
+  "internal/cli/select.go:escArrow:选择器搜索方向键修复" \
+  "internal/cli/select.go:escSeqLen:选择器转义序列识别" \
+  "internal/config/model_window.go:EffectiveContextWindow:未声明窗口兜底" \
+  "internal/config/model_limits_discovery.go:ApplyDiscoveredLimits:/models 容量回填"; do
+  file="${required%%:*}"; rest="${required#*:}"
+  sym="${rest%%:*}"; label="${rest#*:}"
+  # 匹配定义而非任意引用:escArrow 主体被删但 searchText 里还留着一次调用时,
+  # 子串匹配照样命中,校验就形同虚设。定义形式只有两种 —— 顶层 func/const/var,
+  # 以及方法(func (recv ...) Name)。
+  grep -qE "func ${sym}\(|func \([^)]*\) ${sym}\(|^(const|var) ${sym}\b" \
+    "$SCRIPT_DIR/$file" 2>/dev/null || \
+    die "本地修复丢失:$file 里找不到 $sym 的定义($label)。某次上游同步或人工修改
+    把这段修复覆盖掉了。用 git log -S $sym -- $file 找回引入它的提交。"
+done
+# 测试是丢失发生时唯一没响的报警器,所以关键测试的存在本身也要校验。
+for required in \
+  "internal/cli/select_search_input_test.go:TestEscArrowClaimsArrowsBeforeBareEsc" \
+  "internal/cli/select_search_input_test.go:TestSearchBranchChecksArrowsBeforeBareEsc" \
+  "internal/config/model_window_test.go:TestResolveContextWindowNamesTheOrigin" \
+  "internal/config/model_limits_test.go:TestApplyDiscoveredLimitsFillsOnlyGaps"; do
+  file="${required%%:*}"; test_name="${required#*:}"
+  grep -q "func $test_name(" "$SCRIPT_DIR/$file" 2>/dev/null || \
+    die "关键测试丢失:$file 里找不到 $test_name()。测试没了就没有报警器,
+    用 git log -- $file 找回包含它的提交。"
+done
 log "Termux 累积补丁:$PATCH_FILE ($PATCH_FILES files)"
+log "本地修复符号与关键测试校验通过"
 
 # 回滚锚点:升级前的 HEAD 与分支,任何失败都整体恢复。
 ORIG_HEAD_REF="$(git rev-parse HEAD)"
