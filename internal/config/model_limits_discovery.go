@@ -36,6 +36,13 @@ func (e *ProviderEntry) ApplyDiscoveredLimits(catalog []provider.ModelInfo) int 
 			// The model already states its own window; discovery adds nothing.
 			continue
 		}
+		// A connection-wide window is the person's answer for every model it
+		// covers, so a listing must not quietly replace it with per-model
+		// overrides. Only a model that inherits nothing (no connection window and
+		// no own window) has a real gap to fill.
+		if !declared && e.ContextWindow > 0 && info.ContextWindow > 0 {
+			continue
+		}
 		next := existing
 		if info.ContextWindow > 0 {
 			next.ContextWindow = info.ContextWindow

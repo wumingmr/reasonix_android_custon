@@ -116,3 +116,31 @@ func TestApplyDiscoveredLimitsFillsOnlyGaps(t *testing.T) {
 		t.Fatal("a model the listing said nothing about gained limits")
 	}
 }
+
+// A connection-wide window is the person's answer for every model it covers, so
+// a listing must not quietly replace it with per-model overrides. Only a model
+// that inherits nothing has a real gap for discovery to fill.
+func TestApplyDiscoveredLimitsRespectsAConnectionWindow(t *testing.T) {
+	entry := &ProviderEntry{
+		Name: "relay", Kind: "openai",
+		Models:        []string{"m", "n"},
+		ContextWindow: 128_000,
+	}
+	catalog := []provider.ModelInfo{
+		{ID: "m", ContextWindow: 1_000_000},
+		{ID: "n", ContextWindow: 500_000},
+	}
+	if filled := entry.ApplyDiscoveredLimits(catalog); filled != 0 {
+		t.Fatalf("discovery wrote %d overrides over a connection window: %+v", filled, entry.ModelOverrides)
+	}
+	if _, ok := entry.ModelLimits("m"); ok {
+		t.Fatal("a model gained an override despite the connection-wide window")
+	}
+
+	// With no connection window the models do inherit nothing, so the gap is
+	// real and must still be filled.
+	bare := &ProviderEntry{Name: "relay", Kind: "openai", Models: []string{"m"}}
+	if filled := bare.ApplyDiscoveredLimits(catalog); filled != 1 {
+		t.Fatalf("a real gap was not filled: %d", filled)
+	}
+}
