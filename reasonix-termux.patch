@@ -5479,10 +5479,10 @@ index 742d32926b186c31ed332c1a8b7fbe3c10fa17a6..425130d8d2633378a06b5d7690519bed
  	}
  	return ""
 diff --git a/reasonix.example.toml b/reasonix.example.toml
-index 71f12f4617ae408ea144d02d4dc7dbe9fed633d4..f537fdc0d91a7a5554c254ccaf6a0596de84cc0f 100644
+index 71f12f4617ae408ea144d02d4dc7dbe9fed633d4..4a168e883bd2fc681652271eceadc276b5958f06 100644
 --- a/reasonix.example.toml
 +++ b/reasonix.example.toml
-@@ -75,6 +75,11 @@ context_window = 1000000
+@@ -75,6 +75,12 @@ context_window = 1000000
  # Optional per-model budgets. Omitted models inherit context_window and
  # max_output_tokens from the provider above.
  # model_overrides = { "deepseek-v4-flash" = { context_window = 1000000, max_output_tokens = 32768 } }
@@ -5490,7 +5490,8 @@ index 71f12f4617ae408ea144d02d4dc7dbe9fed633d4..f537fdc0d91a7a5554c254ccaf6a0596
 +# model's own published window is used when one is known, and a conservative
 +# fallback (128000) applies otherwise. `reasonix setup` → provider → "Edit
 +# per-model context windows" sets these without editing this file, and fills in
-+# whatever the endpoint's own /models listing declares.
++# what the endpoint's own /models listing declares for models that inherit
++# nothing. A window set here always wins over what a listing reports.
  # Official list prices are frozen per provider (billing_currency). Display
  # currency ([billing].display_currency) never rewrites these tables.
  # billing_currency = "USD"   # frozen list-price currency: CNY|USD
