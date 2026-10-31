@@ -60,28 +60,3 @@ func (e *ProviderEntry) ApplyDiscoveredLimits(catalog []provider.ModelInfo) int 
 	}
 	return filled
 }
-
-// DiscoveredLimitsSummary reports, per model, the window and output cap a
-// listing declared. It exists so an interactive surface can show what it is
-// about to write before writing it, instead of silently changing budgets.
-func DiscoveredLimitsSummary(catalog []provider.ModelInfo) []ModelInfoLimits {
-	out := make([]ModelInfoLimits, 0, len(catalog))
-	for _, info := range catalog {
-		if info.ContextWindow <= 0 && info.MaxOutputTokens <= 0 {
-			continue
-		}
-		out = append(out, ModelInfoLimits{
-			Model:           info.ID,
-			ContextWindow:   info.ContextWindow,
-			MaxOutputTokens: info.MaxOutputTokens,
-		})
-	}
-	return out
-}
-
-// ModelInfoLimits is one model's discovered limits, for display.
-type ModelInfoLimits struct {
-	Model           string
-	ContextWindow   int
-	MaxOutputTokens int
-}
