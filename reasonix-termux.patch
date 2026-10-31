@@ -1328,6 +1328,52 @@ index f743e4559f055a92f7c627736df1ceeb343306fe..f9815aad39fb98a796d98e9c7a5756ff
 +	}
 +	return config.ContextWindowUnestablished
 +}
+diff --git a/internal/agent/zz_probe2_test.go b/internal/agent/zz_probe2_test.go
+deleted file mode 100644
+index c0dd503755c2af03db0b2b5f5e2f43067f8e3e6a..0000000000000000000000000000000000000000
+--- a/internal/agent/zz_probe2_test.go
++++ /dev/null
+@@ -1,40 +0,0 @@
+-package agent
+-
+-import (
+-	"context"
+-	"testing"
+-
+-	"reasonix/internal/event"
+-	"reasonix/internal/evidence"
+-	"reasonix/internal/provider"
+-	"reasonix/internal/tool"
+-)
+-
+-type auditProbe2 struct {
+-	event.Sink
+-	got []evidence.DelegationAudit
+-}
+-
+-func (p *auditProbe2) RecordDelegationAudit(a evidence.DelegationAudit) { p.got = append(p.got, a) }
+-
+-func TestZZProbeThroughTaskTool(t *testing.T) {
+-	root := t.TempDir()
+-	probe := &auditProbe2{Sink: event.Discard}
+-	reg := tool.NewRegistry()
+-	reg.Add(fakeReadFileTool{})
+-	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
+-		{toolCallChunk("1", "read_file", `{"path":"a.go"}`), {Type: provider.ChunkDone}},
+-		{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}},
+-	}}
+-	task := NewTaskTool(prov, nil, reg, 20, 0, 0, 0, 0, 0, 0, 0.0, "", "sys", nil, 0, "", "", nil).
+-		WithTranscripts(mustSubagentStore(t), root, "base", "high").
+-		WithScheduler(NewSubagentScheduler(4, 4))
+-	ctx := withCallContext(context.Background(), "call-1", probe, nil, false)
+-	if _, err := task.Execute(ctx, []byte(`{"prompt":"inspect a.go"}`)); err != nil {
+-		t.Fatalf("task: %v", err)
+-	}
+-	t.Logf("audits через TaskTool: %d", len(probe.got))
+-	if len(probe.got) == 0 {
+-		t.Fatal("no audit through the TaskTool path")
+-	}
+-}
 diff --git a/internal/boot/boot.go b/internal/boot/boot.go
 index 2a9c0573abe967aeca51b2537cd82737a5b155e9..66647e15eb4632aa12d82c6d9a6eeb8b3b20c59a 100644
 --- a/internal/boot/boot.go
