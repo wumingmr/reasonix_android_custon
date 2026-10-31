@@ -1380,6 +1380,143 @@ index 2a9c0573abe967aeca51b2537cd82737a5b155e9..66647e15eb4632aa12d82c6d9a6eeb8b
  			SoftCompactRatio:             cfg.Agent.SoftCompactRatio,
  			ToolResultSnipRatio:          cfg.Agent.ToolResultSnipRatio,
  			CompactRatio:                 cfg.Agent.CompactRatio,
+diff --git a/internal/boot/model_switch_identity_test.go b/internal/boot/model_switch_identity_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..ccbc4768d0f2c9dac11ab0ba639c9dfd285e2a9d
+--- /dev/null
++++ b/internal/boot/model_switch_identity_test.go
+@@ -0,0 +1,131 @@
++package boot
++
++import (
++	"context"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"reasonix/internal/agent"
++	"reasonix/internal/control"
++	"reasonix/internal/event"
++	"reasonix/internal/provider"
++	"reasonix/internal/session"
++)
++
++// A model switch is not a session switch. When the outgoing controller owns a
++// canonical identity, the rebuilt one must attach to that exact identity: the
++// two controllers share one background scope, and activation refuses two
++// controllers that claim the same background ownership for different sessions.
++// Before this was fixed, every /model switch on a canonical session failed with
++// "background ownership cannot cross sessions" and left the new model inactive
++// until the user quit and resumed.
++func TestModelSwitchKeepsTheCanonicalSessionIdentity(t *testing.T) {
++	isolateConfigHome(t)
++	dir := t.TempDir()
++	workspace := filepath.Join(dir, "ws")
++	svc, err := session.NewService("local", session.NewFilesystemPersistence(filepath.Join(dir, "store")))
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = svc.Shutdown(context.Background()) })
++
++	old, err := Build(context.Background(), Options{
++		Model: "deepseek-flash/deepseek-flash", WorkspaceRoot: workspace,
++		SessionService: svc, Sink: event.Discard,
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(old.Close)
++	old.EnsureSessionPath()
++	old.AdoptHistory([]provider.Message{{Role: provider.RoleUser, Content: "hi"}}, old.SessionPath())
++	if err := old.Snapshot(); err != nil {
++		t.Fatal(err)
++	}
++	before, ok := old.SessionRef()
++	if !ok {
++		t.Fatal("fixture did not establish a canonical identity")
++	}
++
++	scope, finish, abort, err := control.ReserveBackgroundReplacement(old)
++	if err != nil {
++		t.Fatalf("reserve replacement: %v", err)
++	}
++	defer abort()
++
++	rebuilt, err := Build(context.Background(), Options{
++		Model: "deepseek-pro/deepseek-v4-pro", WorkspaceRoot: workspace,
++		SessionService: svc, Sink: event.Discard, BackgroundScope: scope,
++	})
++	if err != nil {
++		t.Fatalf("rebuild: %v", err)
++	}
++	t.Cleanup(rebuilt.Close)
++
++	// This is the line the CLI's buildController performs.
++	if _, err := rebuilt.OpenSession(context.Background(), before); err != nil {
++		t.Fatalf("attach rebuilt controller to the existing session: %v", err)
++	}
++	if err := finish(rebuilt); err != nil {
++		t.Fatalf("finish replacement: %v", err)
++	}
++
++	after, ok := rebuilt.SessionRef()
++	if !ok || after.SessionID != before.SessionID {
++		t.Fatalf("identity changed: %q -> %q", before.SessionID, after.SessionID)
++	}
++	if err := control.ActivateControllerReplacement(old, rebuilt); err != nil {
++		t.Fatalf("activation: %v", err)
++	}
++	if rebuilt.ModelRef() == old.ModelRef() {
++		t.Fatalf("the switch did not change the model: %q", rebuilt.ModelRef())
++	}
++
++	// The carried conversation is written only after activation, because a
++	// canonical session fences that commit on execution ownership. Before this
++	// ordering, the CLI's write was silently dropped and the switched-to
++	// profile's system prompt never reached the new controller.
++	carry := []provider.Message{
++		{Role: provider.RoleSystem, Content: "rebuilt-profile-prompt"},
++		{Role: provider.RoleUser, Content: "hi"},
++		{Role: provider.RoleUser, Content: "unsaved-before-switch"},
++	}
++	rebuilt.AdoptHistory(carry, old.SessionPath())
++	var hasPrompt, hasUnsaved bool
++	for _, m := range rebuilt.History() {
++		if m.Role == provider.RoleSystem && strings.Contains(m.Content, "rebuilt-profile-prompt") {
++			hasPrompt = true
++		}
++		if strings.Contains(m.Content, "unsaved-before-switch") {
++			hasUnsaved = true
++		}
++	}
++	if !hasPrompt || !hasUnsaved {
++		t.Fatalf("carry lost after activation: prompt=%v unsaved=%v", hasPrompt, hasUnsaved)
++	}
++}
++
++// A legacy path-only session has no canonical identity to preserve, so the
++// rebuild continues on its path exactly as before.
++func TestModelSwitchFallsBackToThePathForLegacySessions(t *testing.T) {
++	isolateConfigHome(t)
++	dir := t.TempDir()
++	old, err := Build(context.Background(), Options{
++		Model: "deepseek-flash/deepseek-flash", WorkspaceRoot: filepath.Join(dir, "ws"),
++		Sink: event.Discard,
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(old.Close)
++	if _, ok := old.SessionRef(); ok {
++		t.Fatal("fixture unexpectedly owns a canonical identity")
++	}
++	// ContinueSessionPath keeps an established path, which is what the legacy
++	// branch relies on; a canonical session reports "" and takes the other path.
++	prev := filepath.Join(dir, "legacy.jsonl")
++	if got := agent.ContinueSessionPath(prev, dir, "m"); got != prev {
++		t.Fatalf("ContinueSessionPath(%q) = %q", prev, got)
++	}
++}
 diff --git a/internal/boot/resolver.go b/internal/boot/resolver.go
 index 27744a853f2d2956c247b7014f2d9e1b5bbc2968..3aa1609da4dd1d5d8cccd27efbaf6ab9d88124ba 100644
 --- a/internal/boot/resolver.go
@@ -1515,7 +1652,7 @@ index 806644db6edbad38f1d7be69a2de9b6709c1d9a6..28c52b8462af60fbedcdc882598187e3
  	})
  }
 diff --git a/internal/cli/chat_tui.go b/internal/cli/chat_tui.go
-index a40d0977a99b17198e5c47a762aff5383a132bcf..855b9e120af2a5aba0f7c0fbc76c6e96cd38b57d 100644
+index a40d0977a99b17198e5c47a762aff5383a132bcf..9987603efbf0588ee3551ba09b89fa0f5cc75903 100644
 --- a/internal/cli/chat_tui.go
 +++ b/internal/cli/chat_tui.go
 @@ -165,6 +165,9 @@ type chatTUI struct {
@@ -1528,7 +1665,19 @@ index a40d0977a99b17198e5c47a762aff5383a132bcf..855b9e120af2a5aba0f7c0fbc76c6e96
  
  	// reasoning accumulates the in-progress thinking stream (dim); pending
  	// accumulates the in-progress answer (raw markdown). They are committed to
-@@ -644,8 +647,13 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
+@@ -450,6 +453,11 @@ type chatTUI struct {
+ 	// historical field name is retained because model, effort, skill refresh,
+ 	// and work-mode changes all share the same atomic swap path.
+ 	pendingModelSwitch tea.Cmd
++	// pendingSwitchCarry is the carried conversation a canonical model switch
++	// still owes after activation. A canonical session fences the history commit
++	// on execution ownership, which the rebuilt controller only receives at
++	// activation, so the write cannot happen inside the build goroutine.
++	pendingSwitchCarry *pendingCarry
+ 	// oldControllers accumulates controllers retired by runtime switches.
+ 	// They cannot be closed during the switch (Close runs SessionEnd hooks
+ 	// and kills plugin subprocesses, both of which corrupt the terminal's
+@@ -644,8 +652,13 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
  
  	commitBuf := []string{}
  	nativeScrollback := detectTermuxTerminal()
@@ -1544,7 +1693,7 @@ index a40d0977a99b17198e5c47a762aff5383a132bcf..855b9e120af2a5aba0f7c0fbc76c6e96
  	return chatTUI{
  		ctrl:                     ctrl,
  		label:                    ctrl.Label(),
-@@ -681,7 +689,8 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
+@@ -681,7 +694,8 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
  		subagentProgressIdx:      make(map[string]int),
  		subagentProgress:         make(map[string]*cliSubagentProgress),
  		eventCh:                  eventCh,
@@ -1554,7 +1703,7 @@ index a40d0977a99b17198e5c47a762aff5383a132bcf..855b9e120af2a5aba0f7c0fbc76c6e96
  		host:                     ctrl.Host(),
  		commands:                 ctrl.Commands(),
  		skills:                   ctrl.SlashSkills(),
-@@ -697,6 +706,27 @@ func transcriptContentWidth(termW int, nativeScrollback bool) int {
+@@ -697,6 +711,27 @@ func transcriptContentWidth(termW int, nativeScrollback bool) int {
  	return max(termW, 1)
  }
  
@@ -1582,7 +1731,7 @@ index a40d0977a99b17198e5c47a762aff5383a132bcf..855b9e120af2a5aba0f7c0fbc76c6e96
  func configureChatTextarea(ti *textarea.Model) {
  	// Keep a stable two-cell input affordance, matching the prompt treatment in
  	// other coding TUIs. Continuation rows receive two spaces so text and the
-@@ -754,6 +784,18 @@ func isTermuxTerminal() bool {
+@@ -754,6 +789,18 @@ func isTermuxTerminal() bool {
  
  var detectTermuxTerminal = isTermuxTerminal
  
@@ -1601,7 +1750,7 @@ index a40d0977a99b17198e5c47a762aff5383a132bcf..855b9e120af2a5aba0f7c0fbc76c6e96
  func (m *chatTUI) rememberSubmittedInput(input string) {
  	if strings.TrimSpace(input) == "" {
  		return
-@@ -1073,7 +1115,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+@@ -1073,7 +1120,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
  	switch msg := msg.(type) {
  	case tea.WindowSizeMsg:
  		m.followComposerCursor()
@@ -1610,7 +1759,7 @@ index a40d0977a99b17198e5c47a762aff5383a132bcf..855b9e120af2a5aba0f7c0fbc76c6e96
  		m.height = msg.Height
  		m.input.SetWidth(max(msg.Width-4, 1))
  		// Commit the banner — and a resumed session's transcript — once, now
-@@ -1082,9 +1124,10 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+@@ -1082,9 +1129,10 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
  			m.started = true
  			history := append([]provider.Message(nil), m.history...)
  			m.commitTranscriptSource(transcriptSource{
@@ -1690,10 +1839,116 @@ index a9c5c6048b355f7e1f58234f379ec3c9bfd24f6a..3a42c1686a58056ef94896028a2b5310
  	ask := event.Ask{
  		ID: "ask-1",
 diff --git a/internal/cli/cli.go b/internal/cli/cli.go
-index 049f471f35acfa5cf5bd8d6248c09cf37772950a..3190244268cc975d4844e76603abcab954d02d45 100644
+index 049f471f35acfa5cf5bd8d6248c09cf37772950a..27bb288aca129557f1cf1e4e786dc07e6641e6c7 100644
 --- a/internal/cli/cli.go
 +++ b/internal/cli/cli.go
-@@ -1584,7 +1584,7 @@ func interactiveSetup(configPath, envPath string) int {
+@@ -43,6 +43,7 @@ import (
+ 	"reasonix/internal/provider"
+ 	"reasonix/internal/provider/openai"
+ 	"reasonix/internal/serve"
++	"reasonix/internal/session"
+ 	"reasonix/internal/sessiontemp"
+ 	"reasonix/internal/telemetry"
+ 	"reasonix/internal/winaclresidue"
+@@ -1238,7 +1239,8 @@ func chatREPL(args []string, version string) int {
+ 		// Keep the carried conversation in its existing file so the switch doesn't
+ 		// orphan a duplicate (#2807).
+ 		path := agent.ContinueSessionPath(resumePath, c.SessionDir(), c.Label())
+-		if err := adoptCarriedHistoryPreservingProfileAndGrants(c, carry, path, oldCtrl); err != nil {
++		pending, err := adoptCarriedHistory(c, carry, path, oldCtrl)
++		if err != nil {
+ 			c.Close()
+ 			return nil, err
+ 		}
+@@ -1253,6 +1255,11 @@ func chatREPL(args []string, version string) int {
+ 			c.ReleaseResources()
+ 			return nil, err
+ 		}
++		// A canonical rebuild could not write the carried history yet: a canonical
++		// session fences that commit on execution ownership, which the controller
++		// only receives at activation. Publish it last, so a failed build never
++		// leaves a conversation owed to a candidate that was discarded.
++		m.pendingSwitchCarry = pending
+ 		return c, nil
+ 	}
+ 	// /reload support: rebuild the runtime through boot.Rebuild so tools,
+@@ -1363,6 +1370,32 @@ func chatREPL(args []string, version string) int {
+ // read-only command trust, which a rebuild would otherwise silently drop,
+ // forcing the user to re-approve things already granted this session.
+ func adoptCarriedHistoryPreservingProfileAndGrants(c *control.Controller, carry []provider.Message, path string, oldCtrl control.SessionAPI) error {
++	_, err := adoptCarriedHistory(c, carry, path, oldCtrl)
++	return err
++}
++
++// pendingCarry is the carried conversation a canonical rebuild still owes after
++// activation. It is non-nil only when the rebuilt controller attached to an
++// existing session identity, because that is the one case where the write is
++// fenced on execution ownership the controller does not hold yet.
++type pendingCarry struct {
++	messages []provider.Message
++	path     string
++}
++
++// apply writes the deferred conversation now that the controller owns
++// execution. It is a no-op for a rebuilt controller that adopted its history
++// inline.
++func (p *pendingCarry) apply(c *control.Controller) {
++	if p == nil || c == nil {
++		return
++	}
++	c.AdoptHistory(p.messages, p.path)
++}
++
++// adoptCarriedHistory is adoptCarriedHistoryPreservingProfileAndGrants reporting
++// whether the write had to be deferred.
++func adoptCarriedHistory(c *control.Controller, carry []provider.Message, path string, oldCtrl control.SessionAPI) (*pendingCarry, error) {
+ 	if fresh := c.History(); len(fresh) > 0 && fresh[0].Role == provider.RoleSystem {
+ 		if len(carry) > 0 && carry[0].Role == provider.RoleSystem {
+ 			carry[0] = fresh[0]
+@@ -1370,6 +1403,29 @@ func adoptCarriedHistoryPreservingProfileAndGrants(c *control.Controller, carry
+ 			carry = append([]provider.Message{fresh[0]}, carry...)
+ 		}
+ 	}
++	// A model switch is not a session switch. When the outgoing controller owns a
++	// canonical identity, attach the rebuilt one to that exact identity: the two
++	// controllers share one background scope, and activation refuses two
++	// controllers that claim the same background ownership for different
++	// sessions. That refusal is what used to leave the switched-to model
++	// inactive until the user quit and resumed.
++	//
++	// The carried history cannot be written yet. A canonical session routes
++	// AdoptHistory through a session event, and that commit is fenced on
++	// execution ownership — which the rebuilt controller only receives at
++	// activation. Writing now would be silently dropped, so the caller defers it
++	// to after activation (see pendingCarry).
++	if ref, ok := canonicalSessionRef(oldCtrl); ok {
++		if _, err := c.OpenSession(context.Background(), ref); err != nil {
++			return nil, fmt.Errorf("attach rebuilt controller to session %s: %w", ref.SessionID, err)
++		}
++		// The grants below do not touch the session store, so they are safe to
++		// apply now; only the history write waits for execution ownership.
++		if prev, ok := oldCtrl.(*control.Controller); ok {
++			c.RestoreSessionAuthorizations(prev.SessionAuthorizations())
++		}
++		return &pendingCarry{messages: carry, path: path}, nil
++	}
+ 	c.AdoptHistory(carry, path)
+ 	if prev, ok := oldCtrl.(*control.Controller); ok {
+ 		c.RestoreSessionAuthorizations(prev.SessionAuthorizations())
+@@ -1380,10 +1436,10 @@ func adoptCarriedHistoryPreservingProfileAndGrants(c *control.Controller, carry
+ 	// outgoing profile's contract from disk.
+ 	if path != "" {
+ 		if err := c.Snapshot(); err != nil {
+-			return fmt.Errorf("snapshot after runtime switch: %w", err)
++			return nil, fmt.Errorf("snapshot after runtime switch: %w", err)
+ 		}
+ 	}
+-	return nil
++	return nil, nil
+ }
+ 
+ func prepareNativeScrollback(w io.Writer, rows int) {
+@@ -1584,7 +1640,7 @@ func interactiveSetup(configPath, envPath string) int {
  func pickSessionToResume() (cliResumeTarget, int) {
  	sessionDir := resolveCLISessionDir()
  	reclaimCLIRecoveryBranches(sessionDir)
@@ -1702,6 +1957,24 @@ index 049f471f35acfa5cf5bd8d6248c09cf37772950a..3190244268cc975d4844e76603abcab9
  	if len(entries) == 0 {
  		fmt.Fprintln(os.Stderr, i18n.M.NoSessionToResume)
  		return cliResumeTarget{}, 1
+@@ -2772,3 +2828,17 @@ func configCurrencyUsage() {
+   reasonix config currency [auto|CNY|USD]
+ `)
+ }
++
++// canonicalSessionRef is the v3 identity a rebuilt controller must preserve.
++// It reports false for a legacy path-only session: there is no identity to keep,
++// so the caller continues on its path instead.
++func canonicalSessionRef(ctrl control.SessionAPI) (session.SessionRef, bool) {
++	if ctrl == nil {
++		return session.SessionRef{}, false
++	}
++	concrete, ok := ctrl.(*control.Controller)
++	if !ok || concrete == nil {
++		return session.SessionRef{}, false
++	}
++	return concrete.SessionRef()
++}
 diff --git a/internal/cli/connection_setup.go b/internal/cli/connection_setup.go
 index ff7860101183c2a3a9660c3b8f4d01d486f6dce5..8221f5eb79e52aaac06d709edf7cb3c80cc9c78f 100644
 --- a/internal/cli/connection_setup.go
@@ -2130,6 +2403,50 @@ index ee151a3b76ced15ecb64a2278ae0b02b5e062571..403bf717dd2169754070cb2e79ebca0a
  
  	if want := canonicalResumeWalkCap / canonicalResumeScanCap; catalog.calls != want {
  		t.Fatalf("catalog pages walked = %d, want %d (walk cap %d)", catalog.calls, want, canonicalResumeWalkCap)
+diff --git a/internal/cli/runtime_model_switch.go b/internal/cli/runtime_model_switch.go
+index 24d708ca78d9e412e750856ad291973edabf5868..b1661980988b74906f5a8cc235f2d48c41f9c726 100644
+--- a/internal/cli/runtime_model_switch.go
++++ b/internal/cli/runtime_model_switch.go
+@@ -18,10 +18,16 @@ func (m *chatTUI) handleModelSwitch(msg modelSwitchMsg) []tea.Cmd {
+ 		} else if msg.ctrl != nil {
+ 			msg.ctrl.Close()
+ 		}
++		// The deferred carry belonged to the abandoned candidate.
++		m.pendingSwitchCarry = nil
+ 		return nil
+ 	}
+ 	m.modelSwitchPending = false
+ 	m.pendingModelSwitch = nil
++	// Whatever settles below consumes or discards the deferred carry; clearing it
++	// first keeps one switch's conversation from leaking into the next.
++	pending := m.pendingSwitchCarry
++	m.pendingSwitchCarry = nil
+ 	if msg.err != nil {
+ 		prefix := msg.failurePrefix
+ 		if prefix == "" {
+@@ -43,6 +49,11 @@ func (m *chatTUI) handleModelSwitch(msg modelSwitchMsg) []tea.Cmd {
+ 			m.followSessionLease()
+ 			return cmds
+ 		}
++		// The rebuilt controller owns execution now, so a deferred carried
++		// conversation can finally be written. Writing it during the build was
++		// silently dropped: a canonical session fences that commit on execution
++		// ownership, which only activation confers.
++		pending.apply(concreteController(msg.ctrl))
+ 		m.ctrl = activateGoalDriverAfterRebuild(msg.ctrl)
+ 		if m.takeover != nil {
+ 			m.takeover.AttachController(msg.ctrl)
+@@ -85,3 +96,10 @@ func (m *chatTUI) handleModelSwitch(msg modelSwitchMsg) []tea.Cmd {
+ 	}
+ 	return cmds
+ }
++
++// concreteController narrows a SessionAPI to the concrete controller a deferred
++// history write needs, or nil when the implementation owns no session store.
++func concreteController(api control.SessionAPI) *control.Controller {
++	c, _ := api.(*control.Controller)
++	return c
++}
 diff --git a/internal/cli/select.go b/internal/cli/select.go
 index fa34d2d877bfd88816ad1350c7adfaba9c824512..e71f886715651e554a161ffab95769a8ba23a9d9 100644
 --- a/internal/cli/select.go
@@ -2841,6 +3158,57 @@ index 19ba3aa3aea51976c43acd8f2800ec4e5dd4ef54..b2554e10f2294c75fc22ecfa95670a01
  			}
  			p.sel = clampSel(p.sel, p.filteredSkills())
  			return m, nil
+diff --git a/internal/cli/switch_recovery_test.go b/internal/cli/switch_recovery_test.go
+index 7386af53c78b2875ce8a0c5536da4494e6c690f7..d39e496fc0ea4a5dd7a5d7c6b63a7c781bf4aa87 100644
+--- a/internal/cli/switch_recovery_test.go
++++ b/internal/cli/switch_recovery_test.go
+@@ -784,3 +784,46 @@ func TestAdoptCarriedHistoryReportsSnapshotFailure(t *testing.T) {
+ 		t.Fatalf("adopt error = %v, want snapshot failure", err)
+ 	}
+ }
++
++// A canonical session fences the carried-history commit on execution ownership,
++// which the rebuilt controller only receives at activation. So the rebuild must
++// hand the conversation back as a pending write instead of losing it, and the
++// legacy path must keep adopting inline.
++func TestAdoptCarriedHistoryDefersOnACanonicalSession(t *testing.T) {
++	dir := t.TempDir()
++	path := filepath.Join(dir, "carry.jsonl")
++
++	oldSession := agent.NewSession("outgoing prompt")
++	oldSession.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
++	if err := oldSession.Save(path); err != nil {
++		t.Fatalf("save base session: %v", err)
++	}
++
++	fresh := newOwnedTestController(t, control.Options{
++		Executor:   agent.New(nil, nil, agent.NewSession("rebuilt prompt"), agent.Options{}, event.Discard),
++		SessionDir: dir,
++	})
++	carry := []provider.Message{
++		{Role: provider.RoleSystem, Content: "outgoing prompt"},
++		{Role: provider.RoleUser, Content: "hello"},
++	}
++
++	// nil old controller = no canonical identity to preserve, so the legacy
++	// branch adopts inline and owes nothing afterwards.
++	pending, err := adoptCarriedHistory(fresh, carry, path, nil)
++	if err != nil {
++		t.Fatalf("adopt: %v", err)
++	}
++	if pending != nil {
++		t.Fatalf("legacy path deferred a write it already performed: %+v", pending)
++	}
++
++	// A pending carry is applied only once the controller owns execution; the
++	// helper must be nil-safe because the common legacy path leaves it unset.
++	var none *pendingCarry
++	none.apply(fresh)
++	got := fresh.History()
++	if len(got) != 2 || got[0].Content != "rebuilt prompt" || got[1].Content != "hello" {
++		t.Fatalf("history = %+v, want the inline-adopted system+user pair untouched", got)
++	}
++}
 diff --git a/internal/cli/theme_osc_other.go b/internal/cli/theme_osc_other.go
 index 713dc8eeb19e9e1c0114f22dbb48f2bb02b26277..e2c606924df5b0f25f63199e66f1c5741ea28a3d 100644
 --- a/internal/cli/theme_osc_other.go
