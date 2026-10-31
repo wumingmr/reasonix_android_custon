@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"bytes"
+	"os"
+	"strings"
 	"testing"
 	"unicode/utf8"
 )
@@ -113,5 +116,188 @@ func TestTrimSearchRuneRemovesOneCharacter(t *testing.T) {
 	trimmed := trimSearchRune("鹈鹕骑")
 	if !utf8.ValidString(trimmed) {
 		t.Fatalf("trimSearchRune left invalid UTF-8: %q", trimmed)
+	}
+}
+
+func TestSearchPendingSurvivesChunkThatAddsNothing(t *testing.T) {
+	// "鹈" is e9 b9 88, split by the terminal driver across two reads. The
+	// caller keeps the returned fragment as pending across reads; here that
+	// contract is what the first read must produce.
+	query, pending := searchText("", nil, []byte{0xe9, 0xb9})
+	if query != "" {
+		t.Fatalf("query = %q after a split character's first half, want empty", query)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("pending = %v, want the two held-back bytes", pending)
+	}
+
+	query, pending = searchText(query, pending, []byte{0x88})
+	if query != "鹈" {
+		t.Fatalf("query = %q after completing the character, want %q", query, "鹈")
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending = %v after the character completed, want empty", pending)
+	}
+	if n := len(filterMenuItems([]menuItem{{name: "鹈鹕骑自行车"}}, query)); n != 1 {
+		t.Fatalf("a character split across two reads matched %d items, want 1", n)
+	}
+}
+
+func TestSearchTextSkipsEscapeSequenceInsideChunk(t *testing.T) {
+	cases := []struct {
+		name  string
+		chunk []byte
+		want  string
+	}{
+		{"字符后紧跟方向键上", []byte{'a', 0x1b, '[', 'A'}, "a"},
+		{"字符后紧跟方向键下", []byte{'a', 0x1b, '[', 'B'}, "a"},
+		{"字符后紧跟带参数序列", []byte{'a', 0x1b, '[', '3', '~'}, "a"},
+		{"汉字后紧跟方向键", append([]byte("鹈"), 0x1b, '[', 'A'), "鹈"},
+		{"裸 ESC 仍按控制字节丢弃", []byte{'a', 0x1b}, "a"},
+		{"单独的 ESC 序列", []byte{0x1b, '[', 'A'}, ""},
+	}
+	for _, tc := range cases {
+		got, rest := searchText("", nil, tc.chunk)
+		if got != tc.want {
+			t.Fatalf("%s: searchText(%v) = %q, want %q", tc.name, tc.chunk, got, tc.want)
+		}
+		if len(rest) != 0 {
+			t.Fatalf("%s: left over bytes %v, want none", tc.name, rest)
+		}
+	}
+}
+
+func TestEscSeqLen(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []byte
+		want int
+	}{
+		{"CSI 上", []byte{0x1b, '[', 'A'}, 3},
+		{"CSI 带参数", []byte{0x1b, '[', '1', '5', '~'}, 5},
+		{"SS3", []byte{0x1b, 'O', 'A'}, 3},
+		{"不完整 CSI", []byte{0x1b, '['}, 0},
+		{"不完整 SS3", []byte{0x1b, 'O'}, 0},
+		{"裸 ESC", []byte{0x1b}, 0},
+		{"非 ESC 开头", []byte("a"), 0},
+	}
+	for _, tc := range cases {
+		if got := escSeqLen(tc.in); got != tc.want {
+			t.Fatalf("%s: escSeqLen(%v) = %d, want %d", tc.name, tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestEscArrowClaimsArrowsBeforeBareEsc(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []byte
+		want int
+	}{
+		{"CSI 上", []byte{0x1b, '[', 'A'}, -1},
+		{"CSI 下", []byte{0x1b, '[', 'B'}, 1},
+		{"带参数的下 1;2B", []byte{0x1b, '[', '1', ';', '2', 'B'}, 1},
+		{"SS3 上", []byte{0x1b, 'O', 'A'}, -1},
+		{"SS3 下", []byte{0x1b, 'O', 'B'}, 1},
+		{"裸 Esc 仍是取消键", []byte{0x1b}, 0},
+		{"不完整序列 ESC[", []byte{0x1b, '['}, 0},
+		{"Delete 不是方向键", []byte{0x1b, '[', '3', '~'}, 0},
+		{"Home 不是方向键", []byte{0x1b, '[', 'H'}, 0},
+		{"普通字符", []byte{'a'}, 0},
+	}
+	for _, tc := range cases {
+		if got := escArrow(tc.in); got != tc.want {
+			t.Fatalf("%s: escArrow(%v) = %d, want %d", tc.name, tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestSearchBranchChecksArrowsBeforeBareEsc(t *testing.T) {
+	src, err := os.ReadFile("select.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"// up — move the selection", "// down — move the selection", "// up — move the cursor", "// down — move the cursor"} {
+		if !bytes.Contains(src, []byte(marker)) {
+			t.Fatalf("select.go lost the search-branch case %q — the arrows would fall into the Esc branch again", marker)
+		}
+	}
+
+	// In both menus the Esc case must be written as `k[0] == 27` and sit after
+	// every arrow case inside the same search branch.
+	body := string(src)
+	for _, sel := range []string{"sel", "cur"} {
+		arrow := strings.Index(body, "// up — move the "+map[string]string{"sel": "selection", "cur": "cursor"}[sel])
+		if arrow < 0 {
+			t.Fatalf("no arrow case for %q", sel)
+		}
+		esc := strings.Index(body[arrow:], "case k[0] == 27:")
+		if esc < 0 {
+			t.Fatalf("the Esc case for %q is missing after the arrow cases", sel)
+		}
+		// Nothing but the down case may sit between the up case and the Esc case.
+		between := body[arrow : arrow+esc]
+		if strings.Contains(between, "searching = false") {
+			t.Fatalf("the Esc branch (searching = false) sits between the arrow cases for %q", sel)
+		}
+	}
+
+	// selectOne's search branch has no trailing redraw, so each arrow case must
+	// redraw itself. Without it the selection index moves while the screen keeps
+	// showing the old row, which reads as "the row cannot be selected" — the same
+	// symptom as the bug this branch was added to fix. selectMany is exempt: its
+	// search branch ends in an unconditional redraw().
+	one := body[strings.Index(body, "func selectOne"):strings.Index(body, "func selectMany")]
+	search := one[strings.Index(one, "if searching {"):]
+	search = search[:strings.Index(search, "\n\t\tswitch {")]
+	for _, dir := range []string{"up — move the selection", "down — move the selection"} {
+		i := strings.Index(search, dir)
+		if i < 0 {
+			t.Fatalf("selectOne lost the %q case", dir)
+		}
+		caseBody := search[i : strings.Index(search[i:], "\n\t\t\tcase ")+i]
+		if !strings.Contains(caseBody, "redraw()") {
+			t.Fatalf("selectOne's %q case does not redraw — the selection would move without the screen following", dir)
+		}
+	}
+}
+
+func TestBareEscCancelsButArrowsDoNot(t *testing.T) {
+	items := []menuItem{{name: "鹈鹕骑自行车"}, {name: "鹈鹕降落"}, {name: "hello world"}}
+	searching := true
+	searchQuery := "鹈鹕"
+	sel := 0
+	filtered := filterMenuItems(items, searchQuery)
+
+	// The menu's search branch, reading escArrow exactly as select.go does.
+	apply := func(k []byte) {
+		switch {
+		case escArrow(k) < 0:
+			if sel > 0 {
+				sel--
+			}
+		case escArrow(k) > 0:
+			if sel < len(filtered)-1 {
+				sel++
+			}
+		case k[0] == 27:
+			searching = false
+			searchQuery = ""
+			filtered = items
+			sel = 0
+		}
+	}
+
+	apply([]byte{0x1b, '[', 'B'})
+	if !searching || searchQuery != "鹈鹕" || sel != 1 {
+		t.Fatalf("down arrow: searching=%v query=%q sel=%d, want true/鹈鹕/1", searching, searchQuery, sel)
+	}
+	apply([]byte{0x1b, '[', 'A'})
+	if !searching || searchQuery != "鹈鹕" || sel != 0 {
+		t.Fatalf("up arrow: searching=%v query=%q sel=%d, want true/鹈鹕/0", searching, searchQuery, sel)
+	}
+	apply([]byte{0x1b})
+	if searching || searchQuery != "" || sel != 0 || len(filtered) != len(items) {
+		t.Fatalf("bare Esc did not cancel: searching=%v query=%q sel=%d rows=%d", searching, searchQuery, sel, len(filtered))
 	}
 }

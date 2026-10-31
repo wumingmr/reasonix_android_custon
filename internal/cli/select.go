@@ -119,6 +119,70 @@ func filterMenuItems(items []menuItem, query string) []menuItem {
 // partial UTF-8 sequence that no longer matched anything.
 const searchInputBuf = 256
 
+// escSeqLen returns the byte length of the escape sequence at the start of b, or
+// 0 when b holds no complete one. It covers the CSI forms the search menus react
+// to (ESC [ letter) plus SS3, and refuses to claim a bare ESC followed by
+// ordinary text: the caller's own Esc branch already handles that, and here such
+// an ESC is just a control byte to drop.
+func escSeqLen(b []byte) int {
+	if len(b) < 2 || b[0] != 0x1b {
+		return 0
+	}
+	switch b[1] {
+	case '[': // CSI: ESC [ params final-byte, e.g. ESC [ A (up), ESC [ 3 ~ (delete)
+		i := 2
+		for i < len(b) && b[i] >= 0x20 && b[i] < 0x40 { // parameter/intermediate bytes
+			i++
+		}
+		if i < len(b) && b[i] >= 0x40 && b[i] < 0x80 { // final byte
+			return i + 1
+		}
+		return 0 // no final byte yet: incomplete, treat ESC as a plain control byte
+	case 'O': // SS3: ESC O letter, e.g. ESC O A
+		if len(b) >= 3 {
+			return 3
+		}
+		return 0
+	}
+	return 0
+}
+
+// escArrow reports whether the chunk is an arrow-key escape sequence and, if so,
+// which way it points: -1 for up, +1 for down, 0 when it is not an arrow.
+//
+// This has to be decided before the menus' bare-Esc branch, because an arrow
+// sequence starts with ESC (0x1b) too. Testing `k[0] == 27` alone sent every
+// arrow key press down the Esc path, which cleared the query and left search
+// mode — so on a filtered list the selection could not be moved at all.
+func escArrow(k []byte) int {
+	// Only claim a complete sequence; a bare ESC is the cancel key.
+	if escSeqLen(k) == 0 {
+		return 0
+	}
+	// The final byte carries the key; parameters may precede it, so match on the
+	// last byte rather than a fixed length. ESC[1;2B (a modified down) is a real
+	// sequence some terminals emit for Shift+Down.
+	final := k[len(k)-1]
+	if final < 0x40 || final >= 0x80 {
+		return 0
+	}
+	if k[1] == 'O' {
+		// SS3 has no parameters: ESC O A / ESC O B
+		if len(k) != 3 {
+			return 0
+		}
+	} else if k[1] != '[' {
+		return 0
+	}
+	switch final {
+	case 'A':
+		return -1
+	case 'B':
+		return 1
+	}
+	return 0
+}
+
 // searchText folds one raw stdin chunk into the search query. k may hold several
 // characters at once (a paste, or one read catching a fast typist), so the whole
 // chunk is decoded rather than only its first byte.
@@ -134,6 +198,17 @@ func searchText(query string, pending, k []byte) (string, []byte) {
 		buf = append(append(make([]byte, 0, len(pending)+len(k)), pending...), k...)
 	}
 	for i := 0; i < len(buf); {
+		// An escape sequence that did not land at the chunk start — a read
+		// catching a typed character together with the arrow key pressed right
+		// after it. Skipping it keeps "[A" out of the query; before the whole
+		// chunk was decoded only its first byte was ever considered, so such a
+		// pair contributed just the character.
+		if buf[i] == 0x1b {
+			if n := escSeqLen(buf[i:]); n > 0 {
+				i += n
+				continue
+			}
+		}
 		r, size := utf8.DecodeRune(buf[i:])
 		if r == utf8.RuneError && size <= 1 {
 			// A trailing partial sequence is held back for the next read instead
@@ -270,6 +345,19 @@ func selectOne(label string, items []menuItem) (int, error) {
 
 		if searching {
 			switch {
+			case escArrow(k) < 0: // up — move the selection, stay in search
+				// Must precede the bare-Esc case: an arrow sequence starts with
+				// 0x1b, so testing k[0] == 27 first sent every arrow press down
+				// the cancel path and wiped the query.
+				if sel > 0 {
+					sel--
+					redraw()
+				}
+			case escArrow(k) > 0: // down — move the selection, stay in search
+				if sel < len(filtered)-1 {
+					sel++
+					redraw()
+				}
 			case k[0] == 27: // Esc — exit search
 				searching = false
 				searchQuery = ""
@@ -456,6 +544,19 @@ func selectMany(label string, items []menuItem) ([]int, error) {
 
 		if searching {
 			switch {
+			case escArrow(k) < 0: // up — move the cursor, stay in search
+				// Must precede the bare-Esc case: an arrow sequence starts with
+				// 0x1b, so testing k[0] == 27 first sent every arrow press down
+				// the cancel path and wiped the query.
+				if cur > 0 {
+					cur--
+					redraw()
+				}
+			case escArrow(k) > 0: // down — move the cursor, stay in search
+				if cur < len(filtered)-1 {
+					cur++
+					redraw()
+				}
 			case k[0] == 27: // Esc — exit search
 				searching = false
 				searchQuery = ""
