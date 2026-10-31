@@ -3465,10 +3465,10 @@ index 0000000000000000000000000000000000000000..fb1c34f8f190b1e7e8d5e3376d67ccca
 +}
 diff --git a/internal/config/model_limits_discovery.go b/internal/config/model_limits_discovery.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..5d0df2f3f200bd34dfa7a8314371d4f78137ca09
+index 0000000000000000000000000000000000000000..47c8e37946a7f3af6ef6e7c4f6fa7c9d1ef6397a
 --- /dev/null
 +++ b/internal/config/model_limits_discovery.go
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,62 @@
 +package config
 +
 +import (
@@ -3530,31 +3530,6 @@ index 0000000000000000000000000000000000000000..5d0df2f3f200bd34dfa7a8314371d4f7
 +		filled++
 +	}
 +	return filled
-+}
-+
-+// DiscoveredLimitsSummary reports, per model, the window and output cap a
-+// listing declared. It exists so an interactive surface can show what it is
-+// about to write before writing it, instead of silently changing budgets.
-+func DiscoveredLimitsSummary(catalog []provider.ModelInfo) []ModelInfoLimits {
-+	out := make([]ModelInfoLimits, 0, len(catalog))
-+	for _, info := range catalog {
-+		if info.ContextWindow <= 0 && info.MaxOutputTokens <= 0 {
-+			continue
-+		}
-+		out = append(out, ModelInfoLimits{
-+			Model:           info.ID,
-+			ContextWindow:   info.ContextWindow,
-+			MaxOutputTokens: info.MaxOutputTokens,
-+		})
-+	}
-+	return out
-+}
-+
-+// ModelInfoLimits is one model's discovered limits, for display.
-+type ModelInfoLimits struct {
-+	Model           string
-+	ContextWindow   int
-+	MaxOutputTokens int
 +}
 diff --git a/internal/config/model_limits_test.go b/internal/config/model_limits_test.go
 new file mode 100644
