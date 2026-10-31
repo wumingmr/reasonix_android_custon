@@ -1,5 +1,7 @@
 package agent
 
+import "reasonix/internal/config"
+
 // agentConfig is everything New fixes for an Agent's lifetime; nothing writes
 // it afterwards, which agent_config_test.go enforces. Embedded rather than
 // nested so access stays flat, as perTurnState already does. Separating it lets
@@ -28,9 +30,13 @@ type agentConfig struct {
 	maxSubagentDepth int
 	// contextWindow and compactRatio decide when at most one provider-visible
 	// checkpoint is installed; recentKeep and archiveDir shape what it keeps.
-	contextWindow      int
-	compactRatio       float64
-	compactRatioSource func() float64
-	recentKeep         int
-	archiveDir         string
+	contextWindow int
+	// contextWindowSource records where that number came from, so a surface can
+	// say "the model's own ceiling" instead of only printing it. A wrong window
+	// and a deliberately small one look identical without it.
+	contextWindowSource config.ContextWindowSource
+	compactRatio        float64
+	compactRatioSource  func() float64
+	recentKeep          int
+	archiveDir          string
 }

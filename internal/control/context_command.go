@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/config"
 )
 
 // ContextReport renders the current context state as a one-line summary plus
@@ -46,6 +47,9 @@ func renderContextReport(rep agent.ContextReport) (summary, detail string) {
 		hard = fmt.Sprintf("  (usable %s after output reserve)", thousands(rep.HardCeiling))
 	}
 	line("window", thousands(rep.Window)+hard)
+	if origin := windowSourceLine(rep.WindowSource); origin != "" {
+		line("window from", origin)
+	}
 	line("latest prompt", fmt.Sprintf("%s  (%s of window)", thousands(rep.LatestPrompt), percentOf(rep.LatestPrompt, rep.Window)))
 	line("canonical", thousands(rep.CanonicalTokens))
 	visible := thousands(rep.ProjectionTokens)
@@ -95,6 +99,24 @@ func contextSummaryLine(rep agent.ContextReport) string {
 		s += " · maintenance blocked"
 	}
 	return s
+}
+
+// windowSourceLine explains where the window came from, because the number
+// alone cannot distinguish a budget somebody chose from one nothing
+// established — and only the second is fixed by declaring the real limit.
+func windowSourceLine(source config.ContextWindowSource) string {
+	switch source {
+	case config.ContextWindowFromModelOverride:
+		return "model_overrides (declared for this model)"
+	case config.ContextWindowFromProvider:
+		return "the connection's context_window (this provider)"
+	case config.ContextWindowFromModelCatalog:
+		return "the model's own published ceiling"
+	case config.ContextWindowFromFallback:
+		return "nothing established it; conservative fallback. Set context_window or a model_overrides entry"
+	default:
+		return ""
+	}
 }
 
 func percentOf(n, total int) string {

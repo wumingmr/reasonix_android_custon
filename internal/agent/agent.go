@@ -13,6 +13,7 @@ import (
 	"reasonix/internal/ablation"
 	"reasonix/internal/capability"
 	"reasonix/internal/checkpoint"
+	"reasonix/internal/config"
 	"reasonix/internal/diff"
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
@@ -834,7 +835,10 @@ type Options struct {
 	// Context management. ContextWindow <= 0 disables automatic compaction. Ratios and
 	// RecentKeep fall back to defaults when unset.
 	ContextWindow int
-	CompactRatio  float64
+	// ContextWindowSource records where ContextWindow came from. It is
+	// explanatory only: nothing branches on it, and an unset source is fine.
+	ContextWindowSource config.ContextWindowSource
+	CompactRatio        float64
 	// CompactRatioSource must be concurrency-safe; root/planner decisions stay live.
 	CompactRatioSource func() float64
 	// Deprecated compatibility inputs. New agents ignore these fields; automatic
@@ -1021,23 +1025,24 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		reads:            readState{},
 		fileObservations: fileops.NewStore(),
 		agentConfig: agentConfig{
-			maxSteps:           opts.MaxSteps,
-			maxStepsKey:        maxStepsKey,
-			reasoningByteLimit: reasoningByteLimit,
-			maxOutputTokens:    opts.MaxOutputTokens,
-			temperature:        opts.Temperature,
-			usageSource:        usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
-			modelRef:           strings.TrimSpace(opts.ModelRef),
-			workspaceID:        strings.TrimSpace(opts.WorkspaceID),
-			classifierTaskText: opts.ClassifierTaskText,
-			writeWorkspaceRoot: strings.TrimSpace(opts.WriteWorkspaceRoot),
-			subagentDepth:      subagentDepth,
-			maxSubagentDepth:   maxSubagentDepth,
-			contextWindow:      opts.ContextWindow,
-			compactRatio:       opts.CompactRatio,
-			compactRatioSource: opts.CompactRatioSource,
-			recentKeep:         opts.RecentKeep,
-			archiveDir:         opts.ArchiveDir,
+			maxSteps:            opts.MaxSteps,
+			maxStepsKey:         maxStepsKey,
+			reasoningByteLimit:  reasoningByteLimit,
+			maxOutputTokens:     opts.MaxOutputTokens,
+			temperature:         opts.Temperature,
+			usageSource:         usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
+			modelRef:            strings.TrimSpace(opts.ModelRef),
+			workspaceID:         strings.TrimSpace(opts.WorkspaceID),
+			classifierTaskText:  opts.ClassifierTaskText,
+			writeWorkspaceRoot:  strings.TrimSpace(opts.WriteWorkspaceRoot),
+			subagentDepth:       subagentDepth,
+			maxSubagentDepth:    maxSubagentDepth,
+			contextWindow:       opts.ContextWindow,
+			contextWindowSource: opts.ContextWindowSource,
+			compactRatio:        opts.CompactRatio,
+			compactRatioSource:  opts.CompactRatioSource,
+			recentKeep:          opts.RecentKeep,
+			archiveDir:          opts.ArchiveDir,
 		},
 		sess: sessionRuntime{
 			conversation: session,

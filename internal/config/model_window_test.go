@@ -74,7 +74,70 @@ func TestDeclaredContextWindowReadsTheOverrideDirectly(t *testing.T) {
 			"deepseek-v4-pro": {ContextWindow: 64_000},
 		},
 	}
-	if window := entry.declaredContextWindow(); window != 64_000 {
-		t.Fatalf("declared window = %d, want the per-model 64000", window)
+	window, source := entry.declaredContextWindow()
+	if window != 64_000 || source != ContextWindowFromModelOverride {
+		t.Fatalf("declared window = %d from %s, want the per-model 64000", window, source)
+	}
+}
+
+// The origin has to be named, because a window somebody chose and one nothing
+// established need opposite fixes. Most specific source wins.
+func TestResolveContextWindowNamesTheOrigin(t *testing.T) {
+	relay := ProviderEntry{
+		Name: "relay", Kind: "openai", BaseURL: "https://relay.example/v1",
+		Model: "deepseek-v4-pro",
+	}
+	if got := ResolveContextWindow(&relay); got.Tokens != 1_000_000 || got.Source != ContextWindowFromModelCatalog {
+		t.Fatalf("catalog window = %+v", got)
+	}
+
+	relay.ContextWindow = 200_000
+	if got := ResolveContextWindow(&relay); got.Tokens != 200_000 || got.Source != ContextWindowFromProvider {
+		t.Fatalf("provider window = %+v", got)
+	}
+
+	relay.ModelOverrides = map[string]ProviderModelOverride{"deepseek-v4-pro": {ContextWindow: 64_000}}
+	if got := ResolveContextWindow(&relay); got.Tokens != 64_000 || got.Source != ContextWindowFromModelOverride {
+		t.Fatalf("override window = %+v", got)
+	}
+
+	unknown := ProviderEntry{Name: "relay", Kind: "openai", Model: "some-unlisted-model"}
+	if got := ResolveContextWindow(&unknown); got.Tokens != 0 || got.Established() {
+		t.Fatalf("unestablished window = %+v", got)
+	}
+	if got := EffectiveResolvedWindow(&unknown); got.Tokens != DefaultUnknownContextWindow || got.Source != ContextWindowFromFallback {
+		t.Fatalf("fallback window = %+v", got)
+	}
+}
+
+// The fallback is a value nobody established, so it must never claim to be one:
+// a surface that showed it as the model's ceiling would send the user looking
+// for a limit that was never stated.
+func TestTheFallbackNeverClaimsToBeEstablished(t *testing.T) {
+	if ContextWindowFromFallback.IsEstablished() {
+		t.Fatal("the fallback reports itself as established")
+	}
+	for _, source := range []ContextWindowSource{ContextWindowFromModelOverride, ContextWindowFromProvider, ContextWindowFromModelCatalog} {
+		if !source.IsEstablished() {
+			t.Fatalf("%s should count as established", source)
+		}
+	}
+	if ContextWindowUnestablished.IsEstablished() {
+		t.Fatal("nothing-established reports itself as established")
+	}
+}
+
+// The tokens are stable because they also appear in machine-read output.
+func TestContextWindowSourceTokens(t *testing.T) {
+	for source, want := range map[ContextWindowSource]string{
+		ContextWindowUnestablished:     "unestablished",
+		ContextWindowFromModelOverride: "model_override",
+		ContextWindowFromProvider:      "provider",
+		ContextWindowFromModelCatalog:  "model_catalog",
+		ContextWindowFromFallback:      "fallback",
+	} {
+		if got := source.String(); got != want {
+			t.Errorf("%d = %q, want %q", source, got, want)
+		}
 	}
 }
