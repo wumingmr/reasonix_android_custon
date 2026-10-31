@@ -3465,10 +3465,10 @@ index 0000000000000000000000000000000000000000..fb1c34f8f190b1e7e8d5e3376d67ccca
 +}
 diff --git a/internal/config/model_limits_discovery.go b/internal/config/model_limits_discovery.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..822212294748f2f2ecbba747848514c9a54a1b62
+index 0000000000000000000000000000000000000000..5d0df2f3f200bd34dfa7a8314371d4f78137ca09
 --- /dev/null
 +++ b/internal/config/model_limits_discovery.go
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,87 @@
 +package config
 +
 +import (
@@ -3505,6 +3505,13 @@ index 0000000000000000000000000000000000000000..822212294748f2f2ecbba747848514c9
 +		existing, declared := e.ModelLimits(model)
 +		if declared && existing.ContextWindow > 0 {
 +			// The model already states its own window; discovery adds nothing.
++			continue
++		}
++		// A connection-wide window is the person's answer for every model it
++		// covers, so a listing must not quietly replace it with per-model
++		// overrides. Only a model that inherits nothing (no connection window and
++		// no own window) has a real gap to fill.
++		if !declared && e.ContextWindow > 0 && info.ContextWindow > 0 {
 +			continue
 +		}
 +		next := existing
@@ -3551,10 +3558,10 @@ index 0000000000000000000000000000000000000000..822212294748f2f2ecbba747848514c9
 +}
 diff --git a/internal/config/model_limits_test.go b/internal/config/model_limits_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..c264d31bc6261d445b0ef9329c48f1b3d602db3e
+index 0000000000000000000000000000000000000000..a410bba5480c3e3effbf5fcc74b68f355c9da336
 --- /dev/null
 +++ b/internal/config/model_limits_test.go
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,146 @@
 +package config
 +
 +import (
@@ -3671,6 +3678,34 @@ index 0000000000000000000000000000000000000000..c264d31bc6261d445b0ef9329c48f1b3
 +	}
 +	if _, ok := entry.ModelLimits("silent"); ok {
 +		t.Fatal("a model the listing said nothing about gained limits")
++	}
++}
++
++// A connection-wide window is the person's answer for every model it covers, so
++// a listing must not quietly replace it with per-model overrides. Only a model
++// that inherits nothing has a real gap for discovery to fill.
++func TestApplyDiscoveredLimitsRespectsAConnectionWindow(t *testing.T) {
++	entry := &ProviderEntry{
++		Name: "relay", Kind: "openai",
++		Models:        []string{"m", "n"},
++		ContextWindow: 128_000,
++	}
++	catalog := []provider.ModelInfo{
++		{ID: "m", ContextWindow: 1_000_000},
++		{ID: "n", ContextWindow: 500_000},
++	}
++	if filled := entry.ApplyDiscoveredLimits(catalog); filled != 0 {
++		t.Fatalf("discovery wrote %d overrides over a connection window: %+v", filled, entry.ModelOverrides)
++	}
++	if _, ok := entry.ModelLimits("m"); ok {
++		t.Fatal("a model gained an override despite the connection-wide window")
++	}
++
++	// With no connection window the models do inherit nothing, so the gap is
++	// real and must still be filled.
++	bare := &ProviderEntry{Name: "relay", Kind: "openai", Models: []string{"m"}}
++	if filled := bare.ApplyDiscoveredLimits(catalog); filled != 1 {
++		t.Fatalf("a real gap was not filled: %d", filled)
 +	}
 +}
 diff --git a/internal/config/model_window.go b/internal/config/model_window.go
