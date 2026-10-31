@@ -43,6 +43,7 @@ import (
 	"reasonix/internal/provider"
 	"reasonix/internal/provider/openai"
 	"reasonix/internal/serve"
+	"reasonix/internal/session"
 	"reasonix/internal/sessiontemp"
 	"reasonix/internal/telemetry"
 	"reasonix/internal/winaclresidue"
@@ -1238,7 +1239,8 @@ func chatREPL(args []string, version string) int {
 		// Keep the carried conversation in its existing file so the switch doesn't
 		// orphan a duplicate (#2807).
 		path := agent.ContinueSessionPath(resumePath, c.SessionDir(), c.Label())
-		if err := adoptCarriedHistoryPreservingProfileAndGrants(c, carry, path, oldCtrl); err != nil {
+		pending, err := adoptCarriedHistory(c, carry, path, oldCtrl)
+		if err != nil {
 			c.Close()
 			return nil, err
 		}
@@ -1253,6 +1255,11 @@ func chatREPL(args []string, version string) int {
 			c.ReleaseResources()
 			return nil, err
 		}
+		// A canonical rebuild could not write the carried history yet: a canonical
+		// session fences that commit on execution ownership, which the controller
+		// only receives at activation. Publish it last, so a failed build never
+		// leaves a conversation owed to a candidate that was discarded.
+		m.pendingSwitchCarry = pending
 		return c, nil
 	}
 	// /reload support: rebuild the runtime through boot.Rebuild so tools,
@@ -1363,12 +1370,61 @@ func chatREPL(args []string, version string) int {
 // read-only command trust, which a rebuild would otherwise silently drop,
 // forcing the user to re-approve things already granted this session.
 func adoptCarriedHistoryPreservingProfileAndGrants(c *control.Controller, carry []provider.Message, path string, oldCtrl control.SessionAPI) error {
+	_, err := adoptCarriedHistory(c, carry, path, oldCtrl)
+	return err
+}
+
+// pendingCarry is the carried conversation a canonical rebuild still owes after
+// activation. It is non-nil only when the rebuilt controller attached to an
+// existing session identity, because that is the one case where the write is
+// fenced on execution ownership the controller does not hold yet.
+type pendingCarry struct {
+	messages []provider.Message
+	path     string
+}
+
+// apply writes the deferred conversation now that the controller owns
+// execution. It is a no-op for a rebuilt controller that adopted its history
+// inline.
+func (p *pendingCarry) apply(c *control.Controller) {
+	if p == nil || c == nil {
+		return
+	}
+	c.AdoptHistory(p.messages, p.path)
+}
+
+// adoptCarriedHistory is adoptCarriedHistoryPreservingProfileAndGrants reporting
+// whether the write had to be deferred.
+func adoptCarriedHistory(c *control.Controller, carry []provider.Message, path string, oldCtrl control.SessionAPI) (*pendingCarry, error) {
 	if fresh := c.History(); len(fresh) > 0 && fresh[0].Role == provider.RoleSystem {
 		if len(carry) > 0 && carry[0].Role == provider.RoleSystem {
 			carry[0] = fresh[0]
 		} else {
 			carry = append([]provider.Message{fresh[0]}, carry...)
 		}
+	}
+	// A model switch is not a session switch. When the outgoing controller owns a
+	// canonical identity, attach the rebuilt one to that exact identity: the two
+	// controllers share one background scope, and activation refuses two
+	// controllers that claim the same background ownership for different
+	// sessions. That refusal is what used to leave the switched-to model
+	// inactive until the user quit and resumed.
+	//
+	// The carried history cannot be written yet. A canonical session routes
+	// AdoptHistory through a session event, and that commit is fenced on
+	// execution ownership — which the rebuilt controller only receives at
+	// activation. Writing now would be silently dropped, so the caller defers it
+	// to after activation (see pendingCarry).
+	if ref, ok := canonicalSessionRef(oldCtrl); ok {
+		if _, err := c.OpenSession(context.Background(), ref); err != nil {
+			return nil, fmt.Errorf("attach rebuilt controller to session %s: %w", ref.SessionID, err)
+		}
+		// The grants below do not touch the session store, so they are safe to
+		// apply now; only the history write waits for execution ownership.
+		if prev, ok := oldCtrl.(*control.Controller); ok {
+			c.RestoreSessionAuthorizations(prev.SessionAuthorizations())
+		}
+		return &pendingCarry{messages: carry, path: path}, nil
 	}
 	c.AdoptHistory(carry, path)
 	if prev, ok := oldCtrl.(*control.Controller); ok {
@@ -1380,10 +1436,10 @@ func adoptCarriedHistoryPreservingProfileAndGrants(c *control.Controller, carry 
 	// outgoing profile's contract from disk.
 	if path != "" {
 		if err := c.Snapshot(); err != nil {
-			return fmt.Errorf("snapshot after runtime switch: %w", err)
+			return nil, fmt.Errorf("snapshot after runtime switch: %w", err)
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 func prepareNativeScrollback(w io.Writer, rows int) {
@@ -2771,4 +2827,18 @@ func configCurrencyUsage() {
 	fmt.Print(`Usage:
   reasonix config currency [auto|CNY|USD]
 `)
+}
+
+// canonicalSessionRef is the v3 identity a rebuilt controller must preserve.
+// It reports false for a legacy path-only session: there is no identity to keep,
+// so the caller continues on its path instead.
+func canonicalSessionRef(ctrl control.SessionAPI) (session.SessionRef, bool) {
+	if ctrl == nil {
+		return session.SessionRef{}, false
+	}
+	concrete, ok := ctrl.(*control.Controller)
+	if !ok || concrete == nil {
+		return session.SessionRef{}, false
+	}
+	return concrete.SessionRef()
 }

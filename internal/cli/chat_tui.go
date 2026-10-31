@@ -453,6 +453,11 @@ type chatTUI struct {
 	// historical field name is retained because model, effort, skill refresh,
 	// and work-mode changes all share the same atomic swap path.
 	pendingModelSwitch tea.Cmd
+	// pendingSwitchCarry is the carried conversation a canonical model switch
+	// still owes after activation. A canonical session fences the history commit
+	// on execution ownership, which the rebuilt controller only receives at
+	// activation, so the write cannot happen inside the build goroutine.
+	pendingSwitchCarry *pendingCarry
 	// oldControllers accumulates controllers retired by runtime switches.
 	// They cannot be closed during the switch (Close runs SessionEnd hooks
 	// and kills plugin subprocesses, both of which corrupt the terminal's
