@@ -503,10 +503,18 @@ index 0000000000000000000000000000000000000000..2166e748040f3eac8517f0c9c1fb3556
 +  `TestUpgradeDeepSeekProviderProtocolWritesThroughSymlinkAndPreservesMode`）
 +  在未改动的 master 上同样失败，属预存的环境性失败，与本次改动无关
 diff --git a/internal/agent/agent.go b/internal/agent/agent.go
-index 13fe0c5122e4bda65615459dfe3f079879d9c1e2..b17ebc05812f35bba8b3158c8e8fe7e36eab925a 100644
+index 13fe0c5122e4bda65615459dfe3f079879d9c1e2..084e7795c2cb7c8f43e5cd2597f3e6af46b4aec5 100644
 --- a/internal/agent/agent.go
 +++ b/internal/agent/agent.go
-@@ -301,6 +301,12 @@ type Agent struct {
+@@ -13,6 +13,7 @@ import (
+ 	"reasonix/internal/ablation"
+ 	"reasonix/internal/capability"
+ 	"reasonix/internal/checkpoint"
++	"reasonix/internal/config"
+ 	"reasonix/internal/diff"
+ 	"reasonix/internal/event"
+ 	"reasonix/internal/evidence"
+@@ -301,6 +302,12 @@ type Agent struct {
  
  	continuationPolicy ContinuationPolicy
  
@@ -519,6 +527,91 @@ index 13fe0c5122e4bda65615459dfe3f079879d9c1e2..b17ebc05812f35bba8b3158c8e8fe7e3
  	// unwrittenResolve is the resolve watermark a failed state write still owes.
  	// It outlives the conversation, which is why it is not in sessionRuntime.
  	unwrittenResolve unwrittenResolve
+@@ -828,7 +835,10 @@ type Options struct {
+ 	// Context management. ContextWindow <= 0 disables automatic compaction. Ratios and
+ 	// RecentKeep fall back to defaults when unset.
+ 	ContextWindow int
+-	CompactRatio  float64
++	// ContextWindowSource records where ContextWindow came from. It is
++	// explanatory only: nothing branches on it, and an unset source is fine.
++	ContextWindowSource config.ContextWindowSource
++	CompactRatio        float64
+ 	// CompactRatioSource must be concurrency-safe; root/planner decisions stay live.
+ 	CompactRatioSource func() float64
+ 	// Deprecated compatibility inputs. New agents ignore these fields; automatic
+@@ -1015,23 +1025,24 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
+ 		reads:            readState{},
+ 		fileObservations: fileops.NewStore(),
+ 		agentConfig: agentConfig{
+-			maxSteps:           opts.MaxSteps,
+-			maxStepsKey:        maxStepsKey,
+-			reasoningByteLimit: reasoningByteLimit,
+-			maxOutputTokens:    opts.MaxOutputTokens,
+-			temperature:        opts.Temperature,
+-			usageSource:        usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
+-			modelRef:           strings.TrimSpace(opts.ModelRef),
+-			workspaceID:        strings.TrimSpace(opts.WorkspaceID),
+-			classifierTaskText: opts.ClassifierTaskText,
+-			writeWorkspaceRoot: strings.TrimSpace(opts.WriteWorkspaceRoot),
+-			subagentDepth:      subagentDepth,
+-			maxSubagentDepth:   maxSubagentDepth,
+-			contextWindow:      opts.ContextWindow,
+-			compactRatio:       opts.CompactRatio,
+-			compactRatioSource: opts.CompactRatioSource,
+-			recentKeep:         opts.RecentKeep,
+-			archiveDir:         opts.ArchiveDir,
++			maxSteps:            opts.MaxSteps,
++			maxStepsKey:         maxStepsKey,
++			reasoningByteLimit:  reasoningByteLimit,
++			maxOutputTokens:     opts.MaxOutputTokens,
++			temperature:         opts.Temperature,
++			usageSource:         usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
++			modelRef:            strings.TrimSpace(opts.ModelRef),
++			workspaceID:         strings.TrimSpace(opts.WorkspaceID),
++			classifierTaskText:  opts.ClassifierTaskText,
++			writeWorkspaceRoot:  strings.TrimSpace(opts.WriteWorkspaceRoot),
++			subagentDepth:       subagentDepth,
++			maxSubagentDepth:    maxSubagentDepth,
++			contextWindow:       opts.ContextWindow,
++			contextWindowSource: opts.ContextWindowSource,
++			compactRatio:        opts.CompactRatio,
++			compactRatioSource:  opts.CompactRatioSource,
++			recentKeep:          opts.RecentKeep,
++			archiveDir:          opts.ArchiveDir,
+ 		},
+ 		sess: sessionRuntime{
+ 			conversation: session,
+diff --git a/internal/agent/agent_config.go b/internal/agent/agent_config.go
+index 2ed8250919a3fdab460cedfb2736b691dbba123c..94485bf597304ac492c3923952891f89ba0b2d1e 100644
+--- a/internal/agent/agent_config.go
++++ b/internal/agent/agent_config.go
+@@ -1,5 +1,7 @@
+ package agent
+ 
++import "reasonix/internal/config"
++
+ // agentConfig is everything New fixes for an Agent's lifetime; nothing writes
+ // it afterwards, which agent_config_test.go enforces. Embedded rather than
+ // nested so access stays flat, as perTurnState already does. Separating it lets
+@@ -28,9 +30,13 @@ type agentConfig struct {
+ 	maxSubagentDepth int
+ 	// contextWindow and compactRatio decide when at most one provider-visible
+ 	// checkpoint is installed; recentKeep and archiveDir shape what it keeps.
+-	contextWindow      int
+-	compactRatio       float64
+-	compactRatioSource func() float64
+-	recentKeep         int
+-	archiveDir         string
++	contextWindow int
++	// contextWindowSource records where that number came from, so a surface can
++	// say "the model's own ceiling" instead of only printing it. A wrong window
++	// and a deliberately small one look identical without it.
++	contextWindowSource config.ContextWindowSource
++	compactRatio        float64
++	compactRatioSource  func() float64
++	recentKeep          int
++	archiveDir          string
+ }
 diff --git a/internal/agent/context_overflow_probe_test.go b/internal/agent/context_overflow_probe_test.go
 new file mode 100644
 index 0000000000000000000000000000000000000000..70566983610b2cb5f20304d1798f569e62d816e7
@@ -717,6 +810,87 @@ index 2f5c873e866cadd29112c76a6134c8e151ea022c..2e148ac053926e33693ebaea373c8a86
  		physical = 0
  	}
  	if physical > 0 && budget.retries == 0 {
+diff --git a/internal/agent/context_report.go b/internal/agent/context_report.go
+index cb24692f6f99d3f88cb48d14018df3bc569d531a..d853b7b6e7ff7b8576fbb6a7d83262f58185cc9e 100644
+--- a/internal/agent/context_report.go
++++ b/internal/agent/context_report.go
+@@ -1,6 +1,9 @@
+ package agent
+ 
+-import "reasonix/internal/provider"
++import (
++	"reasonix/internal/config"
++	"reasonix/internal/provider"
++)
+ 
+ // ContextReport is a point-in-time view of context pressure: the declared
+ // window, the thresholds derived from it, what the model currently sees, and how
+@@ -8,7 +11,11 @@ import "reasonix/internal/provider"
+ // one produce the same notices, so the numbers behind the decision have to be
+ // inspectable rather than inferred.
+ type ContextReport struct {
+-	Window       int
++	Window int
++	// WindowSource names what established Window, so "compaction fires early"
++	// can be told apart from "somebody asked for a small budget". A report on a
++	// window nobody established says so instead of implying it is the model's.
++	WindowSource config.ContextWindowSource
+ 	HardCeiling  int
+ 	OutputBudget int
+ 
+@@ -38,6 +45,7 @@ func (a *Agent) ContextReport() ContextReport {
+ 	}
+ 	rep := ContextReport{
+ 		Window:       a.contextWindow,
++		WindowSource: a.contextWindowSource,
+ 		HardCeiling:  a.hardInputCeiling(),
+ 		OutputBudget: a.maxOutputTokens,
+ 		CacheState:   a.CacheState(),
+diff --git a/internal/agent/context_report_test.go b/internal/agent/context_report_test.go
+index cd961852c877a04371b9a6cbfa7901c3f826aec3..13286885b1de455c289cf767b338dcfba8affd33 100644
+--- a/internal/agent/context_report_test.go
++++ b/internal/agent/context_report_test.go
+@@ -4,6 +4,7 @@ import (
+ 	"strings"
+ 	"testing"
+ 
++	"reasonix/internal/config"
+ 	"reasonix/internal/event"
+ 	"reasonix/internal/provider"
+ 	"reasonix/internal/tool"
+@@ -58,3 +59,32 @@ func TestContextReportLeavesThresholdsZeroWhenDisabled(t *testing.T) {
+ 		t.Errorf("disabled maintenance reported thresholds: %+v", rep)
+ 	}
+ }
++
++// The report carries the window's origin so a surface can say which source set
++// it, rather than only printing a number the reader has to guess about.
++func TestContextReportCarriesTheWindowOrigin(t *testing.T) {
++	sess := NewSession("sys")
++	a := New(&fakeProvider{reply: "unused"}, tool.NewRegistry(), sess, Options{
++		ContextWindow: 200_000, ContextWindowSource: config.ContextWindowFromProvider,
++	}, event.Discard)
++	rep := a.ContextReport()
++	if rep.Window != 200_000 || rep.WindowSource != config.ContextWindowFromProvider {
++		t.Fatalf("report window = %d from %s", rep.Window, rep.WindowSource)
++	}
++}
++
++// A child that runs on the parent's window inherits the parent's explanation;
++// one whose window came from its own model profile must not, because the
++// parent's origin would then describe a different model.
++func TestChildContextWindowSourceFollowsTheWindow(t *testing.T) {
++	tool := &TaskTool{contextWindow: 128_000, contextWindowSource: config.ContextWindowFromProvider}
++	if got := tool.childContextWindowSource(128_000); got != config.ContextWindowFromProvider {
++		t.Fatalf("inherited source = %s", got)
++	}
++	if got := tool.childContextWindowSource(200_000); got != config.ContextWindowUnestablished {
++		t.Fatalf("re-resolved child source = %s, want it to stop claiming the parent's origin", got)
++	}
++	if got := (&TaskTool{}).childContextWindowSource(1); got != config.ContextWindowUnestablished {
++		t.Fatalf("zero tool source = %s", got)
++	}
++}
 diff --git a/internal/agent/context_window_probe.go b/internal/agent/context_window_probe.go
 new file mode 100644
 index 0000000000000000000000000000000000000000..ed518617413aa18c11508cbe225465b319e6aba7
@@ -1031,20 +1205,144 @@ index 0311fd564d28184e446d71aca07d598fb479c672..1403a0ee6a3088fbc7617350c271a8f7
  }
  
  // finalizeSamplingUsage builds the Usage event payload for consumers that
+diff --git a/internal/agent/task.go b/internal/agent/task.go
+index 39a87dfc9756c004d35c9b864085124ec16f2bd6..153891b3aeb994bebe1a5dce6e65d7d9ae0a92c1 100644
+--- a/internal/agent/task.go
++++ b/internal/agent/task.go
+@@ -13,6 +13,7 @@ import (
+ 
+ 	"reasonix/internal/ablation"
+ 	"reasonix/internal/checkpoint"
++	"reasonix/internal/config"
+ 	"reasonix/internal/event"
+ 	"reasonix/internal/evidence"
+ 	"reasonix/internal/imageinput"
+@@ -256,6 +257,7 @@ type TaskTool struct {
+ 	parentReg                     *tool.Registry
+ 	maxSteps                      int
+ 	contextWindow                 int
++	contextWindowSource           config.ContextWindowSource
+ 	compaction                    compactionThreshold
+ 	recentKeep                    int
+ 	temperature                   float64
+diff --git a/internal/agent/task_options.go b/internal/agent/task_options.go
+index f743e4559f055a92f7c627736df1ceeb343306fe..f9815aad39fb98a796d98e9c7a5756ffa3a0eca9 100644
+--- a/internal/agent/task_options.go
++++ b/internal/agent/task_options.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 
+ 	"reasonix/internal/checkpoint"
++	"reasonix/internal/config"
+ 	"reasonix/internal/event"
+ 	"reasonix/internal/imageinput"
+ 	"reasonix/internal/provider"
+@@ -21,26 +22,27 @@ func NewTaskToolWithOptions(opts TaskToolOptions) *TaskTool {
+ 		sysPrompt = DefaultTaskSystemPrompt
+ 	}
+ 	return &TaskTool{
+-		imageInput:       opts.ImageInput,
+-		prov:             opts.Provider,
+-		pricing:          opts.Pricing,
+-		quoteContext:     opts.QuoteContext,
+-		parentReg:        opts.ParentRegistry,
+-		maxSteps:         opts.MaxSteps,
+-		contextWindow:    opts.ContextWindow,
+-		recentKeep:       opts.RecentKeep,
+-		compaction:       compactionThreshold{opts.CompactRatio, opts.CompactRatioSource},
+-		temperature:      opts.Temperature,
+-		archiveDir:       opts.ArchiveDir,
+-		keepPolicy:       opts.KeepPolicy,
+-		sysPrompt:        sysPrompt,
+-		gate:             opts.Gate,
+-		subagentModel:    opts.SubagentModel,
+-		subagentEffort:   opts.SubagentEffort,
+-		resolveProvider:  opts.ResolveProvider,
+-		maxSubagentDepth: DefaultMaxSubagentDepth,
+-		imageResolver:    opts.ImageRequestResolver,
+-		hooksForSession:  opts.HooksForSession,
++		imageInput:          opts.ImageInput,
++		prov:                opts.Provider,
++		pricing:             opts.Pricing,
++		quoteContext:        opts.QuoteContext,
++		parentReg:           opts.ParentRegistry,
++		maxSteps:            opts.MaxSteps,
++		contextWindow:       opts.ContextWindow,
++		contextWindowSource: opts.ContextWindowSource,
++		recentKeep:          opts.RecentKeep,
++		compaction:          compactionThreshold{opts.CompactRatio, opts.CompactRatioSource},
++		temperature:         opts.Temperature,
++		archiveDir:          opts.ArchiveDir,
++		keepPolicy:          opts.KeepPolicy,
++		sysPrompt:           sysPrompt,
++		gate:                opts.Gate,
++		subagentModel:       opts.SubagentModel,
++		subagentEffort:      opts.SubagentEffort,
++		resolveProvider:     opts.ResolveProvider,
++		maxSubagentDepth:    DefaultMaxSubagentDepth,
++		imageResolver:       opts.ImageRequestResolver,
++		hooksForSession:     opts.HooksForSession,
+ 	}
+ }
+ 
+@@ -59,6 +61,7 @@ func (t *TaskTool) subagentOptions(ctx context.Context, maxSteps int, pricing *p
+ 		UsageSource:              event.UsageSourceSubagent,
+ 		Gate:                     t.gate,
+ 		ContextWindow:            ctxWin,
++		ContextWindowSource:      t.childContextWindowSource(ctxWin),
+ 		RecentKeep:               t.recentKeep,
+ 		CompactRatio:             t.compaction.ratio(),
+ 		ArchiveDir:               t.archiveDir,
+@@ -111,10 +114,12 @@ type TaskToolOptions struct {
+ 	ParentRegistry       *tool.Registry
+ 	MaxSteps             int
+ 	ContextWindow        int
+-	RecentKeep           int
+-	SoftCompactRatio     float64
+-	ToolResultSnipRatio  float64
+-	CompactRatio         float64
++	// ContextWindowSource explains ContextWindow; explanatory only.
++	ContextWindowSource config.ContextWindowSource
++	RecentKeep          int
++	SoftCompactRatio    float64
++	ToolResultSnipRatio float64
++	CompactRatio        float64
+ 	// CompactRatioSource must be concurrency-safe; each child snapshots it once.
+ 	CompactRatioSource                    func() float64
+ 	CompactForceRatio                     float64
+@@ -126,3 +131,17 @@ type TaskToolOptions struct {
+ 	SubagentEffort                        string
+ 	ResolveProvider                       func(string, string) (provider.Provider, *provider.Pricing, int, error)
+ }
++
++// childContextWindowSource names where a child's window came from. A child that
++// runs on the parent's window inherits the parent's explanation; one whose
++// window was resolved from its own model profile says so by dropping it,
++// because the parent's origin would then describe a different model.
++func (t *TaskTool) childContextWindowSource(childWindow int) config.ContextWindowSource {
++	if t == nil {
++		return config.ContextWindowUnestablished
++	}
++	if childWindow == t.contextWindow {
++		return t.contextWindowSource
++	}
++	return config.ContextWindowUnestablished
++}
 diff --git a/internal/boot/boot.go b/internal/boot/boot.go
-index 2a9c0573abe967aeca51b2537cd82737a5b155e9..4fa9b093db0a6846159b4e02cb61c3fbc538eda9 100644
+index 2a9c0573abe967aeca51b2537cd82737a5b155e9..66647e15eb4632aa12d82c6d9a6eeb8b3b20c59a 100644
 --- a/internal/boot/boot.go
 +++ b/internal/boot/boot.go
-@@ -1138,7 +1138,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
+@@ -1138,7 +1138,8 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
  			HooksForSession:     func(id string) agent.ToolHooks { return hookRunner.ForSession(id) },
  			ParentRegistry:      reg,
  			MaxSteps:            maxSteps,
 -			ContextWindow:       entry.ContextWindow,
 +			ContextWindow:       config.EffectiveContextWindow(entry),
++			ContextWindowSource: config.EffectiveResolvedWindow(entry).Source,
  			RecentKeep:          cfg.Agent.RecentKeep,
  			SoftCompactRatio:    cfg.Agent.SoftCompactRatio,
  			ToolResultSnipRatio: cfg.Agent.ToolResultSnipRatio,
-@@ -1283,7 +1283,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
+@@ -1283,7 +1284,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
  		}
  		defer releaseSlot()
  		sk = skill.WithCodeGraphTools(sk, skill.CodeGraphReadTools(reg))
@@ -1053,7 +1351,7 @@ index 2a9c0573abe967aeca51b2537cd82737a5b155e9..4fa9b093db0a6846159b4e02cb61c3fb
  		modelRef := subagentModelRef(cfg, sk)
  		effortRef := subagentEffortRef(cfg, sk, subagentEffort)
  		if modelRef != "" || effortRef != "" {
-@@ -1352,7 +1352,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
+@@ -1352,7 +1353,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
  		}
  		defer releaseSlot()
  		sk = skill.WithCodeGraphTools(sk, skill.CodeGraphReadTools(reg))
@@ -1062,21 +1360,23 @@ index 2a9c0573abe967aeca51b2537cd82737a5b155e9..4fa9b093db0a6846159b4e02cb61c3fb
  		modelRef := subagentModelRef(cfg, sk)
  		effortRef := subagentEffortRef(cfg, sk, subagentEffort)
  		if modelRef != "" || effortRef != "" {
-@@ -1715,7 +1715,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
+@@ -1715,7 +1716,8 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
  		WorkspaceLease:               workspaceLease,
  		CapabilityLedger:             capLedger,
  		CapabilityAudit:              capAudit,
 -		ContextWindow:                entry.ContextWindow,
 +		ContextWindow:                config.EffectiveContextWindow(entry),
++		ContextWindowSource:          config.EffectiveResolvedWindow(entry).Source,
  		MaxOutputTokens:              entry.MaxOutputTokens,
  		SoftCompactRatio:             cfg.Agent.SoftCompactRatio,
  		ToolResultSnipRatio:          cfg.Agent.ToolResultSnipRatio,
-@@ -1797,7 +1797,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
+@@ -1797,7 +1799,8 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
  			Hooks:                        hookRunner.ForRole("planner"),
  			ModelRef:                     modelRefFromEntry(pe),
  			QuoteContext:                 quoteCtx,
 -			ContextWindow:                pe.ContextWindow,
 +			ContextWindow:                config.EffectiveContextWindow(pe),
++			ContextWindowSource:          config.EffectiveResolvedWindow(pe).Source,
  			SoftCompactRatio:             cfg.Agent.SoftCompactRatio,
  			ToolResultSnipRatio:          cfg.Agent.ToolResultSnipRatio,
  			CompactRatio:                 cfg.Agent.CompactRatio,
@@ -3007,10 +3307,10 @@ index 0000000000000000000000000000000000000000..c264d31bc6261d445b0ef9329c48f1b3
 +}
 diff --git a/internal/config/model_window.go b/internal/config/model_window.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..02df223c72784da141bfe920e36443ed67d193f3
+index 0000000000000000000000000000000000000000..8c9c91810c53f7ec7fba7085cdbe7aa2fedde772
 --- /dev/null
 +++ b/internal/config/model_window.go
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,157 @@
 +package config
 +
 +// Where a model's context window comes from, and what happens when nothing
@@ -3027,23 +3327,89 @@ index 0000000000000000000000000000000000000000..02df223c72784da141bfe920e36443ed
 +// entry, or per connection with the provider's own context_window.
 +const DefaultUnknownContextWindow = 128_000
 +
-+// ResolvedContextWindow reports the window to run this entry against and
-+// whether anything established it. Most-specific first: what the configuration
-+// says for this entry (including its per-model override), then what is known
-+// about the model itself. Callers that must not confuse "nobody said" with "no
-+// compaction wanted" need the second return; everything else can use
-+// EffectiveContextWindow, which also applies the fallback.
-+func ResolvedContextWindow(e *ProviderEntry) (int, bool) {
-+	if e == nil {
-+		return 0, false
++// ContextWindowSource names where a window came from. A single number cannot
++// say whether compaction fires early because the user asked for a small budget
++// or because nothing established the real one, and those two need opposite
++// fixes — so the origin travels with the value.
++type ContextWindowSource uint8
++
++const (
++	// ContextWindowUnestablished is the zero value: nothing said anything.
++	ContextWindowUnestablished ContextWindowSource = iota
++	// ContextWindowFromModelOverride is a model_overrides entry's context_window.
++	ContextWindowFromModelOverride
++	// ContextWindowFromProvider is the connection-wide context_window.
++	ContextWindowFromProvider
++	// ContextWindowFromModelCatalog is the window the built-in catalog records
++	// for the model itself, independent of who serves it.
++	ContextWindowFromModelCatalog
++	// ContextWindowFromFallback is DefaultUnknownContextWindow: a working value
++	// no source established.
++	ContextWindowFromFallback
++)
++
++// String is the stable token used by status surfaces and diagnostics. It is
++// not localised, because it also appears in machine-read output.
++func (s ContextWindowSource) String() string {
++	switch s {
++	case ContextWindowFromModelOverride:
++		return "model_override"
++	case ContextWindowFromProvider:
++		return "provider"
++	case ContextWindowFromModelCatalog:
++		return "model_catalog"
++	case ContextWindowFromFallback:
++		return "fallback"
++	default:
++		return "unestablished"
 +	}
-+	if window := e.declaredContextWindow(); window > 0 {
-+		return window, true
++}
++
++// IsEstablished reports whether a real source named this window, as opposed to
++// the fallback standing in for one nobody stated.
++func (s ContextWindowSource) IsEstablished() bool {
++	switch s {
++	case ContextWindowFromModelOverride, ContextWindowFromProvider, ContextWindowFromModelCatalog:
++		return true
++	default:
++		return false
++	}
++}
++
++// ResolvedWindow is a context window together with the source that named it.
++type ResolvedWindow struct {
++	Tokens int
++	Source ContextWindowSource
++}
++
++// Established reports whether a real source named this window.
++func (w ResolvedWindow) Established() bool { return w.Source.IsEstablished() }
++
++// ResolveContextWindow resolves the window to run this entry against and names
++// where it came from. Most-specific first: the per-model override, then the
++// connection-wide value, then what the built-in catalog knows about the model
++// itself. A caller that must not confuse "nobody said" with "no compaction
++// wanted" checks Established; everything else can use EffectiveContextWindow,
++// which also applies the fallback.
++func ResolveContextWindow(e *ProviderEntry) ResolvedWindow {
++	if e == nil {
++		return ResolvedWindow{}
++	}
++	if window, source := e.declaredContextWindow(); window > 0 {
++		return ResolvedWindow{Tokens: window, Source: source}
 +	}
 +	if window := builtinModelContextWindow(e); window > 0 {
-+		return window, true
++		return ResolvedWindow{Tokens: window, Source: ContextWindowFromModelCatalog}
 +	}
-+	return 0, false
++	return ResolvedWindow{}
++}
++
++// ResolvedContextWindow reports the window to run this entry against and
++// whether anything established it. It is ResolveContextWindow without the
++// origin, kept because most callers only branch on the second return.
++func ResolvedContextWindow(e *ProviderEntry) (int, bool) {
++	resolved := ResolveContextWindow(e)
++	return resolved.Tokens, resolved.Established()
 +}
 +
 +// EffectiveContextWindow is the window a run must budget against: the declared
@@ -3052,10 +3418,17 @@ index 0000000000000000000000000000000000000000..02df223c72784da141bfe920e36443ed
 +// deliberately wants compaction off keeps checking the raw
 +// ProviderEntry.ContextWindow instead.
 +func EffectiveContextWindow(e *ProviderEntry) int {
-+	if window, ok := ResolvedContextWindow(e); ok {
-+		return window
++	return EffectiveResolvedWindow(e).Tokens
++}
++
++// EffectiveResolvedWindow is EffectiveContextWindow keeping the origin, which
++// surfaces use to explain the number instead of only printing it.
++func EffectiveResolvedWindow(e *ProviderEntry) ResolvedWindow {
++	resolved := ResolveContextWindow(e)
++	if resolved.Tokens > 0 {
++		return resolved
 +	}
-+	return DefaultUnknownContextWindow
++	return ResolvedWindow{Tokens: DefaultUnknownContextWindow, Source: ContextWindowFromFallback}
 +}
 +
 +// declaredContextWindow is what the configuration said for this exact model:
@@ -3063,19 +3436,22 @@ index 0000000000000000000000000000000000000000..02df223c72784da141bfe920e36443ed
 +// matches applyModelOverride, which the entry normally went through already;
 +// checking the override directly keeps the answer right for a raw
 +// ProviderEntry that never did.
-+func (e *ProviderEntry) declaredContextWindow() int {
++func (e *ProviderEntry) declaredContextWindow() (int, ContextWindowSource) {
 +	if e == nil {
-+		return 0
++		return 0, ContextWindowUnestablished
 +	}
 +	if e.Model != "" {
 +		if ov, ok := e.modelOverrideForModel(e.Model); ok && ov.ContextWindow > 0 {
-+			return ov.ContextWindow
++			return ov.ContextWindow, ContextWindowFromModelOverride
 +		}
 +	}
 +	if e.ContextWindow > 0 {
-+		return e.ContextWindow
++		// applyModelOverride already folded the override into ContextWindow, so an
++		// entry that went through resolution reports the same number under this
++		// branch. The override check above runs first for that reason.
++		return e.ContextWindow, ContextWindowFromProvider
 +	}
-+	return 0
++	return 0, ContextWindowUnestablished
 +}
 +
 +// builtinModelContextWindow is what the compiled-in catalog knows about the
@@ -3094,10 +3470,10 @@ index 0000000000000000000000000000000000000000..02df223c72784da141bfe920e36443ed
 +}
 diff --git a/internal/config/model_window_test.go b/internal/config/model_window_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..6ec6693fb6783a87b658ac39a2da4c4a1dbbfbce
+index 0000000000000000000000000000000000000000..36f763754913280846e9264301475150affa4415
 --- /dev/null
 +++ b/internal/config/model_window_test.go
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,143 @@
 +package config
 +
 +import "testing"
@@ -3174,8 +3550,71 @@ index 0000000000000000000000000000000000000000..6ec6693fb6783a87b658ac39a2da4c4a
 +			"deepseek-v4-pro": {ContextWindow: 64_000},
 +		},
 +	}
-+	if window := entry.declaredContextWindow(); window != 64_000 {
-+		t.Fatalf("declared window = %d, want the per-model 64000", window)
++	window, source := entry.declaredContextWindow()
++	if window != 64_000 || source != ContextWindowFromModelOverride {
++		t.Fatalf("declared window = %d from %s, want the per-model 64000", window, source)
++	}
++}
++
++// The origin has to be named, because a window somebody chose and one nothing
++// established need opposite fixes. Most specific source wins.
++func TestResolveContextWindowNamesTheOrigin(t *testing.T) {
++	relay := ProviderEntry{
++		Name: "relay", Kind: "openai", BaseURL: "https://relay.example/v1",
++		Model: "deepseek-v4-pro",
++	}
++	if got := ResolveContextWindow(&relay); got.Tokens != 1_000_000 || got.Source != ContextWindowFromModelCatalog {
++		t.Fatalf("catalog window = %+v", got)
++	}
++
++	relay.ContextWindow = 200_000
++	if got := ResolveContextWindow(&relay); got.Tokens != 200_000 || got.Source != ContextWindowFromProvider {
++		t.Fatalf("provider window = %+v", got)
++	}
++
++	relay.ModelOverrides = map[string]ProviderModelOverride{"deepseek-v4-pro": {ContextWindow: 64_000}}
++	if got := ResolveContextWindow(&relay); got.Tokens != 64_000 || got.Source != ContextWindowFromModelOverride {
++		t.Fatalf("override window = %+v", got)
++	}
++
++	unknown := ProviderEntry{Name: "relay", Kind: "openai", Model: "some-unlisted-model"}
++	if got := ResolveContextWindow(&unknown); got.Tokens != 0 || got.Established() {
++		t.Fatalf("unestablished window = %+v", got)
++	}
++	if got := EffectiveResolvedWindow(&unknown); got.Tokens != DefaultUnknownContextWindow || got.Source != ContextWindowFromFallback {
++		t.Fatalf("fallback window = %+v", got)
++	}
++}
++
++// The fallback is a value nobody established, so it must never claim to be one:
++// a surface that showed it as the model's ceiling would send the user looking
++// for a limit that was never stated.
++func TestTheFallbackNeverClaimsToBeEstablished(t *testing.T) {
++	if ContextWindowFromFallback.IsEstablished() {
++		t.Fatal("the fallback reports itself as established")
++	}
++	for _, source := range []ContextWindowSource{ContextWindowFromModelOverride, ContextWindowFromProvider, ContextWindowFromModelCatalog} {
++		if !source.IsEstablished() {
++			t.Fatalf("%s should count as established", source)
++		}
++	}
++	if ContextWindowUnestablished.IsEstablished() {
++		t.Fatal("nothing-established reports itself as established")
++	}
++}
++
++// The tokens are stable because they also appear in machine-read output.
++func TestContextWindowSourceTokens(t *testing.T) {
++	for source, want := range map[ContextWindowSource]string{
++		ContextWindowUnestablished:     "unestablished",
++		ContextWindowFromModelOverride: "model_override",
++		ContextWindowFromProvider:      "provider",
++		ContextWindowFromModelCatalog:  "model_catalog",
++		ContextWindowFromFallback:      "fallback",
++	} {
++		if got := source.String(); got != want {
++			t.Errorf("%d = %q, want %q", source, got, want)
++		}
 +	}
 +}
 diff --git a/internal/config/mutate.go b/internal/config/mutate.go
@@ -3381,6 +3820,106 @@ index 0000000000000000000000000000000000000000..a27e99fa3956ba370e6beefc23e4cbb8
 +	}
 +	if got := cfg.UI.ResumeLimit(10); got != 10 {
 +		t.Fatalf("resume_list_limit absent = %d, want the built-in 10", got)
++	}
++}
+diff --git a/internal/control/context_command.go b/internal/control/context_command.go
+index 5fb86696bb685ee5532ad221e0c768090b97957f..ee095a1dc8c27da1e54925fe881881a6faa9413d 100644
+--- a/internal/control/context_command.go
++++ b/internal/control/context_command.go
+@@ -6,6 +6,7 @@ import (
+ 	"strings"
+ 
+ 	"reasonix/internal/agent"
++	"reasonix/internal/config"
+ )
+ 
+ // ContextReport renders the current context state as a one-line summary plus
+@@ -46,6 +47,9 @@ func renderContextReport(rep agent.ContextReport) (summary, detail string) {
+ 		hard = fmt.Sprintf("  (usable %s after output reserve)", thousands(rep.HardCeiling))
+ 	}
+ 	line("window", thousands(rep.Window)+hard)
++	if origin := windowSourceLine(rep.WindowSource); origin != "" {
++		line("window from", origin)
++	}
+ 	line("latest prompt", fmt.Sprintf("%s  (%s of window)", thousands(rep.LatestPrompt), percentOf(rep.LatestPrompt, rep.Window)))
+ 	line("canonical", thousands(rep.CanonicalTokens))
+ 	visible := thousands(rep.ProjectionTokens)
+@@ -97,6 +101,24 @@ func contextSummaryLine(rep agent.ContextReport) string {
+ 	return s
+ }
+ 
++// windowSourceLine explains where the window came from, because the number
++// alone cannot distinguish a budget somebody chose from one nothing
++// established — and only the second is fixed by declaring the real limit.
++func windowSourceLine(source config.ContextWindowSource) string {
++	switch source {
++	case config.ContextWindowFromModelOverride:
++		return "model_overrides (declared for this model)"
++	case config.ContextWindowFromProvider:
++		return "the connection's context_window (this provider)"
++	case config.ContextWindowFromModelCatalog:
++		return "the model's own published ceiling"
++	case config.ContextWindowFromFallback:
++		return "nothing established it; conservative fallback. Set context_window or a model_overrides entry"
++	default:
++		return ""
++	}
++}
++
+ func percentOf(n, total int) string {
+ 	if total <= 0 {
+ 		return "n/a"
+diff --git a/internal/control/context_command_test.go b/internal/control/context_command_test.go
+index c919ee5fcba2c6159c642b2713598fe87db4b191..806c193e44efe8138201676c7fc0b7d37e2f5854 100644
+--- a/internal/control/context_command_test.go
++++ b/internal/control/context_command_test.go
+@@ -5,6 +5,7 @@ import (
+ 	"testing"
+ 
+ 	"reasonix/internal/agent"
++	"reasonix/internal/config"
+ )
+ 
+ // "70% full" does not tell the user whether that is close to anything, so the
+@@ -52,3 +53,40 @@ func TestThousandsGroupsDigits(t *testing.T) {
+ 		}
+ 	}
+ }
++
++// The window number alone cannot distinguish a budget somebody chose from one
++// nothing established, and only the second is fixed by declaring the real
++// limit. So the detail block names the origin instead of only the value.
++func TestContextReportNamesTheWindowOrigin(t *testing.T) {
++	for _, tc := range []struct {
++		name   string
++		source config.ContextWindowSource
++		want   string
++	}{
++		{"model override", config.ContextWindowFromModelOverride, "model_overrides"},
++		{"provider", config.ContextWindowFromProvider, "context_window"},
++		{"model catalog", config.ContextWindowFromModelCatalog, "published ceiling"},
++		{"fallback", config.ContextWindowFromFallback, "conservative fallback"},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			_, detail := renderContextReport(agent.ContextReport{
++				Window: 128_000, WindowSource: tc.source,
++				SnipThreshold: 76_800, FoldThreshold: 102_400, ForceThreshold: 115_200,
++			})
++			if !strings.Contains(detail, "window from") || !strings.Contains(detail, tc.want) {
++				t.Fatalf("detail = %q, want it to name the origin %q", detail, tc.want)
++			}
++		})
++	}
++}
++
++// An unestablished source prints nothing extra rather than inventing an origin,
++// which also keeps older reports rendering unchanged.
++func TestContextReportOmitsAnUnknownOrigin(t *testing.T) {
++	_, detail := renderContextReport(agent.ContextReport{
++		Window: 128_000, SnipThreshold: 76_800, FoldThreshold: 102_400, ForceThreshold: 115_200,
++	})
++	if strings.Contains(detail, "window from") {
++		t.Fatalf("detail = %q, an unknown origin was rendered", detail)
 +	}
 +}
 diff --git a/internal/fileutil/atomicwrite.go b/internal/fileutil/atomicwrite.go
