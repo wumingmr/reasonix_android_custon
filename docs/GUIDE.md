@@ -639,6 +639,11 @@ cursor, while wheel events in the transcript keep scrolling the conversation.
 Use `/theme auto|light|dark` to select the background mode, or `/theme <style>`
 to select one of the named accent palettes shown by bare `/theme`.
 
+Long to-do and question panels share a bounded area above the composer and
+status footer. Scroll over that area or use `Alt+PageUp` / `Alt+PageDown` to read
+the hidden rows; keyboard navigation keeps the selected option visible. The
+keyboard shortcuts also work when mouse capture is off and in Termux.
+
 The responsive footer keeps the active permission preset, Plan state, and current
 interaction state on the left. On wider terminals, model and effort
 stay together on the right; a second row shows available Git identity, cache hit

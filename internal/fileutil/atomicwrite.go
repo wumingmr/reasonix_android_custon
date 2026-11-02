@@ -18,10 +18,6 @@ var (
 	// distinguishes (transient lock vs cross-device) cannot be provoked
 	// portably on a real filesystem.
 	renameFile = os.Rename
-
-	// Test seams for the Android hard-link denial and no-replace publication.
-	linkNewFile   = os.Link
-	renameNewFile = RenameNoReplace
 )
 
 // CrashPoint, when non-nil, runs before every durable write/replace. Tests use
@@ -124,24 +120,10 @@ func AtomicCreateFile(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	defer os.Remove(tmpPath)
-	if err := publishNewFile(tmpPath, path); err != nil {
+	if err := os.Link(tmpPath, path); err != nil {
 		return fmt.Errorf("publish new file %s: %w", path, err)
 	}
-	// The staged inode is already fsynced; make its published name durable too.
-	// Publication has committed, so a directory-sync failure is not a write error.
-	_ = syncParentDirFn(path)
 	return nil
-}
-
-// publishNewFile never exposes a partially written target. Android denies hard
-// links, but supports renameat2(RENAME_NOREPLACE). Unsupported hosts fail closed:
-// a direct O_EXCL copy would expose incomplete transaction and credential files.
-func publishNewFile(src, dst string) error {
-	err := linkNewFile(src, dst)
-	if runtime.GOOS != "android" || (!errors.Is(err, syscall.EPERM) && !errors.Is(err, syscall.EACCES)) {
-		return err
-	}
-	return renameNewFile(src, dst)
 }
 
 // AtomicOverwriteFile replaces an existing file's contents atomically while

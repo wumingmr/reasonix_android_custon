@@ -37,3 +37,17 @@ func TestHistoryKeepsLegacyAndExplicitInterruptionsCompatible(t *testing.T) {
 		}
 	}
 }
+
+func TestHistoryRestoresSafeTransportFailureKinds(t *testing.T) {
+	for _, kind := range []string{"request_send_timeout", "transport_eof", "transport_reset", "transport_timeout", "transport_dns"} {
+		t.Run(kind, func(t *testing.T) {
+			history := historyMessages([]provider.Message{{Role: provider.RoleTool, LocalOnly: true,
+				InterruptedTurn: &provider.InterruptedTurnRecovery{Pending: true, TerminalStatus: "failed",
+					FailureDiagnostic: &provider.FailureDiagnostic{Kind: kind, ProviderID: "deepseek"}},
+			}}, func(s string) string { return s })
+			if len(history) != 1 || history[0].Code != event.NoticeCodeProviderRequestFailed || history[0].Diagnostic == nil || history[0].Diagnostic.Kind != kind {
+				t.Fatalf("lost typed failure: %+v", history)
+			}
+		})
+	}
+}

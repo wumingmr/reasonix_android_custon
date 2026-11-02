@@ -2,10 +2,11 @@ package main
 
 import (
 	"os"
+	"sync"
+
 	"reasonix/desktop/internal/workspacestate"
 	"reasonix/internal/agent"
 	"reasonix/internal/store"
-	"sync"
 )
 
 type sourceHeadObservation struct {
@@ -38,6 +39,11 @@ func adoptedSourceRows(state workspacestate.State) map[string]bool {
 // reappear after their canonical session is archived. Multi-head rows keep
 // independent identities; adopting one must never hide its siblings.
 func sourceMappingHasPathAlias(mapping workspacestate.SourceMapping) bool {
+	// A reviewed version is a separate conversation, not another owner of
+	// the original path. Only its versioned SourceKey may alias that session.
+	if historicalVersionSourceKey(mapping.SourceKey) {
+		return false
+	}
 	if mapping.HeadID == "" {
 		return true
 	}

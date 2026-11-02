@@ -14,24 +14,28 @@ const (
 )
 
 func (m chatTUI) renderSkillPicker() string {
+	return m.renderSkillPickerPanel().text
+}
+
+func (m chatTUI) renderSkillPickerPanel() panelContent {
 	p := m.skillPick
 	if p == nil {
-		return ""
+		return panelContent{}
 	}
 	w := max(viewWidth(m.width), 40)
 	switch p.mode {
 	case pickerSkills:
-		return managerContentPanelStyle(w).Render(m.renderSkillPickerSkills())
+		return m.renderSkillPickerSkillsBody().render(managerContentPanelStyle(w), m.width)
 	case pickerSources:
-		return managerContentPanelStyle(w).Render(m.renderSkillPickerSources())
+		return m.renderSkillPickerSourcesBody().render(managerContentPanelStyle(w), m.width)
 	case pickerSourceSkills:
-		return managerContentPanelStyle(w).Render(m.renderSkillPickerSourceSkills())
+		return m.renderSkillPickerSourceSkillsBody().render(managerContentPanelStyle(w), m.width)
 	case pickerDetail:
-		return managerContentPanelStyle(w).Render(m.renderSkillPickerDetail())
+		return m.renderSkillPickerDetailBody().render(managerContentPanelStyle(w), m.width)
 	case pickerConfirmDelete:
-		return managerContentPanelStyle(w).Render(m.renderSkillPickerConfirmDelete())
+		return m.renderSkillPickerConfirmDeleteBody().render(managerContentPanelStyle(w), m.width)
 	}
-	return ""
+	return panelContent{}
 }
 
 func (m chatTUI) skillPickerFooterHint() string {
@@ -54,10 +58,10 @@ func (m chatTUI) skillPickerFooterHint() string {
 	}
 }
 
-func (m chatTUI) renderSkillPickerSkills() string {
+func (m chatTUI) renderSkillPickerSkillsBody() panelBody {
 	p := m.skillPick
 	w := max(viewWidth(m.width), 40)
-	var b strings.Builder
+	var b panelBuilder
 
 	fmt.Fprintf(&b, "%s\n", viewHeader("Manage skills"))
 	if summary := skillPickerSummary(p); summary != "" {
@@ -91,6 +95,7 @@ func (m chatTUI) renderSkillPickerSkills() string {
 				fmt.Fprintf(&b, "  %s\n", bold(group))
 				lastGroup = group
 			}
+			b.MarkFocus(i == p.sel, i)
 			b.WriteString(renderSkillRow(i+1, i == p.sel, skills[i], p.skillEnabled(skills[i].Name), w))
 			b.WriteByte('\n')
 		}
@@ -100,7 +105,7 @@ func (m chatTUI) renderSkillPickerSkills() string {
 		}
 	}
 
-	return strings.TrimRight(b.String(), "\n")
+	return b.body().trimTrailingNewlines()
 }
 
 func (m chatTUI) skillPickerVisibleRows() int {
@@ -148,9 +153,9 @@ func renderSkillSearchBox(query string, active bool, w int) string {
 	return b.String()
 }
 
-func (m chatTUI) renderSkillPickerSources() string {
+func (m chatTUI) renderSkillPickerSourcesBody() panelBody {
 	p := m.skillPick
-	var b strings.Builder
+	var b panelBuilder
 
 	b.WriteString(accent(i18n.M.SkillPickerSourceTitle))
 	summary := skillSourceSummary(p.roots)
@@ -162,6 +167,7 @@ func (m chatTUI) renderSkillPickerSources() string {
 	roots := p.visibleRoots()
 	for i, r := range roots {
 		label := sourceRowLabel(r, m.width)
+		b.MarkFocus(i == p.sourceSel, i)
 		b.WriteString(rowLine(i == p.sourceSel, i+1, "", label, false))
 		b.WriteByte('\n')
 	}
@@ -171,16 +177,16 @@ func (m chatTUI) renderSkillPickerSources() string {
 	} else {
 		b.WriteString(dim("  " + i18n.M.SkillPickerDiagHidden))
 	}
-	return b.String()
+	return b.body()
 }
 
-func (m chatTUI) renderSkillPickerSourceSkills() string {
+func (m chatTUI) renderSkillPickerSourceSkillsBody() panelBody {
 	p := m.skillPick
-	var b strings.Builder
+	var b panelBuilder
 	root, ok := p.selectedRoot()
 	if !ok {
 		p.mode = pickerSources
-		return m.renderSkillPickerSources()
+		return m.renderSkillPickerSourcesBody()
 	}
 	skills := p.selectedRootSkills()
 	b.WriteString(accent(i18n.M.SkillPickerSourceTitle))
@@ -190,7 +196,7 @@ func (m chatTUI) renderSkillPickerSourceSkills() string {
 	if len(skills) == 0 {
 		b.WriteString(dim("  " + i18n.M.SkillPickerSourceSkillsEmpty))
 		b.WriteByte('\n')
-		return b.String()
+		return b.body()
 	}
 	start, end := skillListWindow(p.sourceSkillSel, len(skills), m.skillPickerVisibleRows())
 	if start > 0 {
@@ -198,6 +204,7 @@ func (m chatTUI) renderSkillPickerSourceSkills() string {
 		b.WriteByte('\n')
 	}
 	for i := start; i < end; i++ {
+		b.MarkFocus(i == p.sourceSkillSel, i)
 		b.WriteString(renderSkillRow(i+1, i == p.sourceSkillSel, skills[i], p.skillEnabled(skills[i].Name), m.width))
 		b.WriteByte('\n')
 	}
@@ -205,12 +212,16 @@ func (m chatTUI) renderSkillPickerSourceSkills() string {
 		b.WriteString(dim("  " + fmt.Sprintf(i18n.M.SkillPickerMoreBelowFmt, len(skills)-end)))
 		b.WriteByte('\n')
 	}
-	return b.String()
+	return b.body()
 }
 
 func (m chatTUI) renderSkillPickerDetail() string {
+	return m.renderSkillPickerDetailBody().text
+}
+
+func (m chatTUI) renderSkillPickerDetailBody() panelBody {
 	p := m.skillPick
-	var b strings.Builder
+	var b panelBuilder
 	b.WriteString(renderSkillDetailHeader(p.detailSkill, m.width))
 	b.WriteByte('\n')
 	b.WriteByte('\n')
@@ -222,6 +233,7 @@ func (m chatTUI) renderSkillPickerDetail() string {
 	b.WriteByte('\n')
 	actions := skillActionsFor(p.detailSkill)
 	for i, action := range actions {
+		b.MarkFocus(i == p.detailAction, i)
 		b.WriteString(rowLine(i == p.detailAction, i+1, "", action.label, false))
 		b.WriteByte('\n')
 	}
@@ -229,12 +241,12 @@ func (m chatTUI) renderSkillPickerDetail() string {
 		b.WriteByte('\n')
 		b.WriteString(body)
 	}
-	return b.String()
+	return b.body()
 }
 
-func (m chatTUI) renderSkillPickerConfirmDelete() string {
+func (m chatTUI) renderSkillPickerConfirmDeleteBody() panelBody {
 	p := m.skillPick
-	var b strings.Builder
+	var b panelBuilder
 	b.WriteString(accent(fmt.Sprintf(i18n.M.SkillPickerDeleteTitleFmt, p.deleteSkill.Name)))
 	b.WriteByte('\n')
 	path := skillDeleteTargetLabel(p.deleteSkill)
@@ -243,10 +255,12 @@ func (m chatTUI) renderSkillPickerConfirmDelete() string {
 		b.WriteByte('\n')
 	}
 	b.WriteByte('\n')
+	b.MarkFocus(p.confirm == 0, 0)
 	b.WriteString(rowLine(p.confirm == 0, 1, "", i18n.M.SkillPickerDeleteConfirm, false))
 	b.WriteByte('\n')
+	b.MarkFocus(p.confirm == 1, 1)
 	b.WriteString(rowLine(p.confirm == 1, 2, "", i18n.M.SkillPickerDeleteCancel, false))
-	return b.String()
+	return b.body()
 }
 
 func renderSkillRow(num int, selected bool, s skill.Skill, enabled bool, w int) string {

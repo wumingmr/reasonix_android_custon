@@ -33,6 +33,14 @@ func ClassifyRecovery(err error) RecoveryFailure {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return f
 	}
+	if errors.As(err, new(*RequestSendTimeoutError)) {
+		f.Phase, f.Code = "send", "request_send_timeout"
+		return f
+	}
+	if protocolFailureIsTerminal(err) {
+		f.Phase, f.Code = "protocol", HTTP2TransportCode(err)
+		return f
+	}
 	if exhausted := AsRecoveryWaitExhausted(err); exhausted != nil {
 		f.Phase, f.Status, f.Code = exhausted.Phase, exhausted.Status, exhausted.Code
 		return f

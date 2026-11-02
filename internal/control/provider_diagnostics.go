@@ -55,5 +55,5 @@ func (c *Controller) providerDiagnosticSnapshot() any {
 		Requests []providerDiagnostic `json:"requests"`
 		Dropped  uint64               `json:"dropped"`
 		Scope    string               `json:"scope"`
-	}{append([]providerDiagnostic{}, b.requests...), b.dropped, "current controller lifetime; transport bytes include heartbeats, not proof of model progress; durable per-turn snapshots are in diagnostic/provider commit events"}
+	}{append([]providerDiagnostic{}, b.requests...), b.dropped, "current controller lifetime; requestBytes is declared body length, not uploaded bytes; transport bodyBytes include heartbeats, not proof of model progress; durable per-turn snapshots are in diagnostic/provider commit events"}
 }

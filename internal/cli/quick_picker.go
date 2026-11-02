@@ -101,12 +101,15 @@ func (p *quickPicker) handleKey(msg tea.KeyPressMsg) quickPickerResult {
 			p.selected = 0
 		}
 	default:
-		// Mirror the textarea input contract: a key press with no Text is not
-		// user input. Termux IMEs emit those while composing, so falling back
-		// to String() here inserted composition leftovers and dropped the
-		// composed text's trailing space (KeySpace reports "space").
-		if msg.Text != "" {
-			p.query += msg.Text
+		text := msg.Text
+		if text == "" {
+			s := msg.String()
+			if len(s) == 1 && s[0] >= 32 && s[0] < 127 {
+				text = s
+			}
+		}
+		if text != "" {
+			p.query += text
 			p.selected = 0
 		}
 	}
@@ -114,8 +117,12 @@ func (p *quickPicker) handleKey(msg tea.KeyPressMsg) quickPickerResult {
 }
 
 func (p *quickPicker) render(width int) string {
+	return p.renderPanel(width).text
+}
+
+func (p *quickPicker) renderPanel(width int) panelContent {
 	if p == nil {
-		return ""
+		return panelContent{}
 	}
 	w := max(width, 10)
 	contentWidth := max(w-8, 12)
@@ -124,7 +131,7 @@ func (p *quickPicker) render(width int) string {
 		p.selected = max(len(items)-1, 0)
 	}
 
-	var b strings.Builder
+	var b panelBuilder
 	b.WriteString(accent(p.title) + "\n")
 	if p.query != "" {
 		b.WriteString("  " + dim("Search: ") + p.query + "\n")
@@ -142,6 +149,7 @@ func (p *quickPicker) render(width int) string {
 			if item.Status != "" {
 				label += " " + dim("("+item.Status+")")
 			}
+			b.MarkFocus(i == p.selected, i)
 			b.WriteString(rowLine(i == p.selected, i+1, "", label, item.Status == "active") + "\n")
 			if item.Description != "" {
 				b.WriteString(dim("     "+ansi.Truncate(item.Description, contentWidth, "…")) + "\n")
@@ -156,7 +164,7 @@ func (p *quickPicker) render(width int) string {
 		hint = "Type to filter · ↑/↓ navigate · Enter select · Esc cancel"
 	}
 	b.WriteString(dim(hint))
-	return choicePanelStyle.Width(w).Render(b.String())
+	return b.render(choicePanelStyle.Width(w), width)
 }
 
 func quickPickerWindow(total, selected int) (int, int) {

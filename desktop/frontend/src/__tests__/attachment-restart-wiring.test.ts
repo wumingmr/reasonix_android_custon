@@ -29,6 +29,9 @@ try {
   assert.deepEqual(captures[0],target);
   assert.equal(prepared.structured.input,"describe","recovery adds no provider prompt bytes");
   const external = [{path:restoredPath,isDir:true,displayPath:"/external/folder"}];
+  await assert.rejects(restoreExternalFolderReferences({ ...app,
+    CaptureAttachmentTarget: async () => { throw Error("unsupported: attachments-v2"); },
+  }, target, external), /unsupported: attachments-v2/, "submission must still validate attachment capability");
   await restoreExternalFolderReferences(app,target,external);
   restoredPath="__reasonix_external_folder/changed/folder";
   await assert.rejects(restoreExternalFolderReferences(app,target,external),/folder changed/);

@@ -215,12 +215,16 @@ func (m chatTUI) commitPreparedRewind() (tea.Model, tea.Cmd) {
 }
 
 func (m chatTUI) renderRewind() string {
+	return m.renderRewindPanel().text
+}
+
+func (m chatTUI) renderRewindPanel() panelContent {
 	r := m.rewind
 	if r == nil {
-		return ""
+		return panelContent{}
 	}
 	w := max(m.width, 10)
-	var b strings.Builder
+	var b panelBuilder
 	if r.stage == 0 {
 		b.WriteString(accent(i18n.M.RewindPickTitle) + "\n")
 		// Long sessions list one row per turn; window it like quickPicker so
@@ -231,13 +235,14 @@ func (m chatTUI) renderRewind() string {
 		}
 		for i := start; i < end; i++ {
 			meta := r.metas[i]
+			b.MarkFocus(i == r.sel, i)
 			b.WriteString(rowLine(i == r.sel, meta.Turn+1, "", turnLabel(meta, w), false) + "\n")
 		}
 		if end < len(r.metas) {
 			b.WriteString(dim("  ↓ more") + "\n")
 		}
 		b.WriteString(dim(i18n.M.RewindPickHint))
-		return choicePanelStyle.Width(w).Render(b.String())
+		return b.render(choicePanelStyle.Width(w), m.width)
 	}
 	meta := r.metas[r.sel]
 	if r.stage == 2 {
@@ -245,14 +250,15 @@ func (m chatTUI) renderRewind() string {
 		b.WriteString(fmt.Sprintf(i18n.M.RewindCoverageWarningFmt, len(r.pendingPlan.CoverageGaps)) + "\n")
 		b.WriteString(dim(fmt.Sprintf(i18n.M.RewindRestoreTitleFmt, meta.Turn+1)+oneLine(meta.Prompt, 48)) + "\n")
 		b.WriteString(dim(i18n.M.RewindConfirmHint))
-		return choicePanelStyle.Width(w).Render(b.String())
+		return b.render(choicePanelStyle.Width(w), m.width)
 	}
 	b.WriteString(accent(fmt.Sprintf(i18n.M.RewindRestoreTitleFmt, meta.Turn+1)) + dim(oneLine(meta.Prompt, 48)) + "\n")
 	for i := range rewindActions {
+		b.MarkFocus(i == r.scope, i)
 		b.WriteString(rowLine(i == r.scope, i+1, "", rewindActionLabel(i), false) + "\n")
 	}
 	b.WriteString(dim(i18n.M.RewindApplyHint))
-	return choicePanelStyle.Width(w).Render(b.String())
+	return b.render(choicePanelStyle.Width(w), m.width)
 }
 
 func rewindActionLabel(i int) string {

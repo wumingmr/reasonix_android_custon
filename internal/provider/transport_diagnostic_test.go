@@ -60,9 +60,24 @@ func TestHTTP2StdlibProtocolFailureRecordsNegotiatedTransport(t *testing.T) {
 			if _, err := io.ReadFull(conn, make([]byte, len(http2.ClientPreface))); err != nil {
 				return
 			}
-			// A valid initial SETTINGS frame, followed by an illegal DATA frame on
-			// stream zero, deterministically exercises net/http's private error type.
-			_, _ = conn.Write([]byte{0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0})
+			framer := http2.NewFramer(conn, conn)
+			if err := framer.WriteSettings(); err != nil {
+				return
+			}
+			// Wait until the request owns a stream. Sending the illegal frame
+			// before then races connection setup and can yield only the generic
+			// "client conn could not be established" instead of a protocol error.
+			for {
+				frame, err := framer.ReadFrame()
+				if err != nil {
+					return
+				}
+				if _, ok := frame.(*http2.HeadersFrame); ok {
+					break
+				}
+			}
+			// An illegal DATA frame on stream zero exercises net/http's private type.
+			_, _ = conn.Write([]byte{0, 0, 0, 0, 0, 0, 0, 0, 0})
 			_, _ = io.Copy(io.Discard, conn)
 		},
 	}

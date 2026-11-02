@@ -33,7 +33,7 @@ func (a *App) retireRemoteTabGeneration(tabID string, gen uint64) {
 	}
 	cancel := tab.cancel
 	tab.gen++
-	tab.attachedGen = 0
+	tab.publication.attachedGen = 0
 	tab.cancel = nil
 	tab.client = nil
 	tab.base = ""
@@ -63,7 +63,7 @@ func (a *App) reconnectRemoteTabGeneration(tabID string, gen uint64) bool {
 	startRetry := tab.state != "reconnecting"
 	cancel := tab.cancel
 	tab.gen++
-	tab.attachedGen = 0
+	tab.publication.attachedGen = 0
 	tab.cancel = nil
 	tab.client = nil
 	tab.base = ""
@@ -75,7 +75,7 @@ func (a *App) reconnectRemoteTabGeneration(tabID string, gen uint64) bool {
 	if cancel != nil {
 		cancel()
 	}
-	a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:state", tabID), RemoteTabStateView{State: "reconnecting"})
+	a.publishRemoteTabState(tabID, RemoteTabStateView{State: "reconnecting"})
 	return startRetry
 }
 
@@ -105,7 +105,7 @@ func (a *App) emitRemoteTabStateForGeneration(tabID string, gen uint64, state, e
 	tab.state = state
 	tab.err = errMsg
 	a.remoteTabMu.Unlock()
-	a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:state", tabID), RemoteTabStateView{State: state, Error: errMsg})
+	a.publishRemoteTabState(tabID, RemoteTabStateView{State: state, Error: errMsg})
 	return true
 }
 
@@ -128,7 +128,7 @@ func (a *App) transitionRemoteTabStateLocked(tab *remoteTab, gen uint64, from, s
 	tab.state = state
 	tab.err = errMsg
 	a.remoteTabMu.Unlock()
-	a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:state", tabID), RemoteTabStateView{State: state, Error: errMsg})
+	a.publishRemoteTabState(tabID, RemoteTabStateView{State: state, Error: errMsg})
 	return true
 }
 
@@ -151,7 +151,7 @@ func (a *App) emitRemoteTabStateLocked(tab *remoteTab, state, errMsg string) {
 	tab.state = state
 	tab.err = errMsg
 	a.remoteTabMu.Unlock()
-	a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:state", tabID), RemoteTabStateView{State: state, Error: errMsg})
+	a.publishRemoteTabState(tabID, RemoteTabStateView{State: state, Error: errMsg})
 }
 
 func (a *App) installRemoteTabAttachPump(ctx context.Context, tabID string, tab *remoteTab, client *http.Client, base, token, targetPath string, installRoute bool) (context.Context, uint64, uint64, error) {

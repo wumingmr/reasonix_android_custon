@@ -7,6 +7,13 @@ import (
 	"reasonix/desktop/internal/workspacestate"
 )
 
+// historicalVersionSourceKey reports whether key names a reviewed version: the
+// original source key, ":review:", then that version's fingerprint.
+func historicalVersionSourceKey(key string) bool {
+	source, version, reviewed := strings.Cut(key, ":review:")
+	return reviewed && source != "" && version != ""
+}
+
 func historicalSourceKeyMatches(mappingKey, sourceID string) bool {
 	return mappingKey == sourceID || strings.HasPrefix(mappingKey, sourceID+":review:")
 }

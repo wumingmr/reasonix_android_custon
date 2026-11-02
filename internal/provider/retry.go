@@ -178,7 +178,7 @@ func RetryableStatus(s int) bool {
 // closed socket) from protocol or caller errors for failure reporting. A common
 // trigger is a proxy idle-closing SSE during a reasoner's first-token gap.
 func IsConnReset(err error) bool {
-	if err == nil {
+	if err == nil || protocolFailureIsTerminal(err) {
 		return false
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrNonStreamingResponse) {
@@ -239,15 +239,28 @@ func readErrorBody(resp *http.Response) []byte {
 }
 
 // SendWithRetry retains its historical name but sends one HTTP request, plus a
-// single resend on a fresh connection when a pooled idle connection closed
-// before answering (see staleIdleConnection). Every other failure returns to
-// the caller without backoff; the user decides whether to try again.
+// single resend when the provider cannot have answered: a pooled idle
+// connection closed first (see staleIdleConnection), or the body never finished
+// uploading (RequestSendTimeoutError). Every other failure returns to the
+// caller without backoff; the user decides whether to try again.
+// A peer's INTERNAL_ERROR, PROTOCOL_ERROR or HTTP_1_1_REQUIRED reset never
+// consumes this allowance, because the peer may already have processed it.
 func SendWithRetry(ctx context.Context, httpClient *http.Client, opts SendOptions, newReq func(context.Context) (*http.Request, error)) (*http.Response, error) {
+	return sendWithResends(ctx, httpClient, opts, newReq, requestSendTimeout, 1)
+}
+
+// SendOnce is SendWithRetry without the resend, for callers whose contract is
+// exactly one request and whose evidence must describe that attempt.
+func SendOnce(ctx context.Context, httpClient *http.Client, opts SendOptions, newReq func(context.Context) (*http.Request, error)) (*http.Response, error) {
+	return sendWithResends(ctx, httpClient, opts, newReq, requestSendTimeout, 0)
+}
+
+func sendWithResends(ctx context.Context, httpClient *http.Client, opts SendOptions, newReq func(context.Context) (*http.Request, error), budget time.Duration, resends int) (*http.Response, error) {
 	identity := RequestIdentity{Provider: opts.Provider, DisplayName: opts.ProviderDisplayName, Protocol: opts.Protocol}
-	resp, stale, err := sendAttempt(ctx, httpClient, newReq)
-	if stale {
+	resp, stale, err := sendAttemptWithTimeout(ctx, httpClient, newReq, budget)
+	if resends > 0 && !protocolFailureIsTerminal(err) && (stale || errors.As(err, new(*RequestSendTimeoutError))) {
 		httpClient.CloseIdleConnections()
-		resp, _, err = sendAttempt(ctx, httpClient, newReq)
+		resp, _, err = sendAttemptWithTimeout(ctx, httpClient, newReq, budget)
 	}
 	var build *buildRequestError
 	if errors.As(err, &build) {
@@ -291,23 +304,52 @@ type buildRequestError struct{ err error }
 func (e *buildRequestError) Error() string { return e.err.Error() }
 func (e *buildRequestError) Unwrap() error { return e.err }
 
-// sendAttempt issues one counted, observed request. stale reports that it
-// failed on a dead pooled idle connection.
-func sendAttempt(ctx context.Context, httpClient *http.Client, newReq func(context.Context) (*http.Request, error)) (resp *http.Response, stale bool, err error) {
+// sendAttemptWithTimeout issues one counted, observed request. stale reports
+// that it failed on a dead pooled idle connection.
+func sendAttemptWithTimeout(ctx context.Context, httpClient *http.Client, newReq func(context.Context) (*http.Request, error), budget time.Duration) (resp *http.Response, stale bool, err error) {
 	requestCtx, observation := observeRequest(ctx)
+	// Detached from ctx's cancellation tree so a completed stream is released
+	// without being cancelled; AfterFunc still carries ctx to an open one.
+	requestCtx, cancel := context.WithCancelCause(context.WithoutCancel(requestCtx))
+	stop := context.AfterFunc(ctx, func() { cancel(context.Cause(ctx)) })
+	observation.sendTiming(budget, 0)
 	probe := &connectionProbe{}
 	req, err := newReq(probe.attach(requestCtx))
 	if err != nil {
 		observation.finish(err, "build_error")
+		stop()
+		cancel(nil)
 		return nil, false, &buildRequestError{err: err}
 	}
 	observation.request(req)
 	recordRequestAttempt(ctx)
-	resp, err = httpClient.Do(req)
+	guard := &requestSendGuard{budget: budget, cancel: cancel}
+	client := *httpClient
+	transport := client.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	client.Transport = requestSendTransport{base: transport, guard: guard}
+	resp, err = client.Do(req)
+	elapsed := guard.finish()
+	observation.sendTiming(budget, elapsed)
+	// Only the caller's context identifies user cancellation or task deadline.
+	// Internal cancellation from the send guard has a distinct terminal cause.
+	if ctx.Err() != nil {
+		err = ctx.Err()
+	} else if cause := context.Cause(requestCtx); cause != nil {
+		err = cause
+	}
 	if err != nil {
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
 		observation.finish(err, "request_error")
+		stop()
+		cancel(nil)
 		return nil, probe.staleIdleConnection(ctx, err), err
 	}
+	resp.Body = &releaseResponseBody{ReadCloser: resp.Body, release: stop}
 	observation.response(resp)
 	return resp, false, nil
 }

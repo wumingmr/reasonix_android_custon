@@ -666,15 +666,13 @@ func checkpointProjectionMessages(msgs []provider.Message, head int, kept []prov
 	return provider.ProjectionMessages(projMsgs)
 }
 
-// acceptCheckpointCandidate requires real savings and, for automatic
-// maintenance, a result below the physical input ceiling.
-func (a *Agent) acceptCheckpointCandidate(trigger string, sourceTokens, candidateTokens int) error {
+// acceptCheckpointCandidate requires real savings. A view far over the window
+// is brought back in batches, each folding what one summary request can carry,
+// so a candidate that shrinks the view but is still above the physical ceiling
+// is progress to keep, not a result to discard.
+func (a *Agent) acceptCheckpointCandidate(_ string, sourceTokens, candidateTokens int) error {
 	if candidateTokens >= sourceTokens {
 		return fmt.Errorf("%w: candidate would not reduce tokens (%d >= %d)", errCheckpointRejected, candidateTokens, sourceTokens)
-	}
-	hard := a.hardInputCeiling()
-	if trigger != CompactionTriggerManual && hard > 0 && candidateTokens >= hard {
-		return fmt.Errorf("%w: candidate %d still at or above physical ceiling %d", errCheckpointRejected, candidateTokens, hard)
 	}
 	return nil
 }

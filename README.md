@@ -7,8 +7,6 @@
   &nbsp;·&nbsp;
   <a href="./README.zh-CN.md">简体中文</a>
   &nbsp;·&nbsp;
-  <strong><a href="./docs/TERMUX.zh-CN.md">Termux / Android</a></strong>
-  &nbsp;·&nbsp;
   <a href="./docs/GUIDE.md">Guide</a>
   &nbsp;·&nbsp;
   <a href="./docs/ACP.md">ACP</a>
@@ -90,13 +88,6 @@ brew install esengine/reasonix/reasonix   # macOS
 
 Prebuilt archives (`darwin|linux|windows × amd64|arm64`) and `SHA256SUMS` are on
 every [GitHub release](https://github.com/esengine/DeepSeek-Reasonix/releases).
-
-> [!IMPORTANT]
-> **Termux / Android arm64:** use this fork's
-> [releases](https://github.com/wumingmr/reasonix_android_custon/releases) and read
-> the [Termux sandbox and wrapper guide](docs/TERMUX.zh-CN.md). Android currently
-> lacks a usable bubblewrap backend, so restricted shell modes fail closed; the
-> guide includes a one-command wrapper installer that does not require a clone.
 
 ### Path B: Desktop app
 

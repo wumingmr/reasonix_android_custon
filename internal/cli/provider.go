@@ -159,8 +159,12 @@ func (m chatTUI) handleQuickPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 }
 
 func (m chatTUI) renderQuickPicker() string {
+	return m.renderQuickPickerPanel().text
+}
+
+func (m chatTUI) renderQuickPickerPanel() panelContent {
 	if m.quickPick == nil {
-		return ""
+		return panelContent{}
 	}
-	return m.quickPick.render(m.width)
+	return m.quickPick.renderPanel(m.width)
 }

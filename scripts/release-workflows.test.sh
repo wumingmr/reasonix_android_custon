@@ -130,6 +130,14 @@ grep -Fq 'node scripts/release-candidate.mjs verify-rehearsal' "$rehearsal_verif
 grep -Fq 'node scripts/verify-release-artifact-archive.mjs' "$rehearsal_verify"
 ! grep -Eq 'environment: release|release-candidate-tags\.sh activate|publish-(desktop|homebrew)|npm publish' "$rehearsal_verify"
 grep -Fq 'gh attestation verify' "$promote"
+for attestation_workflow in "$promote" "$repo_root/.github/workflows/release-candidate-verify.yml"; do
+	prime_line="$(grep -nF 'verify_provenance "${files[0]}"' "$attestation_workflow" | cut -d: -f1)"
+	parallel_line="$(grep -nF "xargs -0 -P 8 -I{} bash -c 'verify_provenance \"\$1\"' _ {}" "$attestation_workflow" | cut -d: -f1)"
+	if [ -z "$prime_line" ] || [ -z "$parallel_line" ] || [ "$prime_line" -ge "$parallel_line" ]; then
+		echo "$attestation_workflow must verify one payload alone before the parallel provenance checks" >&2
+		exit 1
+	fi
+done
 grep -Fq 'bash scripts/release-candidate-tags.sh check' "$promote"
 grep -Fq 'bash scripts/release-candidate-tags.sh activate' "$promote"
 grep -Fq 'git push --atomic "$remote"' "$repo_root/scripts/release-candidate-tags.sh"
@@ -394,6 +402,27 @@ grep -Fq 'go -C release-control/desktop build -o "$signature_verifier" ./cmd/sig
 grep -Fq 'verify_signature_directory assets' "$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'verify_signature_directory "$existing_directory"' \
 	"$repo_root/.github/workflows/release-desktop.yml"
+orphan_drop_line="$(grep -nF -- '[ -f "${signature%.minisig}" ] || rm -f -- "$signature"' \
+	"$repo_root/.github/workflows/release-desktop.yml" | cut -d: -f1)"
+existing_verify_line="$(grep -nF 'verify_signature_directory "$existing_directory"' \
+	"$repo_root/.github/workflows/release-desktop.yml" | cut -d: -f1)"
+if [ -z "$orphan_drop_line" ] || [ -z "$existing_verify_line" ] ||
+	[ "$orphan_drop_line" -ge "$existing_verify_line" ]; then
+	echo "Desktop recovery must drop payload-less signatures before verifying the existing directory" >&2
+	exit 1
+fi
+orphan_fixture="$test_root/desktop-orphan-signature"
+mkdir -p "$orphan_fixture"
+printf 'payload' >"$orphan_fixture/kept.zip"
+printf 'signature' >"$orphan_fixture/kept.zip.minisig"
+printf 'signature' >"$orphan_fixture/orphan.zip.minisig"
+existing_directory="$orphan_fixture"
+eval "$(sed -n "$((orphan_drop_line - 1)),$((orphan_drop_line + 1))p" "$repo_root/.github/workflows/release-desktop.yml")"
+if [ -e "$orphan_fixture/orphan.zip.minisig" ] || [ ! -f "$orphan_fixture/kept.zip.minisig" ] ||
+	[ ! -f "$orphan_fixture/kept.zip" ]; then
+	echo "Desktop recovery must drop only a signature that has no payload" >&2
+	exit 1
+fi
 grep -Fq -- '--allow-authenticated-payload-differences' \
 	"$repo_root/.github/workflows/release-desktop.yml"
 grep -Fq 'cp "$payload" "assets/$payload_relative"' "$repo_root/.github/workflows/release-desktop.yml"

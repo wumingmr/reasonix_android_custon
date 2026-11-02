@@ -22,7 +22,13 @@ func withTerminalFailureDiagnostic(e event.Event) event.Event {
 			e.Diagnostic = provider.DiagnoseFailure(cause)
 		}
 		if e.Detail == "" {
-			e.Detail = provider.FailureDiagnosticDetail(e.Diagnostic)
+			e.Detail = secrets.FailureDetail(e.Err)
+			if metadata := provider.FailureDiagnosticDetail(e.Diagnostic); metadata != "" {
+				if e.Detail != "" {
+					e.Detail += "\n"
+				}
+				e.Detail += metadata
+			}
 		}
 	}
 	return e
@@ -53,7 +59,7 @@ func (c *Controller) providerDiagnosticEvent(e event.Event) (*session.Event, err
 		Requests      []providerDiagnostic        `json:"requests"`
 		Dropped       *uint64                     `json:"dropped,omitempty"`
 		Truncated     bool                        `json:"truncated"`
-	}{1, failure, 128, requests, dropped, truncated})
+	}{2, failure, 128, requests, dropped, truncated})
 	if err != nil {
 		return nil, err
 	}

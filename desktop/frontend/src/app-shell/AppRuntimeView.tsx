@@ -42,6 +42,7 @@ import { submitBlockReason } from "../lib/sessionAvailability";
 
 const WindowsWindowControls = lazy(() => import("./WindowsWindowControls").then((module) => ({ default: module.WindowsWindowControls })));
 const DockLauncher = lazy(() => import("../components/DockLauncher").then((module) => ({ default: module.DockLauncher })));
+const StudioDiscoveryLifecycle = lazy(() => import("../app-runtime/StudioDiscoveryLifecycle").then((module) => ({ default: module.StudioDiscoveryLifecycle })));
 
 const WORKSPACE_RESIZER_WIDTH = 8;
 const SHOW_CONTEXT_DOCK = true;
@@ -210,6 +211,16 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
     <TextSizeHotkeys />
     <WindowChromeLifecycle />
     <StartupGateLifecycle />
+    <Suspense fallback={null}><StudioDiscoveryLifecycle
+      stableRelease={shell.preferences.stableRelease}
+      safeToShow={!startupSplashHold && !shell.startupSplashVisible && !shell.managementActive
+        && (activeTabId ? controllerReady : state.meta?.ready === true) && !core.remoteSurfaceActive
+        && !shell.providerSetupNeeded && !shell.paletteOpen && !shell.shortcutsOpen
+        && !shell.sidebarSearchOpen && !shell.takeoverDialogTab && !shell.reclaimBusyTab
+        && !runtimeTransitioning && !visibleDecisionSurface && !state.running
+        && !local.tasksOpen && !local.histView
+        && !session.visibleTabs.some(tab => tab.running || tab.pendingPrompt || (tab.backgroundJobs ?? 0) > 0)}
+    /></Suspense>
     <AppRuntimeEffects
       running={state.running && !state.runtimeStateSnapshot?.maintenance}
       onEvent={session.runtimeEventCommands.handleRuntimeEvent}

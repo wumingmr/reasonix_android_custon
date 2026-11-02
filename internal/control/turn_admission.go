@@ -51,7 +51,9 @@ func (c *Controller) prepareTurnAdmissionWithGoalRound(admissionCtx context.Cont
 		if c.executor != nil && goalRound != nil {
 			c.executor.BeginTurnTodoState()
 		}
-		return body
+		return func(ctx context.Context) error {
+			return body(withImageReplayWarnings(ctx))
+		}
 	}
 	slog.Error("controller: persist turn admission", "err", admissionErr)
 	return func(context.Context) error { return fmt.Errorf("persist turn admission: %w", admissionErr) }

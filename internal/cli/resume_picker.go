@@ -3,7 +3,6 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -181,15 +180,19 @@ func (m chatTUI) applyResumePick() (tea.Model, tea.Cmd) {
 }
 
 func (m chatTUI) renderResumePicker() string {
+	return m.renderResumePickerPanel().text
+}
+
+func (m chatTUI) renderResumePickerPanel() panelContent {
 	r := m.resumePick
 	if r == nil {
-		return ""
+		return panelContent{}
 	}
 	if r.quick != nil {
-		return r.quick.render(m.width)
+		return r.quick.renderPanel(m.width)
 	}
 	w := max(m.width, 10)
-	var b strings.Builder
+	var b panelBuilder
 	b.WriteString(accent(i18n.M.ResumePickTitle) + "\n")
 	for i, entry := range r.entries {
 		label := sessionPickerLabel(entry.session)
@@ -199,10 +202,11 @@ func (m chatTUI) renderResumePicker() string {
 		if i == r.active {
 			label = dim(label) + " " + dim("(active)")
 		}
+		b.MarkFocus(i == r.sel, i)
 		b.WriteString(rowLine(i == r.sel, i+1, "", label, false) + "\n")
 	}
 	b.WriteString(dim(i18n.M.ResumePickHint))
-	return choicePanelStyle.Width(w).Render(b.String())
+	return b.render(choicePanelStyle.Width(w), m.width)
 }
 
 // sessionPickerLabel is the "N turns · display title" line, truncated to fit.

@@ -1,4 +1,4 @@
-import { clipboardFiles, clipboardHasImageHint, isPasteShortcut, dataURLHash } from "../lib/composerClipboard";
+import { clipboardFiles, clipboardHasImageHint, isPasteShortcut, dataURLHash, cutUnchangedComposerText } from "../lib/composerClipboard";
 import { composerDraftFingerprint, emptyComposerDraft, persistentComposerDraft, persistentSnapshot } from "./composerDraftState";
 import { SessionInputRecovery } from "./SessionInputRecovery";
 import { recoveryStatusText, type RecoveryRetry } from "../lib/recoveryStatus";
@@ -37,7 +37,7 @@ import { cacheGeneration, loadOlder } from "../lib/composerHistory";
 import { sessionTurnsLabel } from "../lib/sessionTurnsPresentation";
 import { useI18n, type Translator } from "../lib/i18n";
 import { detectShortcutPlatform, formatShortcutCombo, matchesShortcut, useShortcutComboLabel } from "../lib/keyboardShortcuts";
-import { fallbackCopyText } from "../lib/clipboard";
+import { writeClipboardText } from "../lib/clipboard";
 import {
   commandAvailableAtSlashPosition,
   commandUsesStructuredInvocation,
@@ -1250,6 +1250,15 @@ export function Composer({
     return target?.trackTask ? target.trackTask(target.draftId, target.generation, promise) : promise;
   };
 
+  const trackInputTask = <T,>(targetDraftKey: string, promise: Promise<T>): Promise<T> => {
+    // Cover the whole accepted operation, including target capture, clipboard
+    // reads and native fallback timers, before any async result can yield to send.
+    updatePendingPasteForDraft(targetDraftKey, 1);
+    const task = promise.finally(() => updatePendingPasteForDraft(targetDraftKey, -1));
+    const target = persistentTargetsByDraftRef.current[targetDraftKey];
+    return target?.trackTask ? target.trackTask(target.draftId, target.generation, task, true) : task;
+  };
+
   const applyInboxQueue = useCallback((items: PendingGuidance[]) => updatePendingGuidanceForDraft(draftKey, () => items), [draftKey]);
   const collapseInboxQueue = useCallback(() => setGuidanceExpanded(false), []);
   const refreshInboxQueue = useCallback(() => setGuidanceRetryNonce((value) => value + 1), []);
@@ -2426,7 +2435,6 @@ export function Composer({
 			const target = await attachmentSubmit.captureImageTarget(app, sourceBridgeTarget);
 		try {
 		for (const file of images) {
-      updatePendingPasteForDraft(sourceDraftKey, 1);
       try {
         const key = await fileDedupKey(file);
         if (attachmentSeenInDraft(sourceDraftKey, key)) continue;
@@ -2440,9 +2448,7 @@ export function Composer({
         if (owner?.onTaskError) owner.onTaskError(owner.draftId, owner.generation, t("composer.attachImageFailed"));
         else if (sourceDraftKey === activeDraftKeyRef.current) showToast(t("composer.attachImageFailed"), "warn");
         // non-fatal: a failed image attach must not block normal text input
-      } finally {
-        updatePendingPasteForDraft(sourceDraftKey, -1);
-			}
+      }
 		}
 		} finally {
 			await app.ReleaseAttachmentTarget?.(target);
@@ -2459,7 +2465,6 @@ export function Composer({
 			const target = await attachmentSubmit.captureAttachmentTarget(app, sourceBridgeTarget, []);
 		try {
 		for (const file of others) {
-      updatePendingPasteForDraft(sourceDraftKey, 1);
       try {
         const nativePath = desktopHost().native.getPathForFile?.(file) || "";
         const key = { hash: "", source: ordinaryFileSource(file, nativePath) };
@@ -2476,9 +2481,7 @@ export function Composer({
         if (sourceDraftKey === activeDraftKeyRef.current && attachmentSubmit.isAttachmentUploadLimitError(error)) showToast(message, "warn", { summary: message });
         else if (owner?.onTaskError) owner.onTaskError(owner.draftId, owner.generation, message);
         else if (sourceDraftKey === activeDraftKeyRef.current) showToast(message, "warn");
-      } finally {
-        updatePendingPasteForDraft(sourceDraftKey, -1);
-			}
+      }
 		}
 		} finally {
 			await app.ReleaseAttachmentTarget?.(target);
@@ -2494,7 +2497,7 @@ export function Composer({
 		const { accepted, oversize } = splitOversizeAttachments(files);
 		for (const { file, limitMiB } of oversize) notify(t("composer.attachTooLarge", { name: file.name, limit: String(limitMiB) }));
 		for (const [attach, failure] of [[attachImageFiles, "composer.attachImageFailed"], [attachOtherFiles, "composer.attachFileFailed"]] as const) {
-			void trackPersistentTask(sourceDraftKey, attach(accepted, sourceDraftKey)).catch((error) => {
+			void trackInputTask(sourceDraftKey, attach(accepted, sourceDraftKey)).catch((error) => {
 				console.warn("[composer] attachment capability unavailable", error);
 				notify(t(failure));
 			});
@@ -2508,7 +2511,6 @@ export function Composer({
 			if (owner?.isCurrent && !owner.isCurrent(owner.draftId, owner.generation)) return;
 			const attachmentSubmit = await loadAttachmentSubmit();
 			const target = await attachmentSubmit.captureAttachmentTarget(app, sourceBridgeTarget, ["SaveClipboardImageForTarget", "AttachmentDataURLForTarget"]);
-			updatePendingPasteForDraft(sourceDraftKey, 1);
 			try {
 				const path = await app.SaveClipboardImageForTarget!(target);
 				const previewUrl = await app.AttachmentDataURLForTarget!(target, path);
@@ -2523,10 +2525,9 @@ export function Composer({
         }
 			} finally {
 				await app.ReleaseAttachmentTarget?.(target);
-				updatePendingPasteForDraft(sourceDraftKey, -1);
       }
     })();
-		return trackPersistentTask(sourceDraftKey, task).catch((error) => {
+		return trackInputTask(sourceDraftKey, task).catch((error) => {
 			console.warn("[composer] native clipboard attachment unavailable", error);
 			if (notifyOnError) {
 				if (owner?.onTaskError) owner.onTaskError(owner.draftId, owner.generation, t("composer.pasteImageFailed"));
@@ -2549,7 +2550,6 @@ export function Composer({
 			const target = await attachmentSubmit.captureAttachmentTarget(app, sourceBridgeTarget, ["AttachDroppedForTarget"]);
 			try {
 			for (const path of paths) {
-        updatePendingPasteForDraft(sourceDraftKey, 1);
         try {
           const key = { hash: "", source: `path:${path}` };
           if (attachmentSeenInDraft(sourceDraftKey, key)) continue;
@@ -2563,15 +2563,13 @@ export function Composer({
           console.warn("[composer] failed to attach dropped file");
           if (owner?.onTaskError) owner.onTaskError(owner.draftId, owner.generation, t("composer.attachDropFailed"));
           else if (sourceDraftKey === activeDraftKeyRef.current) showToast(t("composer.attachDropFailed"), "warn");
-        } finally {
-          updatePendingPasteForDraft(sourceDraftKey, -1);
-				}
+        }
 			}
 			} finally {
 				await app.ReleaseAttachmentTarget?.(target);
 			}
 		})();
-		return trackPersistentTask(sourceDraftKey, task).catch((error) => {
+		return trackInputTask(sourceDraftKey, task).catch((error) => {
 			console.warn("[composer] dropped attachment capability unavailable", error);
 			if (owner?.onTaskError) owner.onTaskError(owner.draftId, owner.generation, t("composer.attachDropFailed"));
 			else showToast(t("composer.attachDropFailed"), "warn");
@@ -2835,45 +2833,46 @@ export function Composer({
   const copyComposerSelection = async (cut = false) => {
     const selection = getInputSelection();
     const sourceDraftKey = activeDraftKeyRef.current;
+    const owner = persistentTargetsByDraftRef.current[sourceDraftKey];
+    if (cut && owner?.canEdit && !owner.canEdit(owner.draftId, owner.generation)) return;
+    const beforeEdit = composerEditSnapshot(sourceDraftKey, { start: selection.from, end: selection.to });
     setInputMenuPoint(null);
     if (!selection.selected) {
       focusInputRange(selection.from, selection.to, selection.afterInvocationId);
       return;
     }
-    try {
-      await navigator.clipboard.writeText(selection.selected);
-    } catch {
-      // Fall back to the desktop host clipboard, then execCommand
-      try {
-        if (await desktopHost().native.clipboardWriteText(selection.selected)) {
-          /* ok */
-        } else if (!fallbackCopyText(selection.selected)) {
-          // Every clipboard path failed. Cutting now would delete text that
-          // never reached the clipboard, so keep the draft intact.
-          if (sourceDraftKey === activeDraftKeyRef.current) {
-            focusInputRange(selection.from, selection.to, selection.afterInvocationId);
-          }
-          return;
-        }
-      } catch {
+    const task = (async () => {
+      if (!await writeClipboardText(selection.selected)) {
+        // Never delete content that did not reach the clipboard.
         if (sourceDraftKey === activeDraftKeyRef.current) {
           focusInputRange(selection.from, selection.to, selection.afterInvocationId);
         }
         return;
       }
-    }
-    if (cut) {
-      const beforeEdit = composerEditSnapshot(sourceDraftKey, { start: selection.from, end: selection.to });
-      if (sourceDraftKey === activeDraftKeyRef.current) resetPromptHistoryNavigation();
-      replaceInputRange("", selection.from, selection.to, sourceDraftKey);
-      recordComposerEdit(
-        sourceDraftKey,
-        beforeEdit,
-        composerEditSnapshot(sourceDraftKey, { start: selection.from, end: selection.from }),
-      );
-    } else if (sourceDraftKey === activeDraftKeyRef.current) {
-      focusInputRange(selection.from, selection.to, selection.afterInvocationId);
-    }
+      if (cut) {
+        if (owner?.isCurrent && !owner.isCurrent(owner.draftId, owner.generation)) return;
+        let afterEdit: ComposerEditSnapshot | undefined;
+        if (owner?.onPatch) {
+          owner.onPatch(owner.draftId, owner.generation, current => {
+            const next = cutUnchangedComposerText(current, beforeEdit, selection);
+            if (next) afterEdit = { ...beforeEdit, text: next.text, invocations: next.invocations, selection: { start: selection.from, end: selection.from } };
+            return next ?? current;
+          });
+          if (!afterEdit) return;
+          if (sourceDraftKey === activeDraftKeyRef.current) focusInputRange(selection.from);
+        } else {
+          if (!composerEditStateMatches(beforeEdit, composerEditSnapshot(sourceDraftKey))) return;
+          replaceInputRange("", selection.from, selection.to, sourceDraftKey, selection.afterInvocationId);
+          afterEdit = composerEditSnapshot(sourceDraftKey, { start: selection.from, end: selection.from });
+          publishPersistentDraft(sourceDraftKey);
+        }
+        if (sourceDraftKey === activeDraftKeyRef.current) resetPromptHistoryNavigation();
+        recordComposerEdit(sourceDraftKey, beforeEdit, afterEdit);
+      } else if (sourceDraftKey === activeDraftKeyRef.current) {
+        focusInputRange(selection.from, selection.to, selection.afterInvocationId);
+      }
+    })();
+    return cut ? trackInputTask(sourceDraftKey, task) : task;
   };
 
   const pasteIntoComposer = () => {
@@ -2882,7 +2881,7 @@ export function Composer({
     const owner = persistentTargetsByDraftRef.current[sourceDraftKey];
     if (owner?.canEdit && !owner.canEdit(owner.draftId, owner.generation)) return Promise.resolve();
     setInputMenuPoint(null);
-    return trackPersistentTask(sourceDraftKey, (async () => {
+    return trackInputTask(sourceDraftKey, (async () => {
 
     // Try reading clipboard items for image detection (no event in menu path)
     try {
@@ -3600,7 +3599,7 @@ export function Composer({
       let settle!: () => void;
       const task = new Promise<void>(resolve => { settle = resolve; });
       nativeClipboardPasteCompletionRef.current = settle;
-      void trackPersistentTask(sourceDraftKey, task);
+      void trackInputTask(sourceDraftKey, task);
       nativeClipboardPasteTimerRef.current = window.setTimeout(() => {
         nativeClipboardPasteTimerRef.current = null;
         nativeClipboardPasteCompletionRef.current = null;

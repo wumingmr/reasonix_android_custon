@@ -33,5 +33,6 @@ export type PersistentComposerTarget = {
   isCurrent?: (draftId: string, generation: number) => boolean;
   canEdit?: (draftId: string, generation: number) => boolean;
   onTaskError?: (draftId: string, generation: number, message: string) => void;
-  trackTask?: <T>(draftId: string, generation: number, promise: Promise<T>) => Promise<T>;
+  // All tasks delay close; accepted input also blocks submission until published.
+  trackTask?: <T>(draftId: string, generation: number, promise: Promise<T>, blocksSubmission?: boolean) => Promise<T>;
 };

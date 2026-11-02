@@ -5,13 +5,14 @@ import (
 	"crypto/tls"
 	"net/http"
 	"net/http/httptrace"
+	"time"
 )
 
 func (s *requestObservationState) request(req *http.Request) {
 	if s == nil || req == nil || req.URL == nil {
 		return
 	}
-	s.update("request_built", func(v *RequestObservation) {
+	s.updateBeforeHeaders("request_built", func(v *RequestObservation) {
 		v.Method, v.Host, v.RequestPath = req.Method, req.URL.Host, req.URL.EscapedPath()
 		if len(v.Host) > 255 {
 			v.Host = ""
@@ -25,19 +26,32 @@ func (s *requestObservationState) request(req *http.Request) {
 
 func (s *requestObservationState) traceContext(ctx context.Context) context.Context {
 	return httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
-		DNSStart: func(httptrace.DNSStartInfo) { s.update("dns_started", nil) },
+		GetConn: func(string) {
+			s.updateBeforeHeaders("connection_wait", func(v *RequestObservation) {
+				// Redirects and Transport retries start another send stage. A prior
+				// write is not evidence that this stage's body has been sent.
+				v.WrittenAt = time.Time{}
+				v.ErrorCode, v.ErrorPhase = "", ""
+			})
+		},
+		DNSStart: func(httptrace.DNSStartInfo) { s.updateBeforeHeaders("dns_started", nil) },
+		DNSDone:  func(info httptrace.DNSDoneInfo) { s.transportFailure(info.Err, "dns_failed") },
 		ConnectStart: func(network, addr string) {
-			s.update("connect_started", func(v *RequestObservation) {
+			s.updateBeforeHeaders("connect_started", func(v *RequestObservation) {
 				v.Network = network
 				if len(addr) <= 255 {
 					v.DialAddress = addr
 				}
 			})
 		},
-		TLSHandshakeStart: func() { s.update("tls_started", nil) },
+		TLSHandshakeStart: func() { s.updateBeforeHeaders("tls_started", nil) },
+		ConnectDone:       func(_, _ string, err error) { s.transportFailure(err, "connect_failed") },
 		TLSHandshakeDone: func(state tls.ConnectionState, err error) {
+			if err != nil {
+				s.transportFailure(err, "tls_failed")
+			}
 			if err == nil {
-				s.update("tls_complete", func(v *RequestObservation) {
+				s.updateBeforeHeaders("tls_complete", func(v *RequestObservation) {
 					if state.NegotiatedProtocol == "h2" {
 						v.HTTPProtocol = "HTTP/2.0"
 					}
@@ -48,7 +62,9 @@ func (s *requestObservationState) traceContext(ctx context.Context) context.Cont
 			}
 		},
 		GotConn: func(info httptrace.GotConnInfo) {
-			s.update("connection_acquired", func(v *RequestObservation) {
+			s.updateBeforeHeaders("connection_acquired", func(v *RequestObservation) {
+				// A successful connection supersedes failed DNS/dial candidates.
+				v.ErrorCode, v.ErrorPhase = "", ""
 				v.ConnectedAt, v.ConnectionReused = v.ObservedAt, info.Reused
 				if info.Conn != nil && info.Conn.RemoteAddr() != nil {
 					if addr := info.Conn.RemoteAddr().String(); len(addr) <= 255 {
@@ -64,7 +80,12 @@ func (s *requestObservationState) traceContext(ctx context.Context) context.Cont
 		},
 		WroteRequest: func(info httptrace.WroteRequestInfo) {
 			if info.Err == nil {
-				s.update("request_written", func(v *RequestObservation) { v.WrittenAt = v.ObservedAt })
+				s.updateBeforeHeaders("request_written", func(v *RequestObservation) {
+					v.WrittenAt = v.ObservedAt
+					v.ErrorCode, v.ErrorPhase = "", ""
+				})
+			} else {
+				s.transportFailure(info.Err, "request_write_failed")
 			}
 		},
 	})

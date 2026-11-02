@@ -612,7 +612,7 @@ listingAttempt:
 		if routeUpdate != nil {
 			a.emitRemoteEvent("remote-tab:updated", *routeUpdate)
 			if routeReadyBarrier {
-				a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:state", routeUpdate.ID), RemoteTabStateView{State: "ready"})
+				a.publishRemoteTabState(routeUpdate.ID, RemoteTabStateView{State: "ready"})
 			}
 		}
 		unlockRoute()

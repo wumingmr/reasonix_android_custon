@@ -10,28 +10,28 @@ import (
 	"reasonix/internal/mcpdiag"
 )
 
-func (m chatTUI) renderMCPManager() string {
+func (m chatTUI) renderMCPManagerPanel() panelContent {
 	if m.mcp == nil {
-		return ""
+		return panelContent{}
 	}
-	return m.mcp.render(m.width)
+	return m.mcp.renderPanel(m.width)
 }
 
-func (p *mcpManager) render(width int) string {
+func (p *mcpManager) renderPanel(width int) panelContent {
 	w := max(viewWidth(width), 40)
 	switch p.stage {
 	case mcpStageDetail:
-		return managerContentPanelStyle(w).Render(p.renderDetail(w))
+		return p.renderDetailBody(w).render(managerContentPanelStyle(w), width)
 	case mcpStageTools:
-		return managerContentPanelStyle(w).Render(p.renderTools(w))
+		return p.renderToolsBody(w).render(managerContentPanelStyle(w), width)
 	case mcpStageLogs:
-		return managerContentPanelStyle(w).Render(p.renderLogs(w))
+		return p.renderLogsBody(w).render(managerContentPanelStyle(w), width)
 	case mcpStageConfirmRemove:
-		return managerContentPanelStyle(w).Render(p.renderConfirmRemove(w))
+		return p.renderConfirmRemoveBody(w).render(managerContentPanelStyle(w), width)
 	case mcpStageConfirmClearAuth:
-		return managerContentPanelStyle(w).Render(p.renderConfirmClearAuth(w))
+		return p.renderConfirmClearAuthBody(w).render(managerContentPanelStyle(w), width)
 	default:
-		return managerContentPanelStyle(w).Render(p.renderList(w))
+		return p.renderListBody(w).render(managerContentPanelStyle(w), width)
 	}
 }
 
@@ -52,7 +52,11 @@ func (p *mcpManager) footerHint() string {
 }
 
 func (p *mcpManager) renderList(width int) string {
-	var b strings.Builder
+	return p.renderListBody(width).text
+}
+
+func (p *mcpManager) renderListBody(width int) panelBody {
+	var b panelBuilder
 	fmt.Fprintf(&b, "%s\n", viewHeader("Manage MCP servers"))
 	fmt.Fprintf(&b, "%s\n\n", viewMeta(fmt.Sprintf("%d servers", len(p.snapshot.servers))))
 	if p.snapshot.err != "" {
@@ -60,7 +64,7 @@ func (p *mcpManager) renderList(width int) string {
 	}
 	if len(p.snapshot.servers) == 0 {
 		b.WriteString(viewMeta("No MCP servers configured. Use /mcp add <name> ... to add one.") + "\n\n")
-		return b.String()
+		return b.body()
 	}
 	start, end := visibleRange(len(p.snapshot.servers), p.sel, mcpListMaxRows)
 	if start > 0 {
@@ -81,12 +85,13 @@ func (p *mcpManager) renderList(width int) string {
 			fmt.Fprintf(&b, "  %s\n", bold(header))
 			lastGroup = group
 		}
+		b.MarkFocus(i == p.sel, i)
 		b.WriteString(p.renderListRow(i, s, width) + "\n")
 	}
 	if end < len(p.snapshot.servers) {
 		fmt.Fprintf(&b, "%s\n", viewMeta(fmt.Sprintf("↓ %d more below", len(p.snapshot.servers)-end)))
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return b.body().trimTrailingNewlines()
 }
 
 func (p *mcpManager) renderListRow(i int, s mcpServerView, width int) string {
@@ -117,62 +122,67 @@ func (p *mcpManager) renderListRow(i int, s mcpServerView, width int) string {
 }
 
 func (p *mcpManager) renderDetail(width int) string {
+	return p.renderDetailBody(width).text
+}
+
+func (p *mcpManager) renderDetailBody(width int) panelBody {
 	v, ok := p.selectedServer()
 	if !ok {
-		return "MCP server not found\n\n" + dim("Esc to back")
+		return panelBody{text: "MCP server not found\n\n" + dim("Esc to back")}
 	}
 	actions := mcpActionsFor(v, p.snapshot.configPath)
 	if p.action >= len(actions) {
 		p.action = max(0, len(actions)-1)
 	}
-	var b strings.Builder
+	var b panelBuilder
 	fmt.Fprintf(&b, "%s MCP Server\n\n", bold(titleText(v.Name)))
-	writeMCPDetailField(&b, "Status", mcpStatusLabel(v))
+	writeMCPDetailField(&b.Builder, "Status", mcpStatusLabel(v))
 	if auth := mcpAuthLabel(v); auth != "" {
-		writeMCPDetailField(&b, "Auth", auth)
+		writeMCPDetailField(&b.Builder, "Auth", auth)
 	}
-	writeMCPDetailField(&b, "Transport", fallbackText(v.Transport, "unknown"))
+	writeMCPDetailField(&b.Builder, "Transport", fallbackText(v.Transport, "unknown"))
 	if v.BuiltIn {
-		writeMCPDetailField(&b, "Config location", "built-in")
+		writeMCPDetailField(&b.Builder, "Config location", "built-in")
 	} else if v.Source == config.MCPSourceProjectMCPJSON {
-		writeMCPDetailField(&b, "Config location", "current project .mcp.json")
+		writeMCPDetailField(&b.Builder, "Config location", "current project .mcp.json")
 	} else if v.Source == config.MCPSourceProjectConfig {
-		writeMCPDetailField(&b, "Config location", "current project reasonix.toml")
+		writeMCPDetailField(&b.Builder, "Config location", "current project reasonix.toml")
 	} else {
 		loc := fallbackText(p.snapshot.configPath, "not saved")
 		if loc != "not saved" {
 			loc = viewCompactPath(loc, viewBudget(width, 18))
 		}
-		writeMCPDetailField(&b, "Config location", loc)
+		writeMCPDetailField(&b.Builder, "Config location", loc)
 	}
-	writeMCPDetailField(&b, "Capabilities", mcpCapabilitiesText(v))
-	writeMCPDetailField(&b, "Tools", countText(v.Tools, "tool"))
+	writeMCPDetailField(&b.Builder, "Capabilities", mcpCapabilitiesText(v))
+	writeMCPDetailField(&b.Builder, "Tools", countText(v.Tools, "tool"))
 	if line := mcpCommandLine(v); line != "" {
-		writeMCPDetailField(&b, mcpCommandLabel(v), viewCompactText(line, viewBudget(width, 18)))
+		writeMCPDetailField(&b.Builder, mcpCommandLabel(v), viewCompactText(line, viewBudget(width, 18)))
 	}
 	if len(v.EnvKeys) > 0 {
-		writeMCPDetailField(&b, "Env", strings.Join(v.EnvKeys, ", "))
+		writeMCPDetailField(&b.Builder, "Env", strings.Join(v.EnvKeys, ", "))
 	}
 	if v.Error != "" {
-		writeMCPDetailField(&b, "Error", viewCompactText(v.Error, viewBudget(width, 18)))
+		writeMCPDetailField(&b.Builder, "Error", viewCompactText(v.Error, viewBudget(width, 18)))
 	}
 	b.WriteByte('\n')
 	if len(actions) == 0 {
 		b.WriteString(viewMeta("No actions available.") + "\n")
 	} else {
 		for i, a := range actions {
+			b.MarkFocus(i == p.action, i)
 			b.WriteString(rowLine(i == p.action, i+1, "", a.label, false) + "\n")
 		}
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return b.body().trimTrailingNewlines()
 }
 
-func (p *mcpManager) renderTools(width int) string {
+func (p *mcpManager) renderToolsBody(width int) panelBody {
 	v, ok := p.selectedServer()
 	if !ok {
-		return "MCP server not found\n\n" + dim("Esc to back")
+		return panelBody{text: "MCP server not found\n\n" + dim("Esc to back")}
 	}
-	var b strings.Builder
+	var b panelBuilder
 	fmt.Fprintf(&b, "%s tools\n\n", bold(v.Name))
 	if len(v.ToolList) == 0 {
 		b.WriteString(viewMeta("Current connection did not return tool details.") + "\n")
@@ -190,49 +200,57 @@ func (p *mcpManager) renderTools(width int) string {
 			fmt.Fprintf(&b, "%s\n", viewMore(extra, "tools"))
 		}
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return b.body().trimTrailingNewlines()
 }
 
-func (p *mcpManager) renderLogs(width int) string {
+func (p *mcpManager) renderLogsBody(width int) panelBody {
 	v, ok := p.selectedServer()
 	if !ok {
-		return "MCP server not found\n\n" + dim("Esc to back")
+		return panelBody{text: "MCP server not found\n\n" + dim("Esc to back")}
 	}
-	var b strings.Builder
+	var b panelBuilder
 	fmt.Fprintf(&b, "%s logs\n\n", bold(v.Name))
 	if strings.TrimSpace(v.Error) == "" {
 		b.WriteString(viewMeta("No failure log recorded for this MCP.") + "\n")
 	} else {
 		b.WriteString(viewProtectLines(v.Error, viewBudget(width, 2)) + "\n")
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return b.body().trimTrailingNewlines()
 }
 
-func (p *mcpManager) renderConfirmRemove(width int) string {
+func (p *mcpManager) renderConfirmRemoveBody(width int) panelBody {
 	v, ok := p.selectedServer()
 	if !ok {
-		return "MCP server not found\n\n" + dim("Esc to back")
+		return panelBody{text: "MCP server not found\n\n" + dim("Esc to back")}
 	}
-	var b strings.Builder
+	var b panelBuilder
 	fmt.Fprintf(&b, "Remove MCP server %q?\n", v.Name)
 	b.WriteString(viewMeta("This removes it from Reasonix config. It cannot be undone from this panel.") + "\n\n")
+	b.MarkFocus(p.confirm == 0, 0)
 	b.WriteString(rowLine(p.confirm == 0, 1, "", "Confirm remove", false) + "\n")
+	b.MarkFocus(p.confirm == 1, 1)
 	b.WriteString(rowLine(p.confirm == 1, 2, "", "Cancel", false) + "\n")
-	return strings.TrimRight(b.String(), "\n")
+	return b.body().trimTrailingNewlines()
 }
 
 func (p *mcpManager) renderConfirmClearAuth(width int) string {
+	return p.renderConfirmClearAuthBody(width).text
+}
+
+func (p *mcpManager) renderConfirmClearAuthBody(width int) panelBody {
 	v, ok := p.selectedServer()
 	if !ok {
-		return "MCP server not found\n\n" + dim("Esc to back")
+		return panelBody{text: "MCP server not found\n\n" + dim("Esc to back")}
 	}
-	var b strings.Builder
+	var b panelBuilder
 	fmt.Fprintf(&b, "Clear authentication for MCP server %q?\n", v.Name)
 	hint := "This removes local auth-like headers, environment values, and URL tokens; the server stays in config."
 	b.WriteString(viewMeta(viewCompactText(hint, viewBudget(width, 0))) + "\n\n")
+	b.MarkFocus(p.confirm == 0, 0)
 	b.WriteString(rowLine(p.confirm == 0, 1, "", "Confirm clear authentication", false) + "\n")
+	b.MarkFocus(p.confirm == 1, 1)
 	b.WriteString(rowLine(p.confirm == 1, 2, "", "Cancel", false) + "\n")
-	return strings.TrimRight(b.String(), "\n")
+	return b.body().trimTrailingNewlines()
 }
 
 func mcpActionsFor(v mcpServerView, configPath string) []mcpActionItem {

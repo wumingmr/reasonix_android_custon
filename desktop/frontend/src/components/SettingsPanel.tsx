@@ -1,4 +1,5 @@
 import { ErrorMessage } from "./ErrorMessage";
+import { StudioDiscoveryCard } from "./StudioIntroduction";
 import { saveModelSettings, isModelSettingsResult } from "../lib/modelSettings";
 import { ModelSettingHelp } from "./ModelSettingHelp";
 import { desktopHost } from "../lib/desktopHost";
@@ -7032,6 +7033,7 @@ function AboutSection({
 
   return (
     <SettingsSection>
+      <StudioDiscoveryCard />
       <SettingsField
         className="settings-field--wide-copy updates-control"
         label={

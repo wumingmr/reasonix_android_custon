@@ -76,13 +76,13 @@ func (m chatTUI) handleMCPImportKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m chatTUI) renderMCPImport() string {
+func (m chatTUI) renderMCPImportPanel() panelContent {
 	p := m.mcpImport
 	if p == nil {
-		return ""
+		return panelContent{}
 	}
 	w := max(m.width, 10)
-	var b strings.Builder
+	var b panelBuilder
 	b.WriteString(accent("Import MCP from cc-switch") + "\n")
 	b.WriteString(dim("Space select · Enter import · Esc cancel") + "\n\n")
 	for i, c := range p.candidates {
@@ -99,7 +99,8 @@ func (m chatTUI) renderMCPImport() string {
 		if i == p.cursor {
 			line = reverse(line)
 		}
+		b.MarkFocus(i == p.cursor, i)
 		b.WriteString(line + "\n")
 	}
-	return choicePanelStyle.Width(w).Render(strings.TrimRight(b.String(), "\n"))
+	return b.body().trimTrailingNewlines().render(choicePanelStyle.Width(w), m.width)
 }

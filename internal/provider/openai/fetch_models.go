@@ -134,8 +134,7 @@ func FetchModelCatalogWithOptions(ctx context.Context, baseURL, apiKey string, o
 	modelsByID := make(map[string]provider.ModelInfo, len(result.Data))
 	conflicts := make(map[string]bool)
 	for _, raw := range result.Data {
-		info, capacity := parseModelTuple(baseURL, raw)
-		model := info
+		model := parseModelInfo(baseURL, raw)
 		if model.ID == "" {
 			continue
 		}
@@ -151,13 +150,7 @@ func FetchModelCatalogWithOptions(ctx context.Context, baseURL, apiKey string, o
 				conflicts[model.ID] = true
 				model.InputModalities = nil
 			}
-			capacity = mergeModelCapacity(modelCapacity{
-				ContextWindow:   previous.ContextWindow,
-				MaxOutputTokens: previous.MaxOutputTokens,
-			}, capacity)
 		}
-		model.ContextWindow = capacity.ContextWindow
-		model.MaxOutputTokens = capacity.MaxOutputTokens
 		modelsByID[model.ID] = model
 	}
 	models := make([]provider.ModelInfo, 0, len(modelsByID))
@@ -173,27 +166,18 @@ func sameModalities(a, b []provider.ModelModality) bool {
 }
 
 func parseModelInfo(baseURL string, raw json.RawMessage) provider.ModelInfo {
-	info, _ := parseModelTuple(baseURL, raw)
-	return info
-}
-
-// parseModelTuple is parseModelInfo keeping the capacity a row declares
-// alongside the metadata it states. Both are optional and independently
-// absent, so they travel separately: a listing may name modalities without a
-// window, or a window without modalities.
-func parseModelTuple(baseURL string, raw json.RawMessage) (provider.ModelInfo, modelCapacity) {
 	var entry map[string]json.RawMessage
 	if json.Unmarshal(raw, &entry) != nil {
-		return provider.ModelInfo{}, modelCapacity{}
+		return provider.ModelInfo{}
 	}
 	var rawID string
 	_ = json.Unmarshal(entry["id"], &rawID)
 	id := normalizeModelID(baseURL, rawID)
 	if id == "" {
-		return provider.ModelInfo{}, modelCapacity{}
+		return provider.ModelInfo{}
 	}
 	modalities, _ := parseModalities(entry)
-	return provider.ModelInfo{ID: id, InputModalities: modalities}, parseModelCapacity(entry)
+	return provider.ModelInfo{ID: id, InputModalities: modalities}
 }
 
 func parseModalities(entry map[string]json.RawMessage) ([]provider.ModelModality, bool) {

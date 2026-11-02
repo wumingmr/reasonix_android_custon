@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"strings"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -72,15 +71,17 @@ func (m *chatTUI) resetFreshContextView(clearTranscript bool) {
 	m.forceGotoBottom = true
 }
 
-func (m chatTUI) renderClearConfirm() string {
+func (m chatTUI) renderClearConfirmPanel() panelContent {
 	if m.clearConfirm == nil {
-		return ""
+		return panelContent{}
 	}
 	w := max(viewWidth(m.width), 40)
-	var b strings.Builder
+	var b panelBuilder
 	b.WriteString(i18n.M.SlashClearPrompt + "\n")
 	b.WriteString(viewMeta("This deletes the current transcript from local history and keeps only the system prompt.") + "\n\n")
+	b.MarkFocus(m.clearConfirm.confirm == 0, 0)
 	b.WriteString(rowLine(m.clearConfirm.confirm == 0, 1, "", "Clear", false) + "\n")
+	b.MarkFocus(m.clearConfirm.confirm == 1, 1)
 	b.WriteString(rowLine(m.clearConfirm.confirm == 1, 2, "", "Cancel", false))
-	return choicePanelStyle.Width(w).Render(b.String())
+	return b.render(choicePanelStyle.Width(w), m.width)
 }

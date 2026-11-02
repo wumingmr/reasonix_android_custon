@@ -248,14 +248,14 @@ func openElicitURL(raw string) {
 	}
 }
 
-// renderElicit draws the pinned elicitation card.
-func (m chatTUI) renderElicit() string {
+// renderElicitPanel draws the pinned elicitation card.
+func (m chatTUI) renderElicitPanel() panelContent {
 	c := m.elicit
 	if c == nil {
-		return ""
+		return panelContent{}
 	}
 	w := max(m.width, 10)
-	var b strings.Builder
+	var b panelBuilder
 	fmt.Fprintf(&b, "%s %s\n", accent("MCP"), dim("· "+c.server))
 	b.WriteString(wrapForViewport(c.message, w, activeCLITheme.info) + "\n")
 	if c.mode == "url" {
@@ -265,11 +265,11 @@ func (m chatTUI) renderElicit() string {
 		}
 		fmt.Fprintf(&b, "  %s\n", host)
 		b.WriteString(dim(i18n.M.ElicitURLHint))
-		return choicePanelStyle.Width(w).Render(b.String())
+		return b.render(choicePanelStyle.Width(w), m.width)
 	}
 	if len(c.fields) == 0 {
 		b.WriteString(dim(i18n.M.ElicitConfirmOnly))
-		return choicePanelStyle.Width(w).Render(b.String())
+		return b.render(choicePanelStyle.Width(w), m.width)
 	}
 	for i, f := range c.fields {
 		marker := "  "
@@ -287,13 +287,15 @@ func (m chatTUI) renderElicit() string {
 			marker = accent("› ")
 			label = accent(label)
 		}
+		b.MarkFocus(i == c.cursor, i)
 		fmt.Fprintf(&b, "%s%s: %s\n", marker, label, value)
 	}
+	b.MarkFocus(c.onSubmitRow(), len(c.fields))
 	if c.onSubmitRow() {
 		fmt.Fprintf(&b, "%s\n", accent("  ["+i18n.M.ElicitSubmit+"]"))
 		b.WriteString(dim(i18n.M.ElicitSubmitHint))
 	} else {
 		fmt.Fprintf(&b, "%s\n", dim("  ["+i18n.M.ElicitSubmit+"]"))
 	}
-	return choicePanelStyle.Width(w).Render(b.String())
+	return b.render(choicePanelStyle.Width(w), m.width)
 }

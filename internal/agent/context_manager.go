@@ -196,7 +196,7 @@ const manualRecoverySummaries = 4
 
 func maxSummariesFor(policy ContextPreparePolicy, overCeiling bool) int {
 	switch {
-	case policy.Trigger == CompactionTriggerManual && overCeiling:
+	case overCeiling && (policy.Trigger == CompactionTriggerManual || policy.Trigger == CompactionTriggerPressure):
 		return manualRecoverySummaries
 	case policy.Trigger == CompactionTriggerPressure:
 		return 2

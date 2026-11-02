@@ -302,9 +302,10 @@ func TestLoadProjectionSidecarDropsForeignCacheKey(t *testing.T) {
 	}
 }
 
-func TestForceThresholdNoopReturnsCompactionRequired(t *testing.T) {
-	// Huge tool result is entirely in the recent tail → no fold region, but
-	// estimate exceeds force; preflight must refuse (not mid-turn).
+func TestForceThresholdFoldsAHugeToolResultInsteadOfRefusing(t *testing.T) {
+	// One huge tool result sits past the force threshold. Folding it into a
+	// digest is progress even when the view stays above the physical ceiling, so
+	// preflight keeps that progress instead of refusing the turn.
 	huge := strings.Repeat("word ", 5000)
 	sess := &Session{Messages: []provider.Message{
 		{Role: provider.RoleSystem, Content: "sys"},
@@ -318,13 +319,13 @@ func TestForceThresholdNoopReturnsCompactionRequired(t *testing.T) {
 		CompactForceRatio: 0.6,
 		RecentKeep:        2,
 	}, event.Discard)
+	before := a.ContextUsedTokens()
 
-	_, err := a.contextManager().Prepare(context.Background(), ContextPreparePolicy{Trigger: CompactionTriggerPressure})
-	if err == nil {
-		t.Fatal("expected ErrCompactionRequired when force threshold has no fold region")
+	if _, err := a.contextManager().Prepare(context.Background(), ContextPreparePolicy{Trigger: CompactionTriggerPressure}); err != nil {
+		t.Fatalf("Prepare = %v, want the fold to land", err)
 	}
-	if !errors.Is(err, ErrCompactionRequired) {
-		t.Fatalf("err = %v, want ErrCompactionRequired", err)
+	if after := a.ContextUsedTokens(); after >= before {
+		t.Fatalf("view is %d tokens after the fold, not below the %d it started from", after, before)
 	}
 }
 

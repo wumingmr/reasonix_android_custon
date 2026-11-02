@@ -206,12 +206,16 @@ func (m chatTUI) chooserAnswer(answers []event.AskAnswer) (tea.Model, tea.Cmd) {
 // question), the current question's prompt and options, and the Type-something /
 // Chat-about-this rows. On the Submit tab it shows a review of the picks.
 func (m chatTUI) renderChooser() string {
+	return m.renderChooserPanel().text
+}
+
+func (m chatTUI) renderChooserPanel() panelContent {
 	c := m.chooser
 	if c == nil {
-		return ""
+		return panelContent{}
 	}
 	w := max(m.width, 10)
-	var b strings.Builder
+	var b panelBuilder
 
 	if len(c.questions) > 1 {
 		b.WriteString(m.chooserTabs() + "\n\n")
@@ -228,12 +232,13 @@ func (m chatTUI) renderChooser() string {
 			fmt.Fprintf(&b, "  %s: %s\n", dim(label), ans)
 		}
 		b.WriteString(dim(i18n.M.AskSubmitHint))
-		return choicePanelStyle.Width(w).Render(b.String())
+		return b.render(choicePanelStyle.Width(w), m.width)
 	}
 
 	q := c.questions[c.tab]
 	b.WriteString(accent("? ") + q.Prompt + "\n")
 	for j, opt := range q.Options {
+		b.MarkFocus(c.cursor == j, j)
 		b.WriteString(m.chooserOptionRow(j, opt, q.Multi) + "\n")
 	}
 	// Type something
@@ -244,13 +249,15 @@ func (m chatTUI) renderChooser() string {
 	} else if c.typing {
 		typeLabel = i18n.M.AskTypingHint
 	}
+	b.MarkFocus(c.cursor == typeRow, typeRow)
 	b.WriteString(rowLine(c.cursor == typeRow, typeRow+1, "", typeLabel, c.typing && c.custom[c.tab] == "") + "\n")
 	// Chat about this
 	b.WriteString(dim(strings.Repeat("─", min(w-2, 40))) + "\n")
 	chatRow := typeRow + 1
+	b.MarkFocus(c.cursor == chatRow, chatRow)
 	b.WriteString(rowLine(c.cursor == chatRow, chatRow+1, "", i18n.M.AskChatInstead, false))
 
-	return choicePanelStyle.Width(w).Render(b.String())
+	return b.render(choicePanelStyle.Width(w), m.width)
 }
 
 func (m chatTUI) chooserTabs() string {

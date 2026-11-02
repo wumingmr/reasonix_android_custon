@@ -74,9 +74,10 @@ type chatTUI struct {
 	// since the terminal no longer forwards those events to Reasonix.
 	mouseCaptureOff bool
 
-	input       textarea.Model
-	composerSel composerSelection
-	composerMap composerLayoutCache
+	input        textarea.Model
+	composerSel  composerSelection
+	composerMap  composerLayoutCache
+	pinnedScroll pinnedPanelScroll
 	// composerScrollOffset is an independent view offset used after the user
 	// wheels inside an overflowing composer. The textarea keeps ownership of the
 	// real insertion cursor; a subsequent edit or cursor key reattaches the view
@@ -165,9 +166,6 @@ type chatTUI struct {
 	// history is a resumed session's messages, committed to scrollback once on
 	// the first WindowSizeMsg so a reopened chat shows its prior transcript.
 	history []provider.Message
-	// historyOmitted counts earlier messages left out of history by the
-	// tail-only replay, so the first commit can say so.
-	historyOmitted int
 
 	// reasoning accumulates the in-progress thinking stream (dim); pending
 	// accumulates the in-progress answer (raw markdown). They are committed to
@@ -453,11 +451,6 @@ type chatTUI struct {
 	// historical field name is retained because model, effort, skill refresh,
 	// and work-mode changes all share the same atomic swap path.
 	pendingModelSwitch tea.Cmd
-	// pendingSwitchCarry is the carried conversation a canonical model switch
-	// still owes after activation. A canonical session fences the history commit
-	// on execution ownership, which the rebuilt controller only receives at
-	// activation, so the write cannot happen inside the build goroutine.
-	pendingSwitchCarry *pendingCarry
 	// oldControllers accumulates controllers retired by runtime switches.
 	// They cannot be closed during the switch (Close runs SessionEnd hooks
 	// and kills plugin subprocesses, both of which corrupt the terminal's
@@ -652,13 +645,8 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
 
 	commitBuf := []string{}
 	nativeScrollback := detectTermuxTerminal()
-	// Paste-ID scanning wants the complete history; the replay wants only the
-	// tail. Reading the full history just for paste IDs would undo the replay
-	// saving, so the tail is read first and the full history only on the rare
-	// paths that still need it (the scan tolerates a truncated view: a colliding
-	// ID from the omitted prefix is already present in the transcript context).
-	replayHistory, replayOmitted := chatUIReplayHistory(ctrl)
-	nextPasteID, usedPasteIDs := pasteIDStateForHistory(replayHistory)
+	history := chatUIDisplayHistory(ctrl)
+	nextPasteID, usedPasteIDs := pasteIDStateForHistory(history)
 	return chatTUI{
 		ctrl:                     ctrl,
 		label:                    ctrl.Label(),
@@ -694,8 +682,7 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
 		subagentProgressIdx:      make(map[string]int),
 		subagentProgress:         make(map[string]*cliSubagentProgress),
 		eventCh:                  eventCh,
-		history:                  replayHistory,
-		historyOmitted:           replayOmitted,
+		history:                  history,
 		host:                     ctrl.Host(),
 		commands:                 ctrl.Commands(),
 		skills:                   ctrl.SlashSkills(),
@@ -709,27 +696,6 @@ func transcriptContentWidth(termW int, nativeScrollback bool) int {
 		termW-- // reserve the last column for the transcript scrollbar
 	}
 	return max(termW, 1)
-}
-
-// termuxWidthReserve is the column deficit Termux leaves between the width it
-// reports through TIOCGWINSZ and the width it actually draws. A stale window
-// size is the common case there — a soft keyboard opening, a font-size change,
-// or a display rotation all leave the reported size behind. Any row laid out
-// to the reported size then overflows by this much and the terminal folds the
-// overflow onto the next row, which swallows the overflowing cells at the end
-// of the full row. One column is the minimum that keeps a wide-rune row from
-// straddling the boundary.
-const termuxWidthReserve = 1
-
-// layoutWidth converts a reported window width into the width layout may use.
-// Only Termux needs the reserve: every other terminal either draws exactly the
-// width it reports or is driven by a WindowSizeMsg that arrives per frame.
-func layoutWidth(termW int, nativeScrollback bool, reserve int) int {
-	w := termW
-	if nativeScrollback {
-		w -= max(reserve, 0)
-	}
-	return max(w, 1)
 }
 
 func configureChatTextarea(ti *textarea.Model) {
@@ -788,18 +754,6 @@ func isTermuxTerminal() bool {
 }
 
 var detectTermuxTerminal = isTermuxTerminal
-
-// termuxWidthReserve reports how many columns layout must leave unused. A
-// configured offset wins, including an explicit 0 for a device whose reported
-// width it draws exactly; otherwise the built-in reserve applies. The pointer
-// type is what makes that distinction expressible — a plain int cannot tell an
-// absent setting from a deliberate zero.
-func (m *chatTUI) termuxWidthReserve() int {
-	if m.cfg != nil && m.cfg.UI.TermuxWidthOffset != nil {
-		return max(*m.cfg.UI.TermuxWidthOffset, 0)
-	}
-	return termuxWidthReserve
-}
 
 func (m *chatTUI) rememberSubmittedInput(input string) {
 	if strings.TrimSpace(input) == "" {
@@ -1025,6 +979,7 @@ func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// absolute row cap crowd the transcript and fixed status rows on short
 	// windows. Textarea remains the owner of the scroll offset and caret reveal.
 	cm.syncInputHeightLimit()
+	cm.syncPinnedPanelScroll()
 	cm.viewport.SetHeight(cm.transcriptHeight())
 	widthChanged := cm.width != prevWidth
 	if widthChanged {
@@ -1120,7 +1075,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.followComposerCursor()
-		m.width = layoutWidth(msg.Width, m.nativeScrollback, m.termuxWidthReserve())
+		m.width = msg.Width
 		m.height = msg.Height
 		m.input.SetWidth(max(msg.Width-4, 1))
 		// Commit the banner — and a resumed session's transcript — once, now
@@ -1129,10 +1084,9 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.started = true
 			history := append([]provider.Message(nil), m.history...)
 			m.commitTranscriptSource(transcriptSource{
-				kind: transcriptSourceReplayBundle, raw: m.missing,
-				replayOmitted: m.historyOmitted, history: history,
+				kind: transcriptSourceReplayBundle, raw: m.missing, history: history,
 			})
-			m.history, m.historyOmitted = nil, 0
+			m.history = nil
 		}
 
 	case tea.FocusMsg:
@@ -1141,6 +1095,9 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseWheelMsg:
+		if m.scrollPinnedPanelMouse(msg) {
+			return m, nil
+		}
 		if m.mouseOverComposer(msg.X, msg.Y) {
 			delta := 0
 			switch msg.Button {
@@ -1319,6 +1276,9 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyComposerPaste(msg, true)
 
 	case tea.KeyPressMsg:
+		if m.scrollPinnedPanelKey(msg) {
+			return m, nil
+		}
 		// Any keystroke dismisses a finished selection (copy is a right-click),
 		// with a few exceptions: Ctrl/Super/Meta+C and Ctrl+Insert copy the
 		// selection, the paste shortcuts keep it so the async clipboard result
@@ -2215,10 +2175,7 @@ func clampWidth(s string, width int) string {
 	if width <= 0 {
 		return s
 	}
-	// ansi.Hardwrap breaks any line over `width` visible cols on grapheme
-	// boundaries, preserving ANSI and counting wide chars — exactly what we want,
-	// and lines already within width pass through unchanged.
-	return ansi.Hardwrap(s, width, false)
+	return hardwrapTerminalText(s, width)
 }
 
 // commitLine queues one finalized block for the next scrollback flush.
@@ -2242,38 +2199,21 @@ func (m *chatTUI) commitSpacer() {
 // and skills normally render inside the main transcript area; in native
 // scrollback mode they join the bottom rail because there is no main viewport.
 func (m chatTUI) bottomRows() int {
+	return m.pinnedPanelView().height() + m.protectedBottomRows()
+}
+
+// protectedBottomRows is shared by panel sizing and transcript/composer sizing.
+// The status count already includes the independently wrapped working line.
+func (m chatTUI) protectedBottomRows() int {
 	rows := 0
-	for _, s := range []string{
-		m.renderTodoPanel(),
-		m.renderApprovalBanner(),
-		m.renderChooser(),
-		m.renderElicit(),
-		m.renderRewind(),
-		m.renderMCPImport(),
-		m.renderResumePicker(),
-		m.renderQuickPicker(),
-		m.renderConnectionSetup(),
-		m.renderCopyPicker(),
-		m.renderCompletion(),
-	} {
-		if s != "" {
-			rows += strings.Count(s, "\n") + 1
-		}
-	}
-	// Remove the hardcoded working-line increment — it is counted inside
-	// statusLineCount via computeStatusLineCount, which also accounts for
-	// wrapping. The fallback to 2 (unwrapped) covers the initial frame and
-	// tests that don't call Update first.
-	if m.nativeScrollback {
-		if main := m.renderMainManager(); main != "" {
-			rows += strings.Count(main, "\n") + 1
-		}
-	}
 	if footer := m.renderMainManagerFooter(); footer != "" {
 		rows += strings.Count(footer, "\n") + 1
 	}
 	if !m.hideComposer() {
 		rows += m.input.Height() + 2
+		if queue := m.renderQueueIndicator(); queue != "" {
+			rows += strings.Count(queue, "\n") + 1
+		}
 	}
 	if m.statusLineCount > 0 {
 		return rows + m.statusLineCount
@@ -2310,13 +2250,17 @@ func (m chatTUI) transcriptHeight() int {
 }
 
 func (m chatTUI) renderMainManager() string {
-	if card := m.renderMCPManager(); card != "" {
+	return m.renderMainManagerPanel().text
+}
+
+func (m chatTUI) renderMainManagerPanel() panelContent {
+	if card := m.renderMCPManagerPanel(); card.text != "" {
 		return card
 	}
-	if card := m.renderClearConfirm(); card != "" {
+	if card := m.renderClearConfirmPanel(); card.text != "" {
 		return card
 	}
-	return m.renderSkillPicker()
+	return m.renderSkillPickerPanel()
 }
 
 func managerContentPanelStyle(width int) lipgloss.Style {
@@ -3326,56 +3270,10 @@ func (m chatTUI) frame() tea.View {
 	// composer when visible, then the two status rows. Its height feeds
 	// transcriptHeight so the viewport above fills exactly the rest of the screen.
 	var parts []string
-	rowsAboveBox := 0 // terminal rows occupied by panels/working line before the composer
-	if todo := m.renderTodoPanel(); todo != "" {
-		parts = append(parts, todo)
-		rowsAboveBox += strings.Count(todo, "\n") + 1
-	}
-	if banner := m.renderApprovalBanner(); banner != "" {
-		parts = append(parts, banner)
-		rowsAboveBox += strings.Count(banner, "\n") + 1
-	}
-	if card := m.renderChooser(); card != "" {
-		parts = append(parts, card)
-		rowsAboveBox += strings.Count(card, "\n") + 1
-	}
-	if card := m.renderElicit(); card != "" {
-		parts = append(parts, card)
-		rowsAboveBox += strings.Count(card, "\n") + 1
-	}
-	if card := m.renderRewind(); card != "" {
-		parts = append(parts, card)
-		rowsAboveBox += strings.Count(card, "\n") + 1
-	}
-	if card := m.renderMCPImport(); card != "" {
-		parts = append(parts, card)
-		rowsAboveBox += strings.Count(card, "\n") + 1
-	}
-	if card := m.renderResumePicker(); card != "" {
-		parts = append(parts, card)
-		rowsAboveBox += strings.Count(card, "\n") + 1
-	}
-	if card := m.renderQuickPicker(); card != "" {
-		parts = append(parts, card)
-		rowsAboveBox += strings.Count(card, "\n") + 1
-	}
-	if card := m.renderConnectionSetup(); card != "" {
-		parts = append(parts, card)
-		rowsAboveBox += strings.Count(card, "\n") + 1
-	}
-	if card := m.renderCopyPicker(); card != "" {
-		parts = append(parts, card)
-		rowsAboveBox += strings.Count(card, "\n") + 1
-	}
-	if menu := m.renderCompletion(); menu != "" {
-		parts = append(parts, menu)
-		rowsAboveBox += strings.Count(menu, "\n") + 1
-	}
-	if m.nativeScrollback {
-		if card := m.renderMainManager(); card != "" {
-			parts = append(parts, card)
-			rowsAboveBox += strings.Count(card, "\n") + 1
-		}
+	panels := m.pinnedPanelView()
+	rowsAboveBox := panels.height()
+	if content := panels.render(boxW); content != "" {
+		parts = append(parts, content)
 	}
 	// Layout: the working spinner (when running), then the composer when visible,
 	// then the persistent status block. Wide terminals keep two information rows
@@ -3694,12 +3592,16 @@ func completionSummaryWarning(c *event.CompletionSummaryInfo) string {
 // renderApprovalBanner is the slim notice shown above the input while a tool
 // call (or a plan) awaits the user's decision.
 func (m chatTUI) renderApprovalBanner() string {
+	return m.renderApprovalBannerPanel().text
+}
+
+func (m chatTUI) renderApprovalBannerPanel() panelContent {
 	w := max(m.width, 10)
 	if m.pendingApproval == nil {
-		return ""
+		return panelContent{}
 	}
 	if isRecoveryApprovalEvent(m.pendingApproval) {
-		return choicePanelStyle.Width(w).Render("ℹ Historical recovery record (retired). It cannot confirm or replay an operation.\n" + dim("Esc/n dismiss"))
+		return panelContent{text: choicePanelStyle.Width(w).Render("ℹ Historical recovery record (retired). It cannot confirm or replay an operation.\n" + dim("Esc/n dismiss"))}
 	}
 	var text string
 	var planDetails []string
@@ -3736,13 +3638,14 @@ func (m chatTUI) renderApprovalBanner() string {
 	if len(planDetails) > 0 {
 		text += "\n" + strings.Join(planDetails, "\n")
 	}
-	var b strings.Builder
+	var b panelBuilder
 	b.WriteString("⏸ " + text + "\n")
 	for i, choice := range approvalChoices(m.pendingApproval) {
+		b.MarkFocus(i == m.approvalSelection, i)
 		b.WriteString(rowLine(i == m.approvalSelection, i+1, "", choice.label, false) + "\n")
 	}
 	b.WriteString(dim("↑/↓ navigate · Enter select · y/a/p/n shortcuts"))
-	return choicePanelStyle.Width(w).Render(b.String())
+	return b.render(choicePanelStyle.Width(w), m.width)
 }
 
 // maxApprovalSubjectLines bounds the expanded command so a heredoc cannot push
@@ -3826,8 +3729,12 @@ const todoPanelMaxRows = 8
 // renderTodoPanel renders the committed current-turn task list above the input.
 // Completed lists remain inspectable until the next host turn boundary.
 func (m chatTUI) renderTodoPanel() string {
+	return m.renderTodoContent().text
+}
+
+func (m chatTUI) renderTodoContent() panelContent {
 	if m.todosDismissed || len(m.todos) == 0 {
-		return ""
+		return panelContent{}
 	}
 	done := 0
 	for _, t := range m.todos {
@@ -3836,13 +3743,14 @@ func (m chatTUI) renderTodoPanel() string {
 		}
 	}
 
-	var b strings.Builder
+	var b panelBuilder
 	fmt.Fprintf(&b, "%s %s\n", accent("To-dos"), dim(fmt.Sprintf("%d/%d", done, len(m.todos))))
 	start, end := todoPanelWindow(m.todos)
 	if start > 0 {
 		b.WriteString(dim(fmt.Sprintf("  +%d above", start)) + "\n")
 	}
-	for _, t := range m.todos[start:end] {
+	for i, t := range m.todos[start:end] {
+		b.MarkFocus(t.Status == "in_progress", start+i)
 		indent := "  "
 		switch t.Status {
 		case "completed":
@@ -3856,7 +3764,7 @@ func (m chatTUI) renderTodoPanel() string {
 	if end < len(m.todos) {
 		b.WriteString(dim(fmt.Sprintf("  +%d more", len(m.todos)-end)) + "\n")
 	}
-	return todoPanelStyle.Width(max(m.width, 10)).Render(strings.TrimRight(b.String(), "\n"))
+	return b.body().trimTrailingNewlines().render(todoPanelStyle.Width(max(m.width, 10)), m.width)
 }
 
 func todoPanelWindow(todos []event.Todo) (int, int) {
@@ -3898,7 +3806,7 @@ func wrapStatusLine(s string, width int) string {
 	if width <= 0 || s == "" {
 		return s
 	}
-	return ansi.Hardwrap(s, width, true)
+	return hardwrapTerminalText(s, width)
 }
 
 // workingLineRows returns the number of terminal rows the working (spinner)

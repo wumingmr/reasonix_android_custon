@@ -287,7 +287,7 @@ func (a *App) recordRemoteTabSessionStatus(tabID string, client *http.Client, ge
 		a.emitRemoteEvent("remote-tab:updated", after)
 	}
 	if readyBarrier || deferredBarrier {
-		a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:state", tabID), RemoteTabStateView{State: "ready"})
+		a.publishRemoteTabState(tabID, RemoteTabStateView{State: "ready"})
 	}
 	if pathChanged {
 		a.goRemoteTabSafe("remoteTabStatusTitle", func() { a.refreshRemoteTabTitle(tabID) })

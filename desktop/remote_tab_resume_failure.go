@@ -1,9 +1,6 @@
 package main
 
-import (
-	"fmt"
-	"net/http"
-)
+import "net/http"
 
 // A rejection is one publication transaction: observers of its error must
 // already see the restored identity. The route fence also prevents a newer
@@ -33,6 +30,6 @@ func (a *App) completeRemoteTabResumeFailure(tabID string, tab *remoteTab, clien
 		a.emitRemoteEvent("remote-tab:updated", meta)
 		a.saveTabsFromRemote()
 	}
-	a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:state", tabID), RemoteTabStateView{State: "ready", Error: message})
+	a.publishRemoteTabState(tabID, RemoteTabStateView{State: "ready", Error: message})
 	return false
 }

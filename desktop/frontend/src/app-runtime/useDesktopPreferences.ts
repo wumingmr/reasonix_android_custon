@@ -48,6 +48,7 @@ export function useDesktopPreferences() {
   const sidebarImConnections = useMemo(() => snapshot ? sidebarImConnectionsFromBot(snapshot.bot, t, botRuntime, nativeRuntime) : [], [snapshot, t, botRuntime, nativeRuntime]);
   const imTopicSources = useMemo(() => snapshot ? sidebarImTopicSourcesFromBot(snapshot.bot, t) : {}, [snapshot, t]);
   return {
+    stableRelease: snapshot?.updaterEnabled === true,
     startupUpdateChecksEnabled: snapshot
       ? snapshot.updaterEnabled === true && snapshot.checkUpdates !== false
       : startupFailed ? false : null,

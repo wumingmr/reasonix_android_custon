@@ -24,6 +24,12 @@ branch.
 
 ### Added
 
+- **Discover Reasonix Studio (Desktop 1.x):** a one-time introduction on an idle
+  stable desktop launch, plus a permanent entry in **Settings → About**. Opens
+  the official Studio download page and explains coexistence and data limits;
+  it does not install Studio or change the 1.x updater. See
+  [the introduction guide](docs/STUDIO_DISCOVERY.md).
+
 - **Editable message queue (Desktop):** full-text editing in the original queue row,
   pointer and keyboard reordering, move-to-top/bottom actions, and a pause
   control. Saves preserve message identity, order and attachments; conflicting

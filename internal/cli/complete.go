@@ -583,8 +583,12 @@ func padCompletionLine(s string, w int) string {
 // That avoids ghost cells on terminals (mintty) with unreliable erases after
 // wide CJK glyphs.
 func (m chatTUI) renderCompletion() string {
+	return m.renderCompletionPanel().text
+}
+
+func (m chatTUI) renderCompletionPanel() panelContent {
 	if !m.completion.active || len(m.completion.items) == 0 {
-		return ""
+		return panelContent{}
 	}
 	items := m.completion.items
 	start := 0
@@ -593,7 +597,7 @@ func (m chatTUI) renderCompletion() string {
 	}
 	end := min(start+maxCompRows, len(items))
 
-	var b strings.Builder
+	var b panelBuilder
 	for i := start; i < end; i++ {
 		it := items[i]
 		var line string
@@ -605,6 +609,7 @@ func (m chatTUI) renderCompletion() string {
 		if it.hint != "" {
 			line += "  " + dim(it.hint)
 		}
+		b.MarkFocus(i == m.completion.sel, i)
 		b.WriteString(padCompletionLine(line, m.width))
 		b.WriteByte('\n')
 	}
@@ -615,5 +620,5 @@ func (m chatTUI) renderCompletion() string {
 		hint = i18n.M.CompHintFile
 	}
 	b.WriteString(padCompletionLine(dim(hint), m.width))
-	return b.String()
+	return b.render(lipgloss.NewStyle(), m.width)
 }

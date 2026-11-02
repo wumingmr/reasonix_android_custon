@@ -1150,6 +1150,8 @@ function elapsedMs(startedAt: number): number {
   return Math.max(0, Math.round(now - startedAt));
 }
 
+// The draft owner registers receipts when loaded; purge needs no eager owner.
+export const sessionPurgeHandlers: Record<string, ((args: unknown[], result: unknown) => void) | undefined> = Object.create(null);
 export const app: AppBindings = new Proxy({} as AppBindings, {
   get(_t, prop) {
     const host = desktopHost().app, target = host ?? getMock();
@@ -1169,6 +1171,7 @@ export const app: AppBindings = new Proxy({} as AppBindings, {
         if (result && typeof (result as Promise<unknown>).then === "function") {
           return (result as Promise<unknown>).then(
             (value) => {
+              sessionPurgeHandlers[method]?.(args, value);
               if (crumb) addBreadcrumb("bridge", `${crumb} done ms=${elapsedMs(startedAt)}`);
               return value;
             },

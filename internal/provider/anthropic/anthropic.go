@@ -167,12 +167,16 @@ func newHTTPClient(cfg provider.Config) (*http.Client, error) {
 		return cfg.HTTPClient, nil
 	}
 	spec, _ := cfg.Extra["proxy_spec"].(netclient.ProxySpec)
-	return netclient.NewHTTPClient(spec, netclient.TransportOptions{
+	client, err := netclient.NewHTTPClient(spec, netclient.TransportOptions{
 		DialTimeout:           30 * time.Second,
 		KeepAlive:             30 * time.Second,
 		TLSHandshakeTimeout:   15 * time.Second,
 		ResponseHeaderTimeout: 300 * time.Second,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return provider.WithProtocolCompatibility(client, provider.RequestIdentity{Provider: cfg.Name, Protocol: "anthropic"}), nil
 }
 
 type client struct {

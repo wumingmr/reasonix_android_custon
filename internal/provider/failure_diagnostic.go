@@ -117,23 +117,13 @@ func DiagnoseFailure(err error) *FailureDiagnostic {
 	}
 	var api *APIError
 	if errors.As(err, &api) {
-		d.Status = api.Status
-		d.ProviderID = api.Provider
-		d.ProviderDisplayName = api.ProviderDisplayName
-		d.Protocol = api.Protocol
-		if len(api.RequestPath) <= 512 && strings.HasPrefix(api.RequestPath, "/") {
-			d.RequestPath = api.RequestPath
-		}
-		// Trace identifiers are opaque tokens, not arbitrary header text.
-		if len(api.TraceID) <= 128 && strings.IndexFunc(api.TraceID, func(r rune) bool {
-			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_.:", r))
-		}) < 0 {
-			d.TraceID = api.TraceID
-		}
+		d.applyAPIError(api)
 	}
 	switch {
 	case errors.Is(err, context.Canceled):
 		d.Kind = FailureKindCancelled
+	case errors.As(err, new(*ImageInputError)):
+		d.Kind = FailureKindImageInput
 	case errors.Is(err, ErrNoDeliverableOutput):
 		d.Kind = "no_deliverable_output"
 	case AsRecoveryWaitExhausted(err) != nil:
@@ -159,12 +149,30 @@ func DiagnoseFailure(err error) *FailureDiagnostic {
 	case HTTP2TransportCode(err) != "":
 		d.Kind = FailureKindTransportProtocol
 		d.TransportCode = HTTP2TransportCode(err)
+	case transportFailureKind(err) != "":
+		d.Kind = transportFailureKind(err)
 	case ClassifyRecovery(err).Retryable:
 		d.Kind = "temporary"
 	case api != nil && api.Status >= 400 && api.Status < 500:
 		d.Kind = "request"
 	}
 	return d
+}
+
+func (d *FailureDiagnostic) applyAPIError(api *APIError) {
+	d.Status = api.Status
+	d.ProviderID = api.Provider
+	d.ProviderDisplayName = api.ProviderDisplayName
+	d.Protocol = api.Protocol
+	if len(api.RequestPath) <= 512 && strings.HasPrefix(api.RequestPath, "/") {
+		d.RequestPath = api.RequestPath
+	}
+	// Trace identifiers are opaque tokens, not arbitrary header text.
+	if len(api.TraceID) <= 128 && strings.IndexFunc(api.TraceID, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_.:", r))
+	}) < 0 {
+		d.TraceID = api.TraceID
+	}
 }
 
 // IsOpaqueBadRequest deliberately recognizes only empty/model-only 400 bodies.

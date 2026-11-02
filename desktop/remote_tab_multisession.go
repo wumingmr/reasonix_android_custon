@@ -289,7 +289,7 @@ func (a *App) adoptRemoteTabFrameCurrent(tabID string, gen uint64, sessionPath s
 		// The frontend treats ready -> ready as a new surface generation. Emit it
 		// before the triggering frame is forwarded so that frame is buffered until
 		// the newly current session snapshot replaces the old transcript.
-		a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:state", tabID), RemoteTabStateView{State: "ready"})
+		a.publishRemoteTabState(tabID, RemoteTabStateView{State: "ready"})
 	}
 }
 

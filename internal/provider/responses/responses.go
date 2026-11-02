@@ -151,7 +151,7 @@ func New(cfg Config) provider.Provider {
 		DialTimeout: 30 * time.Second, KeepAlive: 30 * time.Second,
 		TLSHandshakeTimeout: 15 * time.Second, ResponseHeaderTimeout: 300 * time.Second,
 	}); err == nil {
-		httpClient = built
+		httpClient = provider.WithProtocolCompatibility(built, provider.RequestIdentity{Provider: cfg.Name, Protocol: "responses"})
 	}
 	if cfg.HTTPClient != nil {
 		httpClient = cfg.HTTPClient

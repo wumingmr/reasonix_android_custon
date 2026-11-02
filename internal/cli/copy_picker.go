@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"strings"
-
 	tea "charm.land/bubbletea/v2"
 
 	"reasonix/internal/i18n"
@@ -62,17 +60,18 @@ func (m chatTUI) applyCopyPick() (tea.Model, tea.Cmd) {
 	return m, copyToClipboard(text)
 }
 
-func (m chatTUI) renderCopyPicker() string {
+func (m chatTUI) renderCopyPickerPanel() panelContent {
 	p := m.copyPick
 	if p == nil {
-		return ""
+		return panelContent{}
 	}
 	w := max(m.width, 10)
-	var b strings.Builder
+	var b panelBuilder
 	b.WriteString(accent(i18n.M.SlashCopyListHeader) + "\n")
 	for i, part := range p.parts {
+		b.MarkFocus(i == p.sel, i)
 		b.WriteString(rowLine(i == p.sel, i+1, "", firstLine(part), false) + "\n")
 	}
 	b.WriteString(dim("↑/↓ navigate · Enter copy · Esc cancel"))
-	return choicePanelStyle.Width(w).Render(b.String())
+	return b.render(choicePanelStyle.Width(w), m.width)
 }

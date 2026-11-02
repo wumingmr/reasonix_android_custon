@@ -280,7 +280,7 @@ func (a *App) suspendRemoteTabPumps(hostID, state, errText string) {
 		if cancel != nil {
 			cancel()
 		}
-		a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:state", tab.id), RemoteTabStateView{State: state, Error: errText})
+		a.publishRemoteTabState(tab.id, RemoteTabStateView{State: state, Error: errText})
 		tab.routeEventMu.Unlock()
 	}
 }
@@ -309,7 +309,7 @@ func (a *App) parkRemoteTabsForServer(hostID, workspace, state, errText string) 
 		if cancel != nil {
 			cancel()
 		}
-		a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:state", tab.id), RemoteTabStateView{State: state, Error: errText})
+		a.publishRemoteTabState(tab.id, RemoteTabStateView{State: state, Error: errText})
 		tab.routeEventMu.Unlock()
 	}
 	return affected
@@ -340,7 +340,7 @@ func (a *App) resumeRemoteTabs(hostID string) {
 	}
 	a.remoteTabMu.Unlock()
 	for _, tabID := range rearmed {
-		a.emitRemoteEvent(fmt.Sprintf("remote-tab:%s:state", tabID), RemoteTabStateView{State: "reconnecting"})
+		a.publishRemoteTabState(tabID, RemoteTabStateView{State: "reconnecting"})
 	}
 	for _, tabID := range tabIDs {
 		a.goRemoteTabSafe("remoteTabReattach", func() { a.reattachRemoteTab(tabID) })

@@ -156,11 +156,14 @@ func (m chatTUI) handleConnectionSetupKey(msg tea.KeyPressMsg) (tea.Model, tea.C
 			return connectionCredentialSavedMsg{providerName: setup.providerName, result: result, err: err}
 		}
 	default:
-		// A key press with no Text is not user input (see quick_picker). The
-		// previous String() fallback turned IME composition keys into literal
-		// text and rejected the composed text's trailing space, because a
-		// space key reports "space" rather than " ".
-		if text := msg.Text; text != "" && !strings.ContainsAny(text, "\r\n") {
+		text := msg.Text
+		if text == "" {
+			s := msg.String()
+			if len(s) == 1 && s[0] >= 32 && s[0] < 127 {
+				text = s
+			}
+		}
+		if text != "" && !strings.ContainsAny(text, "\r\n") {
 			setup.invalidateTest()
 			setup.key += text
 		}
@@ -169,13 +172,18 @@ func (m chatTUI) handleConnectionSetupKey(msg tea.KeyPressMsg) (tea.Model, tea.C
 }
 
 func (m chatTUI) renderConnectionSetup() string {
+	return m.renderConnectionSetupPanel().text
+}
+
+func (m chatTUI) renderConnectionSetupPanel() panelContent {
 	if m.setup == nil {
-		return ""
+		return panelContent{}
 	}
 	w := max(m.width, 10)
 	contentWidth := max(w-8, 12)
-	var body strings.Builder
+	var body panelBuilder
 	body.WriteString(accent("Configure "+m.setup.providerName) + "\n")
+	body.MarkFocus(true, 0)
 	body.WriteString("  API Key\n")
 	masked := strings.Repeat("•", utf8.RuneCountInString(m.setup.key))
 	if masked == "" {
@@ -189,7 +197,7 @@ func (m chatTUI) renderConnectionSetup() string {
 	} else {
 		body.WriteString(dim("Ctrl+T test · Enter save · Esc cancel"))
 	}
-	return choicePanelStyle.Width(w).Render(body.String())
+	return body.render(choicePanelStyle.Width(w), m.width)
 }
 
 func (m *chatTUI) handleConnectionCredentialTested(msg connectionCredentialTestedMsg) {
