@@ -82,7 +82,8 @@ for required in \
   "internal/fileutil/atomiccreate_android_test.go:TestAtomicCreateAndroidNoReplaceRace" \
   "internal/fileutil/atomiccreate_android_test.go:TestAtomicCreateAndroidFailsClosedWithoutRename" \
   "internal/cli/select_search_input_test.go:TestUpdateSearchTextRetainsPendingAcrossReads" \
-  "internal/cli/replay_tail_test.go:TestReplayIndexedTailPreservesOmittedAndTurnBoundary"; do
+  "internal/cli/replay_tail_test.go:TestReplayIndexedTailPreservesOmittedAndTurnBoundary" \
+  "internal/session/projection_read_audit_test.go:TestSessionReadPathsReuseIntegrityAndRecheckChanges"; do
   file="${required%%:*}"; test_name="${required#*:}"
   grep -q "func $test_name(" "$SCRIPT_DIR/$file" 2>/dev/null || \
     die "关键测试丢失:$file 里找不到 $test_name()。测试没了就没有报警器,
@@ -91,10 +92,12 @@ done
 for required in \
   'scripts/termux/reasonix-wrapper:    exec "$REAL" "$subcommand" --permission-mode:wrapper 子命令路由' \
   'scripts/termux/compat.test.mjs:update network failure leaves ignored data and HEAD untouched:升级回滚测试' \
-  '.github/workflows/build_termux.yml:tar.gz/${{ github.sha }}:CI 固定源码提交'; do
+  '.github/workflows/build_termux.yml:tar.gz/${{ github.sha }}:CI 固定源码提交' \
+  '.github/workflows/verify-and-release.yml:--verify-tag:发版必须先创建 tag' \
+  'release-termux.sh:[ "$BIN_BASE" = "${TAG#v}" ] ||:发版产物版本校验'; do
   file="${required%%:*}"; rest="${required#*:}"
   marker="${rest%%:*}"; label="${rest#*:}"
-  grep -Fq "$marker" "$SCRIPT_DIR/$file" || die "本地适配丢失:$label ($file)"
+  grep -Fq -- "$marker" "$SCRIPT_DIR/$file" || die "本地适配丢失:$label ($file)"
 done
 log "Termux 累积补丁:$PATCH_FILE ($PATCH_FILES files)"
 log "本地修复符号与关键测试校验通过"

@@ -17,12 +17,42 @@ Termux 定制版构建，基线为上游 [Reasonix](https://github.com/esengine/
 > 默认 `workspace-write` 在 Android 上因缺少可用的 bubblewrap backend，shell 会
 > 安全地拒绝运行；文档说明了 `danger-full-access` 的风险边界和可选解决办法。
 
+## 本次更新：v1.39.11
+
+同步上游稳定 1.x 的 `v1.39.11`，不是 Studio 2.x 迁移。保留全部 Termux 定制。
+
+### 上游安全修复及同步内容
+
+- 修复 Python 只读命令误判：`python3 -v script.py` 会运行脚本，不再绕过审批；
+  只认可精确的 `--version` / `-V` 版本查询。关联 PR #14928、GHSA-qrrg-f72x-hx7r。
+  `danger-full-access` 仍按用户选择放开执行权限，不因本修复变成受限沙箱。
+- 同步完整 tag 中的终端 grapheme/ANSI 换行、底部面板高度和键盘滚动修复，
+  防止长面板挤掉输入框和状态栏；Termux 可用 `Alt+PgUp/PgDn` 查看超长面板。
+- 同步严重超窗时的分批压缩、历史图片失败降级，以及 SQLite 查询索引校验复用。
+- 修复模型请求在发送阶段可能长时间等待的问题，并增强传输失败诊断。
+  发送阶段预算为 300 秒，不限制健康 SSE 长流总时长；部分 HTTP/2 错误仅影响后续
+  请求的临时兼容选择，不自动重放当前失败请求。
+
+### 本次 Termux 审查修复
+
+- 升级前拒绝未提交/未跟踪修改；网络查询失败不触发破坏性回滚。仅替换已跟踪
+  源码，移除整目录删除与 `git clean`，保留本地产物和状态。
+- Android 新文件创建改用 `renameat2(RENAME_NOREPLACE)` 原子发布，不暴露半写文件；
+  不支持原子操作时安全报错，不回退到直接复制最终目标。
+- wrapper 保持 `run/chat/code` 的子命令路由，其他命令原样放行；尊重显式权限选择。
+- 中文搜索无条件保留跨读取的 UTF-8 pending，避免半个汉字被丢弃。
+- 索引尾部回放保留省略计数并调整到用户回合边界；尾读接入上游统一索引校验入口。
+- Termux 构建 workflow 固定当前仓库的触发 SHA，避免构建其他 fork 的可变 master。
+
+新增回归测试与哨兵；累积补丁按 `v1.39.11` 重建。升级不要求手动迁移配置，
+建议同时更新 wrapper，原始二进制与 wrapper 可独立更换。
+
 ## 相对上游改了什么
 
 ### 平台适配
 
 - `internal/notify/sender_android.go` —— Android 通知走 `termux-notification`
-- `internal/mcplaunch/`、`internal/repair/` —— `_unix.go` → `_other.go`
+- `internal/mcplaunch/`、`internal/repair/` —— Android 纳入 Unix 进程存活检测，排除 other stub
 - `internal/fileutil/atomicwrite.go` —— Android 文件系统的原子写
 - `internal/tool/builtin/bash.go` —— Termux shell 路径与进程组处理
 - `internal/agent/migrate.go`、`internal/cli/theme_osc_*.go` —— 终端能力差异

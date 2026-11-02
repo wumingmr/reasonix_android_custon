@@ -5,12 +5,12 @@
 
 ## 安装二进制
 
-从 GitHub Release 下载当前版本。以下以 `v1.39.10` 为例；升级时只需替换
+从 GitHub Release 下载当前版本。以下以 `v1.39.11` 为例；升级时只需替换
 `VERSION`：
 
 ```sh
 mkdir -p ~/tmp
-VERSION=v1.39.10
+VERSION=v1.39.11
 REPO=wumingmr/reasonix_android_custon
 ASSET="reasonix-android-arm64-$VERSION"
 
@@ -21,8 +21,11 @@ curl -fL \
   "https://github.com/$REPO/releases/download/termux-$VERSION/SHA256SUMS" \
   -o ~/tmp/SHA256SUMS
 
-(cd ~/tmp && sha256sum -c SHA256SUMS)
-install -m 755 "$HOME/tmp/$ASSET" "$PREFIX/bin/reasonix"
+(cd ~/tmp && sha256sum -c SHA256SUMS) || exit 1
+NEW="$(mktemp "$PREFIX/bin/.reasonix.new.XXXXXX")"
+install -m 755 "$HOME/tmp/$ASSET" "$NEW" && \
+  cmp -s "$HOME/tmp/$ASSET" "$NEW" && \
+  mv -f "$NEW" "$PREFIX/bin/reasonix" || exit 1
 "$PREFIX/bin/reasonix" --version
 ```
 

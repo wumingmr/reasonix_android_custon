@@ -57,6 +57,10 @@ func TestSessionReadPathsReuseIntegrityAndRecheckChanges(t *testing.T) {
 		name, path string
 		read       func() error
 	}{
+		{"tail-with-omitted", historyIndexPath(root, ref.SessionID), func() error {
+			_, _, err := query.HistoryTailWithOmitted(t.Context(), ref, 1)
+			return err
+		}},
 		{"window", historyIndexPath(root, ref.SessionID), func() error {
 			_, err := query.ReadHistoryWindow(t.Context(), ref, HistoryWindowRequest{Limit: 1})
 			return err

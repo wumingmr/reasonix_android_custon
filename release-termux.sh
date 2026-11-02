@@ -97,11 +97,10 @@ BIN_VERSION="$(go version -m "$BIN" 2>/dev/null | grep -oE 'main\.version=[^ ]+'
 log "产物: $BIN ($BIN_SIZE bytes)"
 log "sha256: $BIN_HASH"
 log "内嵌版本: ${BIN_VERSION:-未知}"
-if [ "${BIN_VERSION:-}" != "$TAG" ]; then
-  # 不必报警:verify-and-release.yml 已改为剥掉 -termux.* 后缀再比较,并只认
-  # 1.x 线(见该 workflow 的 check 步骤),带后缀的定制版本会被正常发布。
-  log "内嵌版本 $BIN_VERSION 已剥离 -termux.* 后缀与 $TAG 比较,Action 会正常发布。"
-fi
+BIN_BASE="${BIN_VERSION%%-termux*}"
+[ "$BIN_BASE" = "${TAG#v}" ] || \
+  die "产物版本 ${BIN_VERSION:-未知} 与发布目标 $TAG 不符，拒绝上传"
+log "内嵌版本基线 $BIN_BASE 与 $TAG 一致"
 
 # 3. 测试
 if [ "${SKIP_TESTS:-0}" != "1" ]; then

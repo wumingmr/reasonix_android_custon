@@ -124,6 +124,7 @@ jobs:
               "$RUNNER_TEMP/$ASSET" \
               "$CHECKSUMS" \
               --repo "$REPO" \
+              --verify-tag \
               --title "Reasonix $TAG — Termux build" \
               --notes-file "$RENDER"
             echo "created $REL_TAG (sha256 $HASH)"

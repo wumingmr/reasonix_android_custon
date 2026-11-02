@@ -523,7 +523,7 @@ func (q *Query) HistoryTailWithOmitted(ctx context.Context, ref SessionRef, maxM
 	if err != nil {
 		return nil, 0, err
 	}
-	handle, err := projectiondb.Open(ctx, projectiondb.OpenOptions{Path: path, Migrations: historyMigrations, RequireDisk: true, MaxOpenConns: 1})
+	handle, err := openHistoryProjection(ctx, path)
 	if err != nil {
 		return nil, 0, err
 	}

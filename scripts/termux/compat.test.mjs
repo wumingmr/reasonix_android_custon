@@ -64,6 +64,8 @@ function updateFixture(t) {
   names.add('scripts/termux/reasonix-wrapper');
   names.add('scripts/termux/compat.test.mjs');
   names.add('.github/workflows/build_termux.yml');
+  names.add('.github/workflows/verify-and-release.yml');
+  names.add('release-termux.sh');
   for (const name of names) {
     mkdirSync(dirname(join(dir, name)), { recursive: true });
     copyFileSync(join(root, name), join(dir, name));
@@ -113,7 +115,7 @@ test('update network failure leaves ignored data and HEAD untouched', t => {
   writeFileSync(join(dir, 'bin/user-data'), 'ignored output\n');
   const { result, calls } = updateWithShim(t, dir, 'if [ "${1-}" = ls-remote ]; then exit 128; fi');
   assert.notEqual(result.status, 0);
-  assert.match(calls, /ls-remote/);
+  assert.match(calls, /ls-remote/, result.stderr);
   assert.doesNotMatch(calls, /reset|clean|^rm /m);
   assert.equal(git(dir, 'rev-parse', 'HEAD'), before);
   assert.equal(readFileSync(join(dir, 'bin/user-data'), 'utf8'), 'ignored output\n');
@@ -131,12 +133,20 @@ test('update checkout failure rolls back only tracked source paths', t => {
   esac`;
   const { result, calls } = updateWithShim(t, dir, body);
   assert.notEqual(result.status, 0);
-  assert.match(calls, /^reset --hard /m);
+  assert.match(calls, /^reset --hard /m, result.stderr);
   assert.doesNotMatch(calls, /\bclean\b/);
   assert.equal(git(dir, 'rev-parse', 'HEAD'), before);
   assert.equal(readFileSync(join(dir, 'tracked.txt'), 'utf8'), 'original user content\n');
   assert.equal(readFileSync(join(dir, 'late-untracked.txt'), 'utf8'), 'late user data\n');
   assert.equal(readFileSync(join(dir, 'bin/user-data'), 'utf8'), 'ignored output\n');
+});
+
+test('release rejects version mismatches and requires an existing tag', () => {
+  const release = readFileSync(join(root, 'release-termux.sh'), 'utf8');
+  assert.ok(release.includes('[ "$BIN_BASE" = "${TAG#v}" ] ||'));
+  assert.ok(release.indexOf('产物版本') < release.indexOf('git add "artifacts/'));
+  const workflow = readFileSync(join(root, '.github/workflows/verify-and-release.yml'), 'utf8');
+  assert.ok(workflow.includes('--verify-tag'));
 });
 
 test('Termux workflow builds the exact repository revision', () => {
