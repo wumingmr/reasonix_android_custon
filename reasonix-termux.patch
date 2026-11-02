@@ -1659,10 +1659,10 @@ index 806644db6edbad38f1d7be69a2de9b6709c1d9a6..da371889419bfa252dc3a3d4e9cb068a
  	})
  }
 diff --git a/internal/cli/chat_tui.go b/internal/cli/chat_tui.go
-index a40d0977a99b17198e5c47a762aff5383a132bcf..9987603efbf0588ee3551ba09b89fa0f5cc75903 100644
+index 1ee6c90a0bd407fc4cab7bb7c892b0a296446356..b546e0fcd7793198e07801a46aecb0f2cade8608 100644
 --- a/internal/cli/chat_tui.go
 +++ b/internal/cli/chat_tui.go
-@@ -165,6 +165,9 @@ type chatTUI struct {
+@@ -166,6 +166,9 @@ type chatTUI struct {
  	// history is a resumed session's messages, committed to scrollback once on
  	// the first WindowSizeMsg so a reopened chat shows its prior transcript.
  	history []provider.Message
@@ -1672,7 +1672,7 @@ index a40d0977a99b17198e5c47a762aff5383a132bcf..9987603efbf0588ee3551ba09b89fa0f
  
  	// reasoning accumulates the in-progress thinking stream (dim); pending
  	// accumulates the in-progress answer (raw markdown). They are committed to
-@@ -450,6 +453,11 @@ type chatTUI struct {
+@@ -451,6 +454,11 @@ type chatTUI struct {
  	// historical field name is retained because model, effort, skill refresh,
  	// and work-mode changes all share the same atomic swap path.
  	pendingModelSwitch tea.Cmd
@@ -1684,7 +1684,7 @@ index a40d0977a99b17198e5c47a762aff5383a132bcf..9987603efbf0588ee3551ba09b89fa0f
  	// oldControllers accumulates controllers retired by runtime switches.
  	// They cannot be closed during the switch (Close runs SessionEnd hooks
  	// and kills plugin subprocesses, both of which corrupt the terminal's
-@@ -644,8 +652,13 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
+@@ -645,8 +653,13 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
  
  	commitBuf := []string{}
  	nativeScrollback := detectTermuxTerminal()
@@ -1700,7 +1700,7 @@ index a40d0977a99b17198e5c47a762aff5383a132bcf..9987603efbf0588ee3551ba09b89fa0f
  	return chatTUI{
  		ctrl:                     ctrl,
  		label:                    ctrl.Label(),
-@@ -681,7 +694,8 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
+@@ -682,7 +695,8 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
  		subagentProgressIdx:      make(map[string]int),
  		subagentProgress:         make(map[string]*cliSubagentProgress),
  		eventCh:                  eventCh,
@@ -1710,7 +1710,7 @@ index a40d0977a99b17198e5c47a762aff5383a132bcf..9987603efbf0588ee3551ba09b89fa0f
  		host:                     ctrl.Host(),
  		commands:                 ctrl.Commands(),
  		skills:                   ctrl.SlashSkills(),
-@@ -697,6 +711,27 @@ func transcriptContentWidth(termW int, nativeScrollback bool) int {
+@@ -698,6 +712,27 @@ func transcriptContentWidth(termW int, nativeScrollback bool) int {
  	return max(termW, 1)
  }
  
@@ -1738,7 +1738,7 @@ index a40d0977a99b17198e5c47a762aff5383a132bcf..9987603efbf0588ee3551ba09b89fa0f
  func configureChatTextarea(ti *textarea.Model) {
  	// Keep a stable two-cell input affordance, matching the prompt treatment in
  	// other coding TUIs. Continuation rows receive two spaces so text and the
-@@ -754,6 +789,18 @@ func isTermuxTerminal() bool {
+@@ -755,6 +790,18 @@ func isTermuxTerminal() bool {
  
  var detectTermuxTerminal = isTermuxTerminal
  
@@ -1757,7 +1757,7 @@ index a40d0977a99b17198e5c47a762aff5383a132bcf..9987603efbf0588ee3551ba09b89fa0f
  func (m *chatTUI) rememberSubmittedInput(input string) {
  	if strings.TrimSpace(input) == "" {
  		return
-@@ -1073,7 +1120,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+@@ -1075,7 +1122,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
  	switch msg := msg.(type) {
  	case tea.WindowSizeMsg:
  		m.followComposerCursor()
@@ -1766,7 +1766,7 @@ index a40d0977a99b17198e5c47a762aff5383a132bcf..9987603efbf0588ee3551ba09b89fa0f
  		m.height = msg.Height
  		m.input.SetWidth(max(msg.Width-4, 1))
  		// Commit the banner — and a resumed session's transcript — once, now
-@@ -1082,9 +1129,10 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+@@ -1084,9 +1131,10 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
  			m.started = true
  			history := append([]provider.Message(nil), m.history...)
  			m.commitTranscriptSource(transcriptSource{
@@ -1983,7 +1983,7 @@ index 049f471f35acfa5cf5bd8d6248c09cf37772950a..27bb288aca129557f1cf1e4e786dc07e
 +	return concrete.SessionRef()
 +}
 diff --git a/internal/cli/connection_setup.go b/internal/cli/connection_setup.go
-index ff7860101183c2a3a9660c3b8f4d01d486f6dce5..8221f5eb79e52aaac06d709edf7cb3c80cc9c78f 100644
+index 7363e18c604c56ae15dc67341e370d663b278ba5..edf8d010c63a638b7051223e64061ba1497ed806 100644
 --- a/internal/cli/connection_setup.go
 +++ b/internal/cli/connection_setup.go
 @@ -156,14 +156,11 @@ func (m chatTUI) handleConnectionSetupKey(msg tea.KeyPressMsg) (tea.Model, tea.C
@@ -2023,7 +2023,7 @@ index 3a366c322f386cee1d3c135d51ecabd907ce3a90..a6ce7fc349c9ea8c4040b59947ad63d6
  		return exec.Command("xdg-open", target), nil
  	}
 diff --git a/internal/cli/quick_picker.go b/internal/cli/quick_picker.go
-index 5ace5dd18a9df3b186fecfdc323daa9dbac1850b..9ca8af4390c5f7038eebb009615d816032a0fd23 100644
+index 6ff4d691483e27d000b0e1d1e09445cfd6b106e1..eb86422603b507df0141942fcc47472f74ba657c 100644
 --- a/internal/cli/quick_picker.go
 +++ b/internal/cli/quick_picker.go
 @@ -101,15 +101,12 @@ func (p *quickPicker) handleKey(msg tea.KeyPressMsg) quickPickerResult {
@@ -3596,7 +3596,7 @@ index e0c89e34a7da52e8be6a00c1298509517d9c4fb4..3c41ed40dddf1269ea91bc3d593800c9
  package cli
  
 diff --git a/internal/cli/transcript.go b/internal/cli/transcript.go
-index bff1d79c3a7a327b1249e175e9fae4f991f078f7..3785f228dbdec186e27b385851347bdde5e8228d 100644
+index 2b8a649a96fc2e9e3d09ad88a0a4e6187454566d..e7ec58b64a3e7226e0db7ae4042b11f88d7b3d56 100644
 --- a/internal/cli/transcript.go
 +++ b/internal/cli/transcript.go
 @@ -1,6 +1,7 @@
@@ -4829,7 +4829,7 @@ index 0435516486e41eb6227eed1dd9a9903709d22242..06160ed6b6678a609bebf5c2f1c1f17f
  // keeping the two properties a bare rename drops: the file's current permission
  // bits (an executable script must not come back 0644) and the symlink target
 diff --git a/internal/i18n/i18n.go b/internal/i18n/i18n.go
-index 0255e3f278384846a84848c4eecbf848f144cc33..258de889201c29120216034c88143cf89d95defc 100644
+index 116a31945fc70e27b57e59129f52d5ea2d2843d6..387093fcdd4edc5a74ebe268c8dfbd5feb234f76 100644
 --- a/internal/i18n/i18n.go
 +++ b/internal/i18n/i18n.go
 @@ -36,6 +36,7 @@ type Messages struct {
@@ -4840,7 +4840,7 @@ index 0255e3f278384846a84848c4eecbf848f144cc33..258de889201c29120216034c88143cf8
  	ReadinessContinuing      string // host is automatically finishing known readiness gaps
  	RecoveryPaused           string // controlled Auto retry pause; user can continue in the next message
  	CompletionUncertain      string // completion validator could not confirm the result; work is kept
-@@ -483,52 +484,57 @@ type Messages struct {
+@@ -484,52 +485,57 @@ type Messages struct {
  	SkillPickerStatusUnreadable  string // "unreadable" path status label
  
  	// init wizard
@@ -4945,7 +4945,7 @@ index 0255e3f278384846a84848c4eecbf848f144cc33..258de889201c29120216034c88143cf8
  	// model fetching
  	FetchingModelsFmt          string // "Fetching models for %s..."
 diff --git a/internal/i18n/messages_en.go b/internal/i18n/messages_en.go
-index 89b8c55e90f1ed284c0902140c4320a4fa695535..bdc642227d49f352570853a0ac64607120ec610c 100644
+index a09137afda8cb41c32aaa471473c5761b0a435cb..5b8c20d54c549fedcbdb05ca8f444356a1a2b8ff 100644
 --- a/internal/i18n/messages_en.go
 +++ b/internal/i18n/messages_en.go
 @@ -12,6 +12,7 @@ var English = Messages{
@@ -4956,7 +4956,7 @@ index 89b8c55e90f1ed284c0902140c4320a4fa695535..bdc642227d49f352570853a0ac646071
  	ReadinessContinuing:              "Reasonix is finishing the remaining task work or checks automatically.",
  	RecoveryPaused:                   "Automatic retries paused. Reasonix stopped repeated attempts and kept completed work. Send “Continue” to start a fresh attempt, or add instructions to change direction.",
  	CompletionUncertain:              "Completion could not be confirmed. The current result and completed work are kept. Send \"continue\" to resume, or restate what should change.",
-@@ -446,52 +447,57 @@ var English = Messages{
+@@ -447,52 +448,57 @@ var English = Messages{
  	RewindUnavailableFmt:         "rewind unavailable: %s",
  	RewindEmpty:                  "(empty)",
  
@@ -5061,7 +5061,7 @@ index 89b8c55e90f1ed284c0902140c4320a4fa695535..bdc642227d49f352570853a0ac646071
  	// model fetching
  	FetchingModelsFmt:          "Fetching models for %s...",
 diff --git a/internal/i18n/messages_zh.go b/internal/i18n/messages_zh.go
-index b2803934e39168a3689775d1ee748a7cde3002c2..64789e41b3ab3cbc9952edc80e867645387669da 100644
+index 9f0a89f070b87b2bd6655d16f65f42a94c777094..dea437555bf0742996356bcfe3a88a37d1fb2f79 100644
 --- a/internal/i18n/messages_zh.go
 +++ b/internal/i18n/messages_zh.go
 @@ -13,6 +13,7 @@ var Chinese = Messages{
@@ -5072,7 +5072,7 @@ index b2803934e39168a3689775d1ee748a7cde3002c2..64789e41b3ab3cbc9952edc80e867645
  	ReadinessContinuing:              "Reasonix 正在自动完成剩余任务或检查。",
  	RecoveryPaused:                   "已暂停自动重试。Reasonix 已停止重复尝试，并保留已完成的工作。发送“继续”即可开始新一轮，也可以补充要求来调整方向。",
  	CompletionUncertain:              "完成状态未确认。当前结果和已完成工作均已保留。发送“继续”可接着完成，也可以补充说明需要调整的内容。",
-@@ -447,52 +448,57 @@ var Chinese = Messages{
+@@ -448,52 +449,57 @@ var Chinese = Messages{
  	RewindUnavailableFmt:         "无法回滚：%s",
  	RewindEmpty:                  "(空)",
  
@@ -5177,7 +5177,7 @@ index b2803934e39168a3689775d1ee748a7cde3002c2..64789e41b3ab3cbc9952edc80e867645
  	// model fetching
  	FetchingModelsFmt:          "正在获取 %s 的模型列表...",
 diff --git a/internal/i18n/messages_zh_tw.go b/internal/i18n/messages_zh_tw.go
-index 55f9f624cfe80b4bd9ca2b89cf54d8092312bcc4..62cee915c3a689ace727a718c26dcfb0a950343e 100644
+index ab04fe31271c366a4fa3b2d3ea4cef2e86416bdd..79530f53624e21ffee7f1edeb722d392cf3514ec 100644
 --- a/internal/i18n/messages_zh_tw.go
 +++ b/internal/i18n/messages_zh_tw.go
 @@ -13,6 +13,7 @@ var ChineseTraditional = Messages{
@@ -5188,7 +5188,7 @@ index 55f9f624cfe80b4bd9ca2b89cf54d8092312bcc4..62cee915c3a689ace727a718c26dcfb0
  	ReadinessContinuing:              "Reasonix 正在自動完成剩餘任務或檢查。",
  	RecoveryPaused:                   "已暫停自動重試。Reasonix 已停止重複嘗試，並保留已完成的工作。傳送「繼續」即可開始新一輪，也可以補充要求來調整方向。",
  	CompletionUncertain:              "完成狀態未確認。目前結果與已完成工作均已保留。傳送「繼續」可接著完成，也可以補充說明需要調整的內容。",
-@@ -420,52 +421,57 @@ var ChineseTraditional = Messages{
+@@ -421,52 +422,57 @@ var ChineseTraditional = Messages{
  	RewindUnavailableFmt:         "無法回滾：%s",
  	RewindEmpty:                  "(空)",
  
@@ -5712,7 +5712,7 @@ index 671d86f46d8c4321c334bd78cb09464304197314..38f8ee4040ffb21afc505d10fd83b4b7
  package repair
  
 diff --git a/internal/session/history_locator.go b/internal/session/history_locator.go
-index 76dc7c5a3aa0e568e18c89e1f5ddbc223db1bbed..36f80a92c7585fe98653840ff2fa5c00b097e1ee 100644
+index ec580759e6e64a7b828633d47831a47e0e58b158..1c3567c8135c95d7f74550aa3d98a3ce640ce447 100644
 --- a/internal/session/history_locator.go
 +++ b/internal/session/history_locator.go
 @@ -494,6 +494,89 @@ func (q *Query) HistoryShape(ctx context.Context, ref SessionRef) (HistoryShape,
