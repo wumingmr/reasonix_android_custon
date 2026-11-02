@@ -120,10 +120,10 @@ index b653e8fae3caaf6c75e51b17f29843661a7a84a1..529cde815beb070f326093c43a53c5da
  // fakeAgent stands in for the reasonix binary: it records every invocation's
 diff --git a/docs/TERMUX.zh-CN.md b/docs/TERMUX.zh-CN.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..37768e40b55c890923ad7a8378214e904bbfc2f2
+index 0000000000000000000000000000000000000000..5c9640caa55a32b3f866d26774bd48fa969be6e7
 --- /dev/null
 +++ b/docs/TERMUX.zh-CN.md
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,191 @@
 +# Reasonix Termux / Android 使用说明
 +
 +本文对应 [`reasonix_android_custon`](https://github.com/wumingmr/reasonix_android_custon)
@@ -131,12 +131,12 @@ index 0000000000000000000000000000000000000000..37768e40b55c890923ad7a8378214e90
 +
 +## 安装二进制
 +
-+从 GitHub Release 下载当前版本。以下以 `v1.39.10` 为例；升级时只需替换
++从 GitHub Release 下载当前版本。以下以 `v1.39.11` 为例；升级时只需替换
 +`VERSION`：
 +
 +```sh
 +mkdir -p ~/tmp
-+VERSION=v1.39.10
++VERSION=v1.39.11
 +REPO=wumingmr/reasonix_android_custon
 +ASSET="reasonix-android-arm64-$VERSION"
 +
@@ -147,8 +147,11 @@ index 0000000000000000000000000000000000000000..37768e40b55c890923ad7a8378214e90
 +  "https://github.com/$REPO/releases/download/termux-$VERSION/SHA256SUMS" \
 +  -o ~/tmp/SHA256SUMS
 +
-+(cd ~/tmp && sha256sum -c SHA256SUMS)
-+install -m 755 "$HOME/tmp/$ASSET" "$PREFIX/bin/reasonix"
++(cd ~/tmp && sha256sum -c SHA256SUMS) || exit 1
++NEW="$(mktemp "$PREFIX/bin/.reasonix.new.XXXXXX")"
++install -m 755 "$HOME/tmp/$ASSET" "$NEW" && \
++  cmp -s "$HOME/tmp/$ASSET" "$NEW" && \
++  mv -f "$NEW" "$PREFIX/bin/reasonix" || exit 1
 +"$PREFIX/bin/reasonix" --version
 +```
 +
@@ -5712,7 +5715,7 @@ index 671d86f46d8c4321c334bd78cb09464304197314..38f8ee4040ffb21afc505d10fd83b4b7
  package repair
  
 diff --git a/internal/session/history_locator.go b/internal/session/history_locator.go
-index ec580759e6e64a7b828633d47831a47e0e58b158..1c3567c8135c95d7f74550aa3d98a3ce640ce447 100644
+index ec580759e6e64a7b828633d47831a47e0e58b158..b1df9e188a09bc9b46a902f0bd3873bd5442b2ca 100644
 --- a/internal/session/history_locator.go
 +++ b/internal/session/history_locator.go
 @@ -494,6 +494,89 @@ func (q *Query) HistoryShape(ctx context.Context, ref SessionRef) (HistoryShape,
@@ -5748,7 +5751,7 @@ index ec580759e6e64a7b828633d47831a47e0e58b158..1c3567c8135c95d7f74550aa3d98a3ce
 +	if err != nil {
 +		return nil, 0, err
 +	}
-+	handle, err := projectiondb.Open(ctx, projectiondb.OpenOptions{Path: path, Migrations: historyMigrations, RequireDisk: true, MaxOpenConns: 1})
++	handle, err := openHistoryProjection(ctx, path)
 +	if err != nil {
 +		return nil, 0, err
 +	}
@@ -5943,6 +5946,21 @@ index 0000000000000000000000000000000000000000..a3a807d6fff63bab14cd70687daf0cca
 +		t.Fatalf("tail tail role = %q", tail[len(tail)-1].Role)
 +	}
 +}
+diff --git a/internal/session/projection_read_audit_test.go b/internal/session/projection_read_audit_test.go
+index 687a574580e2f2bc89e63ee03f202431e3da85f0..23e87630a6ba2fd01dd7cdf5049720f8828684f4 100644
+--- a/internal/session/projection_read_audit_test.go
++++ b/internal/session/projection_read_audit_test.go
+@@ -57,6 +57,10 @@ func TestSessionReadPathsReuseIntegrityAndRecheckChanges(t *testing.T) {
+ 		name, path string
+ 		read       func() error
+ 	}{
++		{"tail-with-omitted", historyIndexPath(root, ref.SessionID), func() error {
++			_, _, err := query.HistoryTailWithOmitted(t.Context(), ref, 1)
++			return err
++		}},
+ 		{"window", historyIndexPath(root, ref.SessionID), func() error {
+ 			_, err := query.ReadHistoryWindow(t.Context(), ref, HistoryWindowRequest{Limit: 1})
+ 			return err
 diff --git a/internal/tool/builtin/bash.go b/internal/tool/builtin/bash.go
 index 742d32926b186c31ed332c1a8b7fbe3c10fa17a6..425130d8d2633378a06b5d7690519bed8e166eda 100644
 --- a/internal/tool/builtin/bash.go
@@ -6058,10 +6076,10 @@ index 0000000000000000000000000000000000000000..401dddf98e69b7757d3c51c3174f50fd
 +    main()
 diff --git a/scripts/termux/compat.test.mjs b/scripts/termux/compat.test.mjs
 new file mode 100644
-index 0000000000000000000000000000000000000000..4e39611a94406c6c2263f15aa0aeb3ff63ddd3f7
+index 0000000000000000000000000000000000000000..09bdae70e391946be357960c038065e63e083a49
 --- /dev/null
 +++ b/scripts/termux/compat.test.mjs
-@@ -0,0 +1,147 @@
+@@ -0,0 +1,157 @@
 +import assert from 'node:assert/strict';
 +import { spawnSync } from 'node:child_process';
 +import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -6128,6 +6146,8 @@ index 0000000000000000000000000000000000000000..4e39611a94406c6c2263f15aa0aeb3ff
 +  names.add('scripts/termux/reasonix-wrapper');
 +  names.add('scripts/termux/compat.test.mjs');
 +  names.add('.github/workflows/build_termux.yml');
++  names.add('.github/workflows/verify-and-release.yml');
++  names.add('release-termux.sh');
 +  for (const name of names) {
 +    mkdirSync(dirname(join(dir, name)), { recursive: true });
 +    copyFileSync(join(root, name), join(dir, name));
@@ -6177,7 +6197,7 @@ index 0000000000000000000000000000000000000000..4e39611a94406c6c2263f15aa0aeb3ff
 +  writeFileSync(join(dir, 'bin/user-data'), 'ignored output\n');
 +  const { result, calls } = updateWithShim(t, dir, 'if [ "${1-}" = ls-remote ]; then exit 128; fi');
 +  assert.notEqual(result.status, 0);
-+  assert.match(calls, /ls-remote/);
++  assert.match(calls, /ls-remote/, result.stderr);
 +  assert.doesNotMatch(calls, /reset|clean|^rm /m);
 +  assert.equal(git(dir, 'rev-parse', 'HEAD'), before);
 +  assert.equal(readFileSync(join(dir, 'bin/user-data'), 'utf8'), 'ignored output\n');
@@ -6195,12 +6215,20 @@ index 0000000000000000000000000000000000000000..4e39611a94406c6c2263f15aa0aeb3ff
 +  esac`;
 +  const { result, calls } = updateWithShim(t, dir, body);
 +  assert.notEqual(result.status, 0);
-+  assert.match(calls, /^reset --hard /m);
++  assert.match(calls, /^reset --hard /m, result.stderr);
 +  assert.doesNotMatch(calls, /\bclean\b/);
 +  assert.equal(git(dir, 'rev-parse', 'HEAD'), before);
 +  assert.equal(readFileSync(join(dir, 'tracked.txt'), 'utf8'), 'original user content\n');
 +  assert.equal(readFileSync(join(dir, 'late-untracked.txt'), 'utf8'), 'late user data\n');
 +  assert.equal(readFileSync(join(dir, 'bin/user-data'), 'utf8'), 'ignored output\n');
++});
++
++test('release rejects version mismatches and requires an existing tag', () => {
++  const release = readFileSync(join(root, 'release-termux.sh'), 'utf8');
++  assert.ok(release.includes('[ "$BIN_BASE" = "${TAG#v}" ] ||'));
++  assert.ok(release.indexOf('产物版本') < release.indexOf('git add "artifacts/'));
++  const workflow = readFileSync(join(root, '.github/workflows/verify-and-release.yml'), 'utf8');
++  assert.ok(workflow.includes('--verify-tag'));
 +});
 +
 +test('Termux workflow builds the exact repository revision', () => {
