@@ -166,6 +166,9 @@ type chatTUI struct {
 	// history is a resumed session's messages, committed to scrollback once on
 	// the first WindowSizeMsg so a reopened chat shows its prior transcript.
 	history []provider.Message
+	// historyOmitted counts earlier messages left out of history by the
+	// tail-only replay, so the first commit can say so.
+	historyOmitted int
 
 	// reasoning accumulates the in-progress thinking stream (dim); pending
 	// accumulates the in-progress answer (raw markdown). They are committed to
@@ -451,6 +454,11 @@ type chatTUI struct {
 	// historical field name is retained because model, effort, skill refresh,
 	// and work-mode changes all share the same atomic swap path.
 	pendingModelSwitch tea.Cmd
+	// pendingSwitchCarry is the carried conversation a canonical model switch
+	// still owes after activation. A canonical session fences the history commit
+	// on execution ownership, which the rebuilt controller only receives at
+	// activation, so the write cannot happen inside the build goroutine.
+	pendingSwitchCarry *pendingCarry
 	// oldControllers accumulates controllers retired by runtime switches.
 	// They cannot be closed during the switch (Close runs SessionEnd hooks
 	// and kills plugin subprocesses, both of which corrupt the terminal's
@@ -645,8 +653,13 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
 
 	commitBuf := []string{}
 	nativeScrollback := detectTermuxTerminal()
-	history := chatUIDisplayHistory(ctrl)
-	nextPasteID, usedPasteIDs := pasteIDStateForHistory(history)
+	// Paste-ID scanning wants the complete history; the replay wants only the
+	// tail. Reading the full history just for paste IDs would undo the replay
+	// saving, so the tail is read first and the full history only on the rare
+	// paths that still need it (the scan tolerates a truncated view: a colliding
+	// ID from the omitted prefix is already present in the transcript context).
+	replayHistory, replayOmitted := chatUIReplayHistory(ctrl)
+	nextPasteID, usedPasteIDs := pasteIDStateForHistory(replayHistory)
 	return chatTUI{
 		ctrl:                     ctrl,
 		label:                    ctrl.Label(),
@@ -682,7 +695,8 @@ func newChatTUI(ctrl control.SessionAPI, missing string, eventCh chan event.Even
 		subagentProgressIdx:      make(map[string]int),
 		subagentProgress:         make(map[string]*cliSubagentProgress),
 		eventCh:                  eventCh,
-		history:                  history,
+		history:                  replayHistory,
+		historyOmitted:           replayOmitted,
 		host:                     ctrl.Host(),
 		commands:                 ctrl.Commands(),
 		skills:                   ctrl.SlashSkills(),
@@ -696,6 +710,27 @@ func transcriptContentWidth(termW int, nativeScrollback bool) int {
 		termW-- // reserve the last column for the transcript scrollbar
 	}
 	return max(termW, 1)
+}
+
+// termuxWidthReserve is the column deficit Termux leaves between the width it
+// reports through TIOCGWINSZ and the width it actually draws. A stale window
+// size is the common case there — a soft keyboard opening, a font-size change,
+// or a display rotation all leave the reported size behind. Any row laid out
+// to the reported size then overflows by this much and the terminal folds the
+// overflow onto the next row, which swallows the overflowing cells at the end
+// of the full row. One column is the minimum that keeps a wide-rune row from
+// straddling the boundary.
+const termuxWidthReserve = 1
+
+// layoutWidth converts a reported window width into the width layout may use.
+// Only Termux needs the reserve: every other terminal either draws exactly the
+// width it reports or is driven by a WindowSizeMsg that arrives per frame.
+func layoutWidth(termW int, nativeScrollback bool, reserve int) int {
+	w := termW
+	if nativeScrollback {
+		w -= max(reserve, 0)
+	}
+	return max(w, 1)
 }
 
 func configureChatTextarea(ti *textarea.Model) {
@@ -754,6 +789,18 @@ func isTermuxTerminal() bool {
 }
 
 var detectTermuxTerminal = isTermuxTerminal
+
+// termuxWidthReserve reports how many columns layout must leave unused. A
+// configured offset wins, including an explicit 0 for a device whose reported
+// width it draws exactly; otherwise the built-in reserve applies. The pointer
+// type is what makes that distinction expressible — a plain int cannot tell an
+// absent setting from a deliberate zero.
+func (m *chatTUI) termuxWidthReserve() int {
+	if m.cfg != nil && m.cfg.UI.TermuxWidthOffset != nil {
+		return max(*m.cfg.UI.TermuxWidthOffset, 0)
+	}
+	return termuxWidthReserve
+}
 
 func (m *chatTUI) rememberSubmittedInput(input string) {
 	if strings.TrimSpace(input) == "" {
@@ -1075,7 +1122,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.followComposerCursor()
-		m.width = msg.Width
+		m.width = layoutWidth(msg.Width, m.nativeScrollback, m.termuxWidthReserve())
 		m.height = msg.Height
 		m.input.SetWidth(max(msg.Width-4, 1))
 		// Commit the banner — and a resumed session's transcript — once, now
@@ -1084,9 +1131,10 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.started = true
 			history := append([]provider.Message(nil), m.history...)
 			m.commitTranscriptSource(transcriptSource{
-				kind: transcriptSourceReplayBundle, raw: m.missing, history: history,
+				kind: transcriptSourceReplayBundle, raw: m.missing,
+				replayOmitted: m.historyOmitted, history: history,
 			})
-			m.history = nil
+			m.history, m.historyOmitted = nil, 0
 		}
 
 	case tea.FocusMsg:

@@ -13,6 +13,7 @@ import (
 
 	"reasonix/internal/ablation"
 	"reasonix/internal/checkpoint"
+	"reasonix/internal/config"
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
 	"reasonix/internal/imageinput"
@@ -256,6 +257,7 @@ type TaskTool struct {
 	parentReg                     *tool.Registry
 	maxSteps                      int
 	contextWindow                 int
+	contextWindowSource           config.ContextWindowSource
 	compaction                    compactionThreshold
 	recentKeep                    int
 	temperature                   float64

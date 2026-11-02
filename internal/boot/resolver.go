@@ -55,12 +55,16 @@ func (r *LocalProviderResolver) Catalog() []provider.Descriptor {
 			if r.capabilities != nil {
 				capability = r.capabilities.Resolve(&entry)
 			}
+			// The catalog reports what is known about the window, not the fallback
+			// an unknown one runs on: a picker showing 128k for every relay model
+			// would state a fact nobody established.
 			d := provider.Descriptor{
 				Ref: ref, DisplayName: entry.Name, Model: entry.Model,
-				ContextWindow: entry.ContextWindow, Vision: capability.State == config.CapabilitySupported,
+				Vision:          capability.State == config.CapabilitySupported,
 				InputModalities: append([]provider.ModelModality(nil), capability.InputModalities...),
 				Tools:           true, DefaultEffort: config.EffectiveEffort(&entry),
 			}
+			d.ContextWindow, _ = config.ResolvedContextWindow(&entry)
 			if capability.ModelInfo.ContextWindow > 0 && d.ContextWindow == 0 {
 				d.ContextWindow = capability.ModelInfo.ContextWindow
 			}
@@ -263,7 +267,7 @@ func syntheticEntryFromResolver(r provider.Resolver, ref string) *config.Provide
 	}
 	contextWindow := match.ContextWindow
 	if contextWindow <= 0 {
-		contextWindow = 128_000
+		contextWindow = config.DefaultUnknownContextWindow
 	}
 	entry := &config.ProviderEntry{
 		Name: name, Model: model, ContextWindow: contextWindow,

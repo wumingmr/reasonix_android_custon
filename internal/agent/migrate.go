@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	fileencoding "reasonix/internal/fileutil/encoding"
@@ -670,6 +671,38 @@ func linkFileNoReplace(src, dst string) error {
 		if os.IsExist(err) {
 			return os.ErrExist
 		}
+		// Android (Termux) denies hard links; fall back to an exclusive
+		// copy that keeps the no-replace guarantee.
+		if !errors.Is(err, syscall.EPERM) && !errors.Is(err, syscall.EACCES) {
+			return err
+		}
+		return copyFileNoReplace(src, dst)
+	}
+	return nil
+}
+
+func copyFileNoReplace(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(dst)
 		return err
 	}
 	return nil

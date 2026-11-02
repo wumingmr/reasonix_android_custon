@@ -1,6 +1,9 @@
 package agent
 
-import "reasonix/internal/provider"
+import (
+	"reasonix/internal/config"
+	"reasonix/internal/provider"
+)
 
 // ContextReport is a point-in-time view of context pressure: the declared
 // window, the thresholds derived from it, what the model currently sees, and how
@@ -8,7 +11,11 @@ import "reasonix/internal/provider"
 // one produce the same notices, so the numbers behind the decision have to be
 // inspectable rather than inferred.
 type ContextReport struct {
-	Window       int
+	Window int
+	// WindowSource names what established Window, so "compaction fires early"
+	// can be told apart from "somebody asked for a small budget". A report on a
+	// window nobody established says so instead of implying it is the model's.
+	WindowSource config.ContextWindowSource
 	HardCeiling  int
 	OutputBudget int
 
@@ -38,6 +45,7 @@ func (a *Agent) ContextReport() ContextReport {
 	}
 	rep := ContextReport{
 		Window:       a.contextWindow,
+		WindowSource: a.contextWindowSource,
 		HardCeiling:  a.hardInputCeiling(),
 		OutputBudget: a.maxOutputTokens,
 		CacheState:   a.CacheState(),

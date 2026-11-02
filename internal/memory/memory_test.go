@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	fileencoding "reasonix/internal/fileutil/encoding"
 )
@@ -68,6 +69,10 @@ func TestLoadIncludesStableGlobalPreferencesAndFeedback(t *testing.T) {
 		t.Fatal(err)
 	}
 	legacyFeedback := "---\nname: zeta-feedback\ndescription: legacy global feedback\nmetadata:\n  type: feedback\n---\n\nGLOBAL FEEDBACK BODY\n"
+	// Termux's filesystem stores mtimes at ~1ms granularity; without this
+	// pause the legacy file's mtime can land in the same millisecond as the
+	// Save above, making the most-recently-updated sort ambiguous.
+	time.Sleep(2 * time.Millisecond)
 	mustWrite(t, filepath.Join(store.GlobalDir, "zeta-feedback.md"), legacyFeedback)
 	if err := reindexIn(store.GlobalDir, "zeta-feedback", Memory{Name: "zeta-feedback", Description: "legacy global feedback", Type: TypeFeedback, Scope: FactScopeGlobal}); err != nil {
 		t.Fatal(err)

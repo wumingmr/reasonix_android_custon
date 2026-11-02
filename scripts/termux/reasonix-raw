@@ -1,0 +1,10 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Invoke the real Termux Reasonix binary without injecting a permission mode.
+# Override the binary location with REASONIX_REAL=/absolute/path if needed.
+set -uo pipefail
+REAL="${REASONIX_REAL:-${PREFIX:-/data/data/com.termux/files/usr}/bin/reasonix}"
+if [ ! -x "$REAL" ]; then
+  printf 'reasonix-raw: real binary missing at %s\n' "$REAL" >&2
+  exit 127
+fi
+exec "$REAL" "$@"

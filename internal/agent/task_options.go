@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"reasonix/internal/checkpoint"
+	"reasonix/internal/config"
 	"reasonix/internal/event"
 	"reasonix/internal/imageinput"
 	"reasonix/internal/provider"
@@ -21,26 +22,27 @@ func NewTaskToolWithOptions(opts TaskToolOptions) *TaskTool {
 		sysPrompt = DefaultTaskSystemPrompt
 	}
 	return &TaskTool{
-		imageInput:       opts.ImageInput,
-		prov:             opts.Provider,
-		pricing:          opts.Pricing,
-		quoteContext:     opts.QuoteContext,
-		parentReg:        opts.ParentRegistry,
-		maxSteps:         opts.MaxSteps,
-		contextWindow:    opts.ContextWindow,
-		recentKeep:       opts.RecentKeep,
-		compaction:       compactionThreshold{opts.CompactRatio, opts.CompactRatioSource},
-		temperature:      opts.Temperature,
-		archiveDir:       opts.ArchiveDir,
-		keepPolicy:       opts.KeepPolicy,
-		sysPrompt:        sysPrompt,
-		gate:             opts.Gate,
-		subagentModel:    opts.SubagentModel,
-		subagentEffort:   opts.SubagentEffort,
-		resolveProvider:  opts.ResolveProvider,
-		maxSubagentDepth: DefaultMaxSubagentDepth,
-		imageResolver:    opts.ImageRequestResolver,
-		hooksForSession:  opts.HooksForSession,
+		imageInput:          opts.ImageInput,
+		prov:                opts.Provider,
+		pricing:             opts.Pricing,
+		quoteContext:        opts.QuoteContext,
+		parentReg:           opts.ParentRegistry,
+		maxSteps:            opts.MaxSteps,
+		contextWindow:       opts.ContextWindow,
+		contextWindowSource: opts.ContextWindowSource,
+		recentKeep:          opts.RecentKeep,
+		compaction:          compactionThreshold{opts.CompactRatio, opts.CompactRatioSource},
+		temperature:         opts.Temperature,
+		archiveDir:          opts.ArchiveDir,
+		keepPolicy:          opts.KeepPolicy,
+		sysPrompt:           sysPrompt,
+		gate:                opts.Gate,
+		subagentModel:       opts.SubagentModel,
+		subagentEffort:      opts.SubagentEffort,
+		resolveProvider:     opts.ResolveProvider,
+		maxSubagentDepth:    DefaultMaxSubagentDepth,
+		imageResolver:       opts.ImageRequestResolver,
+		hooksForSession:     opts.HooksForSession,
 	}
 }
 
@@ -59,6 +61,7 @@ func (t *TaskTool) subagentOptions(ctx context.Context, maxSteps int, pricing *p
 		UsageSource:              event.UsageSourceSubagent,
 		Gate:                     t.gate,
 		ContextWindow:            ctxWin,
+		ContextWindowSource:      t.childContextWindowSource(ctxWin),
 		RecentKeep:               t.recentKeep,
 		CompactRatio:             t.compaction.ratio(),
 		ArchiveDir:               t.archiveDir,
@@ -111,10 +114,12 @@ type TaskToolOptions struct {
 	ParentRegistry       *tool.Registry
 	MaxSteps             int
 	ContextWindow        int
-	RecentKeep           int
-	SoftCompactRatio     float64
-	ToolResultSnipRatio  float64
-	CompactRatio         float64
+	// ContextWindowSource explains ContextWindow; explanatory only.
+	ContextWindowSource config.ContextWindowSource
+	RecentKeep          int
+	SoftCompactRatio    float64
+	ToolResultSnipRatio float64
+	CompactRatio        float64
 	// CompactRatioSource must be concurrency-safe; each child snapshots it once.
 	CompactRatioSource                    func() float64
 	CompactForceRatio                     float64
@@ -125,4 +130,18 @@ type TaskToolOptions struct {
 	SubagentModel                         string
 	SubagentEffort                        string
 	ResolveProvider                       func(string, string) (provider.Provider, *provider.Pricing, int, error)
+}
+
+// childContextWindowSource names where a child's window came from. A child that
+// runs on the parent's window inherits the parent's explanation; one whose
+// window was resolved from its own model profile says so by dropping it,
+// because the parent's origin would then describe a different model.
+func (t *TaskTool) childContextWindowSource(childWindow int) config.ContextWindowSource {
+	if t == nil {
+		return config.ContextWindowUnestablished
+	}
+	if childWindow == t.contextWindow {
+		return t.contextWindowSource
+	}
+	return config.ContextWindowUnestablished
 }

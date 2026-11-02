@@ -18,10 +18,16 @@ func (m *chatTUI) handleModelSwitch(msg modelSwitchMsg) []tea.Cmd {
 		} else if msg.ctrl != nil {
 			msg.ctrl.Close()
 		}
+		// The deferred carry belonged to the abandoned candidate.
+		m.pendingSwitchCarry = nil
 		return nil
 	}
 	m.modelSwitchPending = false
 	m.pendingModelSwitch = nil
+	// Whatever settles below consumes or discards the deferred carry; clearing it
+	// first keeps one switch's conversation from leaking into the next.
+	pending := m.pendingSwitchCarry
+	m.pendingSwitchCarry = nil
 	if msg.err != nil {
 		prefix := msg.failurePrefix
 		if prefix == "" {
@@ -43,6 +49,11 @@ func (m *chatTUI) handleModelSwitch(msg modelSwitchMsg) []tea.Cmd {
 			m.followSessionLease()
 			return cmds
 		}
+		// The rebuilt controller owns execution now, so a deferred carried
+		// conversation can finally be written. Writing it during the build was
+		// silently dropped: a canonical session fences that commit on execution
+		// ownership, which only activation confers.
+		pending.apply(concreteController(msg.ctrl))
 		m.ctrl = activateGoalDriverAfterRebuild(msg.ctrl)
 		if m.takeover != nil {
 			m.takeover.AttachController(msg.ctrl)
@@ -84,4 +95,11 @@ func (m *chatTUI) handleModelSwitch(msg modelSwitchMsg) []tea.Cmd {
 		cmds = append(cmds, c)
 	}
 	return cmds
+}
+
+// concreteController narrows a SessionAPI to the concrete controller a deferred
+// history write needs, or nil when the implementation owns no session store.
+func concreteController(api control.SessionAPI) *control.Controller {
+	c, _ := api.(*control.Controller)
+	return c
 }

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"reasonix/internal/config"
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
@@ -56,5 +57,34 @@ func TestContextReportLeavesThresholdsZeroWhenDisabled(t *testing.T) {
 	rep := a.ContextReport()
 	if rep.Window != 0 || rep.FoldThreshold != 0 || rep.ForceThreshold != 0 {
 		t.Errorf("disabled maintenance reported thresholds: %+v", rep)
+	}
+}
+
+// The report carries the window's origin so a surface can say which source set
+// it, rather than only printing a number the reader has to guess about.
+func TestContextReportCarriesTheWindowOrigin(t *testing.T) {
+	sess := NewSession("sys")
+	a := New(&fakeProvider{reply: "unused"}, tool.NewRegistry(), sess, Options{
+		ContextWindow: 200_000, ContextWindowSource: config.ContextWindowFromProvider,
+	}, event.Discard)
+	rep := a.ContextReport()
+	if rep.Window != 200_000 || rep.WindowSource != config.ContextWindowFromProvider {
+		t.Fatalf("report window = %d from %s", rep.Window, rep.WindowSource)
+	}
+}
+
+// A child that runs on the parent's window inherits the parent's explanation;
+// one whose window came from its own model profile must not, because the
+// parent's origin would then describe a different model.
+func TestChildContextWindowSourceFollowsTheWindow(t *testing.T) {
+	tool := &TaskTool{contextWindow: 128_000, contextWindowSource: config.ContextWindowFromProvider}
+	if got := tool.childContextWindowSource(128_000); got != config.ContextWindowFromProvider {
+		t.Fatalf("inherited source = %s", got)
+	}
+	if got := tool.childContextWindowSource(200_000); got != config.ContextWindowUnestablished {
+		t.Fatalf("re-resolved child source = %s, want it to stop claiming the parent's origin", got)
+	}
+	if got := (&TaskTool{}).childContextWindowSource(1); got != config.ContextWindowUnestablished {
+		t.Fatalf("zero tool source = %s", got)
 	}
 }

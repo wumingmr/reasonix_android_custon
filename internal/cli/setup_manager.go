@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -589,29 +590,135 @@ func manageProvider(s *providerSetupSession, providerIndex int) {
 		return
 	}
 	p := s.cfg.Providers[providerIndex]
-	idx, err := selectOne(fmt.Sprintf(i18n.M.SetupProviderActionsFmt, p.Name), []menuItem{
-		{name: i18n.M.SetupEditProvider},
-		{name: i18n.M.SetupUpdateKey},
-		{name: i18n.M.SetupTestRefresh},
-		{name: i18n.M.SetupSetDefault},
-		{name: i18n.M.SetupRemoveProvider},
-		{name: i18n.M.SetupBack},
-	})
-	if err != nil || idx == 5 {
+	idx, err := selectOne(fmt.Sprintf(i18n.M.SetupProviderActionsFmt, p.Name), providerActionItems(p))
+	if err != nil {
 		return
 	}
 	switch idx {
-	case 0:
+	case providerActionEdit:
 		editProvider(s, p)
-	case 1:
+	case providerActionKey:
 		updateProviderKey(s, p)
-	case 2:
+	case providerActionRefresh:
 		testAndRefreshProvider(s, p)
-	case 3:
+	case providerActionWindows:
+		editProviderModelWindows(s, p)
+	case providerActionDefault:
 		setDefaultProvider(s, p)
-	case 4:
+	case providerActionRemove:
 		removeProviderFromSession(s, p)
 	}
+}
+
+// The per-provider action menu. The positions are named so the dispatcher and
+// the menu cannot drift apart, which a bare index switch invites.
+const (
+	providerActionEdit = iota
+	providerActionKey
+	providerActionRefresh
+	providerActionWindows
+	providerActionDefault
+	providerActionRemove
+	providerActionBack
+)
+
+func providerActionItems(p config.ProviderEntry) []menuItem {
+	return []menuItem{
+		{name: i18n.M.SetupEditProvider},
+		{name: i18n.M.SetupUpdateKey},
+		{name: i18n.M.SetupTestRefresh},
+		{name: i18n.M.SetupModelWindows, desc: modelWindowsSummary(p)},
+		{name: i18n.M.SetupSetDefault},
+		{name: i18n.M.SetupRemoveProvider},
+		{name: i18n.M.SetupBack},
+	}
+}
+
+// modelWindowsSummary describes in one line whether this connection's models
+// share a window or declare their own, so the menu states the current answer
+// instead of only offering the action.
+func modelWindowsSummary(p config.ProviderEntry) string {
+	models := p.ModelList()
+	declared := make([]string, 0, len(models))
+	for _, model := range models {
+		if limits, ok := p.ModelLimits(model); ok && limits.ContextWindow > 0 {
+			declared = append(declared, model)
+		}
+	}
+	switch {
+	case len(declared) == 0 && p.ContextWindow > 0:
+		return fmt.Sprintf("%d tokens for all %d", p.ContextWindow, len(models))
+	case len(declared) == 0:
+		return i18n.M.SetupModelWindowNone
+	case len(declared) == 1:
+		return fmt.Sprintf("%s only", declared[0])
+	default:
+		return fmt.Sprintf("%d of %d models", len(declared), len(models))
+	}
+}
+
+// editProviderModelWindows sets the context window per model on a connection
+// whose models differ in capacity — the shape every relay has. Leaving a prompt
+// blank clears that model's own window so it inherits the connection's again,
+// and the prompt prints what it would inherit, because a window smaller than
+// the model's real one makes compaction fire early.
+func editProviderModelWindows(s *providerSetupSession, current config.ProviderEntry) {
+	models := current.ModelList()
+	if len(models) == 0 {
+		fmt.Fprintln(os.Stderr, i18n.M.CustomFetchEmpty)
+		return
+	}
+	in := bufio.NewScanner(os.Stdin)
+	edited := current
+	changed := false
+	for _, model := range models {
+		inherited := current.InheritedLimits(model)
+		label := fmt.Sprintf(i18n.M.SetupModelWindowPromptFmt, model)
+		if inherited.ContextWindow > 0 {
+			label += " (" + fmt.Sprintf(i18n.M.SetupModelWindowHintFmt, inherited.ContextWindow) + ")"
+		}
+		existing, _ := current.ModelLimits(model)
+		def := ""
+		if existing.ContextWindow > 0 {
+			def = strconv.Itoa(existing.ContextWindow)
+		}
+		raw := ask(in, os.Stdout, label, def)
+		window := parseContextWindowAnswer(raw, existing.ContextWindow)
+		if window == existing.ContextWindow {
+			continue
+		}
+		limits := existing
+		limits.ContextWindow = window
+		if err := edited.SetModelLimits(model, limits); err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", model, err)
+			continue
+		}
+		changed = true
+	}
+	if !changed {
+		return
+	}
+	if err := s.upsert([]config.ProviderEntry{edited}); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
+}
+
+// parseContextWindowAnswer turns a typed prompt answer into a window. Empty or
+// unparseable input keeps what the model had, and a non-positive number clears
+// it so the model inherits again — the only way the wizard can undo a window.
+func parseContextWindowAnswer(raw string, current int) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return current
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return current
+	}
+	if n <= 0 {
+		return 0
+	}
+	return n
 }
 
 func editProvider(s *providerSetupSession, current config.ProviderEntry) {
@@ -717,10 +824,14 @@ func testAndRefreshProvider(s *providerSetupSession, p config.ProviderEntry) {
 	if s.cfg != nil {
 		proxy = s.cfg.NetworkProxySpec()
 	}
-	models, err := p.FetchModelsWithProxy(ctx, proxy)
+	catalog, err := p.FetchModelCatalogWithProxy(ctx, proxy)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, i18n.M.FetchModelsFailedFmt+"\n", p.Name, err)
 		return
+	}
+	models := make([]string, 0, len(catalog))
+	for _, info := range catalog {
+		models = append(models, info.ID)
 	}
 	if len(models) == 0 {
 		fmt.Fprintln(os.Stderr, i18n.M.CustomFetchEmpty)
@@ -743,11 +854,19 @@ func testAndRefreshProvider(s *providerSetupSession, p config.ProviderEntry) {
 	if !containsString(selected, p.Default) {
 		p.Default = selected[0]
 	}
+	// Listings that state a window per model are the only free source of truth
+	// about capacity, so record what this one declared. Models the user already
+	// gave a window keep it; the rest gain the endpoint's own number instead of
+	// inheriting a connection-wide guess.
+	filled := p.ApplyDiscoveredLimits(catalog)
 	if err := s.upsert([]config.ProviderEntry{p}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return
 	}
 	fmt.Printf("  %s\n", green(fmt.Sprintf(i18n.M.FetchModelsSuccessFmt, len(models), p.Name)))
+	if filled > 0 {
+		fmt.Printf("  %s\n", dim(fmt.Sprintf(i18n.M.SetupModelWindowDiscoveredFmt, filled)))
+	}
 }
 
 func temporarilySetCredential(key, value string) func() {

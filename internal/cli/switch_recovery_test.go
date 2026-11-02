@@ -784,3 +784,46 @@ func TestAdoptCarriedHistoryReportsSnapshotFailure(t *testing.T) {
 		t.Fatalf("adopt error = %v, want snapshot failure", err)
 	}
 }
+
+// A canonical session fences the carried-history commit on execution ownership,
+// which the rebuilt controller only receives at activation. So the rebuild must
+// hand the conversation back as a pending write instead of losing it, and the
+// legacy path must keep adopting inline.
+func TestAdoptCarriedHistoryDefersOnACanonicalSession(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "carry.jsonl")
+
+	oldSession := agent.NewSession("outgoing prompt")
+	oldSession.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
+	if err := oldSession.Save(path); err != nil {
+		t.Fatalf("save base session: %v", err)
+	}
+
+	fresh := newOwnedTestController(t, control.Options{
+		Executor:   agent.New(nil, nil, agent.NewSession("rebuilt prompt"), agent.Options{}, event.Discard),
+		SessionDir: dir,
+	})
+	carry := []provider.Message{
+		{Role: provider.RoleSystem, Content: "outgoing prompt"},
+		{Role: provider.RoleUser, Content: "hello"},
+	}
+
+	// nil old controller = no canonical identity to preserve, so the legacy
+	// branch adopts inline and owes nothing afterwards.
+	pending, err := adoptCarriedHistory(fresh, carry, path, nil)
+	if err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	if pending != nil {
+		t.Fatalf("legacy path deferred a write it already performed: %+v", pending)
+	}
+
+	// A pending carry is applied only once the controller owns execution; the
+	// helper must be nil-safe because the common legacy path leaves it unset.
+	var none *pendingCarry
+	none.apply(fresh)
+	got := fresh.History()
+	if len(got) != 2 || got[0].Content != "rebuilt prompt" || got[1].Content != "hello" {
+		t.Fatalf("history = %+v, want the inline-adopted system+user pair untouched", got)
+	}
+}

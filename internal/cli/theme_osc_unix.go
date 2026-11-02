@@ -1,4 +1,4 @@
-//go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris
+//go:build darwin || android || dragonfly || freebsd || linux || netbsd || openbsd || solaris
 
 package cli
 

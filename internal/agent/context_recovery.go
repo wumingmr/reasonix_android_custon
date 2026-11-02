@@ -23,6 +23,15 @@ func (a *Agent) recoverContextLimit(ctx context.Context, frozen samplingRequest,
 	if limit.PromptTokens > 0 {
 		a.setPromptTokenCalibrationFromActive(limit.PromptTokens)
 	}
+	// The refused prompt is the smallest one known not to fit. Measured against
+	// the estimate that was actually sent, because a provider that answers a
+	// bare "prompt is too long" reports no count of its own — and the estimate
+	// is the size of the request it just rejected.
+	refused := limit.PromptTokens
+	if refused <= 0 {
+		refused = a.estimatedRequestTokens(frozen.req)
+	}
+	a.noteRejectedPromptTokens(refused)
 	a.learnContextBudget(limit.WindowTokens, limit.CompletionTokens, omitted)
 	adm := a.lastAdmission()
 	adm.ObservedWindow = limit.WindowTokens
@@ -35,10 +44,26 @@ func (a *Agent) recoverContextLimit(ctx context.Context, frozen samplingRequest,
 	if prompt <= 0 {
 		prompt = a.estimatedRequestTokens(frozen.req)
 	}
+	// A provider that reports no window leaves only the measurement: the prompt
+	// it just refused is larger than its window. Adopting that bound is what
+	// turns "resend the same oversized request" into a retry that fits.
+	//
+	// The measurement has to be usable, though. A bound below the fold floor is
+	// not a window any projection can be built inside, and a bound that does
+	// not exceed the prompt it came from sizes a retry to zero or less, leaving
+	// the summary budget with nothing — the retry is then dropped entirely
+	// rather than made smaller, which is the honest outcome.
+	adopted := false
+	if limit.WindowTokens <= 0 {
+		if probed := a.probedWindow(); probed >= minProbeWindowTokens && probed > prompt && (window <= 0 || probed < window) {
+			window = probed
+			adopted = true
+		}
+	}
 	physical := window - prompt - outputBudgetReserve
-	// An overflow without token numbers cannot size a retry: the estimate that
-	// admitted the request is the number the provider just rejected.
-	if limit.PromptTokens <= 0 && limit.WindowTokens <= 0 {
+	// An overflow that establishes no ceiling cannot size a retry: the estimate
+	// that admitted the request is the number the provider just rejected.
+	if prompt <= 0 || (limit.WindowTokens <= 0 && !adopted) {
 		physical = 0
 	}
 	if physical > 0 && budget.retries == 0 {

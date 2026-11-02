@@ -494,6 +494,89 @@ func (q *Query) HistoryShape(ctx context.Context, ref SessionRef) (HistoryShape,
 	return shape, nil
 }
 
+// HistoryTail materializes the last min(maxMessages, total) messages of a
+// session from the locator index, oldest-first. Interactive TUI replay only
+// needs the recent tail; reading it through the index avoids replaying the
+// whole event log on every resume. maxMessages <= 0 is an error; callers
+// wanting full history should use History instead.
+func (q *Query) HistoryTail(ctx context.Context, ref SessionRef, maxMessages int) ([]provider.Message, error) {
+	messages, _, err := q.HistoryTailWithOmitted(ctx, ref, maxMessages)
+	return messages, err
+}
+
+// HistoryTailWithOmitted also reports the omitted prefix length from the same
+// indexed snapshot. Callers must not infer it from an already truncated slice.
+func (q *Query) HistoryTailWithOmitted(ctx context.Context, ref SessionRef, maxMessages int) ([]provider.Message, int, error) {
+	if q == nil {
+		return nil, 0, errors.New("session: nil query")
+	}
+	if maxMessages <= 0 {
+		return nil, 0, errors.New("session: history tail size must be positive")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
+	if err := ref.validate(q.hostID); err != nil {
+		return nil, 0, err
+	}
+	filesystem, path, err := q.prepareHistoryIndex(ctx, ref)
+	if err != nil {
+		return nil, 0, err
+	}
+	handle, err := projectiondb.Open(ctx, projectiondb.OpenOptions{Path: path, Migrations: historyMigrations, RequireDisk: true, MaxOpenConns: 1})
+	if err != nil {
+		return nil, 0, err
+	}
+	defer handle.DB.Close()
+	var snapshot uint64
+	if err := scanMetadataUint(handle.DB.QueryRowContext(ctx, `SELECT value FROM metadata WHERE key='durable_sequence'`), &snapshot); err != nil {
+		return nil, 0, err
+	}
+	var total int64
+	if err := handle.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE event_sequence<=? AND (valid_to=0 OR valid_to>?)`, snapshot, snapshot).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	if total == 0 {
+		return []provider.Message{}, 0, nil
+	}
+	// Retraction/reinsertion can leave position gaps; select the newest rows
+	// by descending position rather than deriving a boundary from COUNT(*).
+	rows, err := handle.DB.QueryContext(ctx, `SELECT inline,content_digest,content_bytes,content_index_digest FROM messages WHERE event_sequence<=? AND (valid_to=0 OR valid_to>?) ORDER BY position DESC LIMIT ?`, snapshot, snapshot, maxMessages)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	content := contentStoreForSessionDir(filepath.Join(filesystem.Root, ref.SessionID))
+	messages := make([]provider.Message, 0, min(total, int64(maxMessages)))
+	for rows.Next() {
+		var inline []byte
+		var digest, indexDigest string
+		var contentBytes int64
+		if err := rows.Scan(&inline, &digest, &contentBytes, &indexDigest); err != nil {
+			return nil, 0, err
+		}
+		body := json.RawMessage(inline)
+		if digest != "" {
+			body, err = resolveContentPayload(ctx, content, sessioncontent.Ref{Digest: digest, Bytes: contentBytes, IndexDigest: indexDigest, IntegrityBlock: sessioncontent.IntegrityBlockBytes, MediaType: "application/json"})
+			if err != nil {
+				return nil, 0, err
+			}
+		}
+		var message provider.Message
+		if err := json.Unmarshal(body, &message); err != nil {
+			return nil, 0, fmt.Errorf("session: decode indexed message: %w", err)
+		}
+		messages = append(messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	// Rows arrived newest-first; History and the TUI replay both expect the
+	// oldest-first order a session projection produces.
+	slices.Reverse(messages)
+	return messages, int(total) - len(messages), nil
+}
+
 // HistoryWindow materializes exactly [start,end) from a previously obtained
 // durable snapshot. The snapshot must still be representable by the current
 // projection; an append is allowed because version intervals retain the old
