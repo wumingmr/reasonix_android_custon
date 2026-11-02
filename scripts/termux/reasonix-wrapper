@@ -20,19 +20,11 @@ if [ ! -x "$REAL" ]; then
   exit 127
 fi
 
-# State/config/server subcommands do not create an ordinary agent session and
-# may reject a session permission flag. Keep this list in step with the CLI.
-passthrough_subcommand() {
-  case "${1-}" in
-    acp|bot|completion|config|doctor|help|hook|init|mcp|report|serve|setup|subagent|task|trust|upgrade|version|web)
-      return 0 ;;
-  esac
-  return 1
-}
-
 has_explicit_mode() {
   local arg
   for arg in "$@"; do
+    # Everything after -- is data, not an explicit permission selection.
+    [ "$arg" = "--" ] && break
     case "$arg" in
       --permission-mode|--permission-mode=*|--auto|-y|--yolo|--dangerously-skip-permissions)
         return 0 ;;
@@ -44,7 +36,7 @@ has_explicit_mode() {
 # These root flags must remain adjacent to the real binary. In particular,
 # injecting --permission-mode before --version makes pflag report unknown flag.
 case "${1-}" in
-  --version|-v|--help|-h) exec "$REAL" "$@" ;;
+  --version|-v|--help|-h|--acp) exec "$REAL" "$@" ;;
 esac
 
 # Explicit opt-out/bypass. REASONIX_FULL_ACCESS=0 still uses Reasonix's default
@@ -57,8 +49,19 @@ if [ $# -eq 0 ]; then
   exec "$REAL" --permission-mode "$DEFAULT_MODE"
 fi
 
-if passthrough_subcommand "$1" || has_explicit_mode "$@"; then
+if has_explicit_mode "$@"; then
   exec "$REAL" "$@"
 fi
 
-exec "$REAL" --permission-mode "$DEFAULT_MODE" "$@"
+# CLI dispatch uses argv[0], not global flags. Preserve explicit session
+# subcommands before injecting; every other named command passes through,
+# including future commands and unknown names (which must still report errors).
+case "$1" in
+  run|chat|code)
+    subcommand="$1"
+    shift
+    exec "$REAL" "$subcommand" --permission-mode "$DEFAULT_MODE" "$@"
+    ;;
+  -*) exec "$REAL" --permission-mode "$DEFAULT_MODE" "$@" ;;
+  *) exec "$REAL" "$@" ;;
+esac

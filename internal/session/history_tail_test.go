@@ -37,9 +37,12 @@ func TestHistoryTailMatchesFullHistorySuffix(t *testing.T) {
 		t.Fatalf("full history = %d messages, want 5", len(full))
 	}
 
-	tail, err := query.HistoryTail(t.Context(), ref, 2)
+	tail, omitted, err := query.HistoryTailWithOmitted(t.Context(), ref, 2)
 	if err != nil {
 		t.Fatalf("HistoryTail: %v", err)
+	}
+	if omitted != len(full)-len(tail) {
+		t.Fatalf("omitted=%d, full=%d tail=%d", omitted, len(full), len(tail))
 	}
 	want := full[len(full)-2:]
 	if len(tail) != len(want) {
@@ -107,9 +110,12 @@ func TestHistoryTailToleratesPositionGaps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("History: %v", err)
 	}
-	tail, err := query.HistoryTail(t.Context(), ref, 3)
+	tail, omitted, err := query.HistoryTailWithOmitted(t.Context(), ref, 3)
 	if err != nil {
 		t.Fatalf("HistoryTail: %v", err)
+	}
+	if omitted != len(full)-len(tail) {
+		t.Fatalf("gapped omitted=%d, full=%d tail=%d", omitted, len(full), len(tail))
 	}
 	want := full[len(full)-3:]
 	if len(tail) != len(want) {

@@ -159,7 +159,8 @@ func chatUIDisplayHistory(ctrl control.SessionAPI) []provider.Message {
 // whole event log. A failed or not-yet-built index falls back to the
 // full-history path and truncates in memory instead.
 func chatUIReplayHistory(ctrl control.SessionAPI) ([]provider.Message, int) {
-	return clipReplayHistory(chatUIReplayHistoryTail(ctrl))
+	history, omitted := chatUIReplayHistoryTail(ctrl)
+	return clipReplayHistoryWithOmitted(history, omitted)
 }
 
 // clipReplayHistory bounds history to the replay tail. The truncation boundary
@@ -170,34 +171,40 @@ func chatUIReplayHistory(ctrl control.SessionAPI) ([]provider.Message, int) {
 // collapse to a single message, so the preference only applies when a user turn
 // actually exists at or below the nominal boundary.
 func clipReplayHistory(history []provider.Message) ([]provider.Message, int) {
-	if len(history) <= cliReplayTailMessages {
-		return history, 0
+	return clipReplayHistoryWithOmitted(history, 0)
+}
+
+// An index-backed tail may already omit messages even when its length is at or
+// below the replay cap. It still needs turn alignment and an omission notice.
+func clipReplayHistoryWithOmitted(history []provider.Message, omitted int) ([]provider.Message, int) {
+	if len(history) == 0 || (len(history) <= cliReplayTailMessages && omitted == 0) {
+		return history, omitted
 	}
-	cut := cliReplayTailMessages
+	cut := min(len(history), cliReplayTailMessages)
 	for cut > 1 && !agent.IsUserAuthoredTurnMessage(history[len(history)-cut]) {
 		cut--
 	}
 	if cut == 1 && !agent.IsUserAuthoredTurnMessage(history[len(history)-1]) {
 		// No user turn anywhere in the window: keep the full tail rather than
 		// truncating to one message.
-		cut = cliReplayTailMessages
+		cut = min(len(history), cliReplayTailMessages)
 	}
-	return history[len(history)-cut:], len(history) - cut
+	return history[len(history)-cut:], omitted + len(history) - cut
 }
 
 // chatUIReplayHistoryTail prefers the index-backed tail for exclusive sessions
 // and otherwise returns whatever the full-history path produced.
-func chatUIReplayHistoryTail(ctrl control.SessionAPI) []provider.Message {
+func chatUIReplayHistoryTail(ctrl control.SessionAPI) ([]provider.Message, int) {
 	if identity, ok := ctrl.(control.IdentityLifecycle); ok && identity.UsesExclusiveSession() {
 		if service := identity.SessionService(); service != nil {
 			if ref, bound := identity.SessionRef(); bound {
-				if messages, err := service.Query().HistoryTail(context.Background(), ref, cliReplayTailMessages); err == nil {
-					return messages
+				if messages, omitted, err := service.Query().HistoryTailWithOmitted(context.Background(), ref, cliReplayTailMessages); err == nil {
+					return messages, omitted
 				}
 			}
 		}
 	}
-	return chatUIDisplayHistory(ctrl)
+	return chatUIDisplayHistory(ctrl), 0
 }
 
 func (m *chatTUI) replayActiveBranch(title string) {

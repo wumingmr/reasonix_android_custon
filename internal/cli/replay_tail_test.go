@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/provider"
+	"reasonix/internal/session"
 )
 
 func replayTestMessages(n int) []provider.Message {
@@ -54,6 +56,52 @@ func TestClipReplayHistoryBoundsLongHistory(t *testing.T) {
 	// The boundary must land on a user turn, so the replay never opens mid-turn.
 	if !agent.IsUserAuthoredTurnMessage(got[0]) {
 		t.Fatalf("truncation boundary is not a user turn: %+v", got[0])
+	}
+}
+
+func TestReplayIndexedTailPreservesOmittedAndTurnBoundary(t *testing.T) {
+	_, ctrl, service, _ := newCanonicalTakeoverTUI(t)
+	ref, ok := ctrl.SessionRef()
+	if !ok {
+		t.Fatal("canonical identity missing")
+	}
+	runtime, ok := service.Runtime(ref)
+	if !ok {
+		t.Fatal("canonical runtime missing")
+	}
+	events := make([]session.Event, 0, 600)
+	for i := range 600 {
+		role := provider.RoleAssistant
+		if i%3 == 0 {
+			role = provider.RoleUser
+		}
+		payload, err := json.Marshal(map[string]any{"message": provider.Message{
+			ID: fmt.Sprintf("tail-%d", i), Role: role, Content: "body",
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		events = append(events, session.Event{Kind: "message/complete", Payload: payload})
+	}
+	if _, err := runtime.Session().Append(t.Context(), session.Batch{OperationID: "replay-tail", Events: events}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Session().Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	full, err := service.Query().History(t.Context(), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, omitted := chatUIReplayHistory(ctrl)
+	if len(got) == 0 || len(got) > cliReplayTailMessages || !agent.IsUserAuthoredTurnMessage(got[0]) {
+		t.Fatalf("indexed replay not bounded/aligned: len=%d", len(got))
+	}
+	if omitted <= 0 || omitted+len(got) != len(full) {
+		t.Fatalf("omitted=%d kept=%d full=%d", omitted, len(got), len(full))
+	}
+	if got[len(got)-1].ID != "tail-599" {
+		t.Fatalf("lost newest message: %s", got[len(got)-1].ID)
 	}
 }
 

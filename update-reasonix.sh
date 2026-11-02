@@ -27,7 +27,13 @@ log() { printf '[update] %s\n' "$*"; }
 die() { printf '[update] 错误: %s\n' "$*" >&2; exit 1; }
 
 cd "$SCRIPT_DIR"
-[ -d .git ] || die "必须在仓库内运行"
+git rev-parse --git-dir >/dev/null 2>&1 || die "必须在仓库内运行"
+
+require_clean_worktree() {
+  [ -z "$(git status --porcelain --untracked-files=all)" ] || \
+    die "工作区有未提交或未跟踪文件，拒绝升级；请先提交或移到仓库外"
+}
+require_clean_worktree
 
 # 0. 校验唯一补丁源。过去这里从 commit 历史里探测一个"适配 commit"并只
 #    cherry-pick 它;后续独立提交的 TUI resume 优化和配置修复因此会在下一次
@@ -52,7 +58,11 @@ for required in \
   "internal/cli/select.go:escArrow:选择器搜索方向键修复" \
   "internal/cli/select.go:escSeqLen:选择器转义序列识别" \
   "internal/config/model_window.go:EffectiveContextWindow:未声明窗口兜底" \
-  "internal/config/model_limits_discovery.go:ApplyDiscoveredLimits:/models 容量回填"; do
+  "internal/config/model_limits_discovery.go:ApplyDiscoveredLimits:/models 容量回填" \
+  "internal/fileutil/atomicwrite.go:publishNewFile:Android 原子创建" \
+  "internal/cli/select.go:updateSearchText:中文跨读取 pending" \
+  "internal/cli/branch.go:clipReplayHistoryWithOmitted:索引尾部省略计数" \
+  "internal/session/history_locator.go:HistoryTailWithOmitted:历史尾部快照计数"; do
   file="${required%%:*}"; rest="${required#*:}"
   sym="${rest%%:*}"; label="${rest#*:}"
   # 匹配定义而非任意引用:escArrow 主体被删但 searchText 里还留着一次调用时,
@@ -68,18 +78,28 @@ for required in \
   "internal/cli/select_search_input_test.go:TestEscArrowClaimsArrowsBeforeBareEsc" \
   "internal/cli/select_search_input_test.go:TestSearchBranchChecksArrowsBeforeBareEsc" \
   "internal/config/model_window_test.go:TestResolveContextWindowNamesTheOrigin" \
-  "internal/config/model_limits_test.go:TestApplyDiscoveredLimitsFillsOnlyGaps"; do
+  "internal/config/model_limits_test.go:TestApplyDiscoveredLimitsFillsOnlyGaps" \
+  "internal/fileutil/atomiccreate_android_test.go:TestAtomicCreateAndroidNoReplaceRace" \
+  "internal/fileutil/atomiccreate_android_test.go:TestAtomicCreateAndroidFailsClosedWithoutRename" \
+  "internal/cli/select_search_input_test.go:TestUpdateSearchTextRetainsPendingAcrossReads" \
+  "internal/cli/replay_tail_test.go:TestReplayIndexedTailPreservesOmittedAndTurnBoundary"; do
   file="${required%%:*}"; test_name="${required#*:}"
   grep -q "func $test_name(" "$SCRIPT_DIR/$file" 2>/dev/null || \
     die "关键测试丢失:$file 里找不到 $test_name()。测试没了就没有报警器,
     用 git log -- $file 找回包含它的提交。"
 done
+for required in \
+  'scripts/termux/reasonix-wrapper:    exec "$REAL" "$subcommand" --permission-mode:wrapper 子命令路由' \
+  'scripts/termux/compat.test.mjs:update network failure leaves ignored data and HEAD untouched:升级回滚测试' \
+  '.github/workflows/build_termux.yml:tar.gz/${{ github.sha }}:CI 固定源码提交'; do
+  file="${required%%:*}"; rest="${required#*:}"
+  marker="${rest%%:*}"; label="${rest#*:}"
+  grep -Fq "$marker" "$SCRIPT_DIR/$file" || die "本地适配丢失:$label ($file)"
+done
 log "Termux 累积补丁:$PATCH_FILE ($PATCH_FILES files)"
 log "本地修复符号与关键测试校验通过"
 
-# 回滚锚点:升级前的 HEAD 与分支,任何失败都整体恢复。
 ORIG_HEAD_REF="$(git rev-parse HEAD)"
-log "回滚锚点: $ORIG_HEAD_REF"
 
 rollback() {
   rc=$?
@@ -87,22 +107,14 @@ rollback() {
     printf '[update] 失败(rc=%s),KEEP_CHANGES=1 保留现场\n' "$rc" >&2
   else
     printf '[update] 失败(rc=%s),回滚到 %s\n' "$rc" "$ORIG_HEAD_REF" >&2
-    git reset --hard "$ORIG_HEAD_REF" >/dev/null 2>&1 || true
-    git clean -fdq -e '*.bak' >/dev/null 2>&1 || true
-    # git clean 会连未跟踪的本地脚本一起删,而它们的备份在仓库外的
-    # LOCAL_BACKUP 里,必须在此恢复,否则一次失败的升级就丢了本地文件。
-    # LOCAL_BACKUP 到第 4 步才创建,此前任何失败也会走到这里,所以要容忍
-    # 它尚未定义 —— set -u 下未定义变量会直接终止脚本。
-    if [ -n "${LOCAL_BACKUP:-}" ] && [ -f "$LOCAL_BACKUP/untracked.tar" ]; then
-      (cd "$SCRIPT_DIR" && tar -xf "$LOCAL_BACKUP/untracked.tar") >/dev/null 2>&1 || true
-      log "已恢复 $(wc -l <"$LOCAL_BACKUP/untracked.txt" 2>/dev/null || echo 0) 个本地未跟踪文件"
-    fi
-    if [ -n "${LOCAL_BACKUP:-}" ]; then rm -rf "$LOCAL_BACKUP"; fi
+    # Only indexed source files were changed. Never clean unrelated files;
+    # reset also removes newly indexed files introduced by checkout/apply.
+    git reset --hard "$ORIG_HEAD_REF" || \
+      die "自动回滚失败，请保留现场并手工恢复 $ORIG_HEAD_REF"
     log "已回滚;KEEP_CHANGES=1 可保留现场手工处理"
   fi
   exit "$rc"
 }
-trap rollback EXIT
 
 # 1. 解析上游最新 tag
 #    注意 sort -V 会把 v2.x 排在 v1.x 之后,所以"上游最新 tag"默认就是 2.x。
@@ -160,38 +172,26 @@ fi
 # 2. fetch 上游 tag(对象用于 checkout 源码;浅获取即可)
 git fetch --depth=1 "$REPO_URL" tag "$TAG" || { echo "[update] fetch $TAG 失败" >&2; exit 1; }
 
-# 3. 备份专属文件(.gitignore/.gitattributes 含 LFS 配置)
-cp .gitignore "$SCRIPT_DIR/.gitignore.bak"
-cp .gitattributes "$SCRIPT_DIR/.gitattributes.bak"
+# Network resolution/fetch failures must never trigger a destructive rollback.
+# Recheck after fetch in case another process edited the checkout meanwhile.
+require_clean_worktree
+[ "$(git rev-parse HEAD)" = "$ORIG_HEAD_REF" ] || die "升级期间 HEAD 已变化，请重试"
 
-# 4. 清空旧源码。仓库自身文件、Termux 产物与脚本需要保留;bin/ 不在其中 ——
-#    旧二进制会被第 9 步的新构建覆盖,留着只会混淆"已安装的是哪一版"。
-#    scripts/ 里有上游自带的数百个文件,也有本地新增的工具脚本(如
-#    merge-makefile-conflict.py);整目录删掉再 checkout 恢复会连带丢掉未跟踪
-#    的本地脚本,所以先把未跟踪文件备份到仓库之外再删。备份必须放在仓库外:
-#    回滚路径会跑 git clean,放在仓库内的备份会被连坐删除。
-LOCAL_BACKUP="$(mktemp -d "${TMPDIR:-/tmp}/reasonix-update-XXXXXX")"
-UNTRACKED_LIST="$LOCAL_BACKUP/untracked.txt"
-git ls-files --others --exclude-standard -- scripts release-termux.sh \
-  release-notes-termux.md rebuild-termux-patch.sh >"$UNTRACKED_LIST" || true
-if [ -s "$UNTRACKED_LIST" ]; then
-  log "备份 $(wc -l <"$UNTRACKED_LIST") 个未跟踪本地文件"
-  tar -cf "$LOCAL_BACKUP/untracked.tar" -T "$UNTRACKED_LIST"
-fi
+# Replace only tracked source paths. Ignored output, local state and unrelated
+# files survive both successful syncs and rollback; no whole-directory deletion.
+SOURCE_PATHS=(
+  . ':(exclude).github' ':(exclude).gitignore' ':(exclude).gitattributes'
+  ':(exclude).reasonix' ':(exclude)artifacts' ':(exclude)bin'
+  ':(exclude)reasonix-termux.patch' ':(exclude)update-reasonix.sh'
+  ':(exclude)rebuild-termux-patch.sh' ':(exclude)release-termux.sh'
+  ':(exclude)release-notes-termux.md'
+)
+trap rollback EXIT
+log "回滚锚点: $ORIG_HEAD_REF"
+git rm -r --quiet --ignore-unmatch -- "${SOURCE_PATHS[@]}"
+git checkout "$TAG" -- "${SOURCE_PATHS[@]}"
 
-find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github ! -name .reasonix \
-  ! -name artifacts ! -name reasonix-termux.patch \
-  ! -name update-reasonix.sh ! -name rebuild-termux-patch.sh \
-  ! -name release-notes-termux.md ! -name release-termux.sh \
-  ! -name action.log ! -name '*.bak' -exec rm -rf {} +
-
-# 5. 填入上游源码(排除 .github 与专属文件,稍后恢复)
-git checkout "$TAG" -- . ':(exclude).github' || true
-mv .gitignore.bak .gitignore
-mv .gitattributes.bak .gitattributes
-
-# 6. 提交上游源码快照
-git add -A
+# 6. checkout/rm 已把源码快照写入 index，不把同期出现的本地文件混入提交。
 if git diff --cached --quiet; then
   log "上游源码无变化(异常,请检查)"
 else
@@ -201,7 +201,7 @@ fi
 
 rollback_hint() {
   if [ "${KEEP_CHANGES:-0}" = "1" ]; then
-    printf '补丁与 %s 冲突;已保留现场,可 git cherry-pick --continue 继续' "$TAG"
+    printf '补丁与 %s 冲突;已保留上游快照，请手工修正并重新应用 patch' "$TAG"
   else
     printf '补丁与 %s 冲突;将自动回滚到升级前状态' "$TAG"
   fi
@@ -210,8 +210,7 @@ rollback_hint() {
 # 7. 重新应用累积 Termux 补丁。先 --check,失败时不留下半应用状态;KEEP_CHANGES
 #    只保留刚提交的上游快照,方便手工在其上解决 patch 冲突。
 if git apply --check "$PATCH_FILE"; then
-  git apply "$PATCH_FILE"
-  git add -A
+  git apply --index "$PATCH_FILE"
   git commit -m "termux: apply cumulative Android adaptation for $TAG" >/dev/null
   log "累积补丁干净应用 ✓ ($PATCH_FILES files)"
 else
@@ -219,8 +218,7 @@ else
 fi
 
 # 8. 上游基线已经变成 $TAG；立即重建累积 patch 并提交。否则仓库里的 patch
-#    仍以旧 tag 为基线，release-termux.sh 的一致性检查会拒绝发版。必须在恢复
-#    用户的未跟踪 scripts 之前运行，否则干净工作区检查会把它们误判成未提交改动。
+#    仍以旧 tag 为基线，release-termux.sh 的一致性检查会拒绝发版。
 [ -x "$SCRIPT_DIR/rebuild-termux-patch.sh" ] || die "缺少可执行的 rebuild-termux-patch.sh"
 "$SCRIPT_DIR/rebuild-termux-patch.sh"
 git add reasonix-termux.patch
@@ -228,13 +226,6 @@ if ! git diff --cached --quiet -- reasonix-termux.patch; then
   git commit -m "chore(termux): rebuild cumulative patch for $TAG" >/dev/null
   log "已按 $TAG 重建并提交累积补丁"
 fi
-
-# 9. 恢复未跟踪的本地脚本
-if [ -s "$LOCAL_BACKUP/untracked.tar" ]; then
-  log "恢复本地未跟踪文件"
-  tar -xf "$LOCAL_BACKUP/untracked.tar" || die "恢复本地脚本失败"
-fi
-rm -rf "$LOCAL_BACKUP"
 
 # 10. 编译验证
 #    不传 VERSION:Makefile 会用 release-notes/releases.json 里的真实上游版本

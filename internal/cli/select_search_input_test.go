@@ -143,6 +143,24 @@ func TestSearchPendingSurvivesChunkThatAddsNothing(t *testing.T) {
 	}
 }
 
+func TestUpdateSearchTextRetainsPendingAcrossReads(t *testing.T) {
+	query := ""
+	var pending []byte
+	for _, chunk := range [][]byte{{0xe9}, {0xb9}, {0x88}} {
+		updateSearchText(&query, &pending, chunk)
+	}
+	if query != "鹈" || len(pending) != 0 {
+		t.Fatalf("menu state after split rune: query=%q pending=%x", query, pending)
+	}
+	src, err := os.ReadFile("select.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(src), "if updateSearchText(&searchQuery, &searchPending, k)") != 2 {
+		t.Fatal("both menus must use the tested pending-preserving state transition")
+	}
+}
+
 func TestSearchTextSkipsEscapeSequenceInsideChunk(t *testing.T) {
 	cases := []struct {
 		name  string

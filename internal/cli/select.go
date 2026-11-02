@@ -190,8 +190,7 @@ func escArrow(k []byte) int {
 // pending carries the bytes of a multi-byte character that the previous read cut
 // in half. Such a character is not lost: the fragment is prepended to the next
 // chunk and decoded then, which is why the caller keeps pending across reads.
-// Control bytes are dropped so a chunk never injects an Enter or an arrow
-// sequence into the query text.
+// Control bytes never become query text.
 func searchText(query string, pending, k []byte) (string, []byte) {
 	buf := k
 	if len(pending) > 0 {
@@ -221,6 +220,15 @@ func searchText(query string, pending, k []byte) (string, []byte) {
 		i += size
 	}
 	return query, nil
+}
+
+// updateSearchText retains an incomplete UTF-8 fragment even when no visible
+// text changed. Both raw-stdin menus share this state transition.
+func updateSearchText(query *string, pending *[]byte, chunk []byte) bool {
+	next, rest := searchText(*query, *pending, chunk)
+	changed := next != *query
+	*query, *pending = next, rest
+	return changed
 }
 
 // trimSearchRune removes the last character from the query by rune, not by
@@ -390,8 +398,7 @@ func selectOne(label string, items []menuItem) (int, error) {
 			default:
 				// Printable text, including multi-byte characters typed by a
 				// terminal IME and any spaces the chunk carries.
-				if next, rest := searchText(searchQuery, searchPending, k); next != searchQuery {
-					searchQuery, searchPending = next, rest
+				if updateSearchText(&searchQuery, &searchPending, k) {
 					filtered = filterMenuItems(items, searchQuery)
 					filterIdx = filterIndices(items, searchQuery)
 					sel = 0
@@ -601,8 +608,7 @@ func selectMany(label string, items []menuItem) ([]int, error) {
 			default:
 				// Printable text, including multi-byte characters typed by a
 				// terminal IME and any spaces the chunk carries.
-				if next, rest := searchText(searchQuery, searchPending, k); next != searchQuery {
-					searchQuery, searchPending = next, rest
+				if updateSearchText(&searchQuery, &searchPending, k) {
 					filtered = filterMenuItems(items, searchQuery)
 					filterIdx = filterIndices(items, searchQuery)
 					cur = 0
