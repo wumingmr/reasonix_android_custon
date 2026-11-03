@@ -2453,6 +2453,15 @@ func mergeProviderModelOverride(dst *ProviderModelOverride, src ProviderModelOve
 		dst.SupportedEfforts = append([]string(nil), src.SupportedEfforts...)
 		dst.DefaultEffort = src.DefaultEffort
 	}
+	if src.Effort != nil {
+		value := *src.Effort
+		dst.Effort = &value
+	}
+	if src.DiscoveredReasoning != nil {
+		copy := *src.DiscoveredReasoning
+		copy.Efforts = append([]string(nil), copy.Efforts...)
+		dst.DiscoveredReasoning = &copy
+	}
 	if src.Vision != nil {
 		vision := *src.Vision
 		dst.Vision = &vision

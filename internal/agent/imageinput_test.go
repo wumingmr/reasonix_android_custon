@@ -36,6 +36,22 @@ func (p *summaryProvider) Stream(ctx context.Context, r provider.Request) (<-cha
 	return out, nil
 }
 
+type unknownImageProvider struct{ provider.Provider }
+
+func (unknownImageProvider) ModelInfo() provider.ModelInfo { return provider.ModelInfo{} }
+
+func TestUnknownImageInputRespectsFallback(t *testing.T) {
+	p := unknownImageProvider{}
+	if !newImageInput(nil, p).native || !newImageInput(&imageinput.Config{}, p).native {
+		t.Fatal("unknown model without fallback must retain explicit images")
+	}
+	for _, fallback := range []string{"auto", "vision/model"} {
+		if newImageInput(&imageinput.Config{Model: fallback}, p).native {
+			t.Fatalf("unknown model bypassed %s fallback", fallback)
+		}
+	}
+}
+
 type nativeImageProvider struct{ *scriptedProvider }
 
 func (nativeImageProvider) ModelInfo() provider.ModelInfo {

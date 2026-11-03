@@ -66,12 +66,7 @@ func (m *chatTUI) runEffortCommand(input string) tea.Cmd {
 				return err
 			}
 		}
-		if entry.Kind == "anthropic" && effort != "" && entry.Thinking == "" {
-			if err := edit.SetProviderThinking(entry.Name, "adaptive"); err != nil {
-				return err
-			}
-		}
-		if err := edit.SetProviderEffort(entry.Name, effort); err != nil {
+		if err := edit.SetModelEffort(entry.Name, entry.Model, &effort); err != nil {
 			return err
 		}
 		return edit.SaveTo(path)

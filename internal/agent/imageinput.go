@@ -24,7 +24,11 @@ func newImageInput(cfg *imageinput.Config, p provider.Provider) agentImageInput 
 	if cfg == nil {
 		return agentImageInput{native: supportsNativeImages(p)}
 	}
-	return agentImageInput{service: imageinput.New(*cfg), native: supportsNativeImages(p)}
+	native := supportsNativeImages(p)
+	if info, ok := p.(provider.ModelInfoProvider); ok && info.ModelInfo().InputModalities == nil {
+		native = cfg.Model == ""
+	}
+	return agentImageInput{service: imageinput.New(*cfg), native: native}
 }
 func (a *Agent) ImageInput() *imageinput.Service { return a.imageInput.service }
 
@@ -67,5 +71,5 @@ func (a *Agent) processToolImages(ctx context.Context, text string, images []str
 
 func supportsNativeImages(p provider.Provider) bool {
 	info, ok := p.(provider.ModelInfoProvider)
-	return ok && info.ModelInfo().SupportsInput(provider.ModalityImage)
+	return ok && (info.ModelInfo().InputModalities == nil || info.ModelInfo().SupportsInput(provider.ModalityImage))
 }

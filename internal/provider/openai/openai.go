@@ -93,19 +93,12 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	extraBody, _ := cfg.Extra["extra_body"].(map[string]any)
 	vision, _ := cfg.Extra["vision"].(bool)
 	officialDeepSeek := IsDeepSeek(cfg.BaseURL)
-	modelInfo := provider.ModelInfo{ID: cfg.Model, InputModalities: []provider.ModelModality{provider.ModalityText}}
-	if cfg.ModelInfo != nil {
-		modelInfo = *cfg.ModelInfo
-		modelInfo.ID = cfg.Model
-	}
-	if cfg.ModelInfo != nil {
-		vision = modelInfo.SupportsInput(provider.ModalityImage)
-	}
+	modelInfo, vision := provider.ResolveImageInputMetadata(cfg.Model, cfg.ModelInfo, vision)
 	// Keep known text-only models blocked; unknown models use declared capability.
 	vision = DeepSeekImageInputAllowed(officialDeepSeek, chatURL, cfg.Model, cfg.ModelInfo != nil, vision)
-	if vision {
+	if vision && modelInfo.InputModalities != nil {
 		modelInfo.InputModalities = []provider.ModelModality{provider.ModalityText, provider.ModalityImage}
-	} else if modelInfo.SupportsInput(provider.ModalityImage) {
+	} else if !vision {
 		modelInfo.InputModalities = []provider.ModelModality{provider.ModalityText}
 	}
 	visionDetail, _ := cfg.Extra["vision_detail"].(string)

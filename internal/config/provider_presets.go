@@ -1110,6 +1110,19 @@ func cloneModelOverrideMap(in map[string]ProviderModelOverride) map[string]Provi
 	out := make(map[string]ProviderModelOverride, len(in))
 	for k, v := range in {
 		v.SupportedEfforts = append([]string(nil), v.SupportedEfforts...)
+		if v.Effort != nil {
+			value := *v.Effort
+			v.Effort = &value
+		}
+		if v.DiscoveredReasoning != nil {
+			copy := *v.DiscoveredReasoning
+			copy.Efforts = append([]string(nil), copy.Efforts...)
+			if copy.Supported != nil {
+				value := *copy.Supported
+				copy.Supported = &value
+			}
+			v.DiscoveredReasoning = &copy
+		}
 		if v.Vision != nil {
 			vision := *v.Vision
 			v.Vision = &vision

@@ -2485,8 +2485,11 @@ func TestEffortCommandWritesCurrentDeepSeekProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read saved config: %v", err)
 	}
-	if !strings.Contains(string(body), `effort      = "max"`) {
-		t.Fatalf("saved config missing effort=max:\n%s", body)
+	saved := config.LoadForEditWithoutCredentials(configPath)
+	entry, _ := saved.Provider("deepseek-flash")
+	ov := entry.ModelOverrides["deepseek-v4-flash"]
+	if entry.Effort != "" || ov.Effort == nil || *ov.Effort != "max" {
+		t.Fatalf("saved config missing model-specific effort=max:\n%s", body)
 	}
 }
 
@@ -2531,9 +2534,11 @@ func TestEffortCommandAutoClearsProviderEffort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read saved config: %v", err)
 	}
-	section := providerSection(string(body), "deepseek-flash")
-	if strings.Contains(section, `effort      = "`) {
-		t.Fatalf("auto should clear saved deepseek-flash effort:\n%s", section)
+	saved := config.LoadForEditWithoutCredentials(config.UserConfigPath())
+	entry, _ := saved.Provider("deepseek-flash")
+	ov := entry.ModelOverrides["deepseek-v4-flash"]
+	if entry.Effort != "" || ov.Effort == nil || *ov.Effort != "" {
+		t.Fatalf("auto should select model default without changing its connection:\n%s", body)
 	}
 }
 

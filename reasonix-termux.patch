@@ -120,10 +120,10 @@ index b653e8fae3caaf6c75e51b17f29843661a7a84a1..529cde815beb070f326093c43a53c5da
  // fakeAgent stands in for the reasonix binary: it records every invocation's
 diff --git a/docs/TERMUX.zh-CN.md b/docs/TERMUX.zh-CN.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..5c9640caa55a32b3f866d26774bd48fa969be6e7
+index 0000000000000000000000000000000000000000..02db2e5aa225e5374ba9afab7b98fc423b3333c0
 --- /dev/null
 +++ b/docs/TERMUX.zh-CN.md
-@@ -0,0 +1,191 @@
+@@ -0,0 +1,245 @@
 +# Reasonix Termux / Android 使用说明
 +
 +本文对应 [`reasonix_android_custon`](https://github.com/wumingmr/reasonix_android_custon)
@@ -306,6 +306,60 @@ index 0000000000000000000000000000000000000000..5c9640caa55a32b3f866d26774bd48fa
 +如果 `reasonix --version` 报 `unknown flag: --version`，说明使用的是早期 wrapper；
 +重新运行上面带 `--default-full` 的一键安装命令即可安全更新。早期版本在 `--version`
 +之前错误注入了 `--permission-mode`。
++
++## setup 识图能力提示
++
++`reasonix setup` 中新增连接的“从 URL 获取模型”和已有连接的“测试连接并刷新模型”
++会读取同一次 `/models` 响应中的图片能力字段。模型列表显示 `img: 支持 / 不支持 / 未知`，
++并标明接口声明、内置目录/协议或手动设置；不根据模型名字推测，也不发送图片推理探针。
++
++支持 `input_modalities`、`architecture.input_modalities`（OpenRouter）、
++`modalities.input`、`capabilities.input_modalities` / `capabilities.vision`、
++`supports_vision` 和 `vision`。缺字段或冲突保持未知，刷新失败不改变已有结果。
++
++能力声明先留在 setup 草稿，选择“保存并退出”后才写入 Reasonix cache 下的
++`model-capabilities-v2.json`，24 小时有效；端点、模型或凭据变化后旧缓存不复用。
++不会把自动声明写成手动 `vision` 覆盖，也不覆盖已有的模型级设置。要手动声明可用：
++
++```toml
++# 放在对应 [[providers]] 中，保留 model_overrides 的其他已有项
++model_overrides = { "codebuddy/deepseek-v4.1-flash" = { vision = true } }
++```
++
++没有识图声明且没有配置 `[agent] vision_model` 的自定义模型，会尝试发送你明确附加的图片，
++仍显示“未知”而不伪称已验证；若配置了图片理解模型则走该 fallback。显式纯文本声明仍阻止
++直接发图，官方 DeepSeek 纯文本型号的限制仍保留。普通纯文本请求不变化。
++
++你的 `127.0.0.1:8790` 网关目前没有返回识图元数据，因此仅刷新不能显示“支持”。
++这里仅支持 img，不启用音频、视频或原生 PDF 传输。附图可在 CLI 粘贴图片路径形成附件，
++或使用工作目录内的 `@.reasonix/attachments/example.jpg`；工作目录外的裸路径不等于附件。
++
++## setup 思考强度与每模型设置
++
++新建连接和刷新模型沿用同一次 `GET /models` 读取思考声明，不发送推理请求。
++支持 `reasoning` / `supports_reasoning` 布尔、`supported_parameters` 的思考参数提示，
++以及明确的 `reasoning_protocol`、`supported_efforts` / `reasoning_efforts`、`default_effort`；
++也可放在 `capabilities` 或 `reasoning = { supported, protocol, efforts, default }` 中。
++只有布尔或参数名时显示“档位未知”，不会猜测 low/high/max，也不按模型后缀选择协议。
++
++选择“保存并退出”后将发现记录写入对应 `model_overrides` 的 `discovered_reasoning`，
++与手动协议/档位分开，24 小时有效并绑定端点、模型和凭据。取消/保存冲突不写入，
++刷新成功但新响应缺字段会删除旧发现；网络失败保留已有数据。协议未知、不兼容、
++档位重复或默认值非法的声明不会启用。手动声明和 adapter 固定限制始终优先。
++
++连接操作新增“编辑各模型思考强度”，可设置具体档位、`auto` 或“继承”。
++CLI `/effort` 现在只保存当前模型，不影响同分组其他模型：
++
++```toml
++# 放在对应 provider 的 model_overrides 中，与已有窗口/vision 合并
++model_overrides = { "codebuddy/deepseek-v4.1-flash" = { effort = "high" } }
++```
++
++`effort = ""` 表示当前模型 auto（忽略分组固定 effort，使用该模型默认）；
++删除模型级 effort 字段恢复继承分组。会话 `--effort` 优先于模型设置。
++旧的分组 `effort` 未自动清除，因此还没单独设置的模型保持旧行为。GLM/Kimi 等
++协议只允许自身档位；`auto` 不等于 adaptive。你的 8790 网关未声明思考字段，
++自动读取仍只能显示未知或已有配置，不能证明后端确实执行了某个思考强度。
 +
 +## 升级后的关系
 +
@@ -1145,6 +1199,57 @@ index 0000000000000000000000000000000000000000..d707373933b1b30886f79fb5b220f384
 +		t.Fatalf("probed window = %d, a sub-floor measurement must not reach the floor", got)
 +	}
 +}
+diff --git a/internal/agent/imageinput.go b/internal/agent/imageinput.go
+index 210cc78106864b1dc1a5b6b6757a22867415c04e..f4585aa1ae8d53906a771c79588e025b53c6a928 100644
+--- a/internal/agent/imageinput.go
++++ b/internal/agent/imageinput.go
+@@ -24,7 +24,11 @@ func newImageInput(cfg *imageinput.Config, p provider.Provider) agentImageInput
+ 	if cfg == nil {
+ 		return agentImageInput{native: supportsNativeImages(p)}
+ 	}
+-	return agentImageInput{service: imageinput.New(*cfg), native: supportsNativeImages(p)}
++	native := supportsNativeImages(p)
++	if info, ok := p.(provider.ModelInfoProvider); ok && info.ModelInfo().InputModalities == nil {
++		native = cfg.Model == ""
++	}
++	return agentImageInput{service: imageinput.New(*cfg), native: native}
+ }
+ func (a *Agent) ImageInput() *imageinput.Service { return a.imageInput.service }
+ 
+@@ -67,5 +71,5 @@ func (a *Agent) processToolImages(ctx context.Context, text string, images []str
+ 
+ func supportsNativeImages(p provider.Provider) bool {
+ 	info, ok := p.(provider.ModelInfoProvider)
+-	return ok && info.ModelInfo().SupportsInput(provider.ModalityImage)
++	return ok && (info.ModelInfo().InputModalities == nil || info.ModelInfo().SupportsInput(provider.ModalityImage))
+ }
+diff --git a/internal/agent/imageinput_test.go b/internal/agent/imageinput_test.go
+index 24b4e83e1ebb68e6d046077815d61a6b0dd972d6..8bb29a1183863cd61088069394c136d2759d5581 100644
+--- a/internal/agent/imageinput_test.go
++++ b/internal/agent/imageinput_test.go
+@@ -36,6 +36,22 @@ func (p *summaryProvider) Stream(ctx context.Context, r provider.Request) (<-cha
+ 	return out, nil
+ }
+ 
++type unknownImageProvider struct{ provider.Provider }
++
++func (unknownImageProvider) ModelInfo() provider.ModelInfo { return provider.ModelInfo{} }
++
++func TestUnknownImageInputRespectsFallback(t *testing.T) {
++	p := unknownImageProvider{}
++	if !newImageInput(nil, p).native || !newImageInput(&imageinput.Config{}, p).native {
++		t.Fatal("unknown model without fallback must retain explicit images")
++	}
++	for _, fallback := range []string{"auto", "vision/model"} {
++		if newImageInput(&imageinput.Config{Model: fallback}, p).native {
++			t.Fatalf("unknown model bypassed %s fallback", fallback)
++		}
++	}
++}
++
+ type nativeImageProvider struct{ *scriptedProvider }
+ 
+ func (nativeImageProvider) ModelInfo() provider.ModelInfo {
 diff --git a/internal/agent/migrate.go b/internal/agent/migrate.go
 index 0dcb8408353d987ff8c0d936cf7c382470e6e390..276214297d22b7e279aebd513279e887e8575731 100644
 --- a/internal/agent/migrate.go
@@ -1332,9 +1437,27 @@ index f743e4559f055a92f7c627736df1ceeb343306fe..f9815aad39fb98a796d98e9c7a5756ff
 +	return config.ContextWindowUnestablished
 +}
 diff --git a/internal/boot/boot.go b/internal/boot/boot.go
-index 2a9c0573abe967aeca51b2537cd82737a5b155e9..66647e15eb4632aa12d82c6d9a6eeb8b3b20c59a 100644
+index 2a9c0573abe967aeca51b2537cd82737a5b155e9..b0ca2c889c2340ce6df116ec9f2bc3a3f4f090f0 100644
 --- a/internal/boot/boot.go
 +++ b/internal/boot/boot.go
+@@ -482,7 +482,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
+ 		return nil, err
+ 	}
+ 	if opts.EffortOverride != nil {
+-		entry.Effort = *opts.EffortOverride
++		entry.SetRuntimeEffort(*opts.EffortOverride)
+ 		if entry.Kind == "anthropic" && strings.TrimSpace(entry.Effort) != "" && strings.TrimSpace(entry.Thinking) == "" {
+ 			entry.Thinking = "adaptive"
+ 		}
+@@ -1039,7 +1039,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
+ 				}
+ 				normalized = effort
+ 			}
+-			me.Effort = normalized
++			me.SetRuntimeEffort(normalized)
+ 			effortOverride = &normalized
+ 			if me.Kind == "anthropic" && strings.TrimSpace(me.Effort) != "" && strings.TrimSpace(me.Thinking) == "" {
+ 				me.Thinking = "adaptive"
 @@ -1138,7 +1138,8 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
  			HooksForSession:     func(id string) agent.ToolHooks { return hookRunner.ForSession(id) },
  			ParentRegistry:      reg,
@@ -1383,6 +1506,89 @@ index 2a9c0573abe967aeca51b2537cd82737a5b155e9..66647e15eb4632aa12d82c6d9a6eeb8b
  			SoftCompactRatio:             cfg.Agent.SoftCompactRatio,
  			ToolResultSnipRatio:          cfg.Agent.ToolResultSnipRatio,
  			CompactRatio:                 cfg.Agent.CompactRatio,
+@@ -2496,9 +2499,9 @@ func subagentEffectiveIdentity(cfg *config.Config, resolver provider.Resolver, b
+ 	}
+ 	if rawEffort := strings.TrimSpace(effort); rawEffort != "" {
+ 		if normalized, err := config.NormalizeEffort(&entry, rawEffort); err == nil {
+-			entry.Effort = normalized
++			entry.SetRuntimeEffort(normalized)
+ 		} else {
+-			entry.Effort = rawEffort
++			entry.SetRuntimeEffort(rawEffort)
+ 		}
+ 	}
+ 	modelID := strings.TrimSpace(entry.Name)
+diff --git a/internal/boot/model_effort_wire_test.go b/internal/boot/model_effort_wire_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..4e76e54d634c5c83b1e0f6c7df23c7b1b9bb4d69
+--- /dev/null
++++ b/internal/boot/model_effort_wire_test.go
+@@ -0,0 +1,65 @@
++package boot
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++
++	"reasonix/internal/config"
++	"reasonix/internal/netclient"
++	"reasonix/internal/provider"
++)
++
++func TestModelEffortAndSessionOverrideReachWire(t *testing.T) {
++	isolateConfigHome(t)
++	observed := make(chan string, 4)
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		var body struct {
++			Model  string `json:"model"`
++			Effort string `json:"reasoning_effort"`
++		}
++		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
++			t.Error(err)
++		}
++		observed <- body.Model + ":" + body.Effort
++		w.Header().Set("Content-Type", "text/event-stream")
++		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
++	}))
++	defer server.Close()
++	cfg := config.Default()
++	cfg.Providers = []config.ProviderEntry{{Name: "relay", Kind: "openai", BaseURL: server.URL, Models: []string{"a", "b"}, Effort: "high", ReasoningProtocol: "openai", SupportedEfforts: []string{"low", "high"}, DefaultEffort: "low"}}
++	low := "low"
++	if err := cfg.SetModelEffort("relay", "a", &low); err != nil {
++		t.Fatal(err)
++	}
++	resolver := NewLocalProviderResolverWithCapabilities(cfg, netclient.ProxySpec{}, config.NewTransientModelCapabilityResolver())
++	high := "high"
++	for _, tc := range []struct {
++		selection provider.Selection
++		want      string
++	}{
++		{provider.Selection{Ref: "relay/a"}, "a:low"},
++		{provider.Selection{Ref: "relay/b"}, "b:high"},
++		{provider.Selection{Ref: "relay/a", Effort: &high}, "a:high"},
++	} {
++		p, err := resolver.Resolve(tc.selection)
++		if err != nil {
++			t.Fatal(err)
++		}
++		stream, err := p.Stream(context.Background(), provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "ok"}}})
++		if err != nil {
++			t.Fatal(err)
++		}
++		for chunk := range stream {
++			if chunk.Err != nil {
++				t.Fatal(chunk.Err)
++			}
++		}
++		if got := <-observed; got != tc.want {
++			t.Fatalf("wire=%s want=%s", got, tc.want)
++		}
++	}
++}
 diff --git a/internal/boot/model_switch_identity_test.go b/internal/boot/model_switch_identity_test.go
 new file mode 100644
 index 0000000000000000000000000000000000000000..ccbc4768d0f2c9dac11ab0ba639c9dfd285e2a9d
@@ -1520,8 +1726,21 @@ index 0000000000000000000000000000000000000000..ccbc4768d0f2c9dac11ab0ba639c9dfd
 +		t.Fatalf("ContinueSessionPath(%q) = %q", prev, got)
 +	}
 +}
+diff --git a/internal/boot/reasoning_preflight.go b/internal/boot/reasoning_preflight.go
+index 87c5b6f46ead8aa4c0b250264fc2d002a0386822..58d5fc3e9dbef9aec80b699205249ab572b522dd 100644
+--- a/internal/boot/reasoning_preflight.go
++++ b/internal/boot/reasoning_preflight.go
+@@ -184,7 +184,7 @@ func inheritedSubagentEffort(cfg *config.Config, execution *config.ProviderEntry
+ 		return effort, ""
+ 	}
+ 	entry := *config.ResolveReasoningEntry(execution)
+-	entry.Effort = effort
++	entry.SetRuntimeEffort(effort)
+ 	if entry.Kind == "anthropic" && entry.Thinking == "" {
+ 		entry.Thinking = "adaptive"
+ 	}
 diff --git a/internal/boot/resolver.go b/internal/boot/resolver.go
-index 27744a853f2d2956c247b7014f2d9e1b5bbc2968..3aa1609da4dd1d5d8cccd27efbaf6ab9d88124ba 100644
+index 27744a853f2d2956c247b7014f2d9e1b5bbc2968..ff287f60b466cd82dda92dbcfd5f794480470740 100644
 --- a/internal/boot/resolver.go
 +++ b/internal/boot/resolver.go
 @@ -55,12 +55,16 @@ func (r *LocalProviderResolver) Catalog() []provider.Descriptor {
@@ -1542,6 +1761,15 @@ index 27744a853f2d2956c247b7014f2d9e1b5bbc2968..3aa1609da4dd1d5d8cccd27efbaf6ab9
  			if capability.ModelInfo.ContextWindow > 0 && d.ContextWindow == 0 {
  				d.ContextWindow = capability.ModelInfo.ContextWindow
  			}
+@@ -107,7 +111,7 @@ func (r *LocalProviderResolver) Resolve(selection provider.Selection) (provider.
+ 				return nil, err
+ 			}
+ 		}
+-		entry.Effort = *selection.Effort
++		entry.SetRuntimeEffort(*selection.Effort)
+ 	}
+ 	var modelInfo *provider.ModelInfo
+ 	if r.capabilities != nil {
 @@ -263,7 +267,7 @@ func syntheticEntryFromResolver(r provider.Resolver, ref string) *config.Provide
  	}
  	contextWindow := match.ContextWindow
@@ -1551,6 +1779,118 @@ index 27744a853f2d2956c247b7014f2d9e1b5bbc2968..3aa1609da4dd1d5d8cccd27efbaf6ab9
  	}
  	entry := &config.ProviderEntry{
  		Name: name, Model: model, ContextWindow: contextWindow,
+diff --git a/internal/boot/unknown_image_metadata_test.go b/internal/boot/unknown_image_metadata_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..d08b4537f713e4131d64e1655138faf2e12c8370
+--- /dev/null
++++ b/internal/boot/unknown_image_metadata_test.go
+@@ -0,0 +1,106 @@
++package boot
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"fmt"
++	"image"
++	"image/png"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++
++	"reasonix/internal/config"
++	"reasonix/internal/event"
++	"reasonix/internal/netclient"
++	"reasonix/internal/provider"
++)
++
++func TestBuildUnknownImageAttachmentReachesProvider(t *testing.T) {
++	isolateConfigHome(t)
++	root := robustTempDir(t)
++	t.Chdir(root)
++	seen := make(chan bool, 1)
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		var request struct {
++			Messages []struct {
++				Content json.RawMessage `json:"content"`
++			} `json:"messages"`
++		}
++		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
++			t.Error(err)
++		}
++		attached := false
++		for _, message := range request.Messages {
++			if strings.Contains(string(message.Content), `"type":"image_url"`) {
++				attached = true
++			}
++		}
++		seen <- attached
++		w.Header().Set("Content-Type", "text/event-stream")
++		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"synthetic answer\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
++	}))
++	defer srv.Close()
++	cfg := config.Default()
++	cfg.DefaultModel = "relay/codebuddy/deepseek-v4.1-flash"
++	cfg.Providers = []config.ProviderEntry{{Name: "relay", Kind: "openai", BaseURL: srv.URL, Model: "codebuddy/deepseek-v4.1-flash", APIKeyEnv: "UNKNOWN_IMAGE_TEST_KEY"}}
++	t.Setenv("UNKNOWN_IMAGE_TEST_KEY", "test-key")
++	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
++		t.Fatal(err)
++	}
++	var data bytes.Buffer
++	if err := png.Encode(&data, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
++		t.Fatal(err)
++	}
++	imagePath := filepath.Join(root, ".reasonix", "attachments", "probe.png")
++	if err := os.MkdirAll(filepath.Dir(imagePath), 0700); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(imagePath, data.Bytes(), 0600); err != nil {
++		t.Fatal(err)
++	}
++	approveWorkspace(t, root)
++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
++	defer cancel()
++	ctrl, err := Build(ctx, Options{WorkspaceRoot: root, Sink: event.Discard})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer ctrl.Close()
++	if err := ctrl.Run(ctx, "describe @.reasonix/attachments/probe.png"); err != nil {
++		t.Fatal(err)
++	}
++	select {
++	case attached := <-seen:
++		if !attached {
++			t.Fatal("model request lost explicit image attachment")
++		}
++	default:
++		t.Fatal("provider request was not made")
++	}
++}
++
++func TestLocalResolverKeepsUnknownImagesAvailableWithoutFallback(t *testing.T) {
++	t.Setenv("REASONIX_HOME", t.TempDir())
++	cfg := config.Default()
++	cfg.Providers = []config.ProviderEntry{{Name: "relay", Kind: "openai", BaseURL: "http://127.0.0.1:8790/v1", Model: "codebuddy/deepseek-v4.1-flash"}}
++	resolver := NewLocalProviderResolverWithCapabilities(cfg, netclient.ProxySpec{}, config.NewTransientModelCapabilityResolver())
++	p, err := resolver.Resolve(provider.Selection{Ref: "relay/codebuddy/deepseek-v4.1-flash"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if p.(provider.ModelInfoProvider).ModelInfo().InputModalities != nil {
++		t.Fatal("unknown gateway model was falsely declared text-only")
++	}
++	if !runtimeImageEnabled(p, true) {
++		t.Fatal("unknown image capability disabled current-model attachments")
++	}
++	if runtimeImageEnabled(p, false) {
++		t.Fatal("unknown image capability bypassed configured fallback")
++	}
++}
 diff --git a/internal/cli/branch.go b/internal/cli/branch.go
 index 806644db6edbad38f1d7be69a2de9b6709c1d9a6..da371889419bfa252dc3a3d4e9cb068a813322d5 100644
 --- a/internal/cli/branch.go
@@ -1783,7 +2123,7 @@ index 1ee6c90a0bd407fc4cab7bb7c892b0a296446356..b546e0fcd7793198e07801a46aecb0f2
  
  	case tea.FocusMsg:
 diff --git a/internal/cli/chat_tui_test.go b/internal/cli/chat_tui_test.go
-index a9c5c6048b355f7e1f58234f379ec3c9bfd24f6a..3a42c1686a58056ef94896028a2b5310a62c045f 100644
+index a9c5c6048b355f7e1f58234f379ec3c9bfd24f6a..e375138d4f1a111c18b42ed6c16635c22ee21493 100644
 --- a/internal/cli/chat_tui_test.go
 +++ b/internal/cli/chat_tui_test.go
 @@ -951,6 +951,61 @@ func TestTranscriptContentWidthReservesScrollbarColumn(t *testing.T) {
@@ -1848,19 +2188,58 @@ index a9c5c6048b355f7e1f58234f379ec3c9bfd24f6a..3a42c1686a58056ef94896028a2b5310
  func TestModalPanelsHideComposerBox(t *testing.T) {
  	ask := event.Ask{
  		ID: "ask-1",
+@@ -2430,8 +2485,11 @@ func TestEffortCommandWritesCurrentDeepSeekProvider(t *testing.T) {
+ 	if err != nil {
+ 		t.Fatalf("read saved config: %v", err)
+ 	}
+-	if !strings.Contains(string(body), `effort      = "max"`) {
+-		t.Fatalf("saved config missing effort=max:\n%s", body)
++	saved := config.LoadForEditWithoutCredentials(configPath)
++	entry, _ := saved.Provider("deepseek-flash")
++	ov := entry.ModelOverrides["deepseek-v4-flash"]
++	if entry.Effort != "" || ov.Effort == nil || *ov.Effort != "max" {
++		t.Fatalf("saved config missing model-specific effort=max:\n%s", body)
+ 	}
+ }
+ 
+@@ -2476,9 +2534,11 @@ func TestEffortCommandAutoClearsProviderEffort(t *testing.T) {
+ 	if err != nil {
+ 		t.Fatalf("read saved config: %v", err)
+ 	}
+-	section := providerSection(string(body), "deepseek-flash")
+-	if strings.Contains(section, `effort      = "`) {
+-		t.Fatalf("auto should clear saved deepseek-flash effort:\n%s", section)
++	saved := config.LoadForEditWithoutCredentials(config.UserConfigPath())
++	entry, _ := saved.Provider("deepseek-flash")
++	ov := entry.ModelOverrides["deepseek-v4-flash"]
++	if entry.Effort != "" || ov.Effort == nil || *ov.Effort != "" {
++		t.Fatalf("auto should select model default without changing its connection:\n%s", body)
+ 	}
+ }
+ 
 diff --git a/internal/cli/cli.go b/internal/cli/cli.go
-index 049f471f35acfa5cf5bd8d6248c09cf37772950a..27bb288aca129557f1cf1e4e786dc07e6641e6c7 100644
+index 049f471f35acfa5cf5bd8d6248c09cf37772950a..66a6462a1c8c741aa6945ba997f788ab9caa2bb5 100644
 --- a/internal/cli/cli.go
 +++ b/internal/cli/cli.go
-@@ -43,6 +43,7 @@ import (
+@@ -12,7 +12,6 @@ import (
+ 	"flag"
+ 	"fmt"
+ 	"io"
+-	"log/slog"
+ 	"math"
+ 	"net/url"
+ 	"os"
+@@ -41,8 +40,8 @@ import (
+ 	"reasonix/internal/persistentshell"
+ 	"reasonix/internal/plugin"
  	"reasonix/internal/provider"
- 	"reasonix/internal/provider/openai"
+-	"reasonix/internal/provider/openai"
  	"reasonix/internal/serve"
 +	"reasonix/internal/session"
  	"reasonix/internal/sessiontemp"
  	"reasonix/internal/telemetry"
  	"reasonix/internal/winaclresidue"
-@@ -1238,7 +1239,8 @@ func chatREPL(args []string, version string) int {
+@@ -1238,7 +1237,8 @@ func chatREPL(args []string, version string) int {
  		// Keep the carried conversation in its existing file so the switch doesn't
  		// orphan a duplicate (#2807).
  		path := agent.ContinueSessionPath(resumePath, c.SessionDir(), c.Label())
@@ -1870,7 +2249,7 @@ index 049f471f35acfa5cf5bd8d6248c09cf37772950a..27bb288aca129557f1cf1e4e786dc07e
  			c.Close()
  			return nil, err
  		}
-@@ -1253,6 +1255,11 @@ func chatREPL(args []string, version string) int {
+@@ -1253,6 +1253,11 @@ func chatREPL(args []string, version string) int {
  			c.ReleaseResources()
  			return nil, err
  		}
@@ -1882,7 +2261,7 @@ index 049f471f35acfa5cf5bd8d6248c09cf37772950a..27bb288aca129557f1cf1e4e786dc07e
  		return c, nil
  	}
  	// /reload support: rebuild the runtime through boot.Rebuild so tools,
-@@ -1363,6 +1370,32 @@ func chatREPL(args []string, version string) int {
+@@ -1363,6 +1368,32 @@ func chatREPL(args []string, version string) int {
  // read-only command trust, which a rebuild would otherwise silently drop,
  // forcing the user to re-approve things already granted this session.
  func adoptCarriedHistoryPreservingProfileAndGrants(c *control.Controller, carry []provider.Message, path string, oldCtrl control.SessionAPI) error {
@@ -1915,7 +2294,7 @@ index 049f471f35acfa5cf5bd8d6248c09cf37772950a..27bb288aca129557f1cf1e4e786dc07e
  	if fresh := c.History(); len(fresh) > 0 && fresh[0].Role == provider.RoleSystem {
  		if len(carry) > 0 && carry[0].Role == provider.RoleSystem {
  			carry[0] = fresh[0]
-@@ -1370,6 +1403,29 @@ func adoptCarriedHistoryPreservingProfileAndGrants(c *control.Controller, carry
+@@ -1370,6 +1401,29 @@ func adoptCarriedHistoryPreservingProfileAndGrants(c *control.Controller, carry
  			carry = append([]provider.Message{fresh[0]}, carry...)
  		}
  	}
@@ -1945,7 +2324,7 @@ index 049f471f35acfa5cf5bd8d6248c09cf37772950a..27bb288aca129557f1cf1e4e786dc07e
  	c.AdoptHistory(carry, path)
  	if prev, ok := oldCtrl.(*control.Controller); ok {
  		c.RestoreSessionAuthorizations(prev.SessionAuthorizations())
-@@ -1380,10 +1436,10 @@ func adoptCarriedHistoryPreservingProfileAndGrants(c *control.Controller, carry
+@@ -1380,10 +1434,10 @@ func adoptCarriedHistoryPreservingProfileAndGrants(c *control.Controller, carry
  	// outgoing profile's contract from disk.
  	if path != "" {
  		if err := c.Snapshot(); err != nil {
@@ -1958,7 +2337,7 @@ index 049f471f35acfa5cf5bd8d6248c09cf37772950a..27bb288aca129557f1cf1e4e786dc07e
  }
  
  func prepareNativeScrollback(w io.Writer, rows int) {
-@@ -1584,7 +1640,7 @@ func interactiveSetup(configPath, envPath string) int {
+@@ -1584,7 +1638,7 @@ func interactiveSetup(configPath, envPath string) int {
  func pickSessionToResume() (cliResumeTarget, int) {
  	sessionDir := resolveCLISessionDir()
  	reclaimCLIRecoveryBranches(sessionDir)
@@ -1967,7 +2346,129 @@ index 049f471f35acfa5cf5bd8d6248c09cf37772950a..27bb288aca129557f1cf1e4e786dc07e
  	if len(entries) == 0 {
  		fmt.Fprintln(os.Stderr, i18n.M.NoSessionToResume)
  		return cliResumeTarget{}, 1
-@@ -2772,3 +2828,17 @@ func configCurrencyUsage() {
+@@ -1669,29 +1723,8 @@ func fetchOrFallback(probe *config.ProviderEntry, famName string, proxy netclien
+ // endpoint. Returning the empty slice (not an error) on full miss lets the
+ // wizard fall through to a manual text input without an error message.
+ func fetchModelListCompat(ctx context.Context, baseURL, apiKey string, proxy netclient.ProxySpec) ([]string, error) {
+-	candidates, err := config.BuildModelFetchURLs(baseURL, "")
+-	if err != nil {
+-		return nil, err
+-	}
+-	var lastErr error
+-	var firstHardErr error
+-	for _, u := range candidates {
+-		models, err := openai.FetchModelsWithOptions(ctx, u, apiKey, openai.FetchModelsOptions{Proxy: proxy})
+-		if err == nil {
+-			return models, nil
+-		}
+-		lastErr = err
+-		if !openai.IsModelFetchEndpointMiss(err) && firstHardErr == nil {
+-			firstHardErr = err
+-		}
+-	}
+-	if firstHardErr != nil {
+-		return nil, firstHardErr
+-	}
+-	if lastErr != nil {
+-		slog.Debug("model-list probe: all candidates missed", "base_url", baseURL, "err", lastErr)
+-	}
+-	return nil, nil
++	catalog, err := fetchModelCatalogCompat(ctx, baseURL, apiKey, proxy)
++	return setupCatalogModelIDs(catalog), err
+ }
+ 
+ // buildFamilyEntry returns a single ProviderEntry exposing the user's
+@@ -1897,8 +1930,11 @@ func familyOf(name string) providerFamily {
+ }
+ 
+ type providerPromptResult struct {
+-	entries     []config.ProviderEntry
+-	credentials map[string]string
++	imageCatalog            []provider.ModelInfo
++	imageStarted            time.Time
++	imageCredentialRevision string
++	entries                 []config.ProviderEntry
++	credentials             map[string]string
+ 	// keyEnvTyped: the user typed the entries' api_key_env rather than accepting keyEnvDraft.
+ 	keyEnvTyped bool
+ 	keyEnvDraft string
+@@ -1987,7 +2023,10 @@ func promptCustomProviderFromURL(proxy netclient.ProxySpec) (providerPromptResul
+ 	fmt.Printf("  %s\n", dim(fmt.Sprintf(i18n.M.FetchingModelsFmt, "custom")))
+ 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+ 	defer cancel()
+-	models, err := fetchModelListCompat(ctx, baseURL, apiKey, proxy)
++	started := time.Now()
++	credentialRevision := config.CredentialStoreRevision()
++	catalog, err := fetchModelCatalogCompat(ctx, baseURL, apiKey, proxy)
++	models := setupCatalogModelIDs(catalog)
+ 	if err != nil || len(models) == 0 {
+ 		if err != nil {
+ 			fmt.Fprintf(os.Stderr, "  %s\n", dim(fmt.Sprintf(i18n.M.FetchModelsFailedFmt, "custom", err)))
+@@ -1998,10 +2037,7 @@ func promptCustomProviderFromURL(proxy netclient.ProxySpec) (providerPromptResul
+ 	}
+ 	fmt.Printf("  %s\n", green(fmt.Sprintf(i18n.M.FetchModelsSuccessFmt, len(models), "custom")))
+ 
+-	items := make([]menuItem, len(models))
+-	for i, m := range models {
+-		items[i] = menuItem{name: m}
+-	}
++	items := setupModelItems(config.ProviderEntry{Name: providerName, Kind: "openai", BaseURL: baseURL}, catalog)
+ 	idxs, err := selectMany(fmt.Sprintf(i18n.M.SelectModelsLabel, "custom"), items)
+ 	if err != nil || len(idxs) == 0 {
+ 		return providerPromptResult{}, fmt.Errorf("no models selected")
+@@ -2014,8 +2050,12 @@ func promptCustomProviderFromURL(proxy netclient.ProxySpec) (providerPromptResul
+ 		Name: providerName, Kind: "openai", BaseURL: baseURL,
+ 		Models: selected, Model: selected[0], APIKeyEnv: keyEnv, ContextWindow: askContextWindow(in, os.Stdout),
+ 	}
++	entry.ApplyDiscoveredLimits(catalog)
+ 	fmt.Printf("  %s\n", green(fmt.Sprintf(i18n.M.CustomAddedFmt, entry.Name+"/"+selected[0])))
+-	return newProviderPromptResult([]config.ProviderEntry{entry}, keyEnv, apiKey, keyEnvTyped, draft), nil
++	result := newProviderPromptResult([]config.ProviderEntry{entry}, keyEnv, apiKey, keyEnvTyped, draft)
++	result.imageCatalog, result.imageStarted = catalog, started
++	result.imageCredentialRevision = credentialRevision
++	return result, nil
+ }
+ 
+ // promptAnthropicProvider handles the Anthropic compatible provider entry flow.
+@@ -2089,7 +2129,10 @@ func promptAnthropicProviderFromURL(proxy netclient.ProxySpec) (providerPromptRe
+ 	fmt.Printf("  %s\n", dim(fmt.Sprintf(i18n.M.AnthropicFetchingModelsFmt, "anthropic")))
+ 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+ 	defer cancel()
+-	models, err := fetchModelListCompat(ctx, baseURL, apiKey, proxy)
++	started := time.Now()
++	credentialRevision := config.CredentialStoreRevision()
++	catalog, err := fetchModelCatalogCompat(ctx, baseURL, apiKey, proxy)
++	models := setupCatalogModelIDs(catalog)
+ 	if err != nil || len(models) == 0 {
+ 		if err != nil {
+ 			fmt.Fprintf(os.Stderr, "  %s\n", dim(fmt.Sprintf(i18n.M.AnthropicFetchModelsFailedFmt, "anthropic", err)))
+@@ -2100,10 +2143,7 @@ func promptAnthropicProviderFromURL(proxy netclient.ProxySpec) (providerPromptRe
+ 	}
+ 	fmt.Printf("  %s\n", green(fmt.Sprintf(i18n.M.AnthropicFetchModelsSuccessFmt, len(models), "anthropic")))
+ 
+-	items := make([]menuItem, len(models))
+-	for i, m := range models {
+-		items[i] = menuItem{name: m}
+-	}
++	items := setupModelItems(config.ProviderEntry{Name: providerSlug("anthropic", baseURL), Kind: "anthropic", BaseURL: baseURL}, catalog)
+ 	idxs, err := selectMany(fmt.Sprintf(i18n.M.AnthropicSelectModelsLabel, "anthropic"), items)
+ 	if err != nil || len(idxs) == 0 {
+ 		return providerPromptResult{}, fmt.Errorf("no models selected")
+@@ -2116,8 +2156,12 @@ func promptAnthropicProviderFromURL(proxy netclient.ProxySpec) (providerPromptRe
+ 		Name: providerSlug("anthropic", baseURL), Kind: "anthropic", BaseURL: baseURL,
+ 		Models: selected, Model: selected[0], APIKeyEnv: keyEnv, ContextWindow: askContextWindow(in, os.Stdout),
+ 	}
++	entry.ApplyDiscoveredLimits(catalog)
+ 	fmt.Printf("  %s\n", green(fmt.Sprintf(i18n.M.AnthropicAddedFmt, entry.Name+"/"+selected[0])))
+-	return newProviderPromptResult([]config.ProviderEntry{entry}, keyEnv, apiKey, keyEnvTyped, "ANTHROPIC_API_KEY"), nil
++	result := newProviderPromptResult([]config.ProviderEntry{entry}, keyEnv, apiKey, keyEnvTyped, "ANTHROPIC_API_KEY")
++	result.imageCatalog, result.imageStarted = catalog, started
++	result.imageCredentialRevision = credentialRevision
++	return result, nil
+ }
+ 
+ func groupByFamily(providers []config.ProviderEntry) ([]string, map[string][]int, map[string]providerFamily) {
+@@ -2772,3 +2816,17 @@ func configCurrencyUsage() {
    reasonix config currency [auto|CNY|USD]
  `)
  }
@@ -2009,6 +2510,24 @@ index 7363e18c604c56ae15dc67341e370d663b278ba5..edf8d010c63a638b7051223e64061ba1
  			setup.invalidateTest()
  			setup.key += text
  		}
+diff --git a/internal/cli/effort.go b/internal/cli/effort.go
+index 6db43c08ee296b76674d46ae0602ecfcefa0a3b5..ed6473052e1140b73313e985a99c8177eaf54230 100644
+--- a/internal/cli/effort.go
++++ b/internal/cli/effort.go
+@@ -66,12 +66,7 @@ func (m *chatTUI) runEffortCommand(input string) tea.Cmd {
+ 				return err
+ 			}
+ 		}
+-		if entry.Kind == "anthropic" && effort != "" && entry.Thinking == "" {
+-			if err := edit.SetProviderThinking(entry.Name, "adaptive"); err != nil {
+-				return err
+-			}
+-		}
+-		if err := edit.SetProviderEffort(entry.Name, effort); err != nil {
++		if err := edit.SetModelEffort(entry.Name, entry.Model, &effort); err != nil {
+ 			return err
+ 		}
+ 		return edit.SaveTo(path)
 diff --git a/internal/cli/mcp_manager_actions.go b/internal/cli/mcp_manager_actions.go
 index 3a366c322f386cee1d3c135d51ecabd907ce3a90..a6ce7fc349c9ea8c4040b59947ad63d6b51b2b5e 100644
 --- a/internal/cli/mcp_manager_actions.go
@@ -3160,19 +3679,537 @@ index 0000000000000000000000000000000000000000..040dc8d4e929c3df2cef0e772c13f344
 +		t.Fatalf("bare Esc did not cancel: searching=%v query=%q sel=%d rows=%d", searching, searchQuery, sel, len(filtered))
 +	}
 +}
+diff --git a/internal/cli/setup_image_capabilities.go b/internal/cli/setup_image_capabilities.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..a29862b5e6c5e41aaae79e86b2becb4868e405a7
+--- /dev/null
++++ b/internal/cli/setup_image_capabilities.go
+@@ -0,0 +1,160 @@
++package cli
++
++import (
++	"context"
++	"crypto/sha256"
++	"fmt"
++	"strings"
++	"time"
++
++	"reasonix/internal/config"
++	"reasonix/internal/i18n"
++	"reasonix/internal/netclient"
++	"reasonix/internal/provider"
++	"reasonix/internal/provider/openai"
++)
++
++// A discovery stays in the setup draft until configuration and credentials commit.
++type setupImageCatalog struct {
++	entry                   config.ProviderEntry
++	models                  []provider.ModelInfo
++	started                 time.Time
++	credentialRevision      string
++	pendingCredentialDigest [32]byte
++	pendingCredential       bool
++}
++
++func (s *providerSetupSession) stageImageCatalog(entry config.ProviderEntry, models []provider.ModelInfo, started time.Time) {
++	s.stageImageCatalogAt(entry, models, started, config.CredentialStoreRevision())
++}
++
++func (s *providerSetupSession) stageImageCatalogAt(entry config.ProviderEntry, models []provider.ModelInfo, started time.Time, revision string) {
++	if s.imageCatalogs == nil {
++		s.imageCatalogs = make(map[string]setupImageCatalog)
++	}
++	copied := append([]provider.ModelInfo(nil), models...)
++	for i := range copied {
++		copied[i].InputModalities = append([]provider.ModelModality(nil), copied[i].InputModalities...)
++		if copied[i].ReasoningInfo != nil {
++			copy := *copied[i].ReasoningInfo
++			copy.Efforts = append([]string(nil), copy.Efforts...)
++			if copy.Supported != nil {
++				value := *copy.Supported
++				copy.Supported = &value
++			}
++			copied[i].ReasoningInfo = &copy
++		}
++	}
++	value, pending := s.pendingConnectionCredentials[entry.Name]
++	s.imageCatalogs[entry.Name] = setupImageCatalog{
++		entry: config.ProviderEntryConfigSnapshot(entry), models: copied, started: started,
++		credentialRevision: revision,
++		pendingCredential:  pending, pendingCredentialDigest: sha256.Sum256([]byte(value)),
++	}
++}
++
++// Discard metadata if credentials changed after discovery. This runs under the
++// setup commit locks, before its own credential rotations change the revision.
++func (s *providerSetupSession) validateImageCatalogCredentials() {
++	revision := config.CredentialStoreRevision()
++	for name, discovery := range s.imageCatalogs {
++		value, pending := s.pendingConnectionCredentials[name]
++		if revision != discovery.credentialRevision || pending != discovery.pendingCredential || sha256.Sum256([]byte(value)) != discovery.pendingCredentialDigest {
++			delete(s.imageCatalogs, name)
++		}
++	}
++}
++
++// Compare against the draft before rebinding discoveries to committed credential
++// slots. A later edit or a concurrent config change must not certify a new route.
++func (s *providerSetupSession) persistImageCatalogs(fresh *config.Config) {
++	resolver := config.NewModelCapabilityResolver()
++	for name, discovery := range s.imageCatalogs {
++		draft, ok := s.cfg.Provider(name)
++		if !ok || !config.ProviderEntriesConfigEqual(*draft, discovery.entry) {
++			continue
++		}
++		entry, ok := fresh.Provider(name)
++		if !ok {
++			continue
++		}
++		committed := config.ProviderEntryConfigSnapshot(*entry)
++		// Successful setup may rotate only APIKeyEnv after replaying the draft.
++		if _, rotated := s.pendingConnectionCredentials[name]; rotated {
++			committed.APIKeyEnv = discovery.entry.APIKeyEnv
++		}
++		committed.ModelOverrides = cloneSetupOverridesWithoutDiscovery(committed.ModelOverrides)
++		expected := discovery.entry
++		expected.ModelOverrides = cloneSetupOverridesWithoutDiscovery(expected.ModelOverrides)
++		if !config.ProviderEntriesConfigEqual(committed, expected) {
++			continue
++		}
++		resolver.PutCatalogAt(*entry, discovery.models, discovery.started)
++	}
++}
++
++func setupModelItems(entry config.ProviderEntry, catalog []provider.ModelInfo) []menuItem {
++	resolver := config.NewTransientModelCapabilityResolver()
++	builtin := config.NewTransientModelCapabilityResolver()
++	resolver.PutCatalog(entry, catalog)
++	items := make([]menuItem, 0, len(catalog))
++	for _, model := range catalog {
++		selected := entry
++		selected.Model = model.ID
++		capability := resolver.Resolve(&selected)
++		state := i18n.M.SetupImageUnknown
++		switch capability.State {
++		case config.CapabilitySupported:
++			state = i18n.M.SetupImageSupported
++		case config.CapabilityUnsupported:
++			state = i18n.M.SetupImageUnsupported
++		}
++		source := i18n.M.SetupImageNoMetadata
++		switch capability.Source {
++		case config.CapabilitySourceOverride, config.CapabilitySourceLegacy:
++			source = i18n.M.SetupImageManual
++		case config.CapabilitySourcePreset, config.CapabilitySourceProtocol:
++			source = i18n.M.SetupImageBuiltin
++		case config.CapabilitySourceAdapter:
++			source = i18n.M.SetupImageEndpoint
++			if capability.InputModalities == nil {
++				source = i18n.M.SetupImageNoMetadata
++			}
++			if builtin.Resolve(&selected).Source == config.CapabilitySourceAdapter {
++				source = i18n.M.SetupImageBuiltin
++			}
++		}
++		items = append(items, menuItem{name: model.ID, desc: fmt.Sprintf("img: %s · %s · %s", state, source, setupReasoningDescription(entry, model))})
++	}
++	return items
++}
++
++// Keep the URL wizard's existing endpoint/auth fallback policy, preserving
++// metadata instead of reducing the response to model IDs before selection.
++func fetchModelCatalogCompat(ctx context.Context, baseURL, apiKey string, proxy netclient.ProxySpec) ([]provider.ModelInfo, error) {
++	candidates, err := config.BuildModelFetchURLs(baseURL, "")
++	if err != nil {
++		return nil, err
++	}
++	var firstHardErr error
++	for _, u := range candidates {
++		catalog, err := openai.FetchModelCatalogWithOptions(ctx, u, apiKey, openai.FetchModelsOptions{Proxy: proxy})
++		if err == nil {
++			return catalog, nil
++		}
++		if !openai.IsModelFetchEndpointMiss(err) && firstHardErr == nil {
++			firstHardErr = err
++		}
++	}
++	return nil, firstHardErr
++}
++
++func setupCatalogModelIDs(catalog []provider.ModelInfo) []string {
++	models := make([]string, 0, len(catalog))
++	for _, info := range catalog {
++		if strings.TrimSpace(info.ID) != "" {
++			models = append(models, info.ID)
++		}
++	}
++	return models
++}
+diff --git a/internal/cli/setup_image_capabilities_test.go b/internal/cli/setup_image_capabilities_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..95a8b8db21eb423e7e92599686c6bb47b2761d0e
+--- /dev/null
++++ b/internal/cli/setup_image_capabilities_test.go
+@@ -0,0 +1,299 @@
++package cli
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++
++	"reasonix/internal/config"
++	"reasonix/internal/i18n"
++	"reasonix/internal/netclient"
++	"reasonix/internal/provider"
++)
++
++func setupImageFixture(t *testing.T) (*providerSetupSession, string) {
++	t.Helper()
++	home := t.TempDir()
++	t.Setenv("REASONIX_HOME", home)
++	t.Setenv("REASONIX_CACHE_HOME", filepath.Join(home, "cache"))
++	cfg := config.Default()
++	cfg.Providers = []config.ProviderEntry{{Name: "relay", Kind: "openai", BaseURL: "http://127.0.0.1:8790/v1", Models: []string{"image", "text", "unknown"}, Default: "image", APIKeyEnv: "SETUP_IMAGE_TEST_KEY"}}
++	cfg.DefaultModel = "relay/image"
++	path := filepath.Join(home, "config.toml")
++	if err := cfg.SaveTo(path); err != nil {
++		t.Fatal(err)
++	}
++	fresh, err := config.LoadForEditReadOnlyStrict(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return newProviderSetupSession(fresh), path
++}
++
++func setupImageTestCatalog() []provider.ModelInfo {
++	return []provider.ModelInfo{
++		{ID: "image", InputModalities: []provider.ModelModality{provider.ModalityText, provider.ModalityImage}},
++		{ID: "text", InputModalities: []provider.ModelModality{provider.ModalityText}},
++		{ID: "unknown"},
++	}
++}
++
++func TestSetupImageCatalogSavesOnlyAfterCommit(t *testing.T) {
++	s, path := setupImageFixture(t)
++	before, _ := os.ReadFile(path)
++	s.stageImageCatalog(s.cfg.Providers[0], setupImageTestCatalog(), time.Now())
++	entry, _ := s.cfg.ResolveModel("relay/image")
++	if got := config.NewModelCapabilityResolver().Resolve(entry); got.State != config.CapabilityUnknown {
++		t.Fatalf("draft wrote capability cache: %+v", got)
++	}
++	written, err := commitProviderSetupSession(s, path)
++	if err != nil || written {
++		t.Fatalf("cache-only commit: written=%v err=%v", written, err)
++	}
++	for model, want := range map[string]config.CapabilityState{"image": config.CapabilitySupported, "text": config.CapabilityUnsupported, "unknown": config.CapabilityUnknown} {
++		entry, _ := s.cfg.ResolveModel("relay/" + model)
++		if got := config.NewModelCapabilityResolver().Resolve(entry); got.State != want {
++			t.Fatalf("%s after cache reload: %+v", model, got)
++		}
++	}
++	after, _ := os.ReadFile(path)
++	if string(before) != string(after) || s.cfg.DefaultModel != "relay/image" {
++		t.Fatal("discovery rewrote user config/default")
++	}
++}
++
++func TestSetupImageCatalogDoesNotCertifyEditedOrConflictingRoutes(t *testing.T) {
++	for _, concurrent := range []bool{false, true} {
++		t.Run(fmt.Sprint(concurrent), func(t *testing.T) {
++			s, path := setupImageFixture(t)
++			s.stageImageCatalog(s.cfg.Providers[0], setupImageTestCatalog(), time.Now())
++			if concurrent {
++				other, err := config.LoadForEditReadOnlyStrict(path)
++				if err != nil {
++					t.Fatal(err)
++				}
++				other.Providers[0].BaseURL = "http://127.0.0.1:9999/v1"
++				if err := other.SaveTo(path); err != nil {
++					t.Fatal(err)
++				}
++			} else {
++				edited := s.cfg.Providers[0]
++				edited.BaseURL = "http://127.0.0.1:9999/v1"
++				if err := s.upsert([]config.ProviderEntry{edited}); err != nil {
++					t.Fatal(err)
++				}
++			}
++			_, _ = commitProviderSetupSession(s, path)
++			fresh, err := config.LoadForEditReadOnlyStrict(path)
++			if err != nil {
++				t.Fatal(err)
++			}
++			entry, _ := fresh.ResolveModel("relay/image")
++			if got := config.NewModelCapabilityResolver().Resolve(entry); got.State != config.CapabilityUnknown {
++				t.Fatalf("new route inherited old image fact: %+v", got)
++			}
++		})
++	}
++}
++
++func TestSetupImageCatalogConflictDoesNotWriteCache(t *testing.T) {
++	s, path := setupImageFixture(t)
++	edited := s.cfg.Providers[0]
++	edited.ContextWindow = 200000
++	if err := s.upsert([]config.ProviderEntry{edited}); err != nil {
++		t.Fatal(err)
++	}
++	current, _ := s.cfg.Provider("relay")
++	s.stageImageCatalog(*current, setupImageTestCatalog(), time.Now())
++	concurrent, err := config.LoadForEditReadOnlyStrict(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	concurrent.Providers[0].ContextWindow = 300000
++	if err := concurrent.SaveTo(path); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := commitProviderSetupSession(s, path); err == nil {
++		t.Fatal("concurrent edit was accepted")
++	}
++	entry, _ := concurrent.ResolveModel("relay/image")
++	if got := config.NewModelCapabilityResolver().Resolve(entry); got.State != config.CapabilityUnknown {
++		t.Fatalf("failed save wrote cache: %+v", got)
++	}
++}
++
++func TestSetupImageCatalogCommitPreservesManualOverride(t *testing.T) {
++	s, path := setupImageFixture(t)
++	disabled := false
++	edited := s.cfg.Providers[0]
++	edited.ModelOverrides = map[string]config.ProviderModelOverride{"image": {Vision: &disabled, ContextWindow: 200000}}
++	if err := s.upsert([]config.ProviderEntry{edited}); err != nil {
++		t.Fatal(err)
++	}
++	current, _ := s.cfg.Provider("relay")
++	s.stageImageCatalog(*current, setupImageTestCatalog(), time.Now())
++	if _, err := commitProviderSetupSession(s, path); err != nil {
++		t.Fatal(err)
++	}
++	fresh, err := config.LoadForEditReadOnlyStrict(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	entry, _ := fresh.ResolveModel("relay/image")
++	got := config.NewModelCapabilityResolver().Resolve(entry)
++	if got.State != config.CapabilityUnsupported || got.Source != config.CapabilitySourceOverride || got.AutomaticState != config.CapabilitySupported || entry.ContextWindow != 200000 {
++		t.Fatalf("manual setting lost: %+v", got)
++	}
++}
++
++func TestSetupImageCatalogFollowsCommittedCredentialRotation(t *testing.T) {
++	s, path := setupImageFixture(t)
++	if err := s.setCredentialForProviders([]string{"relay"}, "SETUP_IMAGE_TEST_KEY", "test-only-key"); err != nil {
++		t.Fatal(err)
++	}
++	current, _ := s.cfg.Provider("relay")
++	s.stageImageCatalog(*current, setupImageTestCatalog(), time.Now())
++	if _, err := commitProviderSetupSession(s, path); err != nil {
++		t.Fatal(err)
++	}
++	fresh, err := config.LoadForEditReadOnlyStrict(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	entry, _ := fresh.ResolveModel("relay/image")
++	if got := config.NewModelCapabilityResolver().Resolve(entry); got.State != config.CapabilitySupported {
++		t.Fatalf("new credential slot lost discovery: %+v", got)
++	}
++}
++
++func TestSetupImageCatalogRejectsChangedPendingCredential(t *testing.T) {
++	s, path := setupImageFixture(t)
++	if err := s.setCredentialForProviders([]string{"relay"}, "SETUP_IMAGE_TEST_KEY", "first-key"); err != nil {
++		t.Fatal(err)
++	}
++	current, _ := s.cfg.Provider("relay")
++	s.stageImageCatalog(*current, setupImageTestCatalog(), time.Now())
++	if err := s.setCredentialForProviders([]string{"relay"}, "SETUP_IMAGE_TEST_KEY", "replacement-key"); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := commitProviderSetupSession(s, path); err != nil {
++		t.Fatal(err)
++	}
++	fresh, err := config.LoadForEditReadOnlyStrict(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	entry, _ := fresh.ResolveModel("relay/image")
++	if got := config.NewModelCapabilityResolver().Resolve(entry); got.State != config.CapabilityUnknown {
++		t.Fatalf("replacement credential inherited discovery: %+v", got)
++	}
++}
++
++func TestSetupImageItemsShowStateAndRespectManualChoice(t *testing.T) {
++	s, _ := setupImageFixture(t)
++	items := setupModelItems(s.cfg.Providers[0], setupImageTestCatalog())
++	for i, want := range []string{i18n.M.SetupImageSupported, i18n.M.SetupImageUnsupported, i18n.M.SetupImageUnknown} {
++		if !strings.Contains(items[i].desc, "img:") || !strings.Contains(items[i].desc, want) {
++			t.Fatalf("item %d: %+v", i, items[i])
++		}
++	}
++	entry := s.cfg.Providers[0]
++	no := false
++	entry.ModelOverrides = map[string]config.ProviderModelOverride{"image": {Vision: &no}}
++	if got := setupModelItems(entry, setupImageTestCatalog())[0].desc; !strings.Contains(got, i18n.M.SetupImageManual) || !strings.Contains(got, i18n.M.SetupImageUnsupported) {
++		t.Fatal(got)
++	}
++}
++
++func TestSetupImageCatalogNewConnectionRetainsMetadata(t *testing.T) {
++	s, path := setupImageFixture(t)
++	entry := config.ProviderEntry{Name: "new-relay", Kind: "openai", BaseURL: "http://127.0.0.1:8888/v1", Model: "image"}
++	result := newProviderPromptResult([]config.ProviderEntry{entry}, "", "", false, "")
++	result.imageCatalog, result.imageStarted = setupImageTestCatalog(), time.Now()
++	result.imageCredentialRevision = config.CredentialStoreRevision()
++	if !s.addPrompted(nil, nil, result) {
++		t.Fatal("new connection rejected")
++	}
++	if _, err := commitProviderSetupSession(s, path); err != nil {
++		t.Fatal(err)
++	}
++	fresh, err := config.LoadForEditReadOnlyStrict(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	selected, ok := fresh.ResolveModel("new-relay/image")
++	if !ok || config.NewModelCapabilityResolver().Resolve(selected).State != config.CapabilitySupported {
++		t.Fatal("new connection lost image discovery")
++	}
++}
++
++func TestSetupImageRefreshStagesMetadataUntilSave(t *testing.T) {
++	s, path := setupImageFixture(t)
++	requests := 0
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		requests++
++		if r.Method != "GET" || r.URL.Path != "/v1/models" {
++			t.Errorf("unexpected probe: %s %s", r.Method, r.URL.Path)
++		}
++		fmt.Fprint(w, `{"data":[{"id":"image","supports_vision":true},{"id":"unknown"}]}`)
++	}))
++	defer srv.Close()
++	entry := s.cfg.Providers[0]
++	entry.BaseURL = srv.URL + "/v1"
++	if err := s.upsert([]config.ProviderEntry{entry}); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("SETUP_IMAGE_TEST_KEY", "test-only-key")
++	old := selectSetupModels
++	t.Cleanup(func() { selectSetupModels = old })
++	selectSetupModels = func(_ string, items []menuItem) ([]int, error) {
++		if len(items) != 2 || !strings.Contains(items[0].desc, i18n.M.SetupImageSupported) || !strings.Contains(items[1].desc, i18n.M.SetupImageUnknown) {
++			t.Fatalf("items=%+v", items)
++		}
++		return nil, errors.New("cancelled")
++	}
++	testAndRefreshProvider(s, entry)
++	if len(s.imageCatalogs) != 0 {
++		t.Fatal("cancelled picker staged capabilities")
++	}
++	selectSetupModels = func(string, []menuItem) ([]int, error) { return []int{0, 1}, nil }
++	testAndRefreshProvider(s, entry)
++	selected, _ := s.cfg.ResolveModel("relay/image")
++	if config.NewModelCapabilityResolver().Resolve(selected).State != config.CapabilityUnknown {
++		t.Fatal("refresh persisted before Save")
++	}
++	if _, err := commitProviderSetupSession(s, path); err != nil {
++		t.Fatal(err)
++	}
++	fresh, err := config.LoadForEditReadOnlyStrict(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	selected, _ = fresh.ResolveModel("relay/image")
++	if config.NewModelCapabilityResolver().Resolve(selected).State != config.CapabilitySupported || requests != 2 {
++		t.Fatalf("refresh did not save metadata: requests=%d", requests)
++	}
++}
++
++func TestSetupImageCatalogFetchUsesOnlyModelMetadata(t *testing.T) {
++	requests := 0
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		requests++
++		if r.Method != "GET" || r.URL.Path != "/v1/models" {
++			t.Errorf("unexpected inference probe: %s %s", r.Method, r.URL.Path)
++		}
++		fmt.Fprint(w, `{"data":[{"id":"image","architecture":{"input_modalities":["text","image"]}},{"id":"unknown"}]}`)
++	}))
++	defer srv.Close()
++	catalog, err := fetchModelCatalogCompat(context.Background(), srv.URL+"/v1", "", netclient.ProxySpec{})
++	if err != nil || len(catalog) != 2 || !catalog[0].SupportsInput(provider.ModalityImage) || catalog[1].InputModalities != nil || requests != 1 {
++		t.Fatalf("catalog=%+v requests=%d err=%v", catalog, requests, err)
++	}
++}
+diff --git a/internal/cli/setup_key_env.go b/internal/cli/setup_key_env.go
+index 53238a39cb7c8dcf1bc7ebde4e1647a45fad7d7c..c78fb8c298ca51eebd23250c089afcc605861ba5 100644
+--- a/internal/cli/setup_key_env.go
++++ b/internal/cli/setup_key_env.go
+@@ -51,6 +51,13 @@ func (s *providerSetupSession) addPrompted(in *bufio.Scanner, w io.Writer, resul
+ 	}
+ 	// After the new keys are staged, so usability sees them.
+ 	s.promoteDefaultToNewProviders(result.entries)
++	if len(result.imageCatalog) > 0 {
++		for _, entry := range result.entries {
++			if current, ok := s.cfg.Provider(entry.Name); ok {
++				s.stageImageCatalogAt(*current, result.imageCatalog, result.imageStarted, result.imageCredentialRevision)
++			}
++		}
++	}
+ 	return true
+ }
+ 
 diff --git a/internal/cli/setup_manager.go b/internal/cli/setup_manager.go
-index 275a5771b62fe58fb4ed82efec91045654db4e1d..93fb6eefce26c3d786e0978a2efc90b0faf9bef7 100644
+index 275a5771b62fe58fb4ed82efec91045654db4e1d..3fdd17dcd7cffd92bd0faddb86f3c75290818edc 100644
 --- a/internal/cli/setup_manager.go
 +++ b/internal/cli/setup_manager.go
-@@ -9,6 +9,7 @@ import (
+@@ -3,14 +3,13 @@ package cli
+ import (
+ 	"bufio"
+ 	"bytes"
+-	"context"
+ 	"errors"
+ 	"fmt"
  	"io"
  	"os"
  	"sort"
 +	"strconv"
  	"strings"
- 	"time"
+-	"time"
  
-@@ -589,31 +590,137 @@ func manageProvider(s *providerSetupSession, providerIndex int) {
+ 	"reasonix/internal/config"
+ 	"reasonix/internal/i18n"
+@@ -31,6 +30,7 @@ type providerSetupSession struct {
+ 	projectScoped                bool
+ 	declaredProviders            []string
+ 	operations                   []providerSetupOperation
++	imageCatalogs                map[string]setupImageCatalog
+ }
+ 
+ const setupManagerContinue = 2
+@@ -460,6 +460,12 @@ func (s *providerSetupSession) summary() []string {
+ 		}
+ 	}
+ 	var out []string
++	if len(s.imageCatalogs) > 0 {
++		out = append(out, i18n.M.SetupImageSaveHint)
++		if s.hasReasoningCatalog() {
++			out = append(out, i18n.M.SetupReasoningSaveHint)
++		}
++	}
+ 	if len(added) > 0 {
+ 		out = append(out, fmt.Sprintf(i18n.M.SetupSummaryAddedFmt, strings.Join(added, ", ")))
+ 	}
+@@ -589,31 +595,141 @@ func manageProvider(s *providerSetupSession, providerIndex int) {
  		return
  	}
  	p := s.cfg.Providers[providerIndex]
@@ -3202,6 +4239,8 @@ index 275a5771b62fe58fb4ed82efec91045654db4e1d..93fb6eefce26c3d786e0978a2efc90b0
 -	case 3:
 +	case providerActionWindows:
 +		editProviderModelWindows(s, p)
++	case providerActionEfforts:
++		editProviderModelEfforts(s, p)
 +	case providerActionDefault:
  		setDefaultProvider(s, p)
 -	case 4:
@@ -3217,6 +4256,7 @@ index 275a5771b62fe58fb4ed82efec91045654db4e1d..93fb6eefce26c3d786e0978a2efc90b0
 +	providerActionKey
 +	providerActionRefresh
 +	providerActionWindows
++	providerActionEfforts
 +	providerActionDefault
 +	providerActionRemove
 +	providerActionBack
@@ -3228,6 +4268,7 @@ index 275a5771b62fe58fb4ed82efec91045654db4e1d..93fb6eefce26c3d786e0978a2efc90b0
 +		{name: i18n.M.SetupUpdateKey},
 +		{name: i18n.M.SetupTestRefresh},
 +		{name: i18n.M.SetupModelWindows, desc: modelWindowsSummary(p)},
++		{name: i18n.M.SetupModelEfforts, desc: i18n.M.SetupModelEffortsHint},
 +		{name: i18n.M.SetupSetDefault},
 +		{name: i18n.M.SetupRemoveProvider},
 +		{name: i18n.M.SetupBack},
@@ -3324,43 +4365,101 @@ index 275a5771b62fe58fb4ed82efec91045654db4e1d..93fb6eefce26c3d786e0978a2efc90b0
  func editProvider(s *providerSetupSession, current config.ProviderEntry) {
  	in := bufio.NewScanner(os.Stdin)
  	edited := current
-@@ -717,11 +824,15 @@ func testAndRefreshProvider(s *providerSetupSession, p config.ProviderEntry) {
- 	if s.cfg != nil {
- 		proxy = s.cfg.NetworkProxySpec()
+@@ -707,49 +823,6 @@ func updateProviderKey(s *providerSetupSession, p config.ProviderEntry) {
  	}
--	models, err := p.FetchModelsWithProxy(ctx, proxy)
-+	catalog, err := p.FetchModelCatalogWithProxy(ctx, proxy)
- 	if err != nil {
- 		fmt.Fprintf(os.Stderr, i18n.M.FetchModelsFailedFmt+"\n", p.Name, err)
- 		return
- 	}
-+	models := make([]string, 0, len(catalog))
-+	for _, info := range catalog {
-+		models = append(models, info.ID)
-+	}
- 	if len(models) == 0 {
- 		fmt.Fprintln(os.Stderr, i18n.M.CustomFetchEmpty)
- 		return
-@@ -743,11 +854,19 @@ func testAndRefreshProvider(s *providerSetupSession, p config.ProviderEntry) {
- 	if !containsString(selected, p.Default) {
- 		p.Default = selected[0]
- 	}
-+	// Listings that state a window per model are the only free source of truth
-+	// about capacity, so record what this one declared. Models the user already
-+	// gave a window keep it; the rest gain the endpoint's own number instead of
-+	// inheriting a connection-wide guess.
-+	filled := p.ApplyDiscoveredLimits(catalog)
- 	if err := s.upsert([]config.ProviderEntry{p}); err != nil {
- 		fmt.Fprintln(os.Stderr, err)
- 		return
- 	}
- 	fmt.Printf("  %s\n", green(fmt.Sprintf(i18n.M.FetchModelsSuccessFmt, len(models), p.Name)))
-+	if filled > 0 {
-+		fmt.Printf("  %s\n", dim(fmt.Sprintf(i18n.M.SetupModelWindowDiscoveredFmt, filled)))
-+	}
  }
  
+-func testAndRefreshProvider(s *providerSetupSession, p config.ProviderEntry) {
+-	restore := temporarilySetCredential(p.APIKeyEnv, s.pendingConnectionCredentials[p.Name])
+-	defer restore()
+-	p.ResolveAPIKeyFromProcessEnvForProbe()
+-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+-	defer cancel()
+-	var proxy netclient.ProxySpec
+-	if s.cfg != nil {
+-		proxy = s.cfg.NetworkProxySpec()
+-	}
+-	models, err := p.FetchModelsWithProxy(ctx, proxy)
+-	if err != nil {
+-		fmt.Fprintf(os.Stderr, i18n.M.FetchModelsFailedFmt+"\n", p.Name, err)
+-		return
+-	}
+-	if len(models) == 0 {
+-		fmt.Fprintln(os.Stderr, i18n.M.CustomFetchEmpty)
+-		return
+-	}
+-	items := make([]menuItem, len(models))
+-	for i, model := range models {
+-		items[i] = menuItem{name: model}
+-	}
+-	idxs, err := selectMany(fmt.Sprintf(i18n.M.SelectModelsLabel, p.Name), items)
+-	if err != nil || len(idxs) == 0 {
+-		return
+-	}
+-	selected := make([]string, 0, len(idxs))
+-	for _, idx := range idxs {
+-		selected = append(selected, models[idx])
+-	}
+-	p.Models = selected
+-	p.Model = ""
+-	if !containsString(selected, p.Default) {
+-		p.Default = selected[0]
+-	}
+-	if err := s.upsert([]config.ProviderEntry{p}); err != nil {
+-		fmt.Fprintln(os.Stderr, err)
+-		return
+-	}
+-	fmt.Printf("  %s\n", green(fmt.Sprintf(i18n.M.FetchModelsSuccessFmt, len(models), p.Name)))
+-}
+-
  func temporarilySetCredential(key, value string) func() {
+ 	if key == "" || value == "" {
+ 		return func() {}
+@@ -878,7 +951,8 @@ func providerSetupAccessContains(names []string, want string) bool {
+ }
+ 
+ func commitProviderSetupSession(s *providerSetupSession, configPath string) (bool, error) {
+-	if len(s.operations) == 0 && len(s.pendingConnectionCredentials) == 0 {
++	cacheOnly := len(s.operations) == 0 && len(s.pendingConnectionCredentials) == 0 && !s.hasReasoningCatalog()
++	if cacheOnly && len(s.imageCatalogs) == 0 {
+ 		return false, nil
+ 	}
+ 	unlock, err := config.LockConfigFileEdits(configPath)
+@@ -891,6 +965,7 @@ func commitProviderSetupSession(s *providerSetupSession, configPath string) (boo
+ 		return false, err
+ 	}
+ 	defer unlockCredentials()
++	s.validateImageCatalogCredentials()
+ 
+ 	before, err := readProviderSetupFileSnapshot(configPath)
+ 	if err != nil {
+@@ -904,6 +979,10 @@ func commitProviderSetupSession(s *providerSetupSession, configPath string) (boo
+ 	if err != nil {
+ 		return false, err
+ 	}
++	if cacheOnly {
++		s.persistImageCatalogs(fresh)
++		return false, nil
++	}
+ 	if err := fresh.BeginModelCredentialCommitLocked(configPath, "cli-setup"); err != nil {
+ 		return false, err
+ 	}
+@@ -933,6 +1012,7 @@ func commitProviderSetupSession(s *providerSetupSession, configPath string) (boo
+ 			return false, err
+ 		}
+ 	}
++	s.applyReasoningCatalogs(fresh)
+ 	current, err := readProviderSetupFileSnapshot(configPath)
+ 	if err != nil {
+ 		return false, err
+@@ -953,6 +1033,7 @@ func commitProviderSetupSession(s *providerSetupSession, configPath string) (boo
+ 	if err := fresh.CompleteModelCredentialCommitLocked(); err != nil {
+ 		return false, err
+ 	}
++	s.persistImageCatalogs(fresh)
+ 	return true, nil
+ }
+ 
 diff --git a/internal/cli/setup_model_limits_test.go b/internal/cli/setup_model_limits_test.go
 new file mode 100644
 index 0000000000000000000000000000000000000000..17139ab3140f10270ca596a3ccadce5b3a012cce
@@ -3485,6 +4584,366 @@ index 0000000000000000000000000000000000000000..17139ab3140f10270ca596a3ccadce5b
 +	}
 +	if items[providerActionBack].name != i18n.M.SetupBack {
 +		t.Fatalf("Back is not at the position the dispatcher treats as Back: %v", items)
++	}
++}
+diff --git a/internal/cli/setup_reasoning.go b/internal/cli/setup_reasoning.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..9a8febdf38b1664fc4f776fdeec53663a317a88b
+--- /dev/null
++++ b/internal/cli/setup_reasoning.go
+@@ -0,0 +1,159 @@
++package cli
++
++import (
++	"fmt"
++	"os"
++	"strings"
++
++	"reasonix/internal/config"
++	"reasonix/internal/i18n"
++	"reasonix/internal/provider"
++)
++
++func cloneSetupOverridesWithoutDiscovery(in map[string]config.ProviderModelOverride) map[string]config.ProviderModelOverride {
++	out := make(map[string]config.ProviderModelOverride, len(in))
++	for model, ov := range in {
++		ov.DiscoveredReasoning = nil
++		if ov.ReasoningProtocol == "" && len(ov.SupportedEfforts) == 0 && ov.DefaultEffort == "" && ov.Effort == nil && ov.Vision == nil && ov.ContextWindow == 0 && ov.MaxOutputTokens == 0 {
++			continue
++		}
++		out[model] = ov
++	}
++	if len(out) == 0 {
++		return nil
++	}
++	return out
++}
++
++func (s *providerSetupSession) hasReasoningCatalog() bool {
++	for _, d := range s.imageCatalogs {
++		for _, model := range d.models {
++			if model.ReasoningInfo != nil || d.entry.ModelOverrides[model.ID].DiscoveredReasoning != nil {
++				return true
++			}
++		}
++	}
++	return false
++}
++
++// Run inside setup's commit after credential rotation so the stored identity
++// follows the accepted route. Discovery never overwrites a manual declaration.
++func (s *providerSetupSession) applyReasoningCatalogs(fresh *config.Config) {
++	for name, d := range s.imageCatalogs {
++		draft, ok := s.cfg.Provider(name)
++		if !ok || !config.ProviderEntriesConfigEqual(*draft, d.entry) {
++			continue
++		}
++		entry, ok := fresh.Provider(name)
++		if !ok {
++			continue
++		}
++		copy := config.ProviderEntryConfigSnapshot(*entry)
++		if _, rotated := s.pendingConnectionCredentials[name]; rotated {
++			copy.APIKeyEnv = d.entry.APIKeyEnv
++		}
++		if !config.ProviderEntriesConfigEqual(copy, d.entry) {
++			continue
++		}
++		entry.ApplyDiscoveredReasoning(d.models)
++	}
++}
++
++func setupReasoningDescription(entry config.ProviderEntry, info provider.ModelInfo) string {
++	entry.Model = info.ID
++	cap := config.ReasoningCapabilityForEntry(&entry)
++	r := info.ReasoningInfo
++	if r != nil {
++		if r.Invalid {
++			return "effort: " + i18n.M.SetupReasoningInvalid
++		}
++		if len(r.Efforts) > 0 {
++			status := " · " + i18n.M.SetupReasoningEndpoint
++			if !config.DiscoveredReasoningUsable(&entry, r) {
++				status += " (" + i18n.M.SetupReasoningUnusable + ")"
++			}
++			if r.Default != "" {
++				status += " · " + fmt.Sprintf(i18n.M.SetupReasoningDefaultFmt, r.Default)
++			}
++			return "effort: " + strings.Join(r.Efforts, "/") + status
++		}
++		if r.Parameter || (r.Supported != nil && *r.Supported) {
++			return "effort: " + i18n.M.SetupReasoningParameter + " · " + i18n.M.SetupReasoningEndpoint
++		}
++		if r.Supported != nil || r.Protocol == "none" {
++			return "effort: " + i18n.M.SetupReasoningUnsupported + " · " + i18n.M.SetupReasoningEndpoint
++		}
++		if r.Protocol != "" {
++			return "effort: " + i18n.M.SetupReasoningUnknown + " · " + r.Protocol + " · " + i18n.M.SetupReasoningEndpoint
++		}
++	}
++	if cap.Unknown {
++		return "effort: " + i18n.M.SetupReasoningUnknown
++	}
++	if len(cap.Options) == 0 {
++		return "effort: " + i18n.M.SetupReasoningUnsupported
++	}
++	return "effort: " + strings.Join(cap.IDs(), "/") + " · " + i18n.M.SetupReasoningConfigured
++}
++
++var selectSetupEffort = selectOne
++
++func editProviderModelEfforts(s *providerSetupSession, p config.ProviderEntry) {
++	items := make([]menuItem, 0, len(p.ModelList()))
++	preview := config.ProviderEntryConfigSnapshot(p)
++	if discovery, ok := s.imageCatalogs[p.Name]; ok && config.ProviderEntriesConfigEqual(p, discovery.entry) {
++		preview.ApplyDiscoveredReasoning(discovery.models)
++	}
++	previewConfig := &config.Config{Providers: []config.ProviderEntry{preview}}
++	for _, model := range p.ModelList() {
++		e, _ := previewConfig.ResolveModel(p.Name + "/" + model)
++		items = append(items, menuItem{name: model, desc: "effort: " + config.EffortDisplay(e)})
++	}
++	idx, err := selectSetupEffort(i18n.M.SetupEffortSelectModel, items)
++	if err != nil {
++		return
++	}
++	model := p.ModelList()[idx]
++	e, _ := previewConfig.ResolveModel(p.Name + "/" + model)
++	cap := config.ReasoningCapabilityForEntry(e)
++	choices := []menuItem{{name: "auto", desc: i18n.M.SetupEffortAutoHint}, {name: "inherit", desc: i18n.M.SetupEffortInheritHint}}
++	for _, level := range cap.Options {
++		choices = append(choices, menuItem{name: level.ID, desc: level.Description})
++	}
++	choice, err := selectSetupEffort(fmt.Sprintf(i18n.M.SetupEffortSelectFmt, model), choices)
++	if err != nil {
++		return
++	}
++	before := p
++	cfg := previewConfig
++	var value *string
++	if choice != 1 {
++		v := choices[choice].name
++		if choice == 0 {
++			v = ""
++		}
++		value = &v
++	}
++	if err := cfg.SetModelEffort(p.Name, model, value); err != nil {
++		fmt.Fprintln(os.Stderr, err)
++		return
++	}
++	// Keep discovery staged until Save; only the user's effort edit enters draft.
++	ov := before.ModelOverrides[model]
++	ov.Effort = cfg.Providers[0].ModelOverrides[model].Effort
++	edited := config.ProviderEntryConfigSnapshot(before)
++	edited.ModelOverrides = make(map[string]config.ProviderModelOverride, len(before.ModelOverrides)+1)
++	for key, value := range before.ModelOverrides {
++		edited.ModelOverrides[key] = value
++	}
++	edited.ModelOverrides[model] = ov
++	if err := s.upsert([]config.ProviderEntry{edited}); err != nil {
++		fmt.Fprintln(os.Stderr, err)
++		return
++	}
++	if discovery, ok := s.imageCatalogs[p.Name]; ok && config.ProviderEntriesConfigEqual(before, discovery.entry) {
++		current, _ := s.cfg.Provider(p.Name)
++		discovery.entry = config.ProviderEntryConfigSnapshot(*current)
++		s.imageCatalogs[p.Name] = discovery
++	}
++}
+diff --git a/internal/cli/setup_reasoning_test.go b/internal/cli/setup_reasoning_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..6d2646fb120a6ed274539f7559c22af5c79745bc
+--- /dev/null
++++ b/internal/cli/setup_reasoning_test.go
+@@ -0,0 +1,118 @@
++package cli
++
++import (
++	"os"
++	"strings"
++	"testing"
++	"time"
++
++	"reasonix/internal/config"
++	"reasonix/internal/i18n"
++	"reasonix/internal/provider"
++)
++
++func TestSetupReasoningSavesDeclarationsAndImagesTogether(t *testing.T) {
++	s, path := setupImageFixture(t)
++	catalog := setupImageTestCatalog()
++	catalog[0].ReasoningInfo = &provider.ModelReasoningInfo{Protocol: "openai", Efforts: []string{"low", "high"}, Default: "low"}
++	s.stageImageCatalog(s.cfg.Providers[0], catalog, time.Now())
++	if s.cfg.Providers[0].ModelOverrides["image"].DiscoveredReasoning != nil {
++		t.Fatal("discovery written before Save")
++	}
++	written, err := commitProviderSetupSession(s, path)
++	if err != nil || !written {
++		t.Fatalf("commit=%v %v", written, err)
++	}
++	loaded, err := config.LoadForEditReadOnlyStrict(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	e, _ := loaded.ResolveModel("relay/image")
++	if config.EffectiveEffort(e) != "low" {
++		t.Fatal("saved reasoning default lost")
++	}
++	if config.NewModelCapabilityResolver().Resolve(e).State != config.CapabilitySupported {
++		t.Fatal("reasoning save broke image cache")
++	}
++	before, _ := os.ReadFile(path)
++	refresh := newProviderSetupSession(loaded)
++	refresh.stageImageCatalog(loaded.Providers[0], setupImageTestCatalog(), time.Now())
++	if _, err := commitProviderSetupSession(refresh, path); err != nil {
++		t.Fatal(err)
++	}
++	after, _ := os.ReadFile(path)
++	if string(before) == string(after) || strings.Contains(string(after), "discovered_reasoning") {
++		t.Fatal("refresh missing metadata did not remove stale declaration")
++	}
++}
++
++func TestSetupReasoningBoolDoesNotInventLevels(t *testing.T) {
++	s, path := setupImageFixture(t)
++	catalog := setupImageTestCatalog()
++	yes := true
++	catalog[0].ReasoningInfo = &provider.ModelReasoningInfo{Supported: &yes, Parameter: true}
++	s.stageImageCatalog(s.cfg.Providers[0], catalog, time.Now())
++	if _, err := commitProviderSetupSession(s, path); err != nil {
++		t.Fatal(err)
++	}
++	loaded, err := config.LoadForEditReadOnlyStrict(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	e, _ := loaded.ResolveModel("relay/image")
++	if !config.ReasoningCapabilityForEntry(e).Unknown {
++		t.Fatal("reasoning flag invented usable levels")
++	}
++}
++
++func TestSetupReasoningEditorUsesStagedDiscovery(t *testing.T) {
++	s, path := setupImageFixture(t)
++	catalog := setupImageTestCatalog()
++	catalog[0].ReasoningInfo = &provider.ModelReasoningInfo{Protocol: "openai", Efforts: []string{"low", "high"}, Default: "low"}
++	s.stageImageCatalog(s.cfg.Providers[0], catalog, time.Now())
++	old := selectSetupEffort
++	t.Cleanup(func() { selectSetupEffort = old })
++	calls := 0
++	selectSetupEffort = func(_ string, items []menuItem) (int, error) {
++		calls++
++		if calls == 1 {
++			return 0, nil
++		}
++		for i, item := range items {
++			if item.name == "high" {
++				return i, nil
++			}
++		}
++		t.Fatal("staged discovery levels missing from editor")
++		return 0, nil
++	}
++	editProviderModelEfforts(s, s.cfg.Providers[0])
++	if s.cfg.Providers[0].ModelOverrides["image"].DiscoveredReasoning != nil {
++		t.Fatal("editor prematurely wrote discovery")
++	}
++	if _, err := commitProviderSetupSession(s, path); err != nil {
++		t.Fatal(err)
++	}
++	loaded, err := config.LoadForEditReadOnlyStrict(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	e, _ := loaded.ResolveModel("relay/image")
++	if config.EffectiveEffort(e) != "high" || len(e.SupportedEfforts) != 2 {
++		t.Fatal("manual effort edit discarded discovery")
++	}
++}
++
++func TestEffortCommandPersistsOnlySelectedModel(t *testing.T) {
++	source, err := os.ReadFile("effort.go")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !strings.Contains(string(source), "SetModelEffort(entry.Name, entry.Model, &effort)") || strings.Contains(string(source), "SetProviderEffort") {
++		t.Fatal("/effort still changes connection-wide setting")
++	}
++	items := providerActionItems(config.ProviderEntry{})
++	if items[providerActionEfforts].name != i18n.M.SetupModelEfforts {
++		t.Fatal("setup lacks per-model effort editor")
++	}
++}
+diff --git a/internal/cli/setup_refresh.go b/internal/cli/setup_refresh.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..6451fc4dc309a5a0f441694cc2f2d8c398907fd5
+--- /dev/null
++++ b/internal/cli/setup_refresh.go
+@@ -0,0 +1,65 @@
++package cli
++
++import (
++	"context"
++	"fmt"
++	"os"
++	"time"
++
++	"reasonix/internal/config"
++	"reasonix/internal/i18n"
++	"reasonix/internal/netclient"
++)
++
++var selectSetupModels = selectMany
++
++func testAndRefreshProvider(s *providerSetupSession, p config.ProviderEntry) {
++	restore := temporarilySetCredential(p.APIKeyEnv, s.pendingConnectionCredentials[p.Name])
++	defer restore()
++	p.ResolveAPIKeyFromProcessEnvForProbe()
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++	defer cancel()
++	var proxy netclient.ProxySpec
++	if s.cfg != nil {
++		proxy = s.cfg.NetworkProxySpec()
++	}
++	started := time.Now()
++	credentialRevision := config.CredentialStoreRevision()
++	catalog, err := p.FetchModelCatalogWithProxy(ctx, proxy)
++	if err != nil {
++		fmt.Fprintf(os.Stderr, i18n.M.FetchModelsFailedFmt+"\n", p.Name, err)
++		return
++	}
++	models := setupCatalogModelIDs(catalog)
++	if len(models) == 0 {
++		fmt.Fprintln(os.Stderr, i18n.M.CustomFetchEmpty)
++		return
++	}
++	idxs, err := selectSetupModels(fmt.Sprintf(i18n.M.SelectModelsLabel, p.Name), setupModelItems(p, catalog))
++	if err != nil || len(idxs) == 0 {
++		return
++	}
++	selected := make([]string, 0, len(idxs))
++	for _, idx := range idxs {
++		selected = append(selected, models[idx])
++	}
++	p.Models = selected
++	p.Model = ""
++	if !containsString(selected, p.Default) {
++		p.Default = selected[0]
++	}
++	// Listings fill only missing windows; user settings remain authoritative.
++	filled := p.ApplyDiscoveredLimits(catalog)
++	if err := s.upsert([]config.ProviderEntry{p}); err != nil {
++		fmt.Fprintln(os.Stderr, err)
++		return
++	}
++	if current, ok := s.cfg.Provider(p.Name); ok {
++		s.stageImageCatalogAt(*current, catalog, started, credentialRevision)
++	}
++	fmt.Printf("  %s\n", green(fmt.Sprintf(i18n.M.FetchModelsSuccessFmt, len(models), p.Name)))
++	fmt.Printf("  %s\n", dim(i18n.M.SetupImageSaveHint))
++	if filled > 0 {
++		fmt.Printf("  %s\n", dim(fmt.Sprintf(i18n.M.SetupModelWindowDiscoveredFmt, filled)))
 +	}
 +}
 diff --git a/internal/cli/skill_picker.go b/internal/cli/skill_picker.go
@@ -3661,7 +5120,7 @@ index 2b8a649a96fc2e9e3d09ad88a0a4e6187454566d..e7ec58b64a3e7226e0db7ae4042b11f8
  	source transcriptSource,
  	contentWidth int,
 diff --git a/internal/config/config.go b/internal/config/config.go
-index a2e1c1ae9bd7b3bb4bd755a7e73086e10001c4e3..cdf40a33d26079b7a207fd01c01b52df8bf76d8d 100644
+index a2e1c1ae9bd7b3bb4bd755a7e73086e10001c4e3..7d77c49bf7c1d171e260579bcf841c2f1057b67a 100644
 --- a/internal/config/config.go
 +++ b/internal/config/config.go
 @@ -271,6 +271,28 @@ type UIConfig struct {
@@ -3693,8 +5152,100 @@ index a2e1c1ae9bd7b3bb4bd755a7e73086e10001c4e3..cdf40a33d26079b7a207fd01c01b52df
  }
  
  // CLIConfig controls user-global native CLI behavior. It is separate from
+@@ -1427,8 +1449,12 @@ type ProviderEntry struct {
+ 	// concrete model from a multi-model provider. Use it when a gateway exposes
+ 	// mixed DeepSeek/OpenAI/no-reasoning or mixed vision/text models under one
+ 	// base_url/key.
+-	ModelOverrides map[string]ProviderModelOverride `toml:"model_overrides"`
+-	visionOverride *bool
++	ModelOverrides     map[string]ProviderModelOverride `toml:"model_overrides"`
++	visionOverride     *bool
++	effortRuntime      bool
++	discoveredProtocol bool
++	discoveredEfforts  bool
++	discoveredDefault  bool
+ 	// NoProxy reaches this provider's base_url directly, never through the proxy.
+ 	// For China-only endpoints a foreign-exit proxy resets the TLS handshake (#2803).
+ 	NoProxy bool `toml:"no_proxy"`
+@@ -1575,6 +1601,9 @@ func (e *ProviderEntry) applyModelOverride() {
+ 		e.reasoningDefaultAutomatic = false
+ 		e.DefaultEffort = ov.DefaultEffort
+ 	}
++	if ov.Effort != nil && !e.effortRuntime {
++		e.Effort = *ov.Effort
++	}
+ 	if ov.Vision != nil {
+ 		e.visionOverride = ov.Vision
+ 	}
+diff --git a/internal/config/discovered_reasoning_validation.go b/internal/config/discovered_reasoning_validation.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..9d18fd3b939e13abb5957fdfbe5bbcadc8034b25
+--- /dev/null
++++ b/internal/config/discovered_reasoning_validation.go
+@@ -0,0 +1,61 @@
++package config
++
++import (
++	"slices"
++	"strings"
++
++	"reasonix/internal/provider"
++)
++
++func validDiscoveredReasoning(r *DiscoveredModelReasoning) bool {
++	if r == nil || r.Invalid || len(r.Efforts) > 32 {
++		return false
++	}
++	if r.Protocol != "" && normalizeReasoningProtocol(r.Protocol) != r.Protocol {
++		return false
++	}
++	seen := map[string]bool{}
++	for _, id := range r.Efforts {
++		if id == "" || id == "auto" || id != strings.ToLower(strings.TrimSpace(id)) || seen[id] {
++			return false
++		}
++		seen[id] = true
++	}
++	if r.Default != "" && len(r.Efforts) > 0 && !slices.Contains(r.Efforts, r.Default) {
++		return false
++	}
++	if r.Supported != nil && !*r.Supported && len(r.Efforts) > 0 {
++		return false
++	}
++	if r.Protocol == "none" && (len(r.Efforts) > 0 || r.Default != "" || (r.Supported != nil && *r.Supported)) {
++		return false
++	}
++	return true
++}
++
++// DiscoveredReasoningUsable separates an endpoint declaration from a dialect
++// the configured adapter can faithfully serialize. Manual settings still win.
++func DiscoveredReasoningUsable(e *ProviderEntry, info *provider.ModelReasoningInfo) bool {
++	if e == nil || info == nil {
++		return false
++	}
++	r := &DiscoveredModelReasoning{Supported: info.Supported, Protocol: info.Protocol, Efforts: info.Efforts, Default: info.Default, Invalid: info.Invalid}
++	if !validDiscoveredReasoning(r) {
++		return false
++	}
++	protocol := explicitReasoningProtocol(e)
++	if info.Protocol != "" {
++		if protocol != "" && protocol != info.Protocol {
++			return false
++		}
++		protocol = info.Protocol
++	}
++	if protocol == "" {
++		return false
++	}
++	if len(info.Efforts) == 0 {
++		return info.Protocol == "none"
++	}
++	cap := provider.ReasoningForConfig(e.Kind, provider.Config{BaseURL: e.BaseURL, Model: e.Model, Extra: map[string]any{"reasoning_protocol": protocol, "supported_efforts": info.Efforts, "default_effort": info.Default}})
++	return cap.Validate(e.Model, "") == nil && slices.Equal(cap.IDs(), info.Efforts)
++}
 diff --git a/internal/config/effort.go b/internal/config/effort.go
-index 60f07b96700be8dabed006f8094d46d6acb6f7c9..9e72b4b90690565a401b8a6b4bb8e2416a56dcc8 100644
+index 60f07b96700be8dabed006f8094d46d6acb6f7c9..16c87d68f000e15f68120a0783de62d5799619f2 100644
 --- a/internal/config/effort.go
 +++ b/internal/config/effort.go
 @@ -28,11 +28,22 @@ type EffortCapability struct {
@@ -3723,6 +5274,203 @@ index 60f07b96700be8dabed006f8094d46d6acb6f7c9..9e72b4b90690565a401b8a6b4bb8e241
  }
  
  // EffortCapabilityForEntry returns the user-facing /effort levels for a resolved
+@@ -354,6 +365,10 @@ func normalizedModelOverrides(overrides map[string]ProviderModelOverride) map[st
+ 		ov.ReasoningProtocol = normalizeReasoningProtocol(ov.ReasoningProtocol)
+ 		ov.SupportedEfforts = normalizedEffortLevels(ov.SupportedEfforts)
+ 		ov.DefaultEffort = normalizeEffortLevel(ov.DefaultEffort)
++		if ov.Effort != nil {
++			value := normalizeStoredEffort(*ov.Effort)
++			ov.Effort = &value
++		}
+ 		if ov.ContextWindow < 0 {
+ 			ov.ContextWindow = 0
+ 		}
+diff --git a/internal/config/load.go b/internal/config/load.go
+index 0de4bcfa2c6fa39a65b099d49c83728770726f96..3149b0ca7b6e7980376d967e20ff8aee9b04035c 100644
+--- a/internal/config/load.go
++++ b/internal/config/load.go
+@@ -2453,6 +2453,15 @@ func mergeProviderModelOverride(dst *ProviderModelOverride, src ProviderModelOve
+ 		dst.SupportedEfforts = append([]string(nil), src.SupportedEfforts...)
+ 		dst.DefaultEffort = src.DefaultEffort
+ 	}
++	if src.Effort != nil {
++		value := *src.Effort
++		dst.Effort = &value
++	}
++	if src.DiscoveredReasoning != nil {
++		copy := *src.DiscoveredReasoning
++		copy.Efforts = append([]string(nil), copy.Efforts...)
++		dst.DiscoveredReasoning = &copy
++	}
+ 	if src.Vision != nil {
+ 		vision := *src.Vision
+ 		dst.Vision = &vision
+diff --git a/internal/config/model_effort.go b/internal/config/model_effort.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..922ae6ba7e0c1f0d594f155c373948e4a7841ddd
+--- /dev/null
++++ b/internal/config/model_effort.go
+@@ -0,0 +1,40 @@
++package config
++
++import "fmt"
++
++// SetRuntimeEffort keeps session/role overrides above persisted model settings.
++func (e *ProviderEntry) SetRuntimeEffort(effort string) {
++	e.Effort = effort
++	e.effortRuntime = true
++}
++
++// SetModelEffort changes only this model. Nil restores connection inheritance;
++// an explicit empty string selects auto, even if the connection pins an effort.
++func (c *Config) SetModelEffort(name, model string, effort *string) error {
++	entry, ok := c.Provider(name)
++	selected, found := c.ResolveModel(name + "/" + model)
++	if !ok || !found || selected.Name != name {
++		return fmt.Errorf("unknown model %s/%s", name, model)
++	}
++	if effort != nil && *effort != "" {
++		if _, err := NormalizeEffort(selected, *effort); err != nil {
++			return err
++		}
++	}
++	entry.ModelOverrides = cloneModelOverrideMap(entry.ModelOverrides)
++	ov := entry.ModelOverrides[model]
++	ov.Effort = nil
++	if effort != nil {
++		value := normalizeStoredEffort(*effort)
++		ov.Effort = &value
++	}
++	if entry.ModelOverrides == nil {
++		entry.ModelOverrides = map[string]ProviderModelOverride{}
++	}
++	if modelOverrideEmpty(ov) {
++		delete(entry.ModelOverrides, model)
++	} else {
++		entry.ModelOverrides[model] = ov
++	}
++	return nil
++}
+diff --git a/internal/config/model_effort_test.go b/internal/config/model_effort_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..186379f0d8d502fd46b4eb8e8c8f5371478ba488
+--- /dev/null
++++ b/internal/config/model_effort_test.go
+@@ -0,0 +1,114 @@
++package config
++
++import (
++	"path/filepath"
++	"testing"
++
++	"reasonix/internal/provider"
++)
++
++func TestModelEffortIndependentRoundTripAndRuntimePriority(t *testing.T) {
++	cfg := &Config{Providers: []ProviderEntry{{Name: "relay", Kind: "openai", BaseURL: "https://relay.test/v1", Models: []string{"a", "b"}, Effort: "high", ReasoningProtocol: "openai", SupportedEfforts: []string{"low", "high"}, DefaultEffort: "low"}}}
++	low := "low"
++	if err := cfg.SetModelEffort("relay", "a", &low); err != nil {
++		t.Fatal(err)
++	}
++	a, _ := cfg.ResolveModel("relay/a")
++	b, _ := cfg.ResolveModel("relay/b")
++	if EffectiveEffort(a) != "low" || EffectiveEffort(b) != "high" {
++		t.Fatal("model effort leaked to sibling")
++	}
++	a.SetRuntimeEffort("high")
++	if EffectiveEffort(a) != "high" {
++		t.Fatal("session effort lost to model setting")
++	}
++	auto := ""
++	if err := cfg.SetModelEffort("relay", "a", &auto); err != nil {
++		t.Fatal(err)
++	}
++	a, _ = cfg.ResolveModel("relay/a")
++	if EffectiveEffort(a) != "low" {
++		t.Fatal("model auto inherited pinned connection effort")
++	}
++	path := filepath.Join(t.TempDir(), "config.toml")
++	if err := cfg.SaveTo(path); err != nil {
++		t.Fatal(err)
++	}
++	loaded := LoadForEditWithoutCredentials(path)
++	if loaded.Providers[0].ModelOverrides["a"].Effort == nil {
++		t.Fatal("explicit auto lost on save")
++	}
++	if err := loaded.SetModelEffort("relay", "a", nil); err != nil {
++		t.Fatal(err)
++	}
++	a, _ = loaded.ResolveModel("relay/a")
++	if EffectiveEffort(a) != "high" {
++		t.Fatal("inherit did not restore connection")
++	}
++}
++
++func TestDiscoveredReasoningIsScopedAndManualWins(t *testing.T) {
++	t.Setenv("REASONIX_HOME", t.TempDir())
++	e := ProviderEntry{Name: "relay", Kind: "openai", BaseURL: "http://127.0.0.1:8790/v1", Models: []string{"a", "b"}}
++	e.ApplyDiscoveredReasoning([]provider.ModelInfo{{ID: "a", ReasoningInfo: &provider.ModelReasoningInfo{Protocol: "openai", Efforts: []string{"low", "high"}, Default: "low"}}})
++	cfg := &Config{Providers: []ProviderEntry{e}}
++	a, _ := cfg.ResolveModel("relay/a")
++	if EffectiveEffort(a) != "low" || ReasoningCapabilityForEntry(a).Unknown {
++		t.Fatalf("discovery not active: %+v", a)
++	}
++	b, _ := cfg.ResolveModel("relay/b")
++	if !ReasoningCapabilityForEntry(b).Unknown {
++		t.Fatal("discovery applied to sibling")
++	}
++	path := filepath.Join(t.TempDir(), "config.toml")
++	if err := cfg.SaveTo(path); err != nil {
++		t.Fatal(err)
++	}
++	loaded := LoadForEditWithoutCredentials(path)
++	a, _ = loaded.ResolveModel("relay/a")
++	if EffectiveEffort(a) != "low" {
++		t.Fatal("discovery did not roundtrip")
++	}
++	ov := loaded.Providers[0].ModelOverrides["a"]
++	ov.ReasoningProtocol = "none"
++	loaded.Providers[0].ModelOverrides["a"] = ov
++	a, _ = loaded.ResolveModel("relay/a")
++	if ReasoningCapabilityForEntry(a).State() != "unsupported" {
++		t.Fatal("discovery overwrote manual none")
++	}
++	loaded.Providers[0].BaseURL = "https://other.test/v1"
++	ov.ReasoningProtocol = ""
++	loaded.Providers[0].ModelOverrides["a"] = ov
++	a, _ = loaded.ResolveModel("relay/a")
++	if !ReasoningCapabilityForEntry(a).Unknown {
++		t.Fatal("new endpoint inherited old declaration")
++	}
++}
++
++func TestDiscoveredReasoningExpiresAndCloneIsIndependent(t *testing.T) {
++	t.Setenv("REASONIX_HOME", t.TempDir())
++	e := ProviderEntry{Name: "relay", Kind: "openai", BaseURL: "https://relay.test", Model: "a"}
++	e.ApplyDiscoveredReasoning([]provider.ModelInfo{{ID: "a", ReasoningInfo: &provider.ModelReasoningInfo{Protocol: "openai", Efforts: []string{"low", "high"}, Default: "low"}}})
++	copy := cloneModelOverrideMap(e.ModelOverrides)
++	copy["a"].DiscoveredReasoning.Efforts[0] = "changed"
++	if e.ModelOverrides["a"].DiscoveredReasoning.Efforts[0] != "low" {
++		t.Fatal("clone shares discovery slice")
++	}
++	runtime := ResolveReasoningEntry(&e)
++	e.ModelOverrides["a"].DiscoveredReasoning.ExpiresAt = 1
++	if got := ResolveReasoningEntry(runtime); got.ReasoningProtocol != "" || len(got.SupportedEfforts) != 0 {
++		t.Fatal("expired facts survived re-resolution")
++	}
++}
++
++func TestDiscoveredReasoningNeverInventsLevelsOrBreaksFixedProtocols(t *testing.T) {
++	t.Setenv("REASONIX_HOME", t.TempDir())
++	for _, r := range []*provider.ModelReasoningInfo{{Parameter: true}, {Protocol: "glm", Efforts: []string{"low", "high"}}, {Protocol: "kimi-k3", Efforts: []string{"medium"}}} {
++		e := ProviderEntry{Name: "relay", Kind: "openai", BaseURL: "https://relay.test", Model: "custom-model"}
++		e.ApplyDiscoveredReasoning([]provider.ModelInfo{{ID: e.Model, ReasoningInfo: r}})
++		got := ResolveReasoningEntry(&e)
++		if len(got.SupportedEfforts) != 0 || got.ReasoningProtocol != "" {
++			t.Fatalf("unsafe declaration applied: %+v", got)
++		}
++	}
++}
 diff --git a/internal/config/model_limits.go b/internal/config/model_limits.go
 new file mode 100644
 index 0000000000000000000000000000000000000000..fb1c34f8f190b1e7e8d5e3376d67cccaf692e4bf
@@ -4051,6 +5799,199 @@ index 0000000000000000000000000000000000000000..a410bba5480c3e3effbf5fcc74b68f35
 +	if filled := bare.ApplyDiscoveredLimits(catalog); filled != 1 {
 +		t.Fatalf("a real gap was not filled: %d", filled)
 +	}
++}
+diff --git a/internal/config/model_override.go b/internal/config/model_override.go
+index f90518f234a0d834c88c98008455e7ed5b25b379..67b3e5de3437b9a4271aa53af04586f0b343abd4 100644
+--- a/internal/config/model_override.go
++++ b/internal/config/model_override.go
+@@ -8,6 +8,9 @@ type ProviderModelOverride struct {
+ 	SupportedEfforts  []string `toml:"supported_efforts"`
+ 	DefaultEffort     string   `toml:"default_effort"`
+ 	Vision            *bool    `toml:"vision"`
++	// Nil inherits the connection; an explicit empty value selects model auto.
++	Effort              *string                   `toml:"effort"`
++	DiscoveredReasoning *DiscoveredModelReasoning `toml:"discovered_reasoning"`
+ 	// ContextWindow overrides the provider-wide context budget for this model.
+ 	// Zero inherits ProviderEntry.ContextWindow so existing configurations keep
+ 	// their current compaction behavior.
+diff --git a/internal/config/model_override_render.go b/internal/config/model_override_render.go
+index 42dd974ff578242cce9245f60509f5366f2355ea..f04ab75a0ca5521826c755decc8b4caaa199557c 100644
+--- a/internal/config/model_override_render.go
++++ b/internal/config/model_override_render.go
+@@ -41,6 +41,12 @@ func renderModelOverride(ov ProviderModelOverride) string {
+ 	if ov.DefaultEffort != "" {
+ 		parts = append(parts, fmt.Sprintf("default_effort = %q", ov.DefaultEffort))
+ 	}
++	if ov.Effort != nil {
++		parts = append(parts, fmt.Sprintf("effort = %q", *ov.Effort))
++	}
++	if ov.DiscoveredReasoning != nil {
++		parts = append(parts, "discovered_reasoning = "+renderDiscoveredReasoning(*ov.DiscoveredReasoning))
++	}
+ 	if ov.Vision != nil {
+ 		parts = append(parts, fmt.Sprintf("vision = %t", *ov.Vision))
+ 	}
+@@ -54,5 +60,5 @@ func renderModelOverride(ov ProviderModelOverride) string {
+ }
+ 
+ func modelOverrideEmpty(ov ProviderModelOverride) bool {
+-	return ov.ReasoningProtocol == "" && len(ov.SupportedEfforts) == 0 && ov.DefaultEffort == "" && ov.Vision == nil && ov.ContextWindow <= 0 && ov.MaxOutputTokens == 0
++	return ov.ReasoningProtocol == "" && len(ov.SupportedEfforts) == 0 && ov.DefaultEffort == "" && ov.Vision == nil && ov.Effort == nil && ov.DiscoveredReasoning == nil && ov.ContextWindow <= 0 && ov.MaxOutputTokens == 0
+ }
+diff --git a/internal/config/model_reasoning_discovery.go b/internal/config/model_reasoning_discovery.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..45049e0f3f5a55d2339511a8945ee79b208e8bc0
+--- /dev/null
++++ b/internal/config/model_reasoning_discovery.go
+@@ -0,0 +1,149 @@
++package config
++
++import (
++	"crypto/sha256"
++	"encoding/json"
++	"fmt"
++	"slices"
++	"strings"
++	"time"
++
++	"reasonix/internal/provider"
++)
++
++// Discovery is separate from manual overrides and bound to the serving route.
++type DiscoveredModelReasoning struct {
++	Supported *bool    `toml:"supported"`
++	Protocol  string   `toml:"protocol"`
++	Efforts   []string `toml:"efforts"`
++	Default   string   `toml:"default"`
++	Parameter bool     `toml:"parameter"`
++	Invalid   bool     `toml:"invalid"`
++	Identity  string   `toml:"identity"`
++	ExpiresAt int64    `toml:"expires_at"`
++}
++
++func reasoningDiscoveryIdentity(e *ProviderEntry, model, revision string) string {
++	data, _ := json.Marshal([]any{e.Name, e.Kind, e.BaseURL, e.RequestURL, e.ChatURL, e.ModelsURL, e.APIKeyEnv, e.Headers, e.NoProxy, e.AuthHeader, model, revision})
++	return fmt.Sprintf("%x", sha256.Sum256(data))
++}
++
++func (e *ProviderEntry) ApplyDiscoveredReasoning(catalog []provider.ModelInfo) int {
++	if e == nil {
++		return 0
++	}
++	e.ModelOverrides = cloneModelOverrideMap(e.ModelOverrides)
++	revision := CredentialStoreRevision()
++	changed := 0
++	for _, info := range catalog {
++		if !e.HasModel(info.ID) {
++			continue
++		}
++		ov := e.ModelOverrides[info.ID]
++		if info.ReasoningInfo == nil {
++			if ov.DiscoveredReasoning == nil {
++				continue
++			}
++			ov.DiscoveredReasoning = nil
++		} else {
++			r := info.ReasoningInfo
++			ov.DiscoveredReasoning = &DiscoveredModelReasoning{Supported: r.Supported, Protocol: r.Protocol, Efforts: slices.Clone(r.Efforts), Default: r.Default, Parameter: r.Parameter, Invalid: r.Invalid,
++				Identity: reasoningDiscoveryIdentity(e, info.ID, revision), ExpiresAt: time.Now().Add(24 * time.Hour).Unix()}
++		}
++		if e.ModelOverrides == nil {
++			e.ModelOverrides = map[string]ProviderModelOverride{}
++		}
++		if modelOverrideEmpty(ov) {
++			delete(e.ModelOverrides, info.ID)
++		} else {
++			e.ModelOverrides[info.ID] = ov
++		}
++		changed++
++	}
++	return changed
++}
++
++func (e *ProviderEntry) discoveredReasoning() *DiscoveredModelReasoning {
++	ov, ok := e.ModelOverrides[e.Model]
++	if !ok || ov.DiscoveredReasoning == nil {
++		return nil
++	}
++	r := ov.DiscoveredReasoning
++	if r.Identity != reasoningDiscoveryIdentity(e, e.Model, CredentialStoreRevision()) || r.ExpiresAt <= time.Now().Unix() {
++		return nil
++	}
++	return r
++}
++
++func applyDiscoveredReasoning(e *ProviderEntry) {
++	r := e.discoveredReasoning()
++	if !validDiscoveredReasoning(r) {
++		return
++	}
++	// Bare capability booleans/parameter names never choose a dialect or levels.
++	protocol := explicitReasoningProtocol(e)
++	if r.Protocol == "" {
++		if protocol == "" || len(r.Efforts) == 0 {
++			return
++		}
++	} else if normalizeReasoningProtocol(r.Protocol) != r.Protocol || (protocol != "" && protocol != r.Protocol) {
++		return
++	}
++	if !DiscoveredReasoningUsable(e, &provider.ModelReasoningInfo{Supported: r.Supported, Protocol: r.Protocol, Efforts: r.Efforts, Default: r.Default, Invalid: r.Invalid}) {
++		return
++	}
++	if explicitReasoningProtocol(e) == "" && r.Protocol != "" {
++		e.ReasoningProtocol = r.Protocol
++		e.discoveredProtocol = true
++	}
++	if len(e.SupportedEfforts) == 0 && len(r.Efforts) > 0 {
++		e.SupportedEfforts = slices.Clone(r.Efforts)
++		e.discoveredEfforts = true
++	}
++	if e.discoveredEfforts && e.DefaultEffort == "" && r.Default != "" && slices.Contains(e.SupportedEfforts, r.Default) {
++		e.DefaultEffort = r.Default
++		e.discoveredDefault = true
++	}
++}
++
++func stripDiscoveredReasoning(e *ProviderEntry) {
++	if !e.discoveredProtocol && !e.discoveredEfforts && !e.discoveredDefault {
++		return
++	}
++	if ov, ok := e.ModelOverrides[e.Model]; ok && ov.DiscoveredReasoning != nil {
++		r := ov.DiscoveredReasoning
++		if e.discoveredProtocol && e.ReasoningProtocol == r.Protocol {
++			e.ReasoningProtocol = ""
++		}
++		if e.discoveredEfforts && slices.Equal(e.SupportedEfforts, r.Efforts) {
++			e.SupportedEfforts = nil
++		}
++		if e.discoveredDefault && e.DefaultEffort == r.Default {
++			e.DefaultEffort = ""
++		}
++	}
++	e.discoveredProtocol, e.discoveredEfforts, e.discoveredDefault = false, false, false
++}
++
++func renderDiscoveredReasoning(r DiscoveredModelReasoning) string {
++	parts := []string{fmt.Sprintf("identity = %q", r.Identity), fmt.Sprintf("expires_at = %d", r.ExpiresAt)}
++	if r.Supported != nil {
++		parts = append(parts, fmt.Sprintf("supported = %t", *r.Supported))
++	}
++	if r.Protocol != "" {
++		parts = append(parts, fmt.Sprintf("protocol = %q", r.Protocol))
++	}
++	if len(r.Efforts) > 0 {
++		parts = append(parts, "efforts = "+renderStringArray(r.Efforts))
++	}
++	if r.Default != "" {
++		parts = append(parts, fmt.Sprintf("default = %q", r.Default))
++	}
++	if r.Parameter {
++		parts = append(parts, "parameter = true")
++	}
++	if r.Invalid {
++		parts = append(parts, "invalid = true")
++	}
++	return "{ " + strings.Join(parts, ", ") + " }"
 +}
 diff --git a/internal/config/model_window.go b/internal/config/model_window.go
 new file mode 100644
@@ -4411,6 +6352,82 @@ index 7c33fea5dd5ac141ea79bf8248988eda3d0414ec..8202561cb4133e7b16f68e14b046f9be
  func configEditPathKey(path string) (string, error) {
  	path = strings.TrimSpace(path)
  	if path == "" {
+diff --git a/internal/config/provider_presets.go b/internal/config/provider_presets.go
+index c0d138756949255df788fa1c8960bba690389900..b37b2a2a00ce24c457ecb2b53e717f0903db9b75 100644
+--- a/internal/config/provider_presets.go
++++ b/internal/config/provider_presets.go
+@@ -1110,6 +1110,19 @@ func cloneModelOverrideMap(in map[string]ProviderModelOverride) map[string]Provi
+ 	out := make(map[string]ProviderModelOverride, len(in))
+ 	for k, v := range in {
+ 		v.SupportedEfforts = append([]string(nil), v.SupportedEfforts...)
++		if v.Effort != nil {
++			value := *v.Effort
++			v.Effort = &value
++		}
++		if v.DiscoveredReasoning != nil {
++			copy := *v.DiscoveredReasoning
++			copy.Efforts = append([]string(nil), copy.Efforts...)
++			if copy.Supported != nil {
++				value := *copy.Supported
++				copy.Supported = &value
++			}
++			v.DiscoveredReasoning = &copy
++		}
+ 		if v.Vision != nil {
+ 			vision := *v.Vision
+ 			v.Vision = &vision
+diff --git a/internal/config/provider_snapshot.go b/internal/config/provider_snapshot.go
+index aeb03d0bd759857b2330e655d69006432616b0aa..29bb9b2de30f5c8b7bdce89fe1aad7ec2d51a3e9 100644
+--- a/internal/config/provider_snapshot.go
++++ b/internal/config/provider_snapshot.go
+@@ -9,6 +9,7 @@ func ProviderEntryConfigSnapshot(entry ProviderEntry) ProviderEntry {
+ 	entry.resolvedAPIKey = ""
+ 	entry.resolvedSource = CredentialSource{}
+ 	entry.visionOverride = nil
++	entry.effortRuntime = false
+ 	entry.persistedOfficialCurrency = ""
+ 	return entry
+ }
+diff --git a/internal/config/reasoning_entry.go b/internal/config/reasoning_entry.go
+index 145650f991a89517268f483a0b940397a5297d32..16e65baa66a2d96fb26bc16301017ceacf3ca326 100644
+--- a/internal/config/reasoning_entry.go
++++ b/internal/config/reasoning_entry.go
+@@ -14,11 +14,13 @@ func ResolveReasoningEntry(entry *ProviderEntry) *ProviderEntry {
+ 		return nil
+ 	}
+ 	e := *entry
++	stripDiscoveredReasoning(&e)
+ 	if e.Model == "" {
+ 		e.Model = e.DefaultModel()
+ 	}
+ 	e.applyModelOverride()
+ 	RepairProviderEndpointContract(&e)
++	applyDiscoveredReasoning(&e)
+ 	defaults, ok := builtinReasoningDefaults(&e)
+ 	if !ok {
+ 		return &e
+@@ -48,6 +50,7 @@ func ResolveReasoningEntry(entry *ProviderEntry) *ProviderEntry {
+ // entry (for example /effort materializing a default provider) from freezing
+ // inherited facts. Values changed since resolution remain explicit edits.
+ func stripRuntimeReasoningDefaults(e *ProviderEntry) {
++	stripDiscoveredReasoning(e)
+ 	if !e.reasoningAutomatic && !e.reasoningProtocolAutomatic && !e.reasoningDefaultAutomatic {
+ 		return
+ 	}
+diff --git a/internal/config/reasoning_snapshot.go b/internal/config/reasoning_snapshot.go
+index ecbdbfa712416c64b3de6bfa6395afeb4a253010..33cd84a09fec28def1684435ff4cff8f36bcf468 100644
+--- a/internal/config/reasoning_snapshot.go
++++ b/internal/config/reasoning_snapshot.go
+@@ -59,6 +59,9 @@ func reasoningCompatibilitySnapshot(entry ProviderEntry) ProviderEntry {
+ 		selected := e
+ 		selected.Model = model
+ 		resolved := ResolveReasoningEntry(&selected)
++		if resolved.discoveredProtocol || resolved.discoveredEfforts || resolved.discoveredDefault {
++			continue // Endpoint discoveries are not built-in compatibility defaults.
++		}
+ 		mask := ""
+ 		if ov.ReasoningProtocol == "" && explicitReasoningProtocol(&e) == "" && resolved.ReasoningProtocol != "" {
+ 			ov.ReasoningProtocol = resolved.ReasoningProtocol
 diff --git a/internal/config/render.go b/internal/config/render.go
 index 537f1747868eabc7c0912dc4014fb3bf7a9eeb3a..0daecd7ff0ee7f83f2b8393f3ea48a5752b1da92 100644
 --- a/internal/config/render.go
@@ -4832,7 +6849,7 @@ index 0435516486e41eb6227eed1dd9a9903709d22242..06160ed6b6678a609bebf5c2f1c1f17f
  // keeping the two properties a bare rename drops: the file's current permission
  // bits (an executable script must not come back 0644) and the symlink target
 diff --git a/internal/i18n/i18n.go b/internal/i18n/i18n.go
-index 116a31945fc70e27b57e59129f52d5ea2d2843d6..387093fcdd4edc5a74ebe268c8dfbd5feb234f76 100644
+index 116a31945fc70e27b57e59129f52d5ea2d2843d6..b344b27472a4726b9e68894f35306ff05ab9da46 100644
 --- a/internal/i18n/i18n.go
 +++ b/internal/i18n/i18n.go
 @@ -36,6 +36,7 @@ type Messages struct {
@@ -4843,7 +6860,7 @@ index 116a31945fc70e27b57e59129f52d5ea2d2843d6..387093fcdd4edc5a74ebe268c8dfbd5f
  	ReadinessContinuing      string // host is automatically finishing known readiness gaps
  	RecoveryPaused           string // controlled Auto retry pause; user can continue in the next message
  	CompletionUncertain      string // completion validator could not confirm the result; work is kept
-@@ -484,52 +485,57 @@ type Messages struct {
+@@ -484,52 +485,80 @@ type Messages struct {
  	SkillPickerStatusUnreadable  string // "unreadable" path status label
  
  	// init wizard
@@ -4926,6 +6943,29 @@ index 116a31945fc70e27b57e59129f52d5ea2d2843d6..387093fcdd4edc5a74ebe268c8dfbd5f
 +	SetupModelWindowHintFmt       string
 +	SetupModelWindowNone          string
 +	SetupModelWindowDiscoveredFmt string
++	SetupImageSupported           string
++	SetupImageUnsupported         string
++	SetupImageUnknown             string
++	SetupImageEndpoint            string
++	SetupImageBuiltin             string
++	SetupImageManual              string
++	SetupImageNoMetadata          string
++	SetupImageSaveHint            string
++	SetupModelEfforts             string
++	SetupModelEffortsHint         string
++	SetupEffortSelectModel        string
++	SetupEffortSelectFmt          string
++	SetupEffortAutoHint           string
++	SetupEffortInheritHint        string
++	SetupReasoningUnknown         string
++	SetupReasoningInvalid         string
++	SetupReasoningEndpoint        string
++	SetupReasoningUnusable        string
++	SetupReasoningDefaultFmt      string
++	SetupReasoningParameter       string
++	SetupReasoningUnsupported     string
++	SetupReasoningConfigured      string
++	SetupReasoningSaveHint        string
 +	SetupSharedKeyWarningFmt      string
 +	SetupKeyEnvTakenFmt           string
 +	SetupKeyEnvStoredFmt          string
@@ -4948,7 +6988,7 @@ index 116a31945fc70e27b57e59129f52d5ea2d2843d6..387093fcdd4edc5a74ebe268c8dfbd5f
  	// model fetching
  	FetchingModelsFmt          string // "Fetching models for %s..."
 diff --git a/internal/i18n/messages_en.go b/internal/i18n/messages_en.go
-index a09137afda8cb41c32aaa471473c5761b0a435cb..5b8c20d54c549fedcbdb05ca8f444356a1a2b8ff 100644
+index a09137afda8cb41c32aaa471473c5761b0a435cb..b2af6d3914d95c9e548c4042b627452e01c18a24 100644
 --- a/internal/i18n/messages_en.go
 +++ b/internal/i18n/messages_en.go
 @@ -12,6 +12,7 @@ var English = Messages{
@@ -4959,7 +6999,7 @@ index a09137afda8cb41c32aaa471473c5761b0a435cb..5b8c20d54c549fedcbdb05ca8f444356
  	ReadinessContinuing:              "Reasonix is finishing the remaining task work or checks automatically.",
  	RecoveryPaused:                   "Automatic retries paused. Reasonix stopped repeated attempts and kept completed work. Send “Continue” to start a fresh attempt, or add instructions to change direction.",
  	CompletionUncertain:              "Completion could not be confirmed. The current result and completed work are kept. Send \"continue\" to resume, or restate what should change.",
-@@ -447,52 +448,57 @@ var English = Messages{
+@@ -447,52 +448,80 @@ var English = Messages{
  	RewindUnavailableFmt:         "rewind unavailable: %s",
  	RewindEmpty:                  "(empty)",
  
@@ -5042,6 +7082,29 @@ index a09137afda8cb41c32aaa471473c5761b0a435cb..5b8c20d54c549fedcbdb05ca8f444356
 +	SetupModelWindowHintFmt:       "inherits %d",
 +	SetupModelWindowNone:          "no model lists a window of its own",
 +	SetupModelWindowDiscoveredFmt: "models reported their own context windows: %d (see Edit per-model context windows)",
++	SetupImageSupported:           "supported",
++	SetupImageUnsupported:         "unsupported",
++	SetupImageUnknown:             "unknown",
++	SetupImageEndpoint:            "endpoint declaration",
++	SetupImageBuiltin:             "built-in catalog/protocol",
++	SetupImageManual:              "manual setting",
++	SetupImageNoMetadata:          "no image metadata",
++	SetupImageSaveHint:            "Image declarations will be cached on Save; manual settings win. No inference probes are sent.",
++	SetupModelEfforts:             "Edit per-model reasoning effort",
++	SetupModelEffortsHint:         "Selected model only: auto / inherit / declared levels",
++	SetupEffortSelectModel:        "Select a model's reasoning effort",
++	SetupEffortSelectFmt:          "Reasoning effort for %s",
++	SetupEffortAutoHint:           "Use the model default, ignoring pinned connection effort",
++	SetupEffortInheritHint:        "Restore connection effort inheritance",
++	SetupReasoningUnknown:         "unknown",
++	SetupReasoningInvalid:         "unknown (invalid/conflicting declaration)",
++	SetupReasoningEndpoint:        "endpoint declaration",
++	SetupReasoningUnusable:        "protocol unknown/incompatible; inactive",
++	SetupReasoningDefaultFmt:      "default=%s",
++	SetupReasoningParameter:       "reasoning parameter available; levels unknown",
++	SetupReasoningUnsupported:     "no configurable reasoning levels",
++	SetupReasoningConfigured:      "current config/built-in",
++	SetupReasoningSaveHint:        "Save endpoint reasoning declarations per model; manual settings win. No inference probes.",
 +	SetupSharedKeyWarningFmt:      "%s is also used by %s at %s. Share this credential?",
 +	SetupKeyEnvTakenFmt:           "%s is already used by provider %s; saving this key under it would replace that provider's key.",
 +	SetupKeyEnvStoredFmt:          "%s already holds a saved credential; saving this key under it would overwrite that value.",
@@ -5064,7 +7127,7 @@ index a09137afda8cb41c32aaa471473c5761b0a435cb..5b8c20d54c549fedcbdb05ca8f444356
  	// model fetching
  	FetchingModelsFmt:          "Fetching models for %s...",
 diff --git a/internal/i18n/messages_zh.go b/internal/i18n/messages_zh.go
-index 9f0a89f070b87b2bd6655d16f65f42a94c777094..dea437555bf0742996356bcfe3a88a37d1fb2f79 100644
+index 9f0a89f070b87b2bd6655d16f65f42a94c777094..f4c7fa1fc509fd03f4ca146b1de816bfbd6e912c 100644
 --- a/internal/i18n/messages_zh.go
 +++ b/internal/i18n/messages_zh.go
 @@ -13,6 +13,7 @@ var Chinese = Messages{
@@ -5075,7 +7138,7 @@ index 9f0a89f070b87b2bd6655d16f65f42a94c777094..dea437555bf0742996356bcfe3a88a37
  	ReadinessContinuing:              "Reasonix 正在自动完成剩余任务或检查。",
  	RecoveryPaused:                   "已暂停自动重试。Reasonix 已停止重复尝试，并保留已完成的工作。发送“继续”即可开始新一轮，也可以补充要求来调整方向。",
  	CompletionUncertain:              "完成状态未确认。当前结果和已完成工作均已保留。发送“继续”可接着完成，也可以补充说明需要调整的内容。",
-@@ -448,52 +449,57 @@ var Chinese = Messages{
+@@ -448,52 +449,80 @@ var Chinese = Messages{
  	RewindUnavailableFmt:         "无法回滚：%s",
  	RewindEmpty:                  "(空)",
  
@@ -5158,6 +7221,29 @@ index 9f0a89f070b87b2bd6655d16f65f42a94c777094..dea437555bf0742996356bcfe3a88a37
 +	SetupModelWindowHintFmt:       "继承 %d",
 +	SetupModelWindowNone:          "没有任何模型单独设置窗口",
 +	SetupModelWindowDiscoveredFmt: "已从端点读到 %d 个模型的上下文窗口（可在“编辑各模型上下文窗口”中查看）",
++	SetupImageSupported:           "支持",
++	SetupImageUnsupported:         "不支持",
++	SetupImageUnknown:             "未知",
++	SetupImageEndpoint:            "接口声明",
++	SetupImageBuiltin:             "内置目录/协议",
++	SetupImageManual:              "手动设置",
++	SetupImageNoMetadata:          "未声明识图能力",
++	SetupImageSaveHint:            "保存时缓存识图声明，手动设置优先；不发送推理实测请求。",
++	SetupModelEfforts:             "编辑各模型思考强度",
++	SetupModelEffortsHint:         "仅修改选中模型，auto / 继承 / 可用档位",
++	SetupEffortSelectModel:        "选择要配置思考强度的模型",
++	SetupEffortSelectFmt:          "设置 %s 的思考强度",
++	SetupEffortAutoHint:           "当前模型使用默认（不继承分组固定 effort）",
++	SetupEffortInheritHint:        "恢复继承分组 effort",
++	SetupReasoningUnknown:         "未知",
++	SetupReasoningInvalid:         "未知（接口声明冲突/无效）",
++	SetupReasoningEndpoint:        "接口声明",
++	SetupReasoningUnusable:        "协议未知/不兼容，未启用",
++	SetupReasoningDefaultFmt:      "默认=%s",
++	SetupReasoningParameter:       "思考参数可用，档位未知",
++	SetupReasoningUnsupported:     "无可配置思考档位",
++	SetupReasoningConfigured:      "当前配置/内置",
++	SetupReasoningSaveHint:        "保存时写入每模型思考声明，手动设置优先；不发送推理实测请求。",
 +	SetupSharedKeyWarningFmt:      "%s 已被 %s（%s）使用。确认共享这项凭据？",
 +	SetupKeyEnvTakenFmt:           "%s 已被 provider %s 使用；把这个 key 存进去会替换那个 provider 的 key。",
 +	SetupKeyEnvStoredFmt:          "%s 已经保存了一项凭据；把这个 key 存进去会覆盖原来的值。",
@@ -5180,7 +7266,7 @@ index 9f0a89f070b87b2bd6655d16f65f42a94c777094..dea437555bf0742996356bcfe3a88a37
  	// model fetching
  	FetchingModelsFmt:          "正在获取 %s 的模型列表...",
 diff --git a/internal/i18n/messages_zh_tw.go b/internal/i18n/messages_zh_tw.go
-index ab04fe31271c366a4fa3b2d3ea4cef2e86416bdd..79530f53624e21ffee7f1edeb722d392cf3514ec 100644
+index ab04fe31271c366a4fa3b2d3ea4cef2e86416bdd..2080587aec9923b6d45a21736a6328639c602e2e 100644
 --- a/internal/i18n/messages_zh_tw.go
 +++ b/internal/i18n/messages_zh_tw.go
 @@ -13,6 +13,7 @@ var ChineseTraditional = Messages{
@@ -5191,7 +7277,7 @@ index ab04fe31271c366a4fa3b2d3ea4cef2e86416bdd..79530f53624e21ffee7f1edeb722d392
  	ReadinessContinuing:              "Reasonix 正在自動完成剩餘任務或檢查。",
  	RecoveryPaused:                   "已暫停自動重試。Reasonix 已停止重複嘗試，並保留已完成的工作。傳送「繼續」即可開始新一輪，也可以補充要求來調整方向。",
  	CompletionUncertain:              "完成狀態未確認。目前結果與已完成工作均已保留。傳送「繼續」可接著完成，也可以補充說明需要調整的內容。",
-@@ -421,52 +422,57 @@ var ChineseTraditional = Messages{
+@@ -421,52 +422,80 @@ var ChineseTraditional = Messages{
  	RewindUnavailableFmt:         "無法回滾：%s",
  	RewindEmpty:                  "(空)",
  
@@ -5274,6 +7360,29 @@ index ab04fe31271c366a4fa3b2d3ea4cef2e86416bdd..79530f53624e21ffee7f1edeb722d392
 +	SetupModelWindowHintFmt:       "繼承 %d",
 +	SetupModelWindowNone:          "沒有任何模型單獨設定視窗",
 +	SetupModelWindowDiscoveredFmt: "已從端點讀到 %d 個模型的上下文視窗（可在「編輯各模型上下文視窗」中檢視）",
++	SetupImageSupported:           "支援",
++	SetupImageUnsupported:         "不支援",
++	SetupImageUnknown:             "未知",
++	SetupImageEndpoint:            "介面宣告",
++	SetupImageBuiltin:             "內建目錄/協定",
++	SetupImageManual:              "手動設定",
++	SetupImageNoMetadata:          "未宣告識圖能力",
++	SetupImageSaveHint:            "儲存時快取識圖宣告，手動設定優先；不傳送推理實測請求。",
++	SetupModelEfforts:             "編輯各模型思考強度",
++	SetupModelEffortsHint:         "僅修改選取模型，auto / 繼承 / 可用檔位",
++	SetupEffortSelectModel:        "選擇要設定思考強度的模型",
++	SetupEffortSelectFmt:          "設定 %s 的思考強度",
++	SetupEffortAutoHint:           "目前模型使用預設（不繼承分組固定 effort）",
++	SetupEffortInheritHint:        "恢復繼承分組 effort",
++	SetupReasoningUnknown:         "未知",
++	SetupReasoningInvalid:         "未知（介面宣告衝突/無效）",
++	SetupReasoningEndpoint:        "介面宣告",
++	SetupReasoningUnusable:        "協定未知/不相容，未啟用",
++	SetupReasoningDefaultFmt:      "預設=%s",
++	SetupReasoningParameter:       "思考參數可用，檔位未知",
++	SetupReasoningUnsupported:     "無可設定思考檔位",
++	SetupReasoningConfigured:      "目前設定/內建",
++	SetupReasoningSaveHint:        "儲存時寫入每模型思考宣告，手動設定優先；不傳送推理實測請求。",
 +	SetupSharedKeyWarningFmt:      "%s 已被 %s（%s）使用。確認共用這項憑據？",
 +	SetupKeyEnvTakenFmt:           "%s 已被 provider %s 使用；把這個 key 存進去會取代那個 provider 的 key。",
 +	SetupKeyEnvStoredFmt:          "%s 已經儲存了一項憑據；把這個 key 存進去會覆寫原本的值。",
@@ -5407,6 +7516,189 @@ index ad7d6fef52aab5f614f61d96d4405305aaab14a8..37f7de4768685b16b945e0b344d13615
  		}
  	}
  	return ""
+diff --git a/internal/provider/anthropic/anthropic.go b/internal/provider/anthropic/anthropic.go
+index 0f1782387282a5243314a7f953aa5036d70d09cd..4ea147d01440bfdf4501b5930ef2b02541a99bfd 100644
+--- a/internal/provider/anthropic/anthropic.go
++++ b/internal/provider/anthropic/anthropic.go
+@@ -94,20 +94,13 @@ func New(cfg provider.Config) (provider.Provider, error) {
+ 		return nil, err
+ 	}
+ 	vision, _ := cfg.Extra["vision"].(bool)
+-	modelInfo := provider.ModelInfo{ID: cfg.Model, InputModalities: []provider.ModelModality{provider.ModalityText}}
+-	if cfg.ModelInfo != nil {
+-		modelInfo = *cfg.ModelInfo
+-		modelInfo.ID = cfg.Model
+-	}
+-	if cfg.ModelInfo != nil {
+-		vision = modelInfo.SupportsInput(provider.ModalityImage)
+-	}
++	modelInfo, vision := provider.ResolveImageInputMetadata(cfg.Model, cfg.ModelInfo, vision)
+ 	// Official DeepSeek image input is pinned to one SKU even when metadata
+ 	// claims otherwise.
+ 	vision = openai.DeepSeekImageInputAllowed(officialDeepSeek, requestURL, cfg.Model, cfg.ModelInfo != nil, vision)
+-	if vision {
++	if vision && modelInfo.InputModalities != nil {
+ 		modelInfo.InputModalities = []provider.ModelModality{provider.ModalityText, provider.ModalityImage}
+-	} else if modelInfo.SupportsInput(provider.ModalityImage) {
++	} else if !vision {
+ 		modelInfo.InputModalities = []provider.ModelModality{provider.ModalityText}
+ 	}
+ 	webSearch, _ := cfg.Extra["web_search"].(bool)
+diff --git a/internal/provider/anthropic/image_test.go b/internal/provider/anthropic/image_test.go
+index baf55a89641fb9a0a17d8fad671b447cfd4b7db4..0fdf0aad3049b4e0f5ad83492fd93e31538320f7 100644
+--- a/internal/provider/anthropic/image_test.go
++++ b/internal/provider/anthropic/image_test.go
+@@ -28,6 +28,25 @@ func TestBuildRequestEmbedsImageBlockForVisionModel(t *testing.T) {
+ 	}
+ }
+ 
++func TestUnknownImageMetadataSerializesOnlyAttachedImages(t *testing.T) {
++	p, err := New(provider.Config{Name: "relay", BaseURL: "https://relay.test", Model: "custom-model", ModelInfo: &provider.ModelInfo{}})
++	if err != nil {
++		t.Fatal(err)
++	}
++	c := p.(*client)
++	if !c.vision || c.ModelInfo().InputModalities != nil {
++		t.Fatal("unknown image metadata changed")
++	}
++	image := c.buildRequest(context.Background(), provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "describe", Images: []string{"data:image/png;base64,AAAA"}}}})
++	if len(image.Messages[0].Content) != 2 || image.Messages[0].Content[1].Type != "image" {
++		t.Fatal("unknown model omitted image")
++	}
++	text := c.buildRequest(context.Background(), provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hello"}}})
++	if len(text.Messages[0].Content) != 1 {
++		t.Fatal("text-only request changed")
++	}
++}
++
+ func TestModelInfoEnablesImageWireSerialization(t *testing.T) {
+ 	p, err := New(provider.Config{
+ 		Name: "catalog", BaseURL: "https://example.test", Model: "vision",
+diff --git a/internal/provider/image_capability.go b/internal/provider/image_capability.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..6edb13ae63d3bd984b697693b55aaf0515293126
+--- /dev/null
++++ b/internal/provider/image_capability.go
+@@ -0,0 +1,18 @@
++package provider
++
++// ResolveImageInputMetadata preserves unknown separately from declared text-only.
++// Unknown metadata permits serialization of explicitly attached images; boot
++// still decides whether an image-understanding fallback owns those attachments.
++func ResolveImageInputMetadata(model string, metadata *ModelInfo, legacy bool) (ModelInfo, bool) {
++	if metadata == nil {
++		info := ModelInfo{ID: model, InputModalities: []ModelModality{ModalityText}}
++		if legacy {
++			info.InputModalities = append(info.InputModalities, ModalityImage)
++		}
++		return info, legacy
++	}
++	info := *metadata
++	info.ID = model
++	info.InputModalities = append([]ModelModality(nil), metadata.InputModalities...)
++	return info, metadata.InputModalities == nil || metadata.SupportsInput(ModalityImage)
++}
+diff --git a/internal/provider/image_capability_test.go b/internal/provider/image_capability_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..0f62870722ec5ef4b878fef8f9f7967d42669026
+--- /dev/null
++++ b/internal/provider/image_capability_test.go
+@@ -0,0 +1,47 @@
++package provider_test
++
++import (
++	"testing"
++
++	"reasonix/internal/provider"
++	"reasonix/internal/provider/anthropic"
++	"reasonix/internal/provider/openai"
++	"reasonix/internal/provider/responses"
++)
++
++func TestAdaptersPreserveUnknownImageMetadata(t *testing.T) {
++	for _, kind := range []string{"openai", "anthropic", "responses"} {
++		for _, mode := range []string{"unknown", "supported", "unsupported"} {
++			t.Run(kind+"/"+mode, func(t *testing.T) {
++				info := provider.ModelInfo{ID: "custom-name-with-no-vision-suffix"}
++				if mode != "unknown" {
++					info.InputModalities = []provider.ModelModality{provider.ModalityText}
++				}
++				if mode == "supported" {
++					info.InputModalities = append(info.InputModalities, provider.ModalityImage)
++				}
++				cfg := provider.Config{Name: "relay", BaseURL: "http://127.0.0.1:8790/v1", Model: info.ID, ModelInfo: &info}
++				var p provider.Provider
++				var err error
++				switch kind {
++				case "openai":
++					p, err = openai.New(cfg)
++				case "anthropic":
++					p, err = anthropic.New(cfg)
++				case "responses":
++					p = responses.New(responses.Config{Name: cfg.Name, BaseURL: cfg.BaseURL, Model: cfg.Model, ModelInfo: cfg.ModelInfo})
++				}
++				if err != nil {
++					t.Fatal(err)
++				}
++				got := p.(provider.ModelInfoProvider).ModelInfo()
++				if (got.InputModalities == nil) != (mode == "unknown") || got.SupportsInput(provider.ModalityImage) != (mode == "supported") {
++					t.Fatalf("metadata changed: %+v", got)
++				}
++				if info.ID != cfg.Model {
++					t.Fatal("adapter mutated caller metadata")
++				}
++			})
++		}
++	}
++}
+diff --git a/internal/provider/model_info.go b/internal/provider/model_info.go
+index 4f0c522be98fb65a6d1472a8d1cfd3fad677aece..285a96b5e2777bd93718588612f59d1a62aac713 100644
+--- a/internal/provider/model_info.go
++++ b/internal/provider/model_info.go
+@@ -16,15 +16,16 @@ const (
+ // InputModalities means that the adapter could not determine the capability;
+ // an explicit []{"text"} is a deliberate negative declaration.
+ type ModelInfo struct {
+-	ID              string          `json:"id"`
+-	Name            string          `json:"name,omitempty"`
+-	API             string          `json:"api,omitempty"`
+-	BaseURL         string          `json:"base_url,omitempty"`
+-	InputModalities []ModelModality `json:"input_modalities,omitempty"`
+-	ContextWindow   int             `json:"context_window,omitempty"`
+-	MaxOutputTokens int             `json:"max_output_tokens,omitempty"`
+-	Reasoning       bool            `json:"reasoning,omitempty"`
+-	Pricing         *Pricing        `json:"pricing,omitempty"`
++	ID              string              `json:"id"`
++	Name            string              `json:"name,omitempty"`
++	API             string              `json:"api,omitempty"`
++	BaseURL         string              `json:"base_url,omitempty"`
++	InputModalities []ModelModality     `json:"input_modalities,omitempty"`
++	ContextWindow   int                 `json:"context_window,omitempty"`
++	MaxOutputTokens int                 `json:"max_output_tokens,omitempty"`
++	Reasoning       bool                `json:"reasoning,omitempty"`
++	ReasoningInfo   *ModelReasoningInfo `json:"reasoning_info,omitempty"`
++	Pricing         *Pricing            `json:"pricing,omitempty"`
+ }
+ 
+ // ModelInfoProvider is implemented by providers that can expose metadata for
+diff --git a/internal/provider/model_reasoning_info.go b/internal/provider/model_reasoning_info.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..1351689fc9339f346f32ea8820e7bb49094c0927
+--- /dev/null
++++ b/internal/provider/model_reasoning_info.go
+@@ -0,0 +1,12 @@
++package provider
++
++// ModelReasoningInfo preserves an endpoint declaration without inventing effort
++// levels from a reasoning boolean or a supported parameter name.
++type ModelReasoningInfo struct {
++	Supported *bool    `json:"supported,omitempty"`
++	Protocol  string   `json:"protocol,omitempty"`
++	Efforts   []string `json:"efforts,omitempty"`
++	Default   string   `json:"default,omitempty"`
++	Parameter bool     `json:"parameter,omitempty"`
++	Invalid   bool     `json:"invalid,omitempty"`
++}
 diff --git a/internal/provider/openai/context_metadata.go b/internal/provider/openai/context_metadata.go
 new file mode 100644
 index 0000000000000000000000000000000000000000..a4aed2860b899f7c11569becd60a0a18f9c67b6c
@@ -5585,10 +7877,10 @@ index 0000000000000000000000000000000000000000..6dbc7b35a52352fdb56aaa6d26befd69
 +	}
 +}
 diff --git a/internal/provider/openai/fetch_models.go b/internal/provider/openai/fetch_models.go
-index abc9848f6551da68b3f7bce194832e5c0c18050d..dc07ed4d45f32a824e7e83b6c82dc2292e7fd2a4 100644
+index abc9848f6551da68b3f7bce194832e5c0c18050d..c17e3a1c03fef9b4b3d3b9f377148da91ad83b21 100644
 --- a/internal/provider/openai/fetch_models.go
 +++ b/internal/provider/openai/fetch_models.go
-@@ -134,7 +134,8 @@ func FetchModelCatalogWithOptions(ctx context.Context, baseURL, apiKey string, o
+@@ -134,11 +134,13 @@ func FetchModelCatalogWithOptions(ctx context.Context, baseURL, apiKey string, o
  	modelsByID := make(map[string]provider.ModelInfo, len(result.Data))
  	conflicts := make(map[string]bool)
  	for _, raw := range result.Data {
@@ -5598,7 +7890,12 @@ index abc9848f6551da68b3f7bce194832e5c0c18050d..dc07ed4d45f32a824e7e83b6c82dc229
  		if model.ID == "" {
  			continue
  		}
-@@ -150,7 +151,13 @@ func FetchModelCatalogWithOptions(ctx context.Context, baseURL, apiKey string, o
+ 		if previous, exists := modelsByID[model.ID]; exists {
++			model.ReasoningInfo = mergeReasoningMetadata(previous.ReasoningInfo, model.ReasoningInfo)
+ 			switch {
+ 			case conflicts[model.ID]:
+ 				model.InputModalities = nil
+@@ -150,7 +152,13 @@ func FetchModelCatalogWithOptions(ctx context.Context, baseURL, apiKey string, o
  				conflicts[model.ID] = true
  				model.InputModalities = nil
  			}
@@ -5612,7 +7909,7 @@ index abc9848f6551da68b3f7bce194832e5c0c18050d..dc07ed4d45f32a824e7e83b6c82dc229
  		modelsByID[model.ID] = model
  	}
  	models := make([]provider.ModelInfo, 0, len(modelsByID))
-@@ -166,18 +173,27 @@ func sameModalities(a, b []provider.ModelModality) bool {
+@@ -166,18 +174,27 @@ func sameModalities(a, b []provider.ModelModality) bool {
  }
  
  func parseModelInfo(baseURL string, raw json.RawMessage) provider.ModelInfo {
@@ -5639,10 +7936,98 @@ index abc9848f6551da68b3f7bce194832e5c0c18050d..dc07ed4d45f32a824e7e83b6c82dc229
  	}
  	modalities, _ := parseModalities(entry)
 -	return provider.ModelInfo{ID: id, InputModalities: modalities}
-+	return provider.ModelInfo{ID: id, InputModalities: modalities}, parseModelCapacity(entry)
++	return provider.ModelInfo{ID: id, InputModalities: modalities, ReasoningInfo: reasoningMetadataForModel(entry)}, parseModelCapacity(entry)
  }
  
  func parseModalities(entry map[string]json.RawMessage) ([]provider.ModelModality, bool) {
+@@ -189,6 +206,14 @@ func parseModalities(entry map[string]json.RawMessage) ([]provider.ModelModality
+ 			return decodeModalities(raw)
+ 		}
+ 	}
++	if raw, present := entry["architecture"]; present {
++		var nested map[string]json.RawMessage
++		if json.Unmarshal(raw, &nested) == nil {
++			if input, ok := nested["input_modalities"]; ok {
++				return decodeModalities(input)
++			}
++		}
++	}
+ 	if raw, present := entry["modalities"]; present {
+ 		var nested map[string]json.RawMessage
+ 		if json.Unmarshal(raw, &nested) == nil {
+@@ -228,7 +253,14 @@ func decodeModalities(raw json.RawMessage) ([]provider.ModelModality, bool) {
+ 	for _, value := range values {
+ 		modality := provider.ModelModality(strings.ToLower(strings.TrimSpace(value)))
+ 		if modality != provider.ModalityText && modality != provider.ModalityImage {
+-			return nil, false
++			// Preserve image facts in mixed multimodal listings without claiming
++			// that Reasonix routes audio, video or native file inputs.
++			switch modality {
++			case "audio", "video", "file":
++				continue
++			default:
++				return nil, false
++			}
+ 		}
+ 		if !seen[modality] {
+ 			seen[modality] = true
+@@ -239,7 +271,10 @@ func decodeModalities(raw json.RawMessage) ([]provider.ModelModality, bool) {
+ 	if len(out) == 2 && out[0] == provider.ModalityImage {
+ 		out[0], out[1] = out[1], out[0]
+ 	}
+-	return out, len(out) > 0
++	if len(out) == 0 {
++		return nil, false
++	}
++	return out, true
+ }
+ 
+ func decodeVisionBool(raw json.RawMessage) ([]provider.ModelModality, bool) {
+diff --git a/internal/provider/openai/fetch_models_test.go b/internal/provider/openai/fetch_models_test.go
+index c8a38551b03587ddc3a09d9f9696fbe5e0e26b5d..e199ed7df81c0df69daf8b858d62b989a6e3bc8b 100644
+--- a/internal/provider/openai/fetch_models_test.go
++++ b/internal/provider/openai/fetch_models_test.go
+@@ -60,6 +60,10 @@ func TestDiscoveryUnknownAndConflictingDuplicates(t *testing.T) {
+ 		{"unknown does not override known", []string{`{"id":"x"}`, `{"id":"x","vision":true}`}, "supported"},
+ 		{"unknown does not erase negative", []string{`{"id":"x"}`, `{"id":"x","vision":false}`}, "unsupported"},
+ 		{"standard wins", []string{`{"id":"x","input_modalities":["text"],"vision":true}`}, "unsupported"},
++		{"OpenRouter architecture", []string{`{"id":"x","architecture":{"input_modalities":["text","image"]}}`}, "supported"},
++		{"mixed media retain image", []string{`{"id":"x","input_modalities":["text","image","audio","video","file"]}`}, "supported"},
++		{"media only stays unknown", []string{`{"id":"x","input_modalities":["audio","video"]}`}, "unknown"},
++		{"canonical beats architecture", []string{`{"id":"x","input_modalities":["text"],"architecture":{"input_modalities":["image"]}}`}, "unsupported"},
+ 	}
+ 	for _, tc := range cases {
+ 		t.Run(tc.name, func(t *testing.T) {
+diff --git a/internal/provider/openai/image_test.go b/internal/provider/openai/image_test.go
+index 8dd07e29b1563475ed7525e0ece6c476453441c9..45f358f2c11b362413495cf93ebdd496b15eb359 100644
+--- a/internal/provider/openai/image_test.go
++++ b/internal/provider/openai/image_test.go
+@@ -32,6 +32,25 @@ func TestBuildRequestEmbedsImagesForVisionModel(t *testing.T) {
+ 	}
+ }
+ 
++func TestUnknownImageMetadataSerializesOnlyAttachedImages(t *testing.T) {
++	p, err := New(provider.Config{Name: "relay", BaseURL: "https://relay.test/v1", Model: "custom-model", ModelInfo: &provider.ModelInfo{}})
++	if err != nil {
++		t.Fatal(err)
++	}
++	c := p.(*client)
++	if !c.vision || c.ModelInfo().InputModalities != nil {
++		t.Fatal("unknown image metadata must stay unknown while allowing attachments")
++	}
++	image := c.buildRequest(provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "describe", Images: []string{"data:image/png;base64,AAAA"}}}})
++	if _, ok := image.Messages[0].Content.([]chatContentPart); !ok {
++		t.Fatalf("image omitted: %#v", image.Messages[0].Content)
++	}
++	text := c.buildRequest(provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hello"}}})
++	if text.Messages[0].Content != "hello" {
++		t.Fatalf("text-only request changed: %#v", text.Messages[0].Content)
++	}
++}
++
+ func TestModelInfoEnablesImageWireSerialization(t *testing.T) {
+ 	p, err := New(provider.Config{
+ 		Name: "catalog", BaseURL: "https://example.test/v1", Model: "kimi-k3",
 diff --git a/internal/provider/openai/live_capacity_probe_test.go b/internal/provider/openai/live_capacity_probe_test.go
 new file mode 100644
 index 0000000000000000000000000000000000000000..2b9ec2b1ee24517373f4082b9f5a62f23f93d207
@@ -5694,6 +8079,317 @@ index 0000000000000000000000000000000000000000..2b9ec2b1ee24517373f4082b9f5a62f2
 +		t.Fatalf("silent row gained a capacity it never declared: %+v", got)
 +	}
 +}
+diff --git a/internal/provider/openai/openai.go b/internal/provider/openai/openai.go
+index d8de266499df4d230c8915a3143b613346537600..b8aa63ffe59808e95eb2708b5533111db0e99008 100644
+--- a/internal/provider/openai/openai.go
++++ b/internal/provider/openai/openai.go
+@@ -93,19 +93,12 @@ func New(cfg provider.Config) (provider.Provider, error) {
+ 	extraBody, _ := cfg.Extra["extra_body"].(map[string]any)
+ 	vision, _ := cfg.Extra["vision"].(bool)
+ 	officialDeepSeek := IsDeepSeek(cfg.BaseURL)
+-	modelInfo := provider.ModelInfo{ID: cfg.Model, InputModalities: []provider.ModelModality{provider.ModalityText}}
+-	if cfg.ModelInfo != nil {
+-		modelInfo = *cfg.ModelInfo
+-		modelInfo.ID = cfg.Model
+-	}
+-	if cfg.ModelInfo != nil {
+-		vision = modelInfo.SupportsInput(provider.ModalityImage)
+-	}
++	modelInfo, vision := provider.ResolveImageInputMetadata(cfg.Model, cfg.ModelInfo, vision)
+ 	// Keep known text-only models blocked; unknown models use declared capability.
+ 	vision = DeepSeekImageInputAllowed(officialDeepSeek, chatURL, cfg.Model, cfg.ModelInfo != nil, vision)
+-	if vision {
++	if vision && modelInfo.InputModalities != nil {
+ 		modelInfo.InputModalities = []provider.ModelModality{provider.ModalityText, provider.ModalityImage}
+-	} else if modelInfo.SupportsInput(provider.ModalityImage) {
++	} else if !vision {
+ 		modelInfo.InputModalities = []provider.ModelModality{provider.ModalityText}
+ 	}
+ 	visionDetail, _ := cfg.Extra["vision_detail"].(string)
+diff --git a/internal/provider/openai/reasoning_metadata.go b/internal/provider/openai/reasoning_metadata.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..3ba7dd8c218da5400c031c4e195e0ebfd8f1db3a
+--- /dev/null
++++ b/internal/provider/openai/reasoning_metadata.go
+@@ -0,0 +1,158 @@
++package openai
++
++import (
++	"encoding/json"
++	"reflect"
++	"regexp"
++	"slices"
++	"strings"
++
++	"reasonix/internal/provider"
++)
++
++var reasoningLevelID = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
++
++// Only declarations are decoded; a model name or parameter flag is not an enum.
++func parseReasoningMetadata(entry map[string]json.RawMessage) *provider.ModelReasoningInfo {
++	r := &provider.ModelReasoningInfo{}
++	present := false
++	readBool := func(raw json.RawMessage) {
++		present = true
++		var value *bool
++		if json.Unmarshal(raw, &value) != nil || value == nil {
++			r.Invalid = true
++			return
++		}
++		if r.Supported != nil && *r.Supported != *value {
++			r.Invalid = true
++		}
++		r.Supported = value
++	}
++	if raw, ok := entry["reasoning"]; ok {
++		var fields map[string]json.RawMessage
++		if json.Unmarshal(raw, &fields) == nil && fields != nil {
++			present = true
++			if v, ok := fields["supported"]; ok {
++				readBool(v)
++			}
++			entryCopy := make(map[string]json.RawMessage, len(entry)+3)
++			for k, v := range entry {
++				entryCopy[k] = v
++			}
++			for key, alias := range map[string]string{"protocol": "reasoning_protocol", "efforts": "supported_efforts", "default": "default_effort"} {
++				if v, ok := fields[key]; ok {
++					if previous, exists := entryCopy[alias]; exists && string(previous) != string(v) {
++						r.Invalid = true
++					}
++					entryCopy[alias] = v
++				}
++			}
++			entry = entryCopy
++		} else {
++			readBool(raw)
++		}
++	}
++	if raw, ok := entry["supports_reasoning"]; ok {
++		readBool(raw)
++	}
++	present = parseDeclaredProtocol(entry, r) || present
++	present = parseDeclaredEfforts(entry, r) || present
++	if raw, ok := entry["default_effort"]; ok {
++		present = true
++		if json.Unmarshal(raw, &r.Default) != nil || r.Default == "auto" {
++			r.Invalid = true
++		}
++	}
++	if r.Default != "" && len(r.Efforts) > 0 && !slices.Contains(r.Efforts, r.Default) {
++		r.Invalid = true
++	}
++	if r.Supported != nil && !*r.Supported && len(r.Efforts) > 0 {
++		r.Invalid = true
++	}
++	r.Parameter = hasReasoningParameter(entry["supported_parameters"])
++	present = r.Parameter || present
++	if !present {
++		return nil
++	}
++	return r
++}
++
++func hasReasoningParameter(raw json.RawMessage) bool {
++	var fields []string
++	return json.Unmarshal(raw, &fields) == nil && (slices.Contains(fields, "reasoning") || slices.Contains(fields, "reasoning_effort") || slices.Contains(fields, "thinking"))
++}
++
++func parseDeclaredProtocol(entry map[string]json.RawMessage, r *provider.ModelReasoningInfo) bool {
++	raw, ok := entry["reasoning_protocol"]
++	if !ok {
++		return false
++	}
++	if json.Unmarshal(raw, &r.Protocol) != nil {
++		r.Invalid = true
++	}
++	switch r.Protocol {
++	case "deepseek", "glm", "kimi-k3", "openai", "none":
++	default:
++		r.Invalid = true
++	}
++	return true
++}
++
++func parseDeclaredEfforts(entry map[string]json.RawMessage, r *provider.ModelReasoningInfo) bool {
++	present := false
++	for _, key := range []string{"supported_efforts", "reasoning_efforts"} {
++		raw, ok := entry[key]
++		if !ok {
++			continue
++		}
++		present = true
++		var ids []string
++		if json.Unmarshal(raw, &ids) != nil || len(ids) == 0 || len(ids) > 32 {
++			r.Invalid = true
++			continue
++		}
++		seen := map[string]bool{}
++		for _, id := range ids {
++			if !reasoningLevelID.MatchString(id) || id == "auto" || seen[id] {
++				r.Invalid = true
++			}
++			seen[id] = true
++		}
++		if r.Efforts != nil && !slices.Equal(r.Efforts, ids) {
++			r.Invalid = true
++		}
++		r.Efforts = ids
++	}
++	return present
++}
++
++func mergeReasoningMetadata(a, b *provider.ModelReasoningInfo) *provider.ModelReasoningInfo {
++	if a == nil {
++		return b
++	}
++	if b == nil {
++		return a
++	}
++	if reflect.DeepEqual(a, b) {
++		return a
++	}
++	// Conflicting duplicate model declarations never resurrect previous levels.
++	return &provider.ModelReasoningInfo{Invalid: true, Parameter: a.Parameter || b.Parameter}
++}
++
++// Nested capabilities are declarations too; top-level fields have precedence.
++func reasoningMetadataForModel(entry map[string]json.RawMessage) *provider.ModelReasoningInfo {
++	copy := make(map[string]json.RawMessage, len(entry))
++	for k, v := range entry {
++		copy[k] = v
++	}
++	var nested map[string]json.RawMessage
++	if json.Unmarshal(entry["capabilities"], &nested) == nil {
++		for k, v := range nested {
++			if _, exists := copy[k]; !exists && (strings.Contains(k, "reasoning") || k == "supported_efforts" || k == "default_effort") {
++				copy[k] = v
++			}
++		}
++	}
++	return parseReasoningMetadata(copy)
++}
+diff --git a/internal/provider/openai/reasoning_metadata_test.go b/internal/provider/openai/reasoning_metadata_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..3f8708973bf5d89ec6125114358c7dc38557e9a6
+--- /dev/null
++++ b/internal/provider/openai/reasoning_metadata_test.go
+@@ -0,0 +1,50 @@
++package openai
++
++import (
++	"encoding/json"
++	"testing"
++)
++
++func TestReasoningMetadataOnlyTrustsDeclarations(t *testing.T) {
++	cases := []struct {
++		body             string
++		present, invalid bool
++		levels           int
++	}{
++		{`{"id":"deepseek-v4-pro"}`, false, false, 0},
++		{`{"reasoning":true}`, true, false, 0},
++		{`{"supported_parameters":["reasoning_effort"]}`, true, false, 0},
++		{`{"reasoning_protocol":"openai","supported_efforts":["low","high"],"default_effort":"low"}`, true, false, 2},
++		{`{"reasoning":{"protocol":"glm","efforts":["enabled","disabled"],"default":"enabled"}}`, true, false, 2},
++		{`{"supported_efforts":["low","low"]}`, true, true, 2},
++		{`{"supported_efforts":["auto"]}`, true, true, 1},
++		{`{"supported_efforts":["low"],"default_effort":"high"}`, true, true, 1},
++		{`{"reasoning":false,"supported_efforts":["high"]}`, true, true, 1},
++		{`{"reasoning_protocol":"arbitrary"}`, true, true, 0},
++	}
++	for _, tc := range cases {
++		var entry map[string]json.RawMessage
++		if err := json.Unmarshal([]byte(tc.body), &entry); err != nil {
++			t.Fatal(err)
++		}
++		got := reasoningMetadataForModel(entry)
++		if (got != nil) != tc.present {
++			t.Fatal(tc.body)
++		}
++		if got != nil && (got.Invalid != tc.invalid || len(got.Efforts) != tc.levels) {
++			t.Fatalf("%s: %+v", tc.body, got)
++		}
++	}
++}
++
++func TestReasoningMetadataDuplicateConflictStaysUnknown(t *testing.T) {
++	var a, b map[string]json.RawMessage
++	json.Unmarshal([]byte(`{"supported_efforts":["low"]}`), &a)
++	json.Unmarshal([]byte(`{"supported_efforts":["high"]}`), &b)
++	x := reasoningMetadataForModel(a)
++	y := reasoningMetadataForModel(b)
++	merged := mergeReasoningMetadata(x, y)
++	if !merged.Invalid || !mergeReasoningMetadata(merged, x).Invalid {
++		t.Fatal("conflicting declaration resurrected")
++	}
++}
+diff --git a/internal/provider/responses/image_test.go b/internal/provider/responses/image_test.go
+index a8f35d26ac9178f83242d9937aff80a12002b4db..710de219278389ada8b27743aa89730353f587a3 100644
+--- a/internal/provider/responses/image_test.go
++++ b/internal/provider/responses/image_test.go
+@@ -54,6 +54,23 @@ func TestOfficialVisionExplicitOffRespectsResolvedMetadata(t *testing.T) {
+ 	}
+ }
+ 
++func TestUnknownImageMetadataSerializesOnlyAttachedImages(t *testing.T) {
++	c := New(Config{Name: "relay", BaseURL: "https://relay.test", Model: "custom-model", ModelInfo: &provider.ModelInfo{}}).(*client)
++	if !c.vision || c.ModelInfo().InputModalities != nil {
++		t.Fatal("unknown image metadata changed")
++	}
++	image, _, _ := c.buildRequestBody(provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "describe", Images: []string{"data:image/png;base64,AAAA"}}}})
++	body, _ := json.Marshal(image)
++	if !strings.Contains(string(body), "input_image") {
++		t.Fatalf("image omitted: %s", body)
++	}
++	text, _, _ := c.buildRequestBody(provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hello"}}})
++	body, _ = json.Marshal(text)
++	if strings.Contains(string(body), "input_image") {
++		t.Fatal("text-only request changed")
++	}
++}
++
+ func TestModelInfoEnablesImageWireSerialization(t *testing.T) {
+ 	c := New(Config{
+ 		Name: "catalog", BaseURL: "https://example.test/v1", Model: "vision",
+diff --git a/internal/provider/responses/responses.go b/internal/provider/responses/responses.go
+index e3d76bbd52d8364d1942f94a9b0bb9e0e0ab8656..d33be21d4a45a825b4c054c40729977a98b8d2a7 100644
+--- a/internal/provider/responses/responses.go
++++ b/internal/provider/responses/responses.go
+@@ -140,9 +140,7 @@ func New(cfg Config) provider.Provider {
+ 		sessionCache = *cfg.SessionCache
+ 	}
+ 	vision, _ := cfg.Extra["vision"].(bool)
+-	if cfg.ModelInfo != nil {
+-		vision = cfg.ModelInfo.SupportsInput(provider.ModalityImage)
+-	}
++	modelInfo, vision := provider.ResolveImageInputMetadata(cfg.Model, cfg.ModelInfo, vision)
+ 	// Official DeepSeek image input is pinned to one SKU. Ignore metadata or
+ 	// Extra["vision"] for Flash/Pro.
+ 	vision = openai.DeepSeekImageInputAllowed(vendor == "deepseek", cfg.RequestURL, cfg.Model, cfg.ModelInfo != nil, vision)
+@@ -157,18 +155,13 @@ func New(cfg Config) provider.Provider {
+ 		httpClient = cfg.HTTPClient
+ 	}
+ 	baseURL, requestURL := resolveEndpoints(cfg.BaseURL, cfg.RequestURL)
+-	modelInfo := provider.ModelInfo{ID: cfg.Model, InputModalities: []provider.ModelModality{provider.ModalityText}}
+-	if cfg.ModelInfo != nil {
+-		modelInfo = *cfg.ModelInfo
+-		modelInfo.ID = cfg.Model
+-	}
+ 	clientWebSearch, _ := cfg.Extra["client_web_search"].(bool)
+ 	if reject, _ := cfg.Extra["reject_redirects"].(bool); reject {
+ 		httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+ 	}
+-	if vision {
++	if vision && modelInfo.InputModalities != nil {
+ 		modelInfo.InputModalities = []provider.ModelModality{provider.ModalityText, provider.ModalityImage}
+-	} else if modelInfo.SupportsInput(provider.ModalityImage) {
++	} else if !vision {
+ 		modelInfo.InputModalities = []provider.ModelModality{provider.ModalityText}
+ 	}
+ 	return &client{
 diff --git a/internal/repair/process_other.go b/internal/repair/process_other.go
 index e99c554f72f557b6eb6aeed4313ab08ab47f96e4..9e74e4d01974134ec7cbc7d3a5da7830ccaadf9b 100644
 --- a/internal/repair/process_other.go

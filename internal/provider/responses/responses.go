@@ -140,9 +140,7 @@ func New(cfg Config) provider.Provider {
 		sessionCache = *cfg.SessionCache
 	}
 	vision, _ := cfg.Extra["vision"].(bool)
-	if cfg.ModelInfo != nil {
-		vision = cfg.ModelInfo.SupportsInput(provider.ModalityImage)
-	}
+	modelInfo, vision := provider.ResolveImageInputMetadata(cfg.Model, cfg.ModelInfo, vision)
 	// Official DeepSeek image input is pinned to one SKU. Ignore metadata or
 	// Extra["vision"] for Flash/Pro.
 	vision = openai.DeepSeekImageInputAllowed(vendor == "deepseek", cfg.RequestURL, cfg.Model, cfg.ModelInfo != nil, vision)
@@ -157,18 +155,13 @@ func New(cfg Config) provider.Provider {
 		httpClient = cfg.HTTPClient
 	}
 	baseURL, requestURL := resolveEndpoints(cfg.BaseURL, cfg.RequestURL)
-	modelInfo := provider.ModelInfo{ID: cfg.Model, InputModalities: []provider.ModelModality{provider.ModalityText}}
-	if cfg.ModelInfo != nil {
-		modelInfo = *cfg.ModelInfo
-		modelInfo.ID = cfg.Model
-	}
 	clientWebSearch, _ := cfg.Extra["client_web_search"].(bool)
 	if reject, _ := cfg.Extra["reject_redirects"].(bool); reject {
 		httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	}
-	if vision {
+	if vision && modelInfo.InputModalities != nil {
 		modelInfo.InputModalities = []provider.ModelModality{provider.ModalityText, provider.ModalityImage}
-	} else if modelInfo.SupportsInput(provider.ModalityImage) {
+	} else if !vision {
 		modelInfo.InputModalities = []provider.ModelModality{provider.ModalityText}
 	}
 	return &client{

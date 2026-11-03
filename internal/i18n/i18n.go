@@ -518,6 +518,29 @@ type Messages struct {
 	SetupModelWindowHintFmt       string
 	SetupModelWindowNone          string
 	SetupModelWindowDiscoveredFmt string
+	SetupImageSupported           string
+	SetupImageUnsupported         string
+	SetupImageUnknown             string
+	SetupImageEndpoint            string
+	SetupImageBuiltin             string
+	SetupImageManual              string
+	SetupImageNoMetadata          string
+	SetupImageSaveHint            string
+	SetupModelEfforts             string
+	SetupModelEffortsHint         string
+	SetupEffortSelectModel        string
+	SetupEffortSelectFmt          string
+	SetupEffortAutoHint           string
+	SetupEffortInheritHint        string
+	SetupReasoningUnknown         string
+	SetupReasoningInvalid         string
+	SetupReasoningEndpoint        string
+	SetupReasoningUnusable        string
+	SetupReasoningDefaultFmt      string
+	SetupReasoningParameter       string
+	SetupReasoningUnsupported     string
+	SetupReasoningConfigured      string
+	SetupReasoningSaveHint        string
 	SetupSharedKeyWarningFmt      string
 	SetupKeyEnvTakenFmt           string
 	SetupKeyEnvStoredFmt          string

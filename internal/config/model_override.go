@@ -8,6 +8,9 @@ type ProviderModelOverride struct {
 	SupportedEfforts  []string `toml:"supported_efforts"`
 	DefaultEffort     string   `toml:"default_effort"`
 	Vision            *bool    `toml:"vision"`
+	// Nil inherits the connection; an explicit empty value selects model auto.
+	Effort              *string                   `toml:"effort"`
+	DiscoveredReasoning *DiscoveredModelReasoning `toml:"discovered_reasoning"`
 	// ContextWindow overrides the provider-wide context budget for this model.
 	// Zero inherits ProviderEntry.ContextWindow so existing configurations keep
 	// their current compaction behavior.

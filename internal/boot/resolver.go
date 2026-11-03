@@ -111,7 +111,7 @@ func (r *LocalProviderResolver) Resolve(selection provider.Selection) (provider.
 				return nil, err
 			}
 		}
-		entry.Effort = *selection.Effort
+		entry.SetRuntimeEffort(*selection.Effort)
 	}
 	var modelInfo *provider.ModelInfo
 	if r.capabilities != nil {

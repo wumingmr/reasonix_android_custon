@@ -59,6 +59,9 @@ func reasoningCompatibilitySnapshot(entry ProviderEntry) ProviderEntry {
 		selected := e
 		selected.Model = model
 		resolved := ResolveReasoningEntry(&selected)
+		if resolved.discoveredProtocol || resolved.discoveredEfforts || resolved.discoveredDefault {
+			continue // Endpoint discoveries are not built-in compatibility defaults.
+		}
 		mask := ""
 		if ov.ReasoningProtocol == "" && explicitReasoningProtocol(&e) == "" && resolved.ReasoningProtocol != "" {
 			ov.ReasoningProtocol = resolved.ReasoningProtocol

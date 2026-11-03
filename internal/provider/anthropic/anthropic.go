@@ -94,20 +94,13 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		return nil, err
 	}
 	vision, _ := cfg.Extra["vision"].(bool)
-	modelInfo := provider.ModelInfo{ID: cfg.Model, InputModalities: []provider.ModelModality{provider.ModalityText}}
-	if cfg.ModelInfo != nil {
-		modelInfo = *cfg.ModelInfo
-		modelInfo.ID = cfg.Model
-	}
-	if cfg.ModelInfo != nil {
-		vision = modelInfo.SupportsInput(provider.ModalityImage)
-	}
+	modelInfo, vision := provider.ResolveImageInputMetadata(cfg.Model, cfg.ModelInfo, vision)
 	// Official DeepSeek image input is pinned to one SKU even when metadata
 	// claims otherwise.
 	vision = openai.DeepSeekImageInputAllowed(officialDeepSeek, requestURL, cfg.Model, cfg.ModelInfo != nil, vision)
-	if vision {
+	if vision && modelInfo.InputModalities != nil {
 		modelInfo.InputModalities = []provider.ModelModality{provider.ModalityText, provider.ModalityImage}
-	} else if modelInfo.SupportsInput(provider.ModalityImage) {
+	} else if !vision {
 		modelInfo.InputModalities = []provider.ModelModality{provider.ModalityText}
 	}
 	webSearch, _ := cfg.Extra["web_search"].(bool)

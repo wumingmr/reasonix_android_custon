@@ -184,7 +184,7 @@ func inheritedSubagentEffort(cfg *config.Config, execution *config.ProviderEntry
 		return effort, ""
 	}
 	entry := *config.ResolveReasoningEntry(execution)
-	entry.Effort = effort
+	entry.SetRuntimeEffort(effort)
 	if entry.Kind == "anthropic" && entry.Thinking == "" {
 		entry.Thinking = "adaptive"
 	}

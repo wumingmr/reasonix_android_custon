@@ -12,7 +12,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log/slog"
 	"math"
 	"net/url"
 	"os"
@@ -41,7 +40,6 @@ import (
 	"reasonix/internal/persistentshell"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
-	"reasonix/internal/provider/openai"
 	"reasonix/internal/serve"
 	"reasonix/internal/session"
 	"reasonix/internal/sessiontemp"
@@ -1725,29 +1723,8 @@ func fetchOrFallback(probe *config.ProviderEntry, famName string, proxy netclien
 // endpoint. Returning the empty slice (not an error) on full miss lets the
 // wizard fall through to a manual text input without an error message.
 func fetchModelListCompat(ctx context.Context, baseURL, apiKey string, proxy netclient.ProxySpec) ([]string, error) {
-	candidates, err := config.BuildModelFetchURLs(baseURL, "")
-	if err != nil {
-		return nil, err
-	}
-	var lastErr error
-	var firstHardErr error
-	for _, u := range candidates {
-		models, err := openai.FetchModelsWithOptions(ctx, u, apiKey, openai.FetchModelsOptions{Proxy: proxy})
-		if err == nil {
-			return models, nil
-		}
-		lastErr = err
-		if !openai.IsModelFetchEndpointMiss(err) && firstHardErr == nil {
-			firstHardErr = err
-		}
-	}
-	if firstHardErr != nil {
-		return nil, firstHardErr
-	}
-	if lastErr != nil {
-		slog.Debug("model-list probe: all candidates missed", "base_url", baseURL, "err", lastErr)
-	}
-	return nil, nil
+	catalog, err := fetchModelCatalogCompat(ctx, baseURL, apiKey, proxy)
+	return setupCatalogModelIDs(catalog), err
 }
 
 // buildFamilyEntry returns a single ProviderEntry exposing the user's
@@ -1953,8 +1930,11 @@ func familyOf(name string) providerFamily {
 }
 
 type providerPromptResult struct {
-	entries     []config.ProviderEntry
-	credentials map[string]string
+	imageCatalog            []provider.ModelInfo
+	imageStarted            time.Time
+	imageCredentialRevision string
+	entries                 []config.ProviderEntry
+	credentials             map[string]string
 	// keyEnvTyped: the user typed the entries' api_key_env rather than accepting keyEnvDraft.
 	keyEnvTyped bool
 	keyEnvDraft string
@@ -2043,7 +2023,10 @@ func promptCustomProviderFromURL(proxy netclient.ProxySpec) (providerPromptResul
 	fmt.Printf("  %s\n", dim(fmt.Sprintf(i18n.M.FetchingModelsFmt, "custom")))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	models, err := fetchModelListCompat(ctx, baseURL, apiKey, proxy)
+	started := time.Now()
+	credentialRevision := config.CredentialStoreRevision()
+	catalog, err := fetchModelCatalogCompat(ctx, baseURL, apiKey, proxy)
+	models := setupCatalogModelIDs(catalog)
 	if err != nil || len(models) == 0 {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  %s\n", dim(fmt.Sprintf(i18n.M.FetchModelsFailedFmt, "custom", err)))
@@ -2054,10 +2037,7 @@ func promptCustomProviderFromURL(proxy netclient.ProxySpec) (providerPromptResul
 	}
 	fmt.Printf("  %s\n", green(fmt.Sprintf(i18n.M.FetchModelsSuccessFmt, len(models), "custom")))
 
-	items := make([]menuItem, len(models))
-	for i, m := range models {
-		items[i] = menuItem{name: m}
-	}
+	items := setupModelItems(config.ProviderEntry{Name: providerName, Kind: "openai", BaseURL: baseURL}, catalog)
 	idxs, err := selectMany(fmt.Sprintf(i18n.M.SelectModelsLabel, "custom"), items)
 	if err != nil || len(idxs) == 0 {
 		return providerPromptResult{}, fmt.Errorf("no models selected")
@@ -2070,8 +2050,12 @@ func promptCustomProviderFromURL(proxy netclient.ProxySpec) (providerPromptResul
 		Name: providerName, Kind: "openai", BaseURL: baseURL,
 		Models: selected, Model: selected[0], APIKeyEnv: keyEnv, ContextWindow: askContextWindow(in, os.Stdout),
 	}
+	entry.ApplyDiscoveredLimits(catalog)
 	fmt.Printf("  %s\n", green(fmt.Sprintf(i18n.M.CustomAddedFmt, entry.Name+"/"+selected[0])))
-	return newProviderPromptResult([]config.ProviderEntry{entry}, keyEnv, apiKey, keyEnvTyped, draft), nil
+	result := newProviderPromptResult([]config.ProviderEntry{entry}, keyEnv, apiKey, keyEnvTyped, draft)
+	result.imageCatalog, result.imageStarted = catalog, started
+	result.imageCredentialRevision = credentialRevision
+	return result, nil
 }
 
 // promptAnthropicProvider handles the Anthropic compatible provider entry flow.
@@ -2145,7 +2129,10 @@ func promptAnthropicProviderFromURL(proxy netclient.ProxySpec) (providerPromptRe
 	fmt.Printf("  %s\n", dim(fmt.Sprintf(i18n.M.AnthropicFetchingModelsFmt, "anthropic")))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	models, err := fetchModelListCompat(ctx, baseURL, apiKey, proxy)
+	started := time.Now()
+	credentialRevision := config.CredentialStoreRevision()
+	catalog, err := fetchModelCatalogCompat(ctx, baseURL, apiKey, proxy)
+	models := setupCatalogModelIDs(catalog)
 	if err != nil || len(models) == 0 {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  %s\n", dim(fmt.Sprintf(i18n.M.AnthropicFetchModelsFailedFmt, "anthropic", err)))
@@ -2156,10 +2143,7 @@ func promptAnthropicProviderFromURL(proxy netclient.ProxySpec) (providerPromptRe
 	}
 	fmt.Printf("  %s\n", green(fmt.Sprintf(i18n.M.AnthropicFetchModelsSuccessFmt, len(models), "anthropic")))
 
-	items := make([]menuItem, len(models))
-	for i, m := range models {
-		items[i] = menuItem{name: m}
-	}
+	items := setupModelItems(config.ProviderEntry{Name: providerSlug("anthropic", baseURL), Kind: "anthropic", BaseURL: baseURL}, catalog)
 	idxs, err := selectMany(fmt.Sprintf(i18n.M.AnthropicSelectModelsLabel, "anthropic"), items)
 	if err != nil || len(idxs) == 0 {
 		return providerPromptResult{}, fmt.Errorf("no models selected")
@@ -2172,8 +2156,12 @@ func promptAnthropicProviderFromURL(proxy netclient.ProxySpec) (providerPromptRe
 		Name: providerSlug("anthropic", baseURL), Kind: "anthropic", BaseURL: baseURL,
 		Models: selected, Model: selected[0], APIKeyEnv: keyEnv, ContextWindow: askContextWindow(in, os.Stdout),
 	}
+	entry.ApplyDiscoveredLimits(catalog)
 	fmt.Printf("  %s\n", green(fmt.Sprintf(i18n.M.AnthropicAddedFmt, entry.Name+"/"+selected[0])))
-	return newProviderPromptResult([]config.ProviderEntry{entry}, keyEnv, apiKey, keyEnvTyped, "ANTHROPIC_API_KEY"), nil
+	result := newProviderPromptResult([]config.ProviderEntry{entry}, keyEnv, apiKey, keyEnvTyped, "ANTHROPIC_API_KEY")
+	result.imageCatalog, result.imageStarted = catalog, started
+	result.imageCredentialRevision = credentialRevision
+	return result, nil
 }
 
 func groupByFamily(providers []config.ProviderEntry) ([]string, map[string][]int, map[string]providerFamily) {

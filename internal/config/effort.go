@@ -365,6 +365,10 @@ func normalizedModelOverrides(overrides map[string]ProviderModelOverride) map[st
 		ov.ReasoningProtocol = normalizeReasoningProtocol(ov.ReasoningProtocol)
 		ov.SupportedEfforts = normalizedEffortLevels(ov.SupportedEfforts)
 		ov.DefaultEffort = normalizeEffortLevel(ov.DefaultEffort)
+		if ov.Effort != nil {
+			value := normalizeStoredEffort(*ov.Effort)
+			ov.Effort = &value
+		}
 		if ov.ContextWindow < 0 {
 			ov.ContextWindow = 0
 		}

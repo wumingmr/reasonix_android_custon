@@ -60,6 +60,10 @@ func TestDiscoveryUnknownAndConflictingDuplicates(t *testing.T) {
 		{"unknown does not override known", []string{`{"id":"x"}`, `{"id":"x","vision":true}`}, "supported"},
 		{"unknown does not erase negative", []string{`{"id":"x"}`, `{"id":"x","vision":false}`}, "unsupported"},
 		{"standard wins", []string{`{"id":"x","input_modalities":["text"],"vision":true}`}, "unsupported"},
+		{"OpenRouter architecture", []string{`{"id":"x","architecture":{"input_modalities":["text","image"]}}`}, "supported"},
+		{"mixed media retain image", []string{`{"id":"x","input_modalities":["text","image","audio","video","file"]}`}, "supported"},
+		{"media only stays unknown", []string{`{"id":"x","input_modalities":["audio","video"]}`}, "unknown"},
+		{"canonical beats architecture", []string{`{"id":"x","input_modalities":["text"],"architecture":{"input_modalities":["image"]}}`}, "unsupported"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

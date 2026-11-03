@@ -7,7 +7,12 @@ on:
   push:
     branches: [master]
     paths: ['artifacts/reasonix-android-arm64']
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing tag, e.g. termux-v1.39.11-r1 (blank uses base tag)'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -15,10 +20,14 @@ permissions:
 jobs:
   verify-and-release:
     runs-on: ubuntu-latest
+    concurrency:
+      group: termux-release-publication
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
           lfs: true
+          fetch-depth: 0
 
       - uses: actions/setup-go@v7
         with:
@@ -45,6 +54,8 @@ jobs:
 
       - name: Skip unless binary tracks the pinned upstream line
         id: check
+        env:
+          REQUESTED_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           VER="${{ steps.info.outputs.version }}"
           TAG="${{ steps.info.outputs.upstream }}"
@@ -63,9 +74,21 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          source scripts/termux/release-identity.sh
+          termux_verify_binary_version "$VER" "$TAG"
+          if [ -z "$REQUESTED_RELEASE_TAG" ]; then
+            REQUESTED_RELEASE_TAG="$(git tag --points-at HEAD --list "termux-$TAG*" | sort -V | tail -1)"
+            test -n "$REQUESTED_RELEASE_TAG" || { echo 'No release tag on this commit; refusing publication'; exit 1; }
+          fi
+          termux_release_identity "$TAG" "$REQUESTED_RELEASE_TAG"
+          TAG_COMMIT="$(git rev-parse "$TERMUX_RELEASE_TAG^{commit}")"
+          test "$TAG_COMMIT" = "$GITHUB_SHA" || { echo 'Release tag does not identify uploaded artifact commit'; exit 1; }
+          git diff --quiet "$TAG_COMMIT" HEAD -- artifacts/reasonix-android-arm64
           echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Release will use tag termux-$TAG (binary tracks $BASE)"
+          echo "release_tag=$TERMUX_RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "asset=$TERMUX_RELEASE_ASSET" >> "$GITHUB_OUTPUT"
+          echo "Release will use $TERMUX_RELEASE_TAG (binary tracks $BASE)"
 
       - name: Create or update release
         if: steps.check.outputs.skip == 'false'
@@ -74,14 +97,14 @@ jobs:
         run: |
           REPO="${{ github.repository }}"
           TAG="${{ steps.check.outputs.tag }}"
-          REL_TAG="termux-$TAG"
+          REL_TAG="${{ steps.check.outputs.release_tag }}"
           HASH="${{ steps.info.outputs.hash }}"
           # Always the versioned name. An earlier version probed the existing
           # assets and fell back to the bare name, which made the asset name
           # depend on the release's history: a rebuilt release silently switched
           # to the bare name, and SHA256SUMS generated for one name then no
           # longer matched the uploaded file. One name, derived from $TAG only.
-          ASSET="reasonix-android-arm64-${TAG}"
+          ASSET="${{ steps.check.outputs.asset }}"
           echo "release asset name: $ASSET"
           VERSION="${{ steps.info.outputs.version }}"
           # The notes live in a tracked template so the published text, the asset
@@ -113,8 +136,8 @@ jobs:
             if [ -n "$OLD_HASH" ] && [ "$OLD_HASH" = "$HASH" ]; then
               echo "release $REL_TAG already carries this exact binary (sha256 $HASH); refreshing notes only"
             else
-              gh release upload "$REL_TAG" "$RUNNER_TEMP/$ASSET" --repo "$REPO" --clobber
-              echo "updated $REL_TAG asset $ASSET (sha256 $HASH)"
+              echo "Existing release bytes differ or are unavailable; use a new revision tag, never overwrite an old asset"
+              exit 1
             fi
             gh release upload "$REL_TAG" "$CHECKSUMS" --repo "$REPO" --clobber
             gh release edit "$REL_TAG" --repo "$REPO" --notes-file "$RENDER"
@@ -125,7 +148,7 @@ jobs:
               "$CHECKSUMS" \
               --repo "$REPO" \
               --verify-tag \
-              --title "Reasonix $TAG — Termux build" \
+              --title "Reasonix ${REL_TAG#termux-} — Termux build" \
               --notes-file "$RENDER"
             echo "created $REL_TAG (sha256 $HASH)"
           fi

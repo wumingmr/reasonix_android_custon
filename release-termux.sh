@@ -14,6 +14,7 @@
 #                     无法套用,详见 update-reasonix.sh 的 ALLOW_MAJOR 说明。
 #   RELEASE_REPO      仅用于打印提示链接(实际推送目标是 git remote origin)。
 #                     默认从 origin 自动推导,不再硬编码别人的仓库。
+#   TERMUX_RELEASE_TAG  新发布 tag；同上游修订用 termux-vX.Y.Z-rN，默认基础 tag
 #   ANDROID_ARCH      目标架构(默认 arm64)
 #   SKIP_TESTS=1      跳过测试
 #   FAIL_ON_TEST=1    测试失败时中止(默认仅报告,Termux 已知环境性失败不阻塞)
@@ -76,7 +77,15 @@ case "$TAG" in
     exit 2
     ;;
 esac
-REL_TAG="termux-$TAG"
+source "$SCRIPT_DIR/scripts/termux/release-identity.sh"
+termux_release_identity "$TAG" "${TERMUX_RELEASE_TAG:-}" || die "发布 tag 无效"
+REL_TAG="$TERMUX_RELEASE_TAG"
+if git show-ref --verify --quiet "refs/tags/$REL_TAG"; then
+  die "tag $REL_TAG 已存在；请用 TERMUX_RELEASE_TAG=termux-$TAG-rN 发布新修订，不移动旧 tag"
+fi
+if [ -n "$(git ls-remote origin "refs/tags/$REL_TAG")" ]; then
+  die "远端 tag $REL_TAG 已存在，请选择新修订 tag"
+fi
 log "版本: $TAG → release tag: $REL_TAG"
 
 # 发布源码与升级/CI 将来重放的补丁必须完全一致。漏跑补丁重建脚本会让本次
@@ -100,6 +109,7 @@ log "内嵌版本: ${BIN_VERSION:-未知}"
 BIN_BASE="${BIN_VERSION%%-termux*}"
 [ "$BIN_BASE" = "${TAG#v}" ] || \
   die "产物版本 ${BIN_VERSION:-未知} 与发布目标 $TAG 不符，拒绝上传"
+termux_verify_binary_version "$BIN_VERSION" "$TAG" || die "非预期 Termux 版本，拒绝上传"
 log "内嵌版本基线 $BIN_BASE 与 $TAG 一致"
 
 # 3. 测试
@@ -138,6 +148,9 @@ else
 fi
 
 # 4. 上传二进制到仓库(发布由 GitHub Action 校验版本/hash 后完成)
+[ "$(git branch --show-current)" = "master" ] || die "只允许从 master 发布"
+[ "$ANDROID_ARCH" = "arm64" ] || die "当前发布 workflow 仅支持 arm64"
+git diff --cached --quiet || die "已有其他暂存内容，拒绝混入发布提交"
 log "上传二进制到仓库 artifacts/"
 ART_DIR="$SCRIPT_DIR/artifacts"
 mkdir -p "$ART_DIR"
@@ -159,6 +172,8 @@ else
   git commit -q -m "upload reasonix-android-$ANDROID_ARCH $TAG" || die "git commit 失败"
   # push 失败不回滚本地提交:二进制已就绪,修好网络后 git push 即可。
   # 但必须让失败可见 —— die 保证 set -e 下不会静默继续。
-  git push origin master || die "git push 失败。提交已在本地,修好网络后 git push origin master 重试。"
+  git tag -a "$REL_TAG" -m "Reasonix $TAG Termux build; source $(git rev-parse HEAD^); sha256 $BIN_HASH"
+  git -c push.followTags=false push --atomic origin HEAD:refs/heads/master "refs/tags/$REL_TAG:refs/tags/$REL_TAG" || \
+    die "原子推送失败。提交和新 tag 保留本地；检查远端后重试同一 master/tag 原子推送。"
   log "已上传 $TAG 二进制,等待 Action 校验并发布: https://github.com/$REPO/actions"
 fi

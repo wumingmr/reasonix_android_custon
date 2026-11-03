@@ -51,6 +51,13 @@ func (s *providerSetupSession) addPrompted(in *bufio.Scanner, w io.Writer, resul
 	}
 	// After the new keys are staged, so usability sees them.
 	s.promoteDefaultToNewProviders(result.entries)
+	if len(result.imageCatalog) > 0 {
+		for _, entry := range result.entries {
+			if current, ok := s.cfg.Provider(entry.Name); ok {
+				s.stageImageCatalogAt(*current, result.imageCatalog, result.imageStarted, result.imageCredentialRevision)
+			}
+		}
+	}
 	return true
 }
 

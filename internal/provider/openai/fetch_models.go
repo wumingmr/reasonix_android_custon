@@ -140,6 +140,7 @@ func FetchModelCatalogWithOptions(ctx context.Context, baseURL, apiKey string, o
 			continue
 		}
 		if previous, exists := modelsByID[model.ID]; exists {
+			model.ReasoningInfo = mergeReasoningMetadata(previous.ReasoningInfo, model.ReasoningInfo)
 			switch {
 			case conflicts[model.ID]:
 				model.InputModalities = nil
@@ -193,7 +194,7 @@ func parseModelTuple(baseURL string, raw json.RawMessage) (provider.ModelInfo, m
 		return provider.ModelInfo{}, modelCapacity{}
 	}
 	modalities, _ := parseModalities(entry)
-	return provider.ModelInfo{ID: id, InputModalities: modalities}, parseModelCapacity(entry)
+	return provider.ModelInfo{ID: id, InputModalities: modalities, ReasoningInfo: reasoningMetadataForModel(entry)}, parseModelCapacity(entry)
 }
 
 func parseModalities(entry map[string]json.RawMessage) ([]provider.ModelModality, bool) {
@@ -203,6 +204,14 @@ func parseModalities(entry map[string]json.RawMessage) ([]provider.ModelModality
 	for _, key := range []string{"input_modalities"} {
 		if raw, present := entry[key]; present {
 			return decodeModalities(raw)
+		}
+	}
+	if raw, present := entry["architecture"]; present {
+		var nested map[string]json.RawMessage
+		if json.Unmarshal(raw, &nested) == nil {
+			if input, ok := nested["input_modalities"]; ok {
+				return decodeModalities(input)
+			}
 		}
 	}
 	if raw, present := entry["modalities"]; present {
@@ -244,7 +253,14 @@ func decodeModalities(raw json.RawMessage) ([]provider.ModelModality, bool) {
 	for _, value := range values {
 		modality := provider.ModelModality(strings.ToLower(strings.TrimSpace(value)))
 		if modality != provider.ModalityText && modality != provider.ModalityImage {
-			return nil, false
+			// Preserve image facts in mixed multimodal listings without claiming
+			// that Reasonix routes audio, video or native file inputs.
+			switch modality {
+			case "audio", "video", "file":
+				continue
+			default:
+				return nil, false
+			}
 		}
 		if !seen[modality] {
 			seen[modality] = true
@@ -255,7 +271,10 @@ func decodeModalities(raw json.RawMessage) ([]provider.ModelModality, bool) {
 	if len(out) == 2 && out[0] == provider.ModalityImage {
 		out[0], out[1] = out[1], out[0]
 	}
-	return out, len(out) > 0
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
 }
 
 func decodeVisionBool(raw json.RawMessage) ([]provider.ModelModality, bool) {

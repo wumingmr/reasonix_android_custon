@@ -9,6 +9,7 @@ func ProviderEntryConfigSnapshot(entry ProviderEntry) ProviderEntry {
 	entry.resolvedAPIKey = ""
 	entry.resolvedSource = CredentialSource{}
 	entry.visionOverride = nil
+	entry.effortRuntime = false
 	entry.persistedOfficialCurrency = ""
 	return entry
 }

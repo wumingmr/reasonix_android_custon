@@ -66,6 +66,7 @@ function updateFixture(t) {
   names.add('.github/workflows/build_termux.yml');
   names.add('.github/workflows/verify-and-release.yml');
   names.add('release-termux.sh');
+  names.add('scripts/termux/release-identity.sh');
   for (const name of names) {
     mkdirSync(dirname(join(dir, name)), { recursive: true });
     copyFileSync(join(root, name), join(dir, name));
@@ -147,6 +148,37 @@ test('release rejects version mismatches and requires an existing tag', () => {
   assert.ok(release.indexOf('产物版本') < release.indexOf('git add "artifacts/'));
   const workflow = readFileSync(join(root, '.github/workflows/verify-and-release.yml'), 'utf8');
   assert.ok(workflow.includes('--verify-tag'));
+});
+
+test('release identity accepts revisions and rejects mismatches', () => {
+  const helper = join(root, 'scripts/termux/release-identity.sh');
+  const cases = [
+    ['v1.39.11', 'termux-v1.39.11', true],
+    ['v1.39.11', 'termux-v1.39.11-r1', true],
+    ['v1.39.11', 'termux-v1.39.11-r12', true],
+    ['v1.39.11', 'termux-v1.39.10-r1', false],
+    ['v1.39.11', 'termux-v1.39.11-r0', false],
+    ['v1.39.11', 'termux-v1.39.11;echo unsafe', false],
+    ['v2.57.0', 'termux-v2.57.0', false],
+  ];
+  for (const [upstream, tag, ok] of cases) {
+    const result = run('bash', ['-c', 'source "$1"; termux_release_identity "$2" "$3" && printf "%s\\n" "$TERMUX_RELEASE_ASSET"', 'bash', helper, upstream, tag], root);
+    assert.equal(result.status === 0, ok, result.stderr);
+    if (ok) assert.equal(result.stdout.trim(), `reasonix-android-arm64-${tag.slice(7)}`);
+  }
+  for (const [version, ok] of [['1.39.11-termux.abc12345', true], ['1.39.10-termux.abc12345', false], ['1.39.11', false]]) {
+    const result = run('bash', ['-c', 'source "$1"; termux_verify_binary_version "$2" v1.39.11', 'bash', helper, version], root);
+    assert.equal(result.status === 0, ok);
+  }
+});
+
+test('update verifies local adaptations without touching the network', t => {
+  const dir = updateFixture(t);
+  const result = run('bash', [join(dir, 'update-reasonix.sh'), '--verify-local'], dir, { TERMUX_PATCH_FILE: join(dir, 'reasonix-termux.patch') });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /本地修复符号与关键测试校验通过/);
+  const source = readFileSync(join(root, 'update-reasonix.sh'), 'utf8');
+  assert.ok(source.indexOf('verify_local_adaptations', source.indexOf('git apply --index')) > source.indexOf('git apply --index'));
 });
 
 test('Termux workflow builds the exact repository revision', () => {

@@ -54,6 +54,23 @@ func TestOfficialVisionExplicitOffRespectsResolvedMetadata(t *testing.T) {
 	}
 }
 
+func TestUnknownImageMetadataSerializesOnlyAttachedImages(t *testing.T) {
+	c := New(Config{Name: "relay", BaseURL: "https://relay.test", Model: "custom-model", ModelInfo: &provider.ModelInfo{}}).(*client)
+	if !c.vision || c.ModelInfo().InputModalities != nil {
+		t.Fatal("unknown image metadata changed")
+	}
+	image, _, _ := c.buildRequestBody(provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "describe", Images: []string{"data:image/png;base64,AAAA"}}}})
+	body, _ := json.Marshal(image)
+	if !strings.Contains(string(body), "input_image") {
+		t.Fatalf("image omitted: %s", body)
+	}
+	text, _, _ := c.buildRequestBody(provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hello"}}})
+	body, _ = json.Marshal(text)
+	if strings.Contains(string(body), "input_image") {
+		t.Fatal("text-only request changed")
+	}
+}
+
 func TestModelInfoEnablesImageWireSerialization(t *testing.T) {
 	c := New(Config{
 		Name: "catalog", BaseURL: "https://example.test/v1", Model: "vision",

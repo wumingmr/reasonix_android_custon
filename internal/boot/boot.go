@@ -482,7 +482,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		return nil, err
 	}
 	if opts.EffortOverride != nil {
-		entry.Effort = *opts.EffortOverride
+		entry.SetRuntimeEffort(*opts.EffortOverride)
 		if entry.Kind == "anthropic" && strings.TrimSpace(entry.Effort) != "" && strings.TrimSpace(entry.Thinking) == "" {
 			entry.Thinking = "adaptive"
 		}
@@ -1039,7 +1039,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 				}
 				normalized = effort
 			}
-			me.Effort = normalized
+			me.SetRuntimeEffort(normalized)
 			effortOverride = &normalized
 			if me.Kind == "anthropic" && strings.TrimSpace(me.Effort) != "" && strings.TrimSpace(me.Thinking) == "" {
 				me.Thinking = "adaptive"
@@ -2499,9 +2499,9 @@ func subagentEffectiveIdentity(cfg *config.Config, resolver provider.Resolver, b
 	}
 	if rawEffort := strings.TrimSpace(effort); rawEffort != "" {
 		if normalized, err := config.NormalizeEffort(&entry, rawEffort); err == nil {
-			entry.Effort = normalized
+			entry.SetRuntimeEffort(normalized)
 		} else {
-			entry.Effort = rawEffort
+			entry.SetRuntimeEffort(rawEffort)
 		}
 	}
 	modelID := strings.TrimSpace(entry.Name)

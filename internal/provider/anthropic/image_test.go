@@ -28,6 +28,25 @@ func TestBuildRequestEmbedsImageBlockForVisionModel(t *testing.T) {
 	}
 }
 
+func TestUnknownImageMetadataSerializesOnlyAttachedImages(t *testing.T) {
+	p, err := New(provider.Config{Name: "relay", BaseURL: "https://relay.test", Model: "custom-model", ModelInfo: &provider.ModelInfo{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := p.(*client)
+	if !c.vision || c.ModelInfo().InputModalities != nil {
+		t.Fatal("unknown image metadata changed")
+	}
+	image := c.buildRequest(context.Background(), provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "describe", Images: []string{"data:image/png;base64,AAAA"}}}})
+	if len(image.Messages[0].Content) != 2 || image.Messages[0].Content[1].Type != "image" {
+		t.Fatal("unknown model omitted image")
+	}
+	text := c.buildRequest(context.Background(), provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hello"}}})
+	if len(text.Messages[0].Content) != 1 {
+		t.Fatal("text-only request changed")
+	}
+}
+
 func TestModelInfoEnablesImageWireSerialization(t *testing.T) {
 	p, err := New(provider.Config{
 		Name: "catalog", BaseURL: "https://example.test", Model: "vision",

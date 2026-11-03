@@ -16,15 +16,16 @@ const (
 // InputModalities means that the adapter could not determine the capability;
 // an explicit []{"text"} is a deliberate negative declaration.
 type ModelInfo struct {
-	ID              string          `json:"id"`
-	Name            string          `json:"name,omitempty"`
-	API             string          `json:"api,omitempty"`
-	BaseURL         string          `json:"base_url,omitempty"`
-	InputModalities []ModelModality `json:"input_modalities,omitempty"`
-	ContextWindow   int             `json:"context_window,omitempty"`
-	MaxOutputTokens int             `json:"max_output_tokens,omitempty"`
-	Reasoning       bool            `json:"reasoning,omitempty"`
-	Pricing         *Pricing        `json:"pricing,omitempty"`
+	ID              string              `json:"id"`
+	Name            string              `json:"name,omitempty"`
+	API             string              `json:"api,omitempty"`
+	BaseURL         string              `json:"base_url,omitempty"`
+	InputModalities []ModelModality     `json:"input_modalities,omitempty"`
+	ContextWindow   int                 `json:"context_window,omitempty"`
+	MaxOutputTokens int                 `json:"max_output_tokens,omitempty"`
+	Reasoning       bool                `json:"reasoning,omitempty"`
+	ReasoningInfo   *ModelReasoningInfo `json:"reasoning_info,omitempty"`
+	Pricing         *Pricing            `json:"pricing,omitempty"`
 }
 
 // ModelInfoProvider is implemented by providers that can expose metadata for

@@ -17,9 +17,51 @@ Termux 定制版构建，基线为上游 [Reasonix](https://github.com/esengine/
 > 默认 `workspace-write` 在 Android 上因缺少可用的 bubblewrap backend，shell 会
 > 安全地拒绝运行；文档说明了 `danger-full-access` 的风险边界和可选解决办法。
 
-## 本次更新：v1.39.11
+## 本次更新：v1.39.11 Termux r1
 
-同步上游稳定 1.x 的 `v1.39.11`，不是 Studio 2.x 迁移。保留全部 Termux 定制。
+发布标识：`$REL_TAG`。上游受支持的 1.x 最新基线仍是 `v1.39.11`；这是 Termux
+修订版，不冒充新的上游版本，不迁移到 Studio 2.x，不移动或覆盖旧 tag/资产。
+保留此前 Android 适配、中文搜索、历史回放、模型窗口、模型切换等累计修复。
+
+### 新增：setup 图片能力自动读取
+
+- 新建连接“从 URL 获取模型”和已有连接刷新，复用同一次 `GET /models` 读取 img
+  元数据，显示“支持 / 不支持 / 未知”及来源。兼容 OpenRouter 的
+  `architecture.input_modalities`，不按模型后缀猜测，不发送推理实测请求。
+- 能力先进入 setup 草稿，保存成功后写入 24 小时模型能力缓存；手动 `vision`
+  优先，取消、保存冲突、换端点/凭据不错误复用发现。
+- 修复 adapter 与 Agent 将“未知”当“不支持”的路径。没有图片理解 fallback 时，
+  用户明确附加的图片可发送给当前未知自定义模型，仍标明未知而非已验证；配置
+  fallback 时保持原路由。明确纯文本声明和官方协议硬限制仍保留。
+- 本次仅支持 img，不启用 audio/video/native PDF 传输。普通文本请求不增加图片或改变提示词。
+
+### 新增：setup 思考声明与每模型独立 effort
+
+- `GET /models` 可读取 `reasoning` / `supports_reasoning`、`supported_parameters`、
+  `reasoning_protocol`、`supported_efforts` / `reasoning_efforts`、`default_effort`，
+  以及嵌套 `capabilities` / `reasoning` 声明。只有布尔或参数名时档位仍未知，
+  不自动编造 low/high/max，不按模型名替网关选择协议。
+- 保存后写入每模型 `discovered_reasoning`，与手动声明分开，24 小时有效并绑定实际
+  端点/模型/凭据。协议未知、不兼容、重复/冲突/非法档位不启用；刷新失败保留，
+  成功响应移除字段则撤掉旧发现。GLM/Kimi 等固定 adapter 限制仍优先。
+- 新增“编辑各模型思考强度”，支持具体档位、auto、继承。`/effort` 只保存当前模型，
+  不影响同分组其他模型；会话 `--effort` 优先。模型 `effort = ""` 为 auto，删除该
+  字段恢复分组继承。已有分组固定 effort 不自动清除，未单独设置的模型保持旧行为。
+- 旧版程序忽略新字段，降级不保证保留模型级 effort/发现记录；当前版本可读旧配置。
+  更新后先用 `/effort` 或 setup 检查各模型设置，尤其混合协议网关。
+
+### 更新、保留和验证机制
+
+- 升级前和补丁应用后都核查修复定义/关键测试；支持 `--verify-local` 无联网校验。
+  累积补丁与源码一致性检查及干净上游重放作为发布前门槛。
+- 新增 `termux-vX.Y.Z-rN` 修订发布规则：上游基线、内嵌版本、tag、资产名和
+  SHA256SUMS 一起校验，master/tag 原子推送，旧 tag 不移动，发布说明从模板渲染。
+- 全仓 Go 测试及失败包/重点场景回归在 Termux 验证；实际图片和力度请求链路使用
+  合成数据与本地模拟服务，不发送真实推理探针。平台限制与既有失败单独记录，
+  不把“未知”宣传成模型已支持，不宣称全仓 lint/test 全绿。
+
+已知：`127.0.0.1:8790` 当前仅提供模型 ID/窗口，没有图片或思考元数据，刷新后仍
+不能证明能力及准确档位。自动读取不是端点行为实测，参数受网关实现约束。
 
 ### 上游安全修复及同步内容
 

@@ -41,6 +41,12 @@ func renderModelOverride(ov ProviderModelOverride) string {
 	if ov.DefaultEffort != "" {
 		parts = append(parts, fmt.Sprintf("default_effort = %q", ov.DefaultEffort))
 	}
+	if ov.Effort != nil {
+		parts = append(parts, fmt.Sprintf("effort = %q", *ov.Effort))
+	}
+	if ov.DiscoveredReasoning != nil {
+		parts = append(parts, "discovered_reasoning = "+renderDiscoveredReasoning(*ov.DiscoveredReasoning))
+	}
 	if ov.Vision != nil {
 		parts = append(parts, fmt.Sprintf("vision = %t", *ov.Vision))
 	}
@@ -54,5 +60,5 @@ func renderModelOverride(ov ProviderModelOverride) string {
 }
 
 func modelOverrideEmpty(ov ProviderModelOverride) bool {
-	return ov.ReasoningProtocol == "" && len(ov.SupportedEfforts) == 0 && ov.DefaultEffort == "" && ov.Vision == nil && ov.ContextWindow <= 0 && ov.MaxOutputTokens == 0
+	return ov.ReasoningProtocol == "" && len(ov.SupportedEfforts) == 0 && ov.DefaultEffort == "" && ov.Vision == nil && ov.Effort == nil && ov.DiscoveredReasoning == nil && ov.ContextWindow <= 0 && ov.MaxOutputTokens == 0
 }

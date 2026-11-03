@@ -34,7 +34,10 @@ func runtimeConfigCoreClassification() []configTypeClassification {
 		// ReasoningMetadataUnknown is transient resolver metadata with json:"-";
 		// unlike new exported fields, it is explicitly reviewed rather than skipped.
 		classifyConfigType[config.ProviderModelOverride](configFieldClasses{
-			runtime: "ReasoningDefaults ReasoningProtocol SupportedEfforts DefaultEffort Vision ContextWindow MaxOutputTokens",
+			runtime: "ReasoningDefaults ReasoningProtocol SupportedEfforts DefaultEffort Effort DiscoveredReasoning Vision ContextWindow MaxOutputTokens",
+		}),
+		classifyConfigType[config.DiscoveredModelReasoning](configFieldClasses{
+			runtime: "Supported Protocol Efforts Default Parameter Invalid Identity ExpiresAt",
 		}),
 		classifyConfigType[provider.Pricing](configFieldClasses{runtime: "CacheHit Input Output Currency"}),
 		classifyConfigType[config.ToolsConfig](configFieldClasses{

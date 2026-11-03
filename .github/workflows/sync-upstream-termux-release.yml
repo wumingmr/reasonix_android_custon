@@ -99,5 +99,6 @@ jobs:
                 -c user.email="reasonix-termux-bot@users.noreply.github.com" \
                 commit -m "chore(termux): rebuild cumulative patch for ${{ steps.upstream.outputs.tag }}"
           fi
+          bash update-reasonix.sh --verify-local
           git push origin master
           echo "Sources and cumulative patch synced to master"

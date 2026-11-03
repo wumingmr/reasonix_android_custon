@@ -3,7 +3,6 @@ package cli
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +10,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"reasonix/internal/config"
 	"reasonix/internal/i18n"
@@ -32,6 +30,7 @@ type providerSetupSession struct {
 	projectScoped                bool
 	declaredProviders            []string
 	operations                   []providerSetupOperation
+	imageCatalogs                map[string]setupImageCatalog
 }
 
 const setupManagerContinue = 2
@@ -461,6 +460,12 @@ func (s *providerSetupSession) summary() []string {
 		}
 	}
 	var out []string
+	if len(s.imageCatalogs) > 0 {
+		out = append(out, i18n.M.SetupImageSaveHint)
+		if s.hasReasoningCatalog() {
+			out = append(out, i18n.M.SetupReasoningSaveHint)
+		}
+	}
 	if len(added) > 0 {
 		out = append(out, fmt.Sprintf(i18n.M.SetupSummaryAddedFmt, strings.Join(added, ", ")))
 	}
@@ -603,6 +608,8 @@ func manageProvider(s *providerSetupSession, providerIndex int) {
 		testAndRefreshProvider(s, p)
 	case providerActionWindows:
 		editProviderModelWindows(s, p)
+	case providerActionEfforts:
+		editProviderModelEfforts(s, p)
 	case providerActionDefault:
 		setDefaultProvider(s, p)
 	case providerActionRemove:
@@ -617,6 +624,7 @@ const (
 	providerActionKey
 	providerActionRefresh
 	providerActionWindows
+	providerActionEfforts
 	providerActionDefault
 	providerActionRemove
 	providerActionBack
@@ -628,6 +636,7 @@ func providerActionItems(p config.ProviderEntry) []menuItem {
 		{name: i18n.M.SetupUpdateKey},
 		{name: i18n.M.SetupTestRefresh},
 		{name: i18n.M.SetupModelWindows, desc: modelWindowsSummary(p)},
+		{name: i18n.M.SetupModelEfforts, desc: i18n.M.SetupModelEffortsHint},
 		{name: i18n.M.SetupSetDefault},
 		{name: i18n.M.SetupRemoveProvider},
 		{name: i18n.M.SetupBack},
@@ -814,61 +823,6 @@ func updateProviderKey(s *providerSetupSession, p config.ProviderEntry) {
 	}
 }
 
-func testAndRefreshProvider(s *providerSetupSession, p config.ProviderEntry) {
-	restore := temporarilySetCredential(p.APIKeyEnv, s.pendingConnectionCredentials[p.Name])
-	defer restore()
-	p.ResolveAPIKeyFromProcessEnvForProbe()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	var proxy netclient.ProxySpec
-	if s.cfg != nil {
-		proxy = s.cfg.NetworkProxySpec()
-	}
-	catalog, err := p.FetchModelCatalogWithProxy(ctx, proxy)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, i18n.M.FetchModelsFailedFmt+"\n", p.Name, err)
-		return
-	}
-	models := make([]string, 0, len(catalog))
-	for _, info := range catalog {
-		models = append(models, info.ID)
-	}
-	if len(models) == 0 {
-		fmt.Fprintln(os.Stderr, i18n.M.CustomFetchEmpty)
-		return
-	}
-	items := make([]menuItem, len(models))
-	for i, model := range models {
-		items[i] = menuItem{name: model}
-	}
-	idxs, err := selectMany(fmt.Sprintf(i18n.M.SelectModelsLabel, p.Name), items)
-	if err != nil || len(idxs) == 0 {
-		return
-	}
-	selected := make([]string, 0, len(idxs))
-	for _, idx := range idxs {
-		selected = append(selected, models[idx])
-	}
-	p.Models = selected
-	p.Model = ""
-	if !containsString(selected, p.Default) {
-		p.Default = selected[0]
-	}
-	// Listings that state a window per model are the only free source of truth
-	// about capacity, so record what this one declared. Models the user already
-	// gave a window keep it; the rest gain the endpoint's own number instead of
-	// inheriting a connection-wide guess.
-	filled := p.ApplyDiscoveredLimits(catalog)
-	if err := s.upsert([]config.ProviderEntry{p}); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return
-	}
-	fmt.Printf("  %s\n", green(fmt.Sprintf(i18n.M.FetchModelsSuccessFmt, len(models), p.Name)))
-	if filled > 0 {
-		fmt.Printf("  %s\n", dim(fmt.Sprintf(i18n.M.SetupModelWindowDiscoveredFmt, filled)))
-	}
-}
-
 func temporarilySetCredential(key, value string) func() {
 	if key == "" || value == "" {
 		return func() {}
@@ -997,7 +951,8 @@ func providerSetupAccessContains(names []string, want string) bool {
 }
 
 func commitProviderSetupSession(s *providerSetupSession, configPath string) (bool, error) {
-	if len(s.operations) == 0 && len(s.pendingConnectionCredentials) == 0 {
+	cacheOnly := len(s.operations) == 0 && len(s.pendingConnectionCredentials) == 0 && !s.hasReasoningCatalog()
+	if cacheOnly && len(s.imageCatalogs) == 0 {
 		return false, nil
 	}
 	unlock, err := config.LockConfigFileEdits(configPath)
@@ -1010,6 +965,7 @@ func commitProviderSetupSession(s *providerSetupSession, configPath string) (boo
 		return false, err
 	}
 	defer unlockCredentials()
+	s.validateImageCatalogCredentials()
 
 	before, err := readProviderSetupFileSnapshot(configPath)
 	if err != nil {
@@ -1022,6 +978,10 @@ func commitProviderSetupSession(s *providerSetupSession, configPath string) (boo
 	fresh, err := config.LoadForEditReadOnlyStrict(configPath)
 	if err != nil {
 		return false, err
+	}
+	if cacheOnly {
+		s.persistImageCatalogs(fresh)
+		return false, nil
 	}
 	if err := fresh.BeginModelCredentialCommitLocked(configPath, "cli-setup"); err != nil {
 		return false, err
@@ -1052,6 +1012,7 @@ func commitProviderSetupSession(s *providerSetupSession, configPath string) (boo
 			return false, err
 		}
 	}
+	s.applyReasoningCatalogs(fresh)
 	current, err := readProviderSetupFileSnapshot(configPath)
 	if err != nil {
 		return false, err
@@ -1072,6 +1033,7 @@ func commitProviderSetupSession(s *providerSetupSession, configPath string) (boo
 	if err := fresh.CompleteModelCredentialCommitLocked(); err != nil {
 		return false, err
 	}
+	s.persistImageCatalogs(fresh)
 	return true, nil
 }
 

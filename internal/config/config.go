@@ -1449,8 +1449,12 @@ type ProviderEntry struct {
 	// concrete model from a multi-model provider. Use it when a gateway exposes
 	// mixed DeepSeek/OpenAI/no-reasoning or mixed vision/text models under one
 	// base_url/key.
-	ModelOverrides map[string]ProviderModelOverride `toml:"model_overrides"`
-	visionOverride *bool
+	ModelOverrides     map[string]ProviderModelOverride `toml:"model_overrides"`
+	visionOverride     *bool
+	effortRuntime      bool
+	discoveredProtocol bool
+	discoveredEfforts  bool
+	discoveredDefault  bool
 	// NoProxy reaches this provider's base_url directly, never through the proxy.
 	// For China-only endpoints a foreign-exit proxy resets the TLS handshake (#2803).
 	NoProxy bool `toml:"no_proxy"`
@@ -1596,6 +1600,9 @@ func (e *ProviderEntry) applyModelOverride() {
 	if ov.DefaultEffort != "" || ov.SupportedEfforts != nil {
 		e.reasoningDefaultAutomatic = false
 		e.DefaultEffort = ov.DefaultEffort
+	}
+	if ov.Effort != nil && !e.effortRuntime {
+		e.Effort = *ov.Effort
 	}
 	if ov.Vision != nil {
 		e.visionOverride = ov.Vision

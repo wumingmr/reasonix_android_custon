@@ -5,12 +5,12 @@
 
 ## 安装二进制
 
-从 GitHub Release 下载当前版本。以下以 `v1.39.11` 为例；升级时只需替换
+从 GitHub Release 下载当前版本。以下以 `v1.39.11-r1` 为例；升级时只需替换
 `VERSION`：
 
 ```sh
 mkdir -p ~/tmp
-VERSION=v1.39.11
+VERSION=v1.39.11-r1
 REPO=wumingmr/reasonix_android_custon
 ASSET="reasonix-android-arm64-$VERSION"
 
@@ -180,6 +180,79 @@ REASONIX_REAL="$PREFIX/bin/reasonix" reasonix-raw --version
 如果 `reasonix --version` 报 `unknown flag: --version`，说明使用的是早期 wrapper；
 重新运行上面带 `--default-full` 的一键安装命令即可安全更新。早期版本在 `--version`
 之前错误注入了 `--permission-mode`。
+
+## setup 识图能力提示
+
+`reasonix setup` 中新增连接的“从 URL 获取模型”和已有连接的“测试连接并刷新模型”
+会读取同一次 `/models` 响应中的图片能力字段。模型列表显示 `img: 支持 / 不支持 / 未知`，
+并标明接口声明、内置目录/协议或手动设置；不根据模型名字推测，也不发送图片推理探针。
+
+支持 `input_modalities`、`architecture.input_modalities`（OpenRouter）、
+`modalities.input`、`capabilities.input_modalities` / `capabilities.vision`、
+`supports_vision` 和 `vision`。缺字段或冲突保持未知，刷新失败不改变已有结果。
+
+能力声明先留在 setup 草稿，选择“保存并退出”后才写入 Reasonix cache 下的
+`model-capabilities-v2.json`，24 小时有效；端点、模型或凭据变化后旧缓存不复用。
+不会把自动声明写成手动 `vision` 覆盖，也不覆盖已有的模型级设置。要手动声明可用：
+
+```toml
+# 放在对应 [[providers]] 中，保留 model_overrides 的其他已有项
+model_overrides = { "codebuddy/deepseek-v4.1-flash" = { vision = true } }
+```
+
+没有识图声明且没有配置 `[agent] vision_model` 的自定义模型，会尝试发送你明确附加的图片，
+仍显示“未知”而不伪称已验证；若配置了图片理解模型则走该 fallback。显式纯文本声明仍阻止
+直接发图，官方 DeepSeek 纯文本型号的限制仍保留。普通纯文本请求不变化。
+
+你的 `127.0.0.1:8790` 网关目前没有返回识图元数据，因此仅刷新不能显示“支持”。
+这里仅支持 img，不启用音频、视频或原生 PDF 传输。附图可在 CLI 粘贴图片路径形成附件，
+或使用工作目录内的 `@.reasonix/attachments/example.jpg`；工作目录外的裸路径不等于附件。
+
+## setup 思考强度与每模型设置
+
+新建连接和刷新模型沿用同一次 `GET /models` 读取思考声明，不发送推理请求。
+支持 `reasoning` / `supports_reasoning` 布尔、`supported_parameters` 的思考参数提示，
+以及明确的 `reasoning_protocol`、`supported_efforts` / `reasoning_efforts`、`default_effort`；
+也可放在 `capabilities` 或 `reasoning = { supported, protocol, efforts, default }` 中。
+只有布尔或参数名时显示“档位未知”，不会猜测 low/high/max，也不按模型后缀选择协议。
+
+选择“保存并退出”后将发现记录写入对应 `model_overrides` 的 `discovered_reasoning`，
+与手动协议/档位分开，24 小时有效并绑定端点、模型和凭据。取消/保存冲突不写入，
+刷新成功但新响应缺字段会删除旧发现；网络失败保留已有数据。协议未知、不兼容、
+档位重复或默认值非法的声明不会启用。手动声明和 adapter 固定限制始终优先。
+
+连接操作新增“编辑各模型思考强度”，可设置具体档位、`auto` 或“继承”。
+CLI `/effort` 现在只保存当前模型，不影响同分组其他模型：
+
+```toml
+# 放在对应 provider 的 model_overrides 中，与已有窗口/vision 合并
+model_overrides = { "codebuddy/deepseek-v4.1-flash" = { effort = "high" } }
+```
+
+`effort = ""` 表示当前模型 auto（忽略分组固定 effort，使用该模型默认）；
+删除模型级 effort 字段恢复继承分组。会话 `--effort` 优先于模型设置。
+旧的分组 `effort` 未自动清除，因此还没单独设置的模型保持旧行为。GLM/Kimi 等
+协议只允许自身档位；`auto` 不等于 adaptive。你的 8790 网关未声明思考字段，
+自动读取仍只能显示未知或已有配置，不能证明后端确实执行了某个思考强度。
+
+## 源码升级与发布保留规则
+
+`update-reasonix.sh` 默认只同步上游最新稳定 1.x；Studio 2.x 不自动迁移。
+升级前要求工作树干净，并在替换前、补丁重放后两次校验关键修复定义与测试。
+`bash update-reasonix.sh --verify-local` 只做本地哨兵校验，不联网、不改源码。
+网络查询失败不回滚；真正开始替换后失败恢复 tracked source，不 `git clean` 本地文件。
+
+每次提交定制源码后运行 `bash rebuild-termux-patch.sh` 并提交累积补丁；
+`--check` 校验补丁与 HEAD 一致并在干净上游树上验证应用。`.github`、LFS 属性、
+update/release/rebuild 脚本、发布说明与 `artifacts` 不在源码 patch 中，升级显式保留。
+新增修复须同时登记到 update 哨兵，不能只依赖“补丁里有文件”。
+
+同上游版本的新定制发布使用 `termux-vX.Y.Z-rN`（例如 `termux-v1.39.11-r1`），
+内嵌版本仍是 `1.39.11-termux.<源码sha>`，不冒充上游补丁版本。
+`TERMUX_RELEASE_TAG=termux-v1.39.11-r1 bash release-termux.sh` 会校验新 tag、版本、
+LFS 指针后原子推送 master/tag；旧 tag 不移动。失败重试前先观察远端状态。
+发版 workflow 可显式传 `release_tag`，要求它指向上传二进制的提交，并按 tag 生成
+资产名和 SHA256SUMS；不是从当前任意 master 隐式创建 tag。
 
 ## 升级后的关系
 

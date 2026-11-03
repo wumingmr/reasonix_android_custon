@@ -14,11 +14,13 @@ func ResolveReasoningEntry(entry *ProviderEntry) *ProviderEntry {
 		return nil
 	}
 	e := *entry
+	stripDiscoveredReasoning(&e)
 	if e.Model == "" {
 		e.Model = e.DefaultModel()
 	}
 	e.applyModelOverride()
 	RepairProviderEndpointContract(&e)
+	applyDiscoveredReasoning(&e)
 	defaults, ok := builtinReasoningDefaults(&e)
 	if !ok {
 		return &e
@@ -48,6 +50,7 @@ func ResolveReasoningEntry(entry *ProviderEntry) *ProviderEntry {
 // entry (for example /effort materializing a default provider) from freezing
 // inherited facts. Values changed since resolution remain explicit edits.
 func stripRuntimeReasoningDefaults(e *ProviderEntry) {
+	stripDiscoveredReasoning(e)
 	if !e.reasoningAutomatic && !e.reasoningProtocolAutomatic && !e.reasoningDefaultAutomatic {
 		return
 	}

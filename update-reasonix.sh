@@ -10,6 +10,7 @@
 #
 # 用法:
 #   ./update-reasonix.sh
+#   ./update-reasonix.sh --verify-local  # 仅校验适配，不联网或替换源码
 # 环境变量:
 #   REASONIX_REPO_URL   上游仓库(默认 https://github.com/esengine/DeepSeek-Reasonix.git)
 #   REASONIX_TAG        指定 tag(默认取**最新 1.x** tag;1.x 之外的版本需配
@@ -39,6 +40,8 @@ require_clean_worktree
 #    cherry-pick 它;后续独立提交的 TUI resume 优化和配置修复因此会在下一次
 #    上游同步时被清空。现在本地脚本与 GitHub workflow 统一应用同一个累积 patch。
 PATCH_FILE="${TERMUX_PATCH_FILE:-$SCRIPT_DIR/reasonix-termux.patch}"
+
+verify_local_adaptations() {
 [ -s "$PATCH_FILE" ] || die "累积补丁不存在或为空:$PATCH_FILE。先运行 ./rebuild-termux-patch.sh"
 PATCH_FILES="$(grep -c '^diff --git ' "$PATCH_FILE" || true)"
 [ "${PATCH_FILES:-0}" -gt 0 ] || die "累积补丁没有 diff:$PATCH_FILE"
@@ -62,7 +65,14 @@ for required in \
   "internal/fileutil/atomicwrite.go:publishNewFile:Android 原子创建" \
   "internal/cli/select.go:updateSearchText:中文跨读取 pending" \
   "internal/cli/branch.go:clipReplayHistoryWithOmitted:索引尾部省略计数" \
-  "internal/session/history_locator.go:HistoryTailWithOmitted:历史尾部快照计数"; do
+  "internal/session/history_locator.go:HistoryTailWithOmitted:历史尾部快照计数" \
+  "internal/cli/setup_image_capabilities.go:setupModelItems:setup 图片能力提示" \
+  "internal/cli/setup_image_capabilities.go:persistImageCatalogs:图片能力保存" \
+  "internal/provider/image_capability.go:ResolveImageInputMetadata:未知图片能力保留" \
+  "internal/agent/imageinput.go:newImageInput:Agent 图片 fallback 决策" \
+  "internal/config/model_effort.go:SetModelEffort:每模型独立 effort" \
+  "internal/config/model_reasoning_discovery.go:ApplyDiscoveredReasoning:setup 思考声明保存" \
+  "internal/provider/openai/reasoning_metadata.go:parseReasoningMetadata:思考元数据解析"; do
   file="${required%%:*}"; rest="${required#*:}"
   sym="${rest%%:*}"; label="${rest#*:}"
   # 匹配定义而非任意引用:escArrow 主体被删但 searchText 里还留着一次调用时,
@@ -83,7 +93,17 @@ for required in \
   "internal/fileutil/atomiccreate_android_test.go:TestAtomicCreateAndroidFailsClosedWithoutRename" \
   "internal/cli/select_search_input_test.go:TestUpdateSearchTextRetainsPendingAcrossReads" \
   "internal/cli/replay_tail_test.go:TestReplayIndexedTailPreservesOmittedAndTurnBoundary" \
-  "internal/session/projection_read_audit_test.go:TestSessionReadPathsReuseIntegrityAndRecheckChanges"; do
+  "internal/session/projection_read_audit_test.go:TestSessionReadPathsReuseIntegrityAndRecheckChanges" \
+  "internal/cli/setup_image_capabilities_test.go:TestSetupImageCatalogSavesOnlyAfterCommit" \
+  "internal/cli/setup_image_capabilities_test.go:TestSetupImageCatalogFetchUsesOnlyModelMetadata" \
+  "internal/boot/unknown_image_metadata_test.go:TestLocalResolverKeepsUnknownImagesAvailableWithoutFallback" \
+  "internal/provider/openai/image_test.go:TestUnknownImageMetadataSerializesOnlyAttachedImages" \
+  "internal/boot/unknown_image_metadata_test.go:TestBuildUnknownImageAttachmentReachesProvider" \
+  "internal/agent/imageinput_test.go:TestUnknownImageInputRespectsFallback" \
+  "internal/config/model_effort_test.go:TestModelEffortIndependentRoundTripAndRuntimePriority" \
+  "internal/cli/setup_reasoning_test.go:TestSetupReasoningSavesDeclarationsAndImagesTogether" \
+  "internal/provider/openai/reasoning_metadata_test.go:TestReasoningMetadataOnlyTrustsDeclarations" \
+  "internal/boot/rebuild_config_classification_test.go:TestRuntimeConfigClassificationCoversExportedFields"; do
   file="${required%%:*}"; test_name="${required#*:}"
   grep -q "func $test_name(" "$SCRIPT_DIR/$file" 2>/dev/null || \
     die "关键测试丢失:$file 里找不到 $test_name()。测试没了就没有报警器,
@@ -94,13 +114,18 @@ for required in \
   'scripts/termux/compat.test.mjs:update network failure leaves ignored data and HEAD untouched:升级回滚测试' \
   '.github/workflows/build_termux.yml:tar.gz/${{ github.sha }}:CI 固定源码提交' \
   '.github/workflows/verify-and-release.yml:--verify-tag:发版必须先创建 tag' \
-  'release-termux.sh:[ "$BIN_BASE" = "${TAG#v}" ] ||:发版产物版本校验'; do
+  'release-termux.sh:[ "$BIN_BASE" = "${TAG#v}" ] ||:发版产物版本校验' \
+  'scripts/termux/release-identity.sh:termux_release_identity():修订 tag 格式校验'; do
   file="${required%%:*}"; rest="${required#*:}"
   marker="${rest%%:*}"; label="${rest#*:}"
   grep -Fq -- "$marker" "$SCRIPT_DIR/$file" || die "本地适配丢失:$label ($file)"
 done
 log "Termux 累积补丁:$PATCH_FILE ($PATCH_FILES files)"
 log "本地修复符号与关键测试校验通过"
+}
+
+verify_local_adaptations
+if [ "${1:-}" = "--verify-local" ]; then exit 0; fi
 
 ORIG_HEAD_REF="$(git rev-parse HEAD)"
 
@@ -219,6 +244,9 @@ if git apply --check "$PATCH_FILE"; then
 else
   die "$(rollback_hint)"
 fi
+
+# Recheck definitions/tests after replay, not just before deleting old source.
+verify_local_adaptations
 
 # 8. 上游基线已经变成 $TAG；立即重建累积 patch 并提交。否则仓库里的 patch
 #    仍以旧 tag 为基线，release-termux.sh 的一致性检查会拒绝发版。

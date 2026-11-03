@@ -13,7 +13,7 @@ func runtimeConfigHostClassification() []configTypeClassification {
 				"UpdateChannel Telemetry Metrics SessionExperience ExpandThinking ReasoningDisplayMode ConversationWidth",
 		}),
 		classifyConfigType[config.UIConfig](configFieldClasses{
-			excluded: "Theme ThemeStyle ShortcutLayout CloseBehavior ShowReasoning ShowTurnUsage CursorShape",
+			excluded: "Theme ThemeStyle ShortcutLayout CloseBehavior ShowReasoning ShowTurnUsage CursorShape ResumeListLimit TermuxWidthOffset",
 		}),
 		classifyConfigType[config.CLIConfig](configFieldClasses{excluded: "UpdateChannel"}),
 		classifyConfigType[config.TelemetryConfig](configFieldClasses{excluded: "CLIMetrics"}),
