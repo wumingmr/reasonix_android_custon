@@ -120,10 +120,10 @@ index b653e8fae3caaf6c75e51b17f29843661a7a84a1..529cde815beb070f326093c43a53c5da
  // fakeAgent stands in for the reasonix binary: it records every invocation's
 diff --git a/docs/TERMUX.zh-CN.md b/docs/TERMUX.zh-CN.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..02db2e5aa225e5374ba9afab7b98fc423b3333c0
+index 0000000000000000000000000000000000000000..a0fc6383346ee9e7196ec1d6b9e54c0456842274
 --- /dev/null
 +++ b/docs/TERMUX.zh-CN.md
-@@ -0,0 +1,245 @@
+@@ -0,0 +1,264 @@
 +# Reasonix Termux / Android 使用说明
 +
 +本文对应 [`reasonix_android_custon`](https://github.com/wumingmr/reasonix_android_custon)
@@ -131,12 +131,12 @@ index 0000000000000000000000000000000000000000..02db2e5aa225e5374ba9afab7b98fc42
 +
 +## 安装二进制
 +
-+从 GitHub Release 下载当前版本。以下以 `v1.39.11` 为例；升级时只需替换
++从 GitHub Release 下载当前版本。以下以 `v1.39.11-r1` 为例；升级时只需替换
 +`VERSION`：
 +
 +```sh
 +mkdir -p ~/tmp
-+VERSION=v1.39.11
++VERSION=v1.39.11-r1
 +REPO=wumingmr/reasonix_android_custon
 +ASSET="reasonix-android-arm64-$VERSION"
 +
@@ -360,6 +360,25 @@ index 0000000000000000000000000000000000000000..02db2e5aa225e5374ba9afab7b98fc42
 +旧的分组 `effort` 未自动清除，因此还没单独设置的模型保持旧行为。GLM/Kimi 等
 +协议只允许自身档位；`auto` 不等于 adaptive。你的 8790 网关未声明思考字段，
 +自动读取仍只能显示未知或已有配置，不能证明后端确实执行了某个思考强度。
++
++## 源码升级与发布保留规则
++
++`update-reasonix.sh` 默认只同步上游最新稳定 1.x；Studio 2.x 不自动迁移。
++升级前要求工作树干净，并在替换前、补丁重放后两次校验关键修复定义与测试。
++`bash update-reasonix.sh --verify-local` 只做本地哨兵校验，不联网、不改源码。
++网络查询失败不回滚；真正开始替换后失败恢复 tracked source，不 `git clean` 本地文件。
++
++每次提交定制源码后运行 `bash rebuild-termux-patch.sh` 并提交累积补丁；
++`--check` 校验补丁与 HEAD 一致并在干净上游树上验证应用。`.github`、LFS 属性、
++update/release/rebuild 脚本、发布说明与 `artifacts` 不在源码 patch 中，升级显式保留。
++新增修复须同时登记到 update 哨兵，不能只依赖“补丁里有文件”。
++
++同上游版本的新定制发布使用 `termux-vX.Y.Z-rN`（例如 `termux-v1.39.11-r1`），
++内嵌版本仍是 `1.39.11-termux.<源码sha>`，不冒充上游补丁版本。
++`TERMUX_RELEASE_TAG=termux-v1.39.11-r1 bash release-termux.sh` 会校验新 tag、版本、
++LFS 指针后原子推送 master/tag；旧 tag 不移动。失败重试前先观察远端状态。
++发版 workflow 可显式传 `release_tag`，要求它指向上传二进制的提交，并按 tag 生成
++资产名和 SHA256SUMS；不是从当前任意 master 隐式创建 tag。
 +
 +## 升级后的关系
 +
@@ -1739,6 +1758,35 @@ index 87c5b6f46ead8aa4c0b250264fc2d002a0386822..58d5fc3e9dbef9aec80b699205249ab5
  	if entry.Kind == "anthropic" && entry.Thinking == "" {
  		entry.Thinking = "adaptive"
  	}
+diff --git a/internal/boot/rebuild_config_classification_core_test.go b/internal/boot/rebuild_config_classification_core_test.go
+index 2b9a7ae4a997cabcda3f6a882ae1c0f2ce083a44..3eaaada3babeac565cf639a263b77a6530d5280f 100644
+--- a/internal/boot/rebuild_config_classification_core_test.go
++++ b/internal/boot/rebuild_config_classification_core_test.go
+@@ -34,7 +34,10 @@ func runtimeConfigCoreClassification() []configTypeClassification {
+ 		// ReasoningMetadataUnknown is transient resolver metadata with json:"-";
+ 		// unlike new exported fields, it is explicitly reviewed rather than skipped.
+ 		classifyConfigType[config.ProviderModelOverride](configFieldClasses{
+-			runtime: "ReasoningDefaults ReasoningProtocol SupportedEfforts DefaultEffort Vision ContextWindow MaxOutputTokens",
++			runtime: "ReasoningDefaults ReasoningProtocol SupportedEfforts DefaultEffort Effort DiscoveredReasoning Vision ContextWindow MaxOutputTokens",
++		}),
++		classifyConfigType[config.DiscoveredModelReasoning](configFieldClasses{
++			runtime: "Supported Protocol Efforts Default Parameter Invalid Identity ExpiresAt",
+ 		}),
+ 		classifyConfigType[provider.Pricing](configFieldClasses{runtime: "CacheHit Input Output Currency"}),
+ 		classifyConfigType[config.ToolsConfig](configFieldClasses{
+diff --git a/internal/boot/rebuild_config_classification_host_test.go b/internal/boot/rebuild_config_classification_host_test.go
+index b0c1620326c3b5a01da2aa6dfe9429eb53db6c36..986e0ee431df7ac29b673576d0c01f51a0063d74 100644
+--- a/internal/boot/rebuild_config_classification_host_test.go
++++ b/internal/boot/rebuild_config_classification_host_test.go
+@@ -13,7 +13,7 @@ func runtimeConfigHostClassification() []configTypeClassification {
+ 				"UpdateChannel Telemetry Metrics SessionExperience ExpandThinking ReasoningDisplayMode ConversationWidth",
+ 		}),
+ 		classifyConfigType[config.UIConfig](configFieldClasses{
+-			excluded: "Theme ThemeStyle ShortcutLayout CloseBehavior ShowReasoning ShowTurnUsage CursorShape",
++			excluded: "Theme ThemeStyle ShortcutLayout CloseBehavior ShowReasoning ShowTurnUsage CursorShape ResumeListLimit TermuxWidthOffset",
+ 		}),
+ 		classifyConfigType[config.CLIConfig](configFieldClasses{excluded: "UpdateChannel"}),
+ 		classifyConfigType[config.TelemetryConfig](configFieldClasses{excluded: "CLIMetrics"}),
 diff --git a/internal/boot/resolver.go b/internal/boot/resolver.go
 index 27744a853f2d2956c247b7014f2d9e1b5bbc2968..ff287f60b466cd82dda92dbcfd5f794480470740 100644
 --- a/internal/boot/resolver.go
@@ -8772,10 +8820,10 @@ index 0000000000000000000000000000000000000000..401dddf98e69b7757d3c51c3174f50fd
 +    main()
 diff --git a/scripts/termux/compat.test.mjs b/scripts/termux/compat.test.mjs
 new file mode 100644
-index 0000000000000000000000000000000000000000..09bdae70e391946be357960c038065e63e083a49
+index 0000000000000000000000000000000000000000..faf878a03dd58a5d1a287d677db5808b1e975f69
 --- /dev/null
 +++ b/scripts/termux/compat.test.mjs
-@@ -0,0 +1,157 @@
+@@ -0,0 +1,189 @@
 +import assert from 'node:assert/strict';
 +import { spawnSync } from 'node:child_process';
 +import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -8844,6 +8892,7 @@ index 0000000000000000000000000000000000000000..09bdae70e391946be357960c038065e6
 +  names.add('.github/workflows/build_termux.yml');
 +  names.add('.github/workflows/verify-and-release.yml');
 +  names.add('release-termux.sh');
++  names.add('scripts/termux/release-identity.sh');
 +  for (const name of names) {
 +    mkdirSync(dirname(join(dir, name)), { recursive: true });
 +    copyFileSync(join(root, name), join(dir, name));
@@ -8925,6 +8974,37 @@ index 0000000000000000000000000000000000000000..09bdae70e391946be357960c038065e6
 +  assert.ok(release.indexOf('产物版本') < release.indexOf('git add "artifacts/'));
 +  const workflow = readFileSync(join(root, '.github/workflows/verify-and-release.yml'), 'utf8');
 +  assert.ok(workflow.includes('--verify-tag'));
++});
++
++test('release identity accepts revisions and rejects mismatches', () => {
++  const helper = join(root, 'scripts/termux/release-identity.sh');
++  const cases = [
++    ['v1.39.11', 'termux-v1.39.11', true],
++    ['v1.39.11', 'termux-v1.39.11-r1', true],
++    ['v1.39.11', 'termux-v1.39.11-r12', true],
++    ['v1.39.11', 'termux-v1.39.10-r1', false],
++    ['v1.39.11', 'termux-v1.39.11-r0', false],
++    ['v1.39.11', 'termux-v1.39.11;echo unsafe', false],
++    ['v2.57.0', 'termux-v2.57.0', false],
++  ];
++  for (const [upstream, tag, ok] of cases) {
++    const result = run('bash', ['-c', 'source "$1"; termux_release_identity "$2" "$3" && printf "%s\\n" "$TERMUX_RELEASE_ASSET"', 'bash', helper, upstream, tag], root);
++    assert.equal(result.status === 0, ok, result.stderr);
++    if (ok) assert.equal(result.stdout.trim(), `reasonix-android-arm64-${tag.slice(7)}`);
++  }
++  for (const [version, ok] of [['1.39.11-termux.abc12345', true], ['1.39.10-termux.abc12345', false], ['1.39.11', false]]) {
++    const result = run('bash', ['-c', 'source "$1"; termux_verify_binary_version "$2" v1.39.11', 'bash', helper, version], root);
++    assert.equal(result.status === 0, ok);
++  }
++});
++
++test('update verifies local adaptations without touching the network', t => {
++  const dir = updateFixture(t);
++  const result = run('bash', [join(dir, 'update-reasonix.sh'), '--verify-local'], dir, { TERMUX_PATCH_FILE: join(dir, 'reasonix-termux.patch') });
++  assert.equal(result.status, 0, result.stderr);
++  assert.match(result.stdout, /本地修复符号与关键测试校验通过/);
++  const source = readFileSync(join(root, 'update-reasonix.sh'), 'utf8');
++  assert.ok(source.indexOf('verify_local_adaptations', source.indexOf('git apply --index')) > source.indexOf('git apply --index'));
 +});
 +
 +test('Termux workflow builds the exact repository revision', () => {
@@ -9193,3 +9273,35 @@ index 0000000000000000000000000000000000000000..0e1c451df9ad7c957c0b89f00d8ed1a4
 +  -*) exec "$REAL" --permission-mode "$DEFAULT_MODE" "$@" ;;
 +  *) exec "$REAL" "$@" ;;
 +esac
+diff --git a/scripts/termux/release-identity.sh b/scripts/termux/release-identity.sh
+new file mode 100644
+index 0000000000000000000000000000000000000000..1260c56da37b4f3b8600798b57ace31bef65141c
+--- /dev/null
++++ b/scripts/termux/release-identity.sh
+@@ -0,0 +1,26 @@
++#!/usr/bin/env bash
++# Shared tag/version rules for local publishing and GitHub verification.
++termux_release_identity() {
++  local upstream="$1" requested="${2:-}" tag_base
++  [[ "$upstream" =~ ^v1\.[0-9]+\.[0-9]+$ ]] || {
++    echo "Unsupported upstream version: $upstream" >&2; return 1;
++  }
++  TERMUX_RELEASE_TAG="${requested:-termux-$upstream}"
++  [[ "$TERMUX_RELEASE_TAG" =~ ^termux-v1\.[0-9]+\.[0-9]+(-r[1-9][0-9]*)?$ ]] || {
++    echo "Invalid Termux release tag: $TERMUX_RELEASE_TAG" >&2; return 1;
++  }
++  tag_base="${TERMUX_RELEASE_TAG#termux-}"
++  tag_base="${tag_base%%-r*}"
++  [ "$tag_base" = "$upstream" ] || {
++    echo "Release tag $TERMUX_RELEASE_TAG does not track $upstream" >&2; return 1;
++  }
++  TERMUX_RELEASE_ASSET="reasonix-android-arm64-${TERMUX_RELEASE_TAG#termux-}"
++}
++
++termux_verify_binary_version() {
++  local version="$1" upstream="$2"
++  [[ "$version" =~ ^1\.[0-9]+\.[0-9]+-termux\.[[:alnum:].+-]+$ ]] && \
++    [ "${version%%-termux*}" = "${upstream#v}" ] || {
++      echo "Binary version ${version:-missing} does not track $upstream" >&2; return 1;
++    }
++}
