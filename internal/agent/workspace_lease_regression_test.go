@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -190,10 +189,10 @@ func TestWritableHooksUseWorkspaceLease(t *testing.T) {
 	call.Arguments = `{"path":"probe.go","content":"probe"}`
 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
 	out := a.executeOne(ctx, &a.turn, call)
-	cancel()
-	if !out.blocked || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		t.Fatalf("hook-capable writer was not blocked by active workspace write: %+v", out)
+	if !out.blocked || ctx.Err() != nil {
+		t.Fatalf("hook-capable writer did not return an immediate workspace conflict: %+v (context=%v)", out, ctx.Err())
 	}
+	cancel()
 	if got := hooks.calls.Load(); got != 0 {
 		t.Fatalf("hook ran %d times before the workspace became exclusive", got)
 	}

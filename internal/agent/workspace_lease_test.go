@@ -65,7 +65,7 @@ func deliveryLeaseTestAgent(t *testing.T, owner *workspacelease.Owner, tools ...
 	return a
 }
 
-func TestDeliveryWriterWaitsBeforeToolExecutionButReaderDoesNot(t *testing.T) {
+func TestDeliveryWriterConflictsBeforeToolExecutionButReaderDoesNot(t *testing.T) {
 	root, locks := t.TempDir(), t.TempDir()
 	first, err := workspacelease.New(root, locks, nil)
 	if err != nil {
@@ -99,8 +99,8 @@ func TestDeliveryWriterWaitsBeforeToolExecutionButReaderDoesNot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
 	defer cancel()
 	outcome := a.executeOne(ctx, &a.turn, providerToolCall("write", writer.Name()))
-	if !outcome.blocked || outcome.errMsg != "blocked: workspace write lease unavailable" {
-		t.Fatalf("writer outcome = %+v, want lease block", outcome)
+	if !outcome.blocked || outcome.errMsg != "blocked: workspace write lease unavailable" || ctx.Err() != nil {
+		t.Fatalf("writer outcome = %+v, want immediate lease conflict (context=%v)", outcome, ctx.Err())
 	}
 	if got := writer.calls.Load(); got != 0 {
 		t.Fatalf("writer executed %d times before lease acquisition", got)

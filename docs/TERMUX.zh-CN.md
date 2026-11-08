@@ -5,12 +5,12 @@
 
 ## 安装二进制
 
-从 GitHub Release 下载当前版本。以下以 `v1.39.11-r1` 为例；升级时只需替换
+从 GitHub Release 下载当前版本。以下以 `v1.39.11-r2` 为例；升级时只需替换
 `VERSION`：
 
 ```sh
 mkdir -p ~/tmp
-VERSION=v1.39.11-r1
+VERSION=v1.39.11-r2
 REPO=wumingmr/reasonix_android_custon
 ASSET="reasonix-android-arm64-$VERSION"
 
@@ -39,6 +39,24 @@ mv -f "$PREFIX/bin/.reasonix.new" "$PREFIX/bin/reasonix"
 ```
 
 已经运行的进程继续使用旧 inode；退出后新进程自动使用新版。
+
+## 多会话同目录写入（v1.39.11-r2 起）
+
+- 不再因其他会话的写入挂起工具调用。明确路径的文件工具允许同目录不同文件并行；
+  同文件冲突立即以 `blocked: WRITE_CONFLICT` 返回给 AI，不排队、不自动重试。
+- 提示包含请求的文件/保护范围、调用尚未执行及恢复建议：选择其他文件继续工作，
+  或在对方写完后重新读取并合并。已有文件版本检查保留，避免用旧读取覆盖新内容。
+- 任意脚本、编译、修改型 `git`、未知 MCP 和可写 hooks 无法证明完整写入目标，
+  仍保留工具执行期间的目录级保护，但遇到冲突同样立即返回。优先把文件修改拆为
+  `read_file` + `edit_file` / `write_file` / `move_file`；`additional_write_dirs`
+  是权限范围，不是文件级锁声明。可写 hooks 会使读工具也需要目录保护。
+- 仅一次性 `bash`/`sh` 中可证明目标的简单 `echo`/`printf` 重定向可使用文件锁。
+  persistent shell、shell startup code、后台/保留进程命令保持保守保护；同会话的
+  子代理调度边界不变。后台任务继承原有租约生命周期及最多 30 秒的完成后保留。
+- 保留旧版本锁协议；旧会话仍可能持有目录锁，需重开所有相关会话才能完整体验。
+  不删除正在使用的锁文件，不修改 Termux 权限 wrapper，不替换运行中的进程。
+- 锁采用有界哈希条带：极少数不同文件也会因碰撞收到保守冲突，提示会说明这一点。
+  这不是 OS 强制隔离；Reasonix 外部编辑器、绕过工具的进程不受这套协作锁约束。
 
 ## 当前沙箱限制
 
@@ -247,9 +265,9 @@ model_overrides = { "codebuddy/deepseek-v4.1-flash" = { effort = "high" } }
 update/release/rebuild 脚本、发布说明与 `artifacts` 不在源码 patch 中，升级显式保留。
 新增修复须同时登记到 update 哨兵，不能只依赖“补丁里有文件”。
 
-同上游版本的新定制发布使用 `termux-vX.Y.Z-rN`（例如 `termux-v1.39.11-r1`），
+同上游版本的新定制发布使用 `termux-vX.Y.Z-rN`（例如 `termux-v1.39.11-r2`），
 内嵌版本仍是 `1.39.11-termux.<源码sha>`，不冒充上游补丁版本。
-`TERMUX_RELEASE_TAG=termux-v1.39.11-r1 bash release-termux.sh` 会校验新 tag、版本、
+`TERMUX_RELEASE_TAG=termux-v1.39.11-r2 bash release-termux.sh` 会校验新 tag、版本、
 LFS 指针后原子推送 master/tag；旧 tag 不移动。失败重试前先观察远端状态。
 发版 workflow 可显式传 `release_tag`，要求它指向上传二进制的提交，并按 tag 生成
 资产名和 SHA256SUMS；不是从当前任意 master 隐式创建 tag。

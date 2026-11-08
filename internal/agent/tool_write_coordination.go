@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 )
 
 // prepareWriteCoordination resolves the real execution target, then acquires
@@ -22,10 +21,7 @@ func (a *Agent) prepareWriteCoordination(ctx context.Context, plan *toolCallPlan
 	if (plan.effects.WorkspaceMutation || plan.hooksMayMutateWorkspace) && a.svc.workspaceLease != nil {
 		release, err := a.acquireWorkspaceLease(ctx, plan)
 		if err != nil {
-			return toolOutcome{
-				output:  fmt.Sprintf("blocked: the workspace did not become available for writing: %v", err),
-				blocked: true, errMsg: "blocked: workspace write lease unavailable",
-			}, true
+			return workspaceWriteBlockedOutcome(plan, err), true
 		}
 		plan.releaseLease = release
 	}
@@ -61,7 +57,7 @@ func (a *Agent) acquireWorkspaceLease(ctx context.Context, plan *toolCallPlan) (
 	// Tool hooks are arbitrary user shell code, so their write surface cannot be
 	// narrowed to the concrete tool's path arguments.
 	if plan.hooksMayMutateWorkspace {
-		return a.svc.workspaceLease.HoldWrite(ctx)
+		return a.svc.workspaceLease.TryHoldWrite(ctx)
 	}
 	name := plan.runTool.Name()
 	if pathBoundWriterNames[name] {
@@ -70,10 +66,17 @@ func (a *Agent) acquireWorkspaceLease(ctx context.Context, plan *toolCallPlan) (
 			for i := range paths {
 				paths[i] = resolveMaybeRelative(a.writeWorkspaceRoot, paths[i])
 			}
-			return a.svc.workspaceLease.HoldWriteForPaths(ctx, paths)
+			return a.svc.workspaceLease.TryHoldWriteForPaths(ctx, paths)
 		}
 	}
-	return a.svc.workspaceLease.HoldWrite(ctx)
+	if resolver, ok := plan.runTool.(interface {
+		LeaseWritePaths(context.Context, json.RawMessage) ([]string, bool)
+	}); ok {
+		if paths, proven := resolver.LeaseWritePaths(ctx, plan.runArgs); proven && len(paths) > 0 {
+			return a.svc.workspaceLease.TryHoldWriteForPaths(ctx, paths)
+		}
+	}
+	return a.svc.workspaceLease.TryHoldWrite(ctx)
 }
 
 func (a *Agent) applyLiveWriteReservation(ctx context.Context, plan *toolCallPlan) (toolOutcome, bool) {

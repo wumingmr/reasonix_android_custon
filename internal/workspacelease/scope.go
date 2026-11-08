@@ -69,6 +69,9 @@ func (o *Owner) HoldWriteForPaths(ctx context.Context, paths []string) (func(), 
 	treeSlots := o.pathTreeSlots(specs)
 	scope, label := pathScope(specs)
 	for {
+		if err := ctx.Err(); err != nil {
+			return func() {}, err
+		}
 		o.mu.Lock()
 		if id, hold := o.exclusiveHoldLocked(); hold != nil {
 			hold.refs++
@@ -81,6 +84,11 @@ func (o *Owner) HoldWriteForPaths(ctx context.Context, paths []string) (func(), 
 			o.cancelGraceLocked()
 			o.mu.Unlock()
 			return o.releaseHoldFunc(id), nil
+		}
+		if isTryWrite(ctx) && (o.lease.acquiring || !o.pathOrderAllowedLocked(slots)) {
+			err := o.localConflictLocked("this session has an acquisition or overlapping/out-of-order file hold; the request was not queued")
+			o.mu.Unlock()
+			return func() {}, err
 		}
 		if o.lease.acquiring {
 			done := o.lease.acquireDone

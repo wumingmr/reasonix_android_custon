@@ -72,7 +72,11 @@ for required in \
   "internal/agent/imageinput.go:newImageInput:Agent 图片 fallback 决策" \
   "internal/config/model_effort.go:SetModelEffort:每模型独立 effort" \
   "internal/config/model_reasoning_discovery.go:ApplyDiscoveredReasoning:setup 思考声明保存" \
-  "internal/provider/openai/reasoning_metadata.go:parseReasoningMetadata:思考元数据解析"; do
+  "internal/provider/openai/reasoning_metadata.go:parseReasoningMetadata:思考元数据解析" \
+  "internal/workspacelease/try.go:TryHoldWrite:跨会话写冲突不等待" \
+  "internal/workspacelease/try.go:TryHoldWriteForPaths:文件粒度非等待租约" \
+  "internal/agent/workspace_write_conflict.go:workspaceWriteBlockedOutcome:AI 写冲突恢复提示" \
+  "internal/tool/builtin/bash_lease.go:LeaseWritePaths:可证明 shell 文件写范围"; do
   file="${required%%:*}"; rest="${required#*:}"
   sym="${rest%%:*}"; label="${rest#*:}"
   # 匹配定义而非任意引用:escArrow 主体被删但 searchText 里还留着一次调用时,
@@ -103,7 +107,14 @@ for required in \
   "internal/config/model_effort_test.go:TestModelEffortIndependentRoundTripAndRuntimePriority" \
   "internal/cli/setup_reasoning_test.go:TestSetupReasoningSavesDeclarationsAndImagesTogether" \
   "internal/provider/openai/reasoning_metadata_test.go:TestReasoningMetadataOnlyTrustsDeclarations" \
-  "internal/boot/rebuild_config_classification_test.go:TestRuntimeConfigClassificationCoversExportedFields"; do
+  "internal/boot/rebuild_config_classification_test.go:TestRuntimeConfigClassificationCoversExportedFields" \
+  "internal/workspacelease/try_test.go:TestTryWriteSameFileConflictDoesNotWait" \
+  "internal/workspacelease/try_test.go:TestTryWriteDifferentFilesOverlap" \
+  "internal/workspacelease/try_test.go:TestTryWriteCrossProcessConflict" \
+  "internal/workspacelease/try_test.go:TestTryWriteWorkspaceAndQueueConflict" \
+  "internal/agent/workspace_write_conflict_test.go:TestWorkspaceConflictReturnsActionableToolResult" \
+  "internal/agent/workspace_write_conflict_test.go:TestStaticShellWriteUsesFileLease" \
+  "internal/tool/builtin/bash_lease_test.go:TestBashLeasePathsAreProvenAndOneShot"; do
   file="${required%%:*}"; test_name="${required#*:}"
   grep -q "func $test_name(" "$SCRIPT_DIR/$file" 2>/dev/null || \
     die "关键测试丢失:$file 里找不到 $test_name()。测试没了就没有报警器,

@@ -294,12 +294,20 @@ func (o *Owner) HoldWrite(ctx context.Context) (func(), error) {
 		ctx = context.Background()
 	}
 	for {
+		if err := ctx.Err(); err != nil {
+			return func() {}, err
+		}
 		o.mu.Lock()
 		if id, hold := o.exclusiveHoldLocked(); hold != nil {
 			hold.refs++
 			o.cancelGraceLocked()
 			o.mu.Unlock()
 			return o.releaseHoldFunc(id), nil
+		}
+		if isTryWrite(ctx) && (o.lease.acquiring || o.hasPathHoldsLocked()) {
+			err := o.localConflictLocked("this session has another acquisition or active file hold; workspace promotion was not queued")
+			o.mu.Unlock()
+			return func() {}, err
 		}
 		if o.lease.acquiring {
 			done := o.lease.acquireDone
@@ -734,6 +742,9 @@ func lockIdentityKey(path string) (string, error) {
 }
 
 func (o *Owner) acquireMode(ctx context.Context, path string, mode filelock.Mode, notified *bool) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	localKey, err := lockIdentityKey(path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace lock identity: %w", err)
@@ -744,6 +755,9 @@ func (o *Owner) acquireMode(ctx context.Context, path string, mode filelock.Mode
 	}
 	if !errors.Is(err, filelock.ErrHeld) {
 		return nil, fmt.Errorf("acquire workspace write lease: %w", err)
+	}
+	if isTryWrite(ctx) {
+		return nil, o.systemConflict(path)
 	}
 	if o.markWaiting() && !*notified {
 		*notified = true
