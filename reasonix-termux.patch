@@ -120,10 +120,10 @@ index b653e8fae3caaf6c75e51b17f29843661a7a84a1..529cde815beb070f326093c43a53c5da
  // fakeAgent stands in for the reasonix binary: it records every invocation's
 diff --git a/docs/TERMUX.zh-CN.md b/docs/TERMUX.zh-CN.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..a0fc6383346ee9e7196ec1d6b9e54c0456842274
+index 0000000000000000000000000000000000000000..e022b24baf70c1545ded3ff1c6fffc5c681da914
 --- /dev/null
 +++ b/docs/TERMUX.zh-CN.md
-@@ -0,0 +1,264 @@
+@@ -0,0 +1,282 @@
 +# Reasonix Termux / Android 使用说明
 +
 +本文对应 [`reasonix_android_custon`](https://github.com/wumingmr/reasonix_android_custon)
@@ -131,12 +131,12 @@ index 0000000000000000000000000000000000000000..a0fc6383346ee9e7196ec1d6b9e54c04
 +
 +## 安装二进制
 +
-+从 GitHub Release 下载当前版本。以下以 `v1.39.11-r1` 为例；升级时只需替换
++从 GitHub Release 下载当前版本。以下以 `v1.39.11-r2` 为例；升级时只需替换
 +`VERSION`：
 +
 +```sh
 +mkdir -p ~/tmp
-+VERSION=v1.39.11-r1
++VERSION=v1.39.11-r2
 +REPO=wumingmr/reasonix_android_custon
 +ASSET="reasonix-android-arm64-$VERSION"
 +
@@ -165,6 +165,24 @@ index 0000000000000000000000000000000000000000..a0fc6383346ee9e7196ec1d6b9e54c04
 +```
 +
 +已经运行的进程继续使用旧 inode；退出后新进程自动使用新版。
++
++## 多会话同目录写入（v1.39.11-r2 起）
++
++- 不再因其他会话的写入挂起工具调用。明确路径的文件工具允许同目录不同文件并行；
++  同文件冲突立即以 `blocked: WRITE_CONFLICT` 返回给 AI，不排队、不自动重试。
++- 提示包含请求的文件/保护范围、调用尚未执行及恢复建议：选择其他文件继续工作，
++  或在对方写完后重新读取并合并。已有文件版本检查保留，避免用旧读取覆盖新内容。
++- 任意脚本、编译、修改型 `git`、未知 MCP 和可写 hooks 无法证明完整写入目标，
++  仍保留工具执行期间的目录级保护，但遇到冲突同样立即返回。优先把文件修改拆为
++  `read_file` + `edit_file` / `write_file` / `move_file`；`additional_write_dirs`
++  是权限范围，不是文件级锁声明。可写 hooks 会使读工具也需要目录保护。
++- 仅一次性 `bash`/`sh` 中可证明目标的简单 `echo`/`printf` 重定向可使用文件锁。
++  persistent shell、shell startup code、后台/保留进程命令保持保守保护；同会话的
++  子代理调度边界不变。后台任务继承原有租约生命周期及最多 30 秒的完成后保留。
++- 保留旧版本锁协议；旧会话仍可能持有目录锁，需重开所有相关会话才能完整体验。
++  不删除正在使用的锁文件，不修改 Termux 权限 wrapper，不替换运行中的进程。
++- 锁采用有界哈希条带：极少数不同文件也会因碰撞收到保守冲突，提示会说明这一点。
++  这不是 OS 强制隔离；Reasonix 外部编辑器、绕过工具的进程不受这套协作锁约束。
 +
 +## 当前沙箱限制
 +
@@ -373,9 +391,9 @@ index 0000000000000000000000000000000000000000..a0fc6383346ee9e7196ec1d6b9e54c04
 +update/release/rebuild 脚本、发布说明与 `artifacts` 不在源码 patch 中，升级显式保留。
 +新增修复须同时登记到 update 哨兵，不能只依赖“补丁里有文件”。
 +
-+同上游版本的新定制发布使用 `termux-vX.Y.Z-rN`（例如 `termux-v1.39.11-r1`），
++同上游版本的新定制发布使用 `termux-vX.Y.Z-rN`（例如 `termux-v1.39.11-r2`），
 +内嵌版本仍是 `1.39.11-termux.<源码sha>`，不冒充上游补丁版本。
-+`TERMUX_RELEASE_TAG=termux-v1.39.11-r1 bash release-termux.sh` 会校验新 tag、版本、
++`TERMUX_RELEASE_TAG=termux-v1.39.11-r2 bash release-termux.sh` 会校验新 tag、版本、
 +LFS 指针后原子推送 master/tag；旧 tag 不移动。失败重试前先观察远端状态。
 +发版 workflow 可显式传 `release_tag`，要求它指向上传二进制的提交，并按 tag 生成
 +资产名和 SHA256SUMS；不是从当前任意 master 隐式创建 tag。
@@ -1454,6 +1472,275 @@ index f743e4559f055a92f7c627736df1ceeb343306fe..f9815aad39fb98a796d98e9c7a5756ff
 +		return t.contextWindowSource
 +	}
 +	return config.ContextWindowUnestablished
++}
+diff --git a/internal/agent/tool_write_coordination.go b/internal/agent/tool_write_coordination.go
+index f82f250bb2bf045e3b796002944606f35063e7bb..23d3c9a59ad38b814406e5ce587ef774bf7b3801 100644
+--- a/internal/agent/tool_write_coordination.go
++++ b/internal/agent/tool_write_coordination.go
+@@ -3,7 +3,6 @@ package agent
+ import (
+ 	"context"
+ 	"encoding/json"
+-	"fmt"
+ )
+ 
+ // prepareWriteCoordination resolves the real execution target, then acquires
+@@ -22,10 +21,7 @@ func (a *Agent) prepareWriteCoordination(ctx context.Context, plan *toolCallPlan
+ 	if (plan.effects.WorkspaceMutation || plan.hooksMayMutateWorkspace) && a.svc.workspaceLease != nil {
+ 		release, err := a.acquireWorkspaceLease(ctx, plan)
+ 		if err != nil {
+-			return toolOutcome{
+-				output:  fmt.Sprintf("blocked: the workspace did not become available for writing: %v", err),
+-				blocked: true, errMsg: "blocked: workspace write lease unavailable",
+-			}, true
++			return workspaceWriteBlockedOutcome(plan, err), true
+ 		}
+ 		plan.releaseLease = release
+ 	}
+@@ -61,7 +57,7 @@ func (a *Agent) acquireWorkspaceLease(ctx context.Context, plan *toolCallPlan) (
+ 	// Tool hooks are arbitrary user shell code, so their write surface cannot be
+ 	// narrowed to the concrete tool's path arguments.
+ 	if plan.hooksMayMutateWorkspace {
+-		return a.svc.workspaceLease.HoldWrite(ctx)
++		return a.svc.workspaceLease.TryHoldWrite(ctx)
+ 	}
+ 	name := plan.runTool.Name()
+ 	if pathBoundWriterNames[name] {
+@@ -70,10 +66,17 @@ func (a *Agent) acquireWorkspaceLease(ctx context.Context, plan *toolCallPlan) (
+ 			for i := range paths {
+ 				paths[i] = resolveMaybeRelative(a.writeWorkspaceRoot, paths[i])
+ 			}
+-			return a.svc.workspaceLease.HoldWriteForPaths(ctx, paths)
++			return a.svc.workspaceLease.TryHoldWriteForPaths(ctx, paths)
+ 		}
+ 	}
+-	return a.svc.workspaceLease.HoldWrite(ctx)
++	if resolver, ok := plan.runTool.(interface {
++		LeaseWritePaths(context.Context, json.RawMessage) ([]string, bool)
++	}); ok {
++		if paths, proven := resolver.LeaseWritePaths(ctx, plan.runArgs); proven && len(paths) > 0 {
++			return a.svc.workspaceLease.TryHoldWriteForPaths(ctx, paths)
++		}
++	}
++	return a.svc.workspaceLease.TryHoldWrite(ctx)
+ }
+ 
+ func (a *Agent) applyLiveWriteReservation(ctx context.Context, plan *toolCallPlan) (toolOutcome, bool) {
+diff --git a/internal/agent/workspace_lease_regression_test.go b/internal/agent/workspace_lease_regression_test.go
+index 3ebd7819d1e5f10e9ca63c839baa6c55e06f6822..cdab7b5bc310b31604717d73fc00b42a0a922bfc 100644
+--- a/internal/agent/workspace_lease_regression_test.go
++++ b/internal/agent/workspace_lease_regression_test.go
+@@ -3,7 +3,6 @@ package agent
+ import (
+ 	"context"
+ 	"encoding/json"
+-	"errors"
+ 	"io"
+ 	"os"
+ 	"path/filepath"
+@@ -190,10 +189,10 @@ func TestWritableHooksUseWorkspaceLease(t *testing.T) {
+ 	call.Arguments = `{"path":"probe.go","content":"probe"}`
+ 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+ 	out := a.executeOne(ctx, &a.turn, call)
+-	cancel()
+-	if !out.blocked || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+-		t.Fatalf("hook-capable writer was not blocked by active workspace write: %+v", out)
++	if !out.blocked || ctx.Err() != nil {
++		t.Fatalf("hook-capable writer did not return an immediate workspace conflict: %+v (context=%v)", out, ctx.Err())
+ 	}
++	cancel()
+ 	if got := hooks.calls.Load(); got != 0 {
+ 		t.Fatalf("hook ran %d times before the workspace became exclusive", got)
+ 	}
+diff --git a/internal/agent/workspace_lease_test.go b/internal/agent/workspace_lease_test.go
+index 91197622a9028278b86eeba5731ce4805935098a..c2c8a0d1f3085d71fe8ab5991c5ee46cadd04359 100644
+--- a/internal/agent/workspace_lease_test.go
++++ b/internal/agent/workspace_lease_test.go
+@@ -65,7 +65,7 @@ func deliveryLeaseTestAgent(t *testing.T, owner *workspacelease.Owner, tools ...
+ 	return a
+ }
+ 
+-func TestDeliveryWriterWaitsBeforeToolExecutionButReaderDoesNot(t *testing.T) {
++func TestDeliveryWriterConflictsBeforeToolExecutionButReaderDoesNot(t *testing.T) {
+ 	root, locks := t.TempDir(), t.TempDir()
+ 	first, err := workspacelease.New(root, locks, nil)
+ 	if err != nil {
+@@ -99,8 +99,8 @@ func TestDeliveryWriterWaitsBeforeToolExecutionButReaderDoesNot(t *testing.T) {
+ 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+ 	defer cancel()
+ 	outcome := a.executeOne(ctx, &a.turn, providerToolCall("write", writer.Name()))
+-	if !outcome.blocked || outcome.errMsg != "blocked: workspace write lease unavailable" {
+-		t.Fatalf("writer outcome = %+v, want lease block", outcome)
++	if !outcome.blocked || outcome.errMsg != "blocked: workspace write lease unavailable" || ctx.Err() != nil {
++		t.Fatalf("writer outcome = %+v, want immediate lease conflict (context=%v)", outcome, ctx.Err())
+ 	}
+ 	if got := writer.calls.Load(); got != 0 {
+ 		t.Fatalf("writer executed %d times before lease acquisition", got)
+diff --git a/internal/agent/workspace_write_conflict.go b/internal/agent/workspace_write_conflict.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..8b6b23d38f9179c2e0bc8f0e5c6a2b33a60883d1
+--- /dev/null
++++ b/internal/agent/workspace_write_conflict.go
+@@ -0,0 +1,34 @@
++package agent
++
++import (
++	"errors"
++	"fmt"
++
++	"reasonix/internal/workspacelease"
++)
++
++func workspaceWriteBlockedOutcome(plan *toolCallPlan, err error) toolOutcome {
++	out := toolOutcome{blocked: true, errMsg: "blocked: workspace write lease unavailable"}
++	var conflict *workspacelease.ConflictError
++	if !errors.As(err, &conflict) {
++		out.output = fmt.Sprintf("blocked: write coordination failed before tool execution: %v. No hooks or tool execution started; fix the error before retrying.", err)
++		return out
++	}
++	out.output = fmt.Sprintf("blocked: WRITE_CONFLICT: %v. This call was NOT executed: no tool hooks, checkpoints, or file changes started. No automatic wait or retry was queued. ", conflict)
++	switch conflict.Scope {
++	case "file":
++		out.output += "Choose/create a different file and continue independent work. Do not overwrite the contested file through bash or another tool. If this exact file is required, re-read its current contents after the other write finishes and reconcile the changes before retrying."
++	case "session":
++		out.output += "This session's own write coordination is busy (possibly a background/subagent write); this is not proof that another session owns the requested file. Continue read-only work, or finish/cancel the relevant own job before retrying."
++	default:
++		out.output += "A workspace-wide/ancestor guard or queue is busy; this does NOT prove that the requested file itself is being edited. "
++		if plan.hooksMayMutateWorkspace {
++			out.output += "Configured tool hooks can write arbitrary files, so even a path-specific or read-only tool needs workspace protection. Changing only the tool's path cannot bypass those hooks; continue independent work without mutating hooks or retry after the writer finishes."
++		} else if pathBoundWriterNames[plan.runTool.Name()] {
++			out.output += "Another opaque command or guard may currently cover this directory. Continue read-only work or write outside that protected workspace; re-read this file before a later retry."
++		} else {
++			out.output += "This command/tool has unproven write targets (scripts, builds, git mutations, MCP); additional_write_dirs is permission, NOT a file-level claim. For file changes, split the operation into read_file plus edit_file/write_file/move_file with explicit, non-conflicting paths. Pure read-only commands may continue. Do not blindly retry the same opaque command in a loop."
++		}
++	}
++	return out
++}
+diff --git a/internal/agent/workspace_write_conflict_test.go b/internal/agent/workspace_write_conflict_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..8cc696016f7cad3b618f415e61b68dc9602c9ae9
+--- /dev/null
++++ b/internal/agent/workspace_write_conflict_test.go
+@@ -0,0 +1,120 @@
++package agent
++
++import (
++	"context"
++	"errors"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++
++	"reasonix/internal/provider"
++	"reasonix/internal/tool/builtin"
++	"reasonix/internal/workspacelease"
++)
++
++func TestWorkspaceConflictReturnsActionableToolResult(t *testing.T) {
++	root, locks := t.TempDir(), t.TempDir()
++	holder, err := workspacelease.New(root, locks, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	owner, err := workspacelease.New(root, locks, func() { t.Error("unexpected automatic wait notice") })
++	if err != nil {
++		t.Fatal(err)
++	}
++	path := filepath.Join(root, "held.go")
++	release, err := holder.HoldWriteForPath(context.Background(), path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer release()
++	writer := &recordingWriter{name: "write_file"}
++	a := deliveryLeaseTestAgent(t, owner, writer)
++	a.writeWorkspaceRoot = root
++	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
++	defer cancel()
++	out := a.executeOne(ctx, &a.turn, provider.ToolCall{ID: "w", Name: writer.Name(),
++		Arguments: string(mustJSON(t, map[string]string{"path": path, "content": "no"}))})
++	if !out.blocked || ctx.Err() != nil {
++		t.Fatalf("not an immediate conflict: %+v, context=%v", out, ctx.Err())
++	}
++	for _, want := range []string{"WRITE_CONFLICT", path, "NOT executed", "different file", "re-read", "No automatic wait"} {
++		if !strings.Contains(out.output, want) {
++			t.Errorf("missing %q in %s", want, out.output)
++		}
++	}
++	other := filepath.Join(root, "other.go")
++	// Avoid a rare conservative stripe collision in this parallelism fixture.
++	for {
++		probe, err := owner.TryHoldWriteForPaths(ctx, []string{other})
++		if err == nil {
++			probe()
++			break
++		}
++		var conflict *workspacelease.ConflictError
++		if !errors.As(err, &conflict) || conflict.Scope != "file" || ctx.Err() != nil {
++			t.Fatalf("different-file fixture: %v", err)
++		}
++		other += "x"
++	}
++	out = a.executeOne(ctx, &a.turn, provider.ToolCall{ID: "other", Name: writer.Name(),
++		Arguments: string(mustJSON(t, map[string]string{"path": other, "content": "yes"}))})
++	if out.blocked || out.errMsg != "" {
++		t.Fatalf("same directory different file blocked: %+v", out)
++	}
++}
++
++func TestWorkspaceConflictOpaqueAndHooksRecovery(t *testing.T) {
++	for _, hooks := range []bool{false, true} {
++		plan := &toolCallPlan{runTool: &workspaceLeaseTestTool{name: "bash"}, hooksMayMutateWorkspace: hooks}
++		out := workspaceWriteBlockedOutcome(plan, &workspacelease.ConflictError{Scope: "workspace", Target: "/test", Reason: "busy"})
++		wants := []string{"does NOT prove", "NOT executed", "No automatic wait"}
++		if hooks {
++			wants = append(wants, "Configured tool hooks", "Changing only the tool's path cannot")
++		} else {
++			wants = append(wants, "additional_write_dirs", "edit_file/write_file/move_file", "Do not blindly retry")
++		}
++		for _, want := range wants {
++			if !strings.Contains(out.output, want) {
++				t.Errorf("missing %q in %s", want, out.output)
++			}
++		}
++	}
++	out := workspaceWriteBlockedOutcome(&toolCallPlan{runTool: &workspaceLeaseTestTool{name: "bash"}},
++		&workspacelease.ConflictError{Scope: "session", Target: "/test", Reason: "active file hold"})
++	for _, want := range []string{"own write coordination", "not proof that another session", "finish/cancel"} {
++		if !strings.Contains(out.output, want) {
++			t.Errorf("missing %q in %s", want, out.output)
++		}
++	}
++}
++
++func TestStaticShellWriteUsesFileLease(t *testing.T) {
++	root, locks := t.TempDir(), t.TempDir()
++	holder, err := workspacelease.New(root, locks, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	owner, err := workspacelease.New(root, locks, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	release, err := holder.HoldWriteForPath(context.Background(), filepath.Join(root, "held.go"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer release()
++	a := deliveryLeaseTestAgent(t, owner, (builtin.Workspace{Dir: root}).Tools("bash")[0])
++	a.writeWorkspaceRoot = root
++	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
++	defer cancel()
++	out := a.executeOne(ctx, &a.turn, provider.ToolCall{ID: "shell", Name: "bash", Arguments: `{"command":"printf ok > held.go"}`})
++	if !out.blocked || !strings.Contains(out.output, "file write conflict") || ctx.Err() != nil {
++		t.Fatalf("static shell was not file-scoped: %+v", out)
++	}
++	out = a.executeOne(ctx, &a.turn, provider.ToolCall{ID: "opaque", Name: "bash", Arguments: `{"command":"python -c 'print(1)'"}`})
++	if !out.blocked || !strings.Contains(out.output, "workspace write conflict") || !strings.Contains(out.output, "additional_write_dirs") {
++		t.Fatalf("opaque shell did not retain workspace protection: %+v", out)
++	}
 +}
 diff --git a/internal/boot/boot.go b/internal/boot/boot.go
 index 2a9c0573abe967aeca51b2537cd82737a5b155e9..b0ca2c889c2340ce6df116ec9f2bc3a3f4f090f0 100644
@@ -8722,6 +9009,479 @@ index 742d32926b186c31ed332c1a8b7fbe3c10fa17a6..425130d8d2633378a06b5d7690519bed
  		}
  	}
  	return ""
+diff --git a/internal/tool/builtin/bash_lease.go b/internal/tool/builtin/bash_lease.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..86aafc27f83743bac7899e89f52ea50c9596a4f7
+--- /dev/null
++++ b/internal/tool/builtin/bash_lease.go
+@@ -0,0 +1,47 @@
++package builtin
++
++import (
++	"context"
++	"encoding/json"
++	"os"
++	"path/filepath"
++	"strings"
++
++	"reasonix/internal/sandbox"
++	"reasonix/internal/shellsafe"
++)
++
++// LeaseWritePaths proves a small one-shot shell's targets. Persistent shells
++// and startup code stay opaque; model-supplied write dirs are not evidence.
++func (b bash) LeaseWritePaths(ctx context.Context, args json.RawMessage) ([]string, bool) {
++	var p bashParams
++	kind := b.resolved().Kind
++	if json.Unmarshal(args, &p) != nil || (kind != sandbox.ShellBash && kind != sandbox.ShellSh) ||
++		b.persistentManager(ctx) != nil || b.terminal != nil || hasShellStartupCode() ||
++		p.RunInBackground || p.PreserveBackgroundProcesses {
++		return nil, false
++	}
++	paths, ok := shellsafe.StaticWritePaths(p.Command)
++	if !ok {
++		return nil, false
++	}
++	for i, path := range paths {
++		if !filepath.IsAbs(path) {
++			paths[i] = resolveIn(b.workDir, path)
++		}
++	}
++	return paths, true
++}
++
++func hasShellStartupCode() bool {
++	for _, entry := range os.Environ() {
++		key, value, _ := strings.Cut(entry, "=")
++		if (key == "BASH_ENV" || key == "ENV") && value != "" {
++			return true
++		}
++		if strings.HasPrefix(key, "BASH_FUNC_") {
++			return true
++		}
++	}
++	return false
++}
+diff --git a/internal/tool/builtin/bash_lease_test.go b/internal/tool/builtin/bash_lease_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..d82e4c6755a5b971b8472adee60a7a309fdd6d8e
+--- /dev/null
++++ b/internal/tool/builtin/bash_lease_test.go
+@@ -0,0 +1,48 @@
++package builtin
++
++import (
++	"context"
++	"encoding/json"
++	"path/filepath"
++	"testing"
++
++	"reasonix/internal/persistentshell"
++	"reasonix/internal/sandbox"
++)
++
++func TestBashLeasePathsAreProvenAndOneShot(t *testing.T) {
++	root := t.TempDir()
++	b := bash{workDir: root, shell: sandbox.Shell{Kind: sandbox.ShellBash, Path: "bash"}}
++	for _, command := range []string{"echo hi > a.go", "printf '%s' hi >> a.go"} {
++		args, _ := json.Marshal(map[string]string{"command": command})
++		paths, ok := b.LeaseWritePaths(context.Background(), args)
++		if !ok || len(paths) != 1 || paths[0] != filepath.Join(root, "a.go") {
++			t.Fatalf("%q paths=%v proven=%v", command, paths, ok)
++		}
++	}
++	for _, args := range []string{
++		`{"command":"python edit.py"}`,
++		`{"command":"echo hi > a.go","run_in_background":true}`,
++		`{"command":"echo hi > a.go","preserve_background_processes":true}`,
++		`{"command":"echo $(touch other) > a.go"}`,
++		`{"command":"cd sub; echo hi > a.go"}`,
++	} {
++		if paths, ok := b.LeaseWritePaths(context.Background(), json.RawMessage(args)); ok {
++			t.Fatalf("unproven write accepted: %s -> %v", args, paths)
++		}
++	}
++	t.Setenv("BASH_ENV", "startup.sh")
++	if _, ok := b.LeaseWritePaths(context.Background(), json.RawMessage(`{"command":"echo hi > a.go"}`)); ok {
++		t.Fatal("shell startup code was treated as proven")
++	}
++	t.Setenv("BASH_ENV", "")
++	b.shell.Kind = sandbox.ShellZsh
++	if _, ok := b.LeaseWritePaths(context.Background(), json.RawMessage(`{"command":"echo hi > a.go"}`)); ok {
++		t.Fatal("zsh startup files were treated as proven")
++	}
++	b.shell.Kind = sandbox.ShellBash
++	b.persistent = &persistentshell.Manager{}
++	if _, ok := b.LeaseWritePaths(context.Background(), json.RawMessage(`{"command":"echo hi > a.go"}`)); ok {
++		t.Fatal("persistent cwd/function state was treated as proven")
++	}
++}
+diff --git a/internal/workspacelease/lease.go b/internal/workspacelease/lease.go
+index 34dc72c971689c8d02deae917fe43b52d0863d8a..04c670992b314ba963bd94a3a07e9af69d460cc9 100644
+--- a/internal/workspacelease/lease.go
++++ b/internal/workspacelease/lease.go
+@@ -294,6 +294,9 @@ func (o *Owner) HoldWrite(ctx context.Context) (func(), error) {
+ 		ctx = context.Background()
+ 	}
+ 	for {
++		if err := ctx.Err(); err != nil {
++			return func() {}, err
++		}
+ 		o.mu.Lock()
+ 		if id, hold := o.exclusiveHoldLocked(); hold != nil {
+ 			hold.refs++
+@@ -301,6 +304,11 @@ func (o *Owner) HoldWrite(ctx context.Context) (func(), error) {
+ 			o.mu.Unlock()
+ 			return o.releaseHoldFunc(id), nil
+ 		}
++		if isTryWrite(ctx) && (o.lease.acquiring || o.hasPathHoldsLocked()) {
++			err := o.localConflictLocked("this session has another acquisition or active file hold; workspace promotion was not queued")
++			o.mu.Unlock()
++			return func() {}, err
++		}
+ 		if o.lease.acquiring {
+ 			done := o.lease.acquireDone
+ 			o.mu.Unlock()
+@@ -734,6 +742,9 @@ func lockIdentityKey(path string) (string, error) {
+ }
+ 
+ func (o *Owner) acquireMode(ctx context.Context, path string, mode filelock.Mode, notified *bool) (func(), error) {
++	if err := ctx.Err(); err != nil {
++		return nil, err
++	}
+ 	localKey, err := lockIdentityKey(path)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("resolve workspace lock identity: %w", err)
+@@ -745,6 +756,9 @@ func (o *Owner) acquireMode(ctx context.Context, path string, mode filelock.Mode
+ 	if !errors.Is(err, filelock.ErrHeld) {
+ 		return nil, fmt.Errorf("acquire workspace write lease: %w", err)
+ 	}
++	if isTryWrite(ctx) {
++		return nil, o.systemConflict(path)
++	}
+ 	if o.markWaiting() && !*notified {
+ 		*notified = true
+ 		if o.onWait != nil {
+diff --git a/internal/workspacelease/scope.go b/internal/workspacelease/scope.go
+index 3924a4f8c854ffbcc2e92df8af68fb25670a5f8a..1d3dc4cd224eb18eb0c95a723d43fb704af1e887 100644
+--- a/internal/workspacelease/scope.go
++++ b/internal/workspacelease/scope.go
+@@ -69,6 +69,9 @@ func (o *Owner) HoldWriteForPaths(ctx context.Context, paths []string) (func(),
+ 	treeSlots := o.pathTreeSlots(specs)
+ 	scope, label := pathScope(specs)
+ 	for {
++		if err := ctx.Err(); err != nil {
++			return func() {}, err
++		}
+ 		o.mu.Lock()
+ 		if id, hold := o.exclusiveHoldLocked(); hold != nil {
+ 			hold.refs++
+@@ -82,6 +85,11 @@ func (o *Owner) HoldWriteForPaths(ctx context.Context, paths []string) (func(),
+ 			o.mu.Unlock()
+ 			return o.releaseHoldFunc(id), nil
+ 		}
++		if isTryWrite(ctx) && (o.lease.acquiring || !o.pathOrderAllowedLocked(slots)) {
++			err := o.localConflictLocked("this session has an acquisition or overlapping/out-of-order file hold; the request was not queued")
++			o.mu.Unlock()
++			return func() {}, err
++		}
+ 		if o.lease.acquiring {
+ 			done := o.lease.acquireDone
+ 			o.mu.Unlock()
+diff --git a/internal/workspacelease/try.go b/internal/workspacelease/try.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..d277c71e67c83f1c177d17d90978a53815819b01
+--- /dev/null
++++ b/internal/workspacelease/try.go
+@@ -0,0 +1,72 @@
++package workspacelease
++
++import (
++	"context"
++	"fmt"
++	"path/filepath"
++	"strings"
++
++	"reasonix/internal/filelock"
++)
++
++// ConflictError reports a refused acquisition, not a queued write. Target is
++// the requested lock domain; advisory locks cannot identify the other session.
++type ConflictError struct {
++	Scope  string
++	Target string
++	Reason string
++}
++
++func (e *ConflictError) Error() string {
++	return fmt.Sprintf("%s write conflict at %q: %s", e.Scope, e.Target, e.Reason)
++}
++
++func (e *ConflictError) Unwrap() error { return filelock.ErrHeld }
++
++type tryWriteKey struct{}
++
++// TryHoldWrite preserves the workspace/legacy lock protocol, but never queues
++// behind a writer or emits a wait notice. The caller must handle the conflict.
++func (o *Owner) TryHoldWrite(ctx context.Context) (func(), error) {
++	return o.HoldWrite(tryWriteContext(ctx))
++}
++
++// TryHoldWriteForPaths is the non-waiting form of HoldWriteForPaths. It retains
++// canonical identity checks, atomic multi-path rollback and Owner re-entrancy.
++func (o *Owner) TryHoldWriteForPaths(ctx context.Context, paths []string) (func(), error) {
++	return o.HoldWriteForPaths(tryWriteContext(ctx), paths)
++}
++
++func tryWriteContext(ctx context.Context) context.Context {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	return context.WithValue(ctx, tryWriteKey{}, true)
++}
++
++func isTryWrite(ctx context.Context) bool {
++	return ctx.Value(tryWriteKey{}) == true
++}
++
++func (o *Owner) localConflictLocked(reason string) error {
++	return &ConflictError{Scope: "session", Target: o.canonical, Reason: reason}
++}
++
++func (o *Owner) systemConflict(path string) error {
++	o.mu.Lock()
++	defer o.mu.Unlock()
++	scope, target := "workspace", o.canonical
++	reason := "another writer holds this workspace/hierarchy domain, or its acquisition queue is busy"
++	if strings.HasPrefix(filepath.Base(path), "path-") {
++		scope = "file"
++		var targets []string
++		for _, key := range o.lease.targetKeys {
++			if o.pathLockPath(key) == path {
++				targets = append(targets, key)
++			}
++		}
++		target = strings.Join(targets, ", ")
++		reason = "another writer holds the requested file lock stripe (rare hash collisions can also protect a different file)"
++	}
++	return &ConflictError{Scope: scope, Target: target, Reason: reason}
++}
+diff --git a/internal/workspacelease/try_test.go b/internal/workspacelease/try_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..873b8cb9c6867dab711838e2a06d2d161bafcb46
+--- /dev/null
++++ b/internal/workspacelease/try_test.go
+@@ -0,0 +1,210 @@
++package workspacelease
++
++import (
++	"context"
++	"errors"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"reasonix/internal/filelock"
++)
++
++func tryOwners(t *testing.T) (*Owner, *Owner, *atomic.Int32) {
++	t.Helper()
++	root, locks := t.TempDir(), t.TempDir()
++	var notices atomic.Int32
++	first, err := New(root, locks, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	second, err := New(root, locks, func() { notices.Add(1) })
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { first.EndRun(); second.EndRun() })
++	return first, second, &notices
++}
++
++func TestTryWriteSameFileConflictDoesNotWait(t *testing.T) {
++	first, second, notices := tryOwners(t)
++	path := filepath.Join(first.rootPath, "same.go")
++	release, err := first.HoldWriteForPath(context.Background(), path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer release()
++	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
++	defer cancel()
++	_, err = second.TryHoldWriteForPaths(ctx, []string{path})
++	var conflict *ConflictError
++	if !errors.As(err, &conflict) || conflict.Scope != "file" || conflict.Target != path || ctx.Err() != nil {
++		t.Fatalf("non-waiting file conflict = %v, context = %v", err, ctx.Err())
++	}
++	if second.State().Waiting || second.State().Acquired || notices.Load() != 0 {
++		t.Fatalf("conflict queued or leaked: %+v, notices=%d", second.State(), notices.Load())
++	}
++	release()
++	retry, err := second.TryHoldWriteForPaths(ctx, []string{path})
++	if err != nil {
++		t.Fatal(err)
++	}
++	retry()
++}
++
++func TestTryWriteDifferentFilesOverlap(t *testing.T) {
++	first, second, _ := tryOwners(t)
++	a := filepath.Join(first.rootPath, "a.go")
++	b := filepath.Join(first.rootPath, "b.go")
++	for first.pathLockPath(a) == first.pathLockPath(b) {
++		b += "b"
++	}
++	release, err := first.TryHoldWriteForPaths(context.Background(), []string{a})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer release()
++	other, err := second.TryHoldWriteForPaths(context.Background(), []string{b})
++	if err != nil {
++		t.Fatalf("different file blocked by an active same-directory writer: %v", err)
++	}
++	other()
++}
++
++func TestTryWriteWorkspaceAndQueueConflict(t *testing.T) {
++	for _, queue := range []bool{false, true} {
++		t.Run(map[bool]string{false: "legacy workspace", true: "priority queue"}[queue], func(t *testing.T) {
++			first, second, notices := tryOwners(t)
++			lock := first.lockPath
++			if queue {
++				lock += ".queue"
++			}
++			release, err := filelock.TryAcquire(lock)
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer release()
++			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
++			defer cancel()
++			_, err = second.TryHoldWriteForPaths(ctx, []string{filepath.Join(first.rootPath, "a.go")})
++			var conflict *ConflictError
++			if !errors.As(err, &conflict) || conflict.Scope != "workspace" || ctx.Err() != nil || notices.Load() != 0 {
++				t.Fatalf("workspace/queue conflict=%v context=%v notices=%d", err, ctx.Err(), notices.Load())
++			}
++		})
++	}
++}
++
++func TestTryWriteRollbackAndLocalPromotion(t *testing.T) {
++	first, second, _ := tryOwners(t)
++	paths := []string{filepath.Join(first.rootPath, "a.go"), filepath.Join(first.rootPath, "b.go")}
++	specs, err := first.pathSpecs(paths)
++	if err != nil {
++		t.Fatal(err)
++	}
++	for specs[0].slot == specs[1].slot {
++		paths[1] += "b"
++		specs, err = first.pathSpecs(paths)
++		if err != nil {
++			t.Fatal(err)
++		}
++	}
++	release, err := first.TryHoldWriteForPaths(context.Background(), []string{specs[1].access})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer release()
++	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
++	defer cancel()
++	if _, err := first.TryHoldWrite(ctx); !errors.Is(err, filelock.ErrHeld) || ctx.Err() != nil {
++		t.Fatalf("local promotion queued: %v", err)
++	}
++	if _, err := second.TryHoldWriteForPaths(ctx, paths); !errors.Is(err, filelock.ErrHeld) {
++		t.Fatalf("multi-file conflict = %v", err)
++	}
++	probe, err := second.TryHoldWriteForPaths(ctx, []string{specs[0].access})
++	if err != nil {
++		t.Fatalf("failed group leaked first path lock: %v", err)
++	}
++	probe()
++	reentered, err := first.TryHoldWriteForPaths(ctx, []string{specs[1].access})
++	if err != nil {
++		t.Fatalf("Owner reentry: %v", err)
++	}
++	reentered()
++}
++
++func TestTryWriteCanceledContext(t *testing.T) {
++	first, _, _ := tryOwners(t)
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel()
++	if _, err := first.TryHoldWrite(ctx); !errors.Is(err, context.Canceled) {
++		t.Fatalf("canceled workspace hold = %v", err)
++	}
++	if _, err := first.TryHoldWriteForPaths(ctx, []string{filepath.Join(first.rootPath, "a.go")}); !errors.Is(err, context.Canceled) {
++		t.Fatalf("canceled path hold = %v", err)
++	}
++}
++
++func TestTryWriteCrossProcessHelper(t *testing.T) {
++	if os.Getenv("REASONIX_TRY_LEASE_HELPER") != "1" {
++		return
++	}
++	o, err := New(os.Getenv("REASONIX_TRY_ROOT"), os.Getenv("REASONIX_TRY_LOCKS"), nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	release, err := o.TryHoldWriteForPaths(context.Background(), []string{filepath.Join(o.rootPath, "same.go")})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer release()
++	if err := os.WriteFile(os.Getenv("REASONIX_TRY_READY"), []byte("ready"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	time.Sleep(time.Minute)
++}
++
++func TestTryWriteCrossProcessConflict(t *testing.T) {
++	first, second, notices := tryOwners(t)
++	ready := filepath.Join(t.TempDir(), "ready")
++	cmd := exec.Command(os.Args[0], "-test.run=^TestTryWriteCrossProcessHelper$")
++	cmd.Env = append(os.Environ(), "REASONIX_TRY_LEASE_HELPER=1", "REASONIX_TRY_ROOT="+first.rootPath,
++		"REASONIX_TRY_LOCKS="+first.lockDir, "REASONIX_TRY_READY="+ready)
++	if err := cmd.Start(); err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
++	deadline := time.Now().Add(5 * time.Second)
++	for {
++		if _, err := os.Stat(ready); err == nil {
++			break
++		}
++		if time.Now().After(deadline) {
++			t.Fatal("helper did not acquire file hold")
++		}
++		time.Sleep(10 * time.Millisecond)
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
++	defer cancel()
++	_, err := second.TryHoldWriteForPaths(ctx, []string{filepath.Join(first.rootPath, "same.go")})
++	if !errors.Is(err, filelock.ErrHeld) || ctx.Err() != nil || notices.Load() != 0 {
++		t.Fatalf("cross-process conflict = %v, context = %v", err, ctx.Err())
++	}
++	other := filepath.Join(first.rootPath, "other.go")
++	for first.pathLockPath(other) == first.pathLockPath(filepath.Join(first.rootPath, "same.go")) {
++		other += "x"
++	}
++	release, err := second.TryHoldWriteForPaths(ctx, []string{other})
++	if err != nil {
++		t.Fatal(err)
++	}
++	release()
++	if _, err := second.TryHoldWrite(ctx); !errors.Is(err, filelock.ErrHeld) || !strings.Contains(err.Error(), "workspace") {
++		t.Fatalf("opaque write did not protect child file: %v", err)
++	}
++}
 diff --git a/reasonix.example.toml b/reasonix.example.toml
 index 71f12f4617ae408ea144d02d4dc7dbe9fed633d4..4a168e883bd2fc681652271eceadc276b5958f06 100644
 --- a/reasonix.example.toml
