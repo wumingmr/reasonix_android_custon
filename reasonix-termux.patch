@@ -120,10 +120,10 @@ index b653e8fae3caaf6c75e51b17f29843661a7a84a1..529cde815beb070f326093c43a53c5da
  // fakeAgent stands in for the reasonix binary: it records every invocation's
 diff --git a/docs/TERMUX.zh-CN.md b/docs/TERMUX.zh-CN.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..e022b24baf70c1545ded3ff1c6fffc5c681da914
+index 0000000000000000000000000000000000000000..799d86098ed249f6b04a0da734bab55a0bd55642
 --- /dev/null
 +++ b/docs/TERMUX.zh-CN.md
-@@ -0,0 +1,282 @@
+@@ -0,0 +1,287 @@
 +# Reasonix Termux / Android 使用说明
 +
 +本文对应 [`reasonix_android_custon`](https://github.com/wumingmr/reasonix_android_custon)
@@ -348,7 +348,12 @@ index 0000000000000000000000000000000000000000..e022b24baf70c1545ded3ff1c6fffc5c
 +仍显示“未知”而不伪称已验证；若配置了图片理解模型则走该 fallback。显式纯文本声明仍阻止
 +直接发图，官方 DeepSeek 纯文本型号的限制仍保留。普通纯文本请求不变化。
 +
-+你的 `127.0.0.1:8790` 网关目前没有返回识图元数据，因此仅刷新不能显示“支持”。
++**自动识别结果仅供参考，不是实际图片请求验证。** 网关元数据可能缺失、过时或错误，
++CLI 能识别的字段、协议适配和附件传输也有实现边界，显示结果可能与实际可用性不同。
++“支持”不保证该端点能处理图片，“未知”不等于不支持；“不支持”可能来自接口声明、
++手动设置或当前适配限制，并不一定代表底层模型能力。请结合显示来源、服务商文档和
++实际附图请求确认。`vision = true` 只修改声明，不会为纯文本模型或不兼容协议增加能力。
++
 +这里仅支持 img，不启用音频、视频或原生 PDF 传输。附图可在 CLI 粘贴图片路径形成附件，
 +或使用工作目录内的 `@.reasonix/attachments/example.jpg`；工作目录外的裸路径不等于附件。
 +
@@ -376,8 +381,8 @@ index 0000000000000000000000000000000000000000..e022b24baf70c1545ded3ff1c6fffc5c
 +`effort = ""` 表示当前模型 auto（忽略分组固定 effort，使用该模型默认）；
 +删除模型级 effort 字段恢复继承分组。会话 `--effort` 优先于模型设置。
 +旧的分组 `effort` 未自动清除，因此还没单独设置的模型保持旧行为。GLM/Kimi 等
-+协议只允许自身档位；`auto` 不等于 adaptive。你的 8790 网关未声明思考字段，
-+自动读取仍只能显示未知或已有配置，不能证明后端确实执行了某个思考强度。
++协议只允许自身档位；`auto` 不等于 adaptive。端点未声明思考字段时，自动读取
++只能显示未知或已有配置；即使提供声明，也不能据此证明后端实际执行了某个思考强度。
 +
 +## 源码升级与发布保留规则
 +
